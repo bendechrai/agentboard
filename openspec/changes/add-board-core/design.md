@@ -122,10 +122,41 @@ worktrees see one board with no configuration.
 
 ### Library first, CLI second
 Every operation is a function in `src/board/` taking a `Board` handle and
-returning a result object; the CLI is a thin argument parser over them and
-the future `mcp` command wraps the same functions as tools. Tests exercise
+returning a result object. A single command registry (`src/cli/registry.ts`)
+describes each command once: name, positional arguments, flags with types
+and whether they are required, whether it writes, a one-line summary, and
+the operation it calls. The CLI parser, the `mcp` tool definitions and (in a
+later change) generated help all read the registry, so a flag added to one
+surface is added to all of them. Tests exercise
 the functions directly for logic and spawn the built CLI for the concurrency
 and crash properties.
+
+### Task reference is source-neutral
+Tickets carry `task: {source, ref, item}` instead of OpenSpec-shaped
+`change` and `group` fields. OpenSpec maps to `source: openspec`, `ref` the
+change name and `item` the group number as a decimal string; Spec Kit would
+map to `source: speckit`, `ref` the feature directory (`001-photo-albums`)
+and `item` a phase or task id. Everything source-specific (finding the
+tasks file, parsing it, pointing at a line) lives behind a source adapter,
+and the schema only type-checks the three strings. Alternative considered:
+keep `change`/`group` and add a Spec Kit shape later. Rejected: that is a
+schema version bump plus a fold for both shapes forever, to save three
+strings now. `--change --group` stays as CLI shorthand because OpenSpec is
+the source this project uses daily.
+
+### MCP server
+`mcp` uses the official MCP TypeScript SDK over stdio rather than a
+hand-rolled JSON-RPC loop: protocol conformance (initialization, capability
+negotiation, schema publication) is the part most likely to be subtly
+wrong, and the SDK is maintained alongside the spec. Tool input schemas are
+generated from the command registry. Each call runs the same operation
+function and the same `BEGIN IMMEDIATE` transaction as the CLI, so an agent
+using MCP and another using the shell race safely. Errors map to tool
+errors carrying the CLI exit code and rejection reason, never to protocol
+errors, so the calling model sees why it was refused. `init`, `watch`,
+`rebuild`, `sync` and `version` are excluded: they are human or
+orchestrator operations and `watch` is a stream that does not fit a
+request/response tool.
 
 ### Secret refusal
 A small pattern list (PEM headers, AWS access key ids, GitHub `ghp_` and
@@ -149,7 +180,9 @@ covers group 1 only, to show the intended shape:
 - `src/events/hlc.ts`: `next(prev, wallMs, actor): Hlc`; `compare(a, b): -1 | 0 | 1`;
   `encode`/`decode` for the wire form.
 - `src/events/schema.ts`: the `Event` envelope type, one body type per kind,
-  and `validate(value): { ok: true; event: Event } | { ok: false; reasons: string[] }`.
+  the `TaskRef` type (`{ source, ref, item }`) with `parseTaskRef(text)` and
+  `formatTaskRef(ref)` for the `<source>:<ref>#<item>` form, and
+  `validate(value): { ok: true; event: Event } | { ok: false; reasons: string[] }`.
 - `src/events/fold.ts`: `fold(events: Event[]): { state: BoardState; rejected: Rejected[]; unknown: Event[] }`,
   deterministic in the input order.
 

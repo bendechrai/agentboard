@@ -12,9 +12,9 @@ branch is reviewed and merged, and its decisions are in a spec delta or ADR.
 
 - [ ] 1.1 Implement `src/events/canonical.ts` (sorted-key canonical JSON encode, decode with strict rejection of floats and duplicate keys) and verify with tests that two objects with different key insertion order produce identical bytes and that a float is rejected
 - [ ] 1.2 Implement `src/events/ulid.ts` (encode, monotonic generator, parse and validate) and verify with tests against two published ULID example values and a 10,000-iteration monotonicity check
-- [ ] 1.3 Implement `src/events/schema.ts` (event envelope and kind bodies as TypeScript types plus a validator returning malformed reasons) and verify with table tests for every kind, one malformed case per required field, and extra-field rejection
+- [ ] 1.3 Implement `src/events/schema.ts` (event envelope and kind bodies as TypeScript types, the source-neutral task reference with its `<source>:<ref>#<item>` text form, plus a validator returning malformed reasons) and verify with table tests for every kind, one malformed case per required field, extra-field rejection, task and adhoc both present, a task reference from a source other than openspec, and a malformed source
 - [ ] 1.4 Implement `src/events/hlc.ts` (hybrid timestamp next-value and compare) and verify with tests for the clock-moved-backwards case and total-order property over random inputs
-- [ ] 1.5 Implement `src/events/fold.ts` (deterministic ordering by (wall, counter, actor, hash); fold to ticket state; rejection reasons unknown-ticket, duplicate-create, invalid-transition, already-assigned, not-assignee, checklist-index, needs-change-link; unknown kinds preserved in the report) and verify with tests for every rejection reason, the blocked-remembers-origin rule, handoff's three effects, version and updated_at counting, and a property test that folding the same event set in shuffled orders yields identical canonical state
+- [ ] 1.5 Implement `src/events/fold.ts` (deterministic ordering by (wall, counter, actor, hash); fold to ticket state; rejection reasons unknown-ticket, duplicate-create, invalid-transition, already-assigned, not-assignee, checklist-index, needs-task-link; unknown kinds preserved in the report) and verify with tests for every rejection reason, the blocked-remembers-origin rule, handoff's three effects, version and updated_at counting, and a property test that folding the same event set in shuffled orders yields identical canonical state
 
 ## 2. Store: discovery, atomic writes, cache, rebuild
 
@@ -26,8 +26,8 @@ branch is reviewed and merged, and its decisions are in a spec delta or ADR.
 
 ## 3. CLI core commands
 
-- [ ] 3.1 Implement the argument parser, actor resolution (`--as` or AGENTBOARD_ACTOR), `--json` plumbing, exit code mapping and `version`, and verify with tests that a missing actor exits 1 and that every command's `--json` stdout parses as one document
-- [ ] 3.2 Implement `init`, `new`, `show` (including `--raw`) and `list` with filters and prefix id resolution, and verify with tests for idempotent init, host gitignore update, ambiguous-prefix refusal, closed-ticket exclusion and each filter
+- [ ] 3.1 Implement the command registry (`src/cli/registry.ts`: every command's arguments, flags, summary and writing flag, defined once) and the argument parser driven by it, actor resolution (`--as` or AGENTBOARD_ACTOR), `--json` plumbing, exit code mapping and `version`, and verify with tests that a missing actor exits 1 and that every command's `--json` stdout parses as one document
+- [ ] 3.2 Implement `init`, `new`, `show` (including `--raw`) and `list` with filters and prefix id resolution, and verify with tests for idempotent init, host gitignore update, ambiguous-prefix refusal, closed-ticket exclusion, each filter, `--task` parsing and malformed-reference refusal, and `--change --group` producing the same task reference as `--task openspec:<name>#<n>`
 - [ ] 3.3 Implement `claim`, `release`, `move`, `comment`, `handoff`, `link`, `checklist tick/untick` and verify with tests for every state machine transition (allowed and refused), claim on assigned, release by non-assignee, handoff atomicity and the tasks.md reminder on tick
 - [ ] 3.4 Implement `close` with the decision disposition rule, the missing-path check and the DECISION: comment guard, and verify with tests for each refusal and for a successful close from merged and from blocked
 - [ ] 3.5 Implement secret-pattern refusal for `new`, `comment` and `handoff` and verify with tests for each pattern name and the `--allow-secret-like` bypass, asserting the matched text is never echoed
@@ -54,7 +54,7 @@ branch is reviewed and merged, and its decisions are in a spec delta or ADR.
 ## 7. OpenSpec integration
 
 - [ ] 7.1 Implement `import-change <name>` (locate the OpenSpec root, parse numbered groups and checkbox lines, one ticket per group with labels and checklist, fully ticked groups as merged) and verify with tests against a fixture tasks file and an idempotency test that a second import writes no events
-- [ ] 7.2 Implement the tickets-reference-tasks rule (`--change/--group` or `--adhoc <reason>`; ad hoc tickets cannot enter `implementing` without a change link) and verify with tests for both refusals
+- [ ] 7.2 Implement the tickets-reference-tasks rule (`--task`, `--change/--group` or `--adhoc <reason>`; ad hoc tickets cannot enter `implementing` without a task link) and the source adapter interface with the `openspec` adapter, and verify with tests for both refusals, a ticket from a source with no adapter being fully usable, and `import-change` naming the unsupported source
 - [ ] 7.3 Implement `close-merged` (gh-backed PR merge state, closes with the right disposition, lists unmerged) and verify with tests that stub the gh invocation for merged, unmerged and gh-missing cases
 
 ## 8. Documentation and consumer setup
@@ -63,6 +63,8 @@ branch is reviewed and merged, and its decisions are in a spec delta or ADR.
 - [ ] 8.2 Add docs/adr/0002-one-transaction-per-command.md and docs/adr/0003-cursors-as-position-plus-seen-set.md recording the design decisions above, and verify the ADR index lists them
 - [ ] 8.3 Add a "Using agentboard in a project" section to CONTRIBUTING.md (gitignore entry, `make hooks` unaffected, `agentboard init`, `import-change` on every new OpenSpec change) and verify with `make check`
 
-## 9. MCP server (optional, last)
+## 9. MCP server
 
-- [ ] 9.1 Implement `agentboard mcp` exposing every reading and writing command as an MCP tool over stdio with identical validation, and verify with a test that lists the tools and round-trips `new`, `claim`, `handoff` and `show` through the server
+- [ ] 9.1 Add the official MCP TypeScript SDK with `npm install`, and implement tool definitions generated from the command registry (names, input schemas, exclusions) and verify with a test that the listed tools are exactly the set in the board-cli spec and that each schema's required fields match the registry
+- [ ] 9.2 Implement `agentboard mcp` over stdio (board discovery at start-up, actor from `as` or `AGENTBOARD_ACTOR`, success as structured JSON, failures as tool errors with exitCode, reason and message) replacing the 3.6 placeholder, and verify with tests that spawn the server as a child process and round-trip `new`, `claim`, `handoff` and `show`, that an `already-assigned` claim returns the mapped tool error and writes no event, and that start-up with no board exits 2
+- [ ] 9.3 Verify with a test that a claim race between one MCP client and one CLI process on the same ticket has exactly one winner and `rebuild --check` reports no divergence
