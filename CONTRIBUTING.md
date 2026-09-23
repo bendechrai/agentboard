@@ -40,7 +40,10 @@ worktree.
    stating each contract; this first commit is the authoritative API for
    the group. `tasks.md` names files and behaviors, not signatures, by
    design. Red tests are expected at this stage. The test author does not
-   implement behavior.
+   implement behavior. Because the tests are red by design at hand-off, the
+   test author runs the pre-push subset (`make build typecheck lint ascii
+   validate-specs`), not the full `make check`; the full green suite is the
+   implementer's and reviewer's obligation.
 2. **Implementer.** Makes the tests green by writing production code. The
    implementer must not edit test files and must not change the stubs'
    signatures; a signature change goes through the STOP protocol below. If
