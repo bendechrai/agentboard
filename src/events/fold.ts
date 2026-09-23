@@ -258,21 +258,51 @@ export function fold(inputs: readonly FoldInput[]): FoldResult {
   const rejected: Rejected[] = [];
   const unknown: UnknownReport[] = [];
 
-  for (const { hash, event } of ordered) {
-    if (!isKnownEvent(event)) {
-      unknown.push({ hash, kind: event.kind, event });
-    } else if (event.kind === 'board.meta') {
-      meta[event.body.key] = event.body.value;
-    } else {
-      const reason = applyTicketEvent(state.tickets, hash, event);
-      if (reason !== null) {
-        rejected.push({ hash, kind: event.kind, ticket: event.ticket, reason });
-      }
+  for (const input of ordered) {
+    const outcome = applyEvent(state, input);
+    if (outcome.status === 'rejected') {
+      rejected.push(outcome.rejected);
+    } else if (outcome.status === 'unknown') {
+      unknown.push(outcome.unknown);
     }
   }
 
   const last = ordered.at(-1);
   return { state, rejected, unknown, latest: last === undefined ? null : { ...last.event.ts } };
+}
+
+/** Outcome of applying one event with `applyEvent`. */
+export type ApplyOutcome =
+  | { status: 'applied' }
+  | { status: 'rejected'; rejected: Rejected }
+  | { status: 'unknown'; unknown: UnknownReport };
+
+/**
+ * One step of `fold`: applies `input` to `state` (mutating it only when the
+ * event is applied) by exactly the per-kind rules documented on `fold`.
+ * `fold` is this function applied to the de-duplicated inputs in fold order,
+ * starting from an empty state; callers that keep state elsewhere (the
+ * cache) use it to apply or validate a single event against the state at
+ * that event's position. `state.tickets` need only hold the event's ticket,
+ * when it exists.
+ */
+export function applyEvent(state: BoardState, input: FoldInput): ApplyOutcome {
+  const { hash, event } = input;
+  if (!isKnownEvent(event)) {
+    return { status: 'unknown', unknown: { hash, kind: event.kind, event } };
+  }
+  if (event.kind === 'board.meta') {
+    state.meta[event.body.key] = event.body.value;
+    return { status: 'applied' };
+  }
+  const reason = applyTicketEvent(state.tickets, hash, event);
+  if (reason !== null) {
+    return {
+      status: 'rejected',
+      rejected: { hash, kind: event.kind, ticket: event.ticket, reason },
+    };
+  }
+  return { status: 'applied' };
 }
 
 /**

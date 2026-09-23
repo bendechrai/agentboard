@@ -18,11 +18,11 @@ branch is reviewed and merged, and its decisions are in a spec delta or ADR.
 
 ## 2. Store: discovery, atomic writes, cache, rebuild
 
-- [ ] 2.1 Implement `src/store/locate.ts` (AGENTBOARD_DIR, then git common dir parent, then ./.board) and verify with tests using temporary git repositories including a linked worktree and a non-git directory
-- [ ] 2.2 Implement `src/store/eventfile.ts` (atomic temp-write, fsync, rename to SHA-256 name; dedupe; listing that ignores `.tmp-` names; corrupt-name detection on read; stale temp reaping) and verify with tests for dedupe, corrupt detection and temp reaping
-- [ ] 2.3 Implement `src/store/cache.ts` (open with WAL, busy_timeout 5000, foreign keys; schema from board-cache; catch-up fold of unrecorded files; apply-event to rows; canonical dump for comparison) and verify with tests that a deleted cache is rebuilt transparently and that the canonical dump of two rebuilds is identical
-- [ ] 2.4 Implement `src/store/transaction.ts` (the single BEGIN IMMEDIATE command transaction: catch-up, validate, build event, write file, apply rows, record folded, commit) and verify with tests that a validation failure writes no file and changes no rows
-- [ ] 2.5 Implement `rebuild` and `rebuild --check` and verify with tests that a hand-edited cache is detected and left unchanged by `--check`
+- [x] 2.1 Implement `src/store/locate.ts` (AGENTBOARD_DIR, then git common dir parent, then ./.board) and verify with tests using temporary git repositories including a linked worktree and a non-git directory
+- [x] 2.2 Implement `src/store/eventfile.ts` (atomic temp-write, fsync, rename to SHA-256 name; dedupe; listing that ignores `.tmp-` names; corrupt-name detection on read; stale temp reaping) and verify with tests for dedupe, corrupt detection and temp reaping
+- [x] 2.3 Implement `src/store/cache.ts` (open with WAL, busy_timeout 5000, foreign keys; schema from board-cache; catch-up fold of unrecorded files; apply-event to rows; canonical dump for comparison) and verify with tests that a deleted cache is rebuilt transparently and that the canonical dump of two rebuilds is identical
+- [x] 2.4 Implement `src/store/transaction.ts` (the single BEGIN IMMEDIATE command transaction: catch-up, validate, build event, write file, apply rows, record folded, commit) and verify with tests that a validation failure writes no file and changes no rows
+- [x] 2.5 Implement `rebuild` and `rebuild --check` and verify with tests that a hand-edited cache is detected and left unchanged by `--check`
 
 ## 3. CLI core commands
 
