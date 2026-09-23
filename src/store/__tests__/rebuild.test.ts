@@ -1,10 +1,14 @@
+import { spawn } from 'node:child_process';
 import { existsSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { openBoard, type Board } from '../board.js';
+import { canonicalEncode, sha256Hex } from '../../events/canonical.js';
 import { dumpCache, openCache, readTicket } from '../cache.js';
+import { BoardError } from '../errors.js';
 import { listEventFiles } from '../eventfile.js';
 import { checkCache, diffCaches, rebuild } from '../rebuild.js';
 import {
@@ -18,6 +22,7 @@ import {
   putEvent,
   seedRich,
   tempBoard,
+  tempDir,
 } from './helpers.js';
 
 const open: Board[] = [];
@@ -148,6 +153,131 @@ describe('rebuild', () => {
     rebuild(board);
     expect(existsSync(temp)).toBe(true);
     expect(board.db.isTransaction).toBe(false);
+  });
+});
+
+/**
+ * A separate writer process that behaves like a committing command, holding
+ * the lock for `holdMs`: it takes BEGIN IMMEDIATE on the live cache, renames
+ * a new event file into place, replaces the derived rows with those of a
+ * cache that already contains that event, prints "locked", waits, then
+ * commits. Pure SQL and fs, so it does not depend on the code under test.
+ */
+const WRITER = `
+import { renameSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+const [cache, after, staged, final, holdMs] = process.argv.slice(2);
+const db = new DatabaseSync(cache);
+db.exec('PRAGMA busy_timeout = 5000');
+db.exec("ATTACH DATABASE '" + after.replaceAll("'", "''") + "' AS a");
+db.exec('BEGIN IMMEDIATE');
+renameSync(staged, final);
+db.exec(\`
+  DELETE FROM main.comments; DELETE FROM main.links; DELETE FROM main.tickets;
+  DELETE FROM main.folded; DELETE FROM main.meta;
+  INSERT INTO main.tickets SELECT * FROM a.tickets;
+  INSERT INTO main.comments SELECT * FROM a.comments;
+  INSERT INTO main.links SELECT * FROM a.links;
+  INSERT INTO main.folded SELECT * FROM a.folded;
+  INSERT INTO main.meta SELECT * FROM a.meta;
+\`);
+process.stdout.write('locked\\n');
+Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(holdMs));
+db.exec('COMMIT');
+db.close();
+`;
+
+interface Writer {
+  exited: Promise<number | null>;
+}
+
+/** Starts the writer and resolves once it holds the lock with the file renamed. */
+async function startWriter(board: Board, event: unknown, holdMs: number): Promise<Writer> {
+  const work = tempDir();
+  // A cache that already contains `event`, built from a copy of the events.
+  const afterDir = copyBoard(board.eventsDir);
+  putEvent(join(afterDir, 'events'), event);
+  openBoard(afterDir).close();
+  const bytes = canonicalEncode(event);
+  const staged = join(work, 'staged.json');
+  writeFileSync(staged, bytes);
+  const script = join(work, 'writer.mjs');
+  writeFileSync(script, WRITER);
+  const final = join(board.eventsDir, `${sha256Hex(bytes)}.json`);
+  const child = spawn(
+    process.execPath,
+    [script, board.cachePath, join(afterDir, 'cache.sqlite'), staged, final, String(holdMs)],
+    { stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  let stderr = '';
+  child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+  const exited = new Promise<number | null>((resolve) => child.on('exit', resolve));
+  await new Promise<void>((resolve, reject) => {
+    let out = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      out += chunk.toString();
+      if (out.includes('locked')) {
+        resolve();
+      }
+    });
+    child.on('exit', (code) => reject(new Error(`writer exited ${String(code)}: ${stderr}`)));
+  });
+  return { exited };
+}
+
+describe('checkCache while a writer runs', () => {
+  it('waits for a writer holding the lock and reports no divergence', async () => {
+    const { board, events } = seeded();
+    const hold = 400;
+    const writer = await startWriter(board, ev(P.comment(T3, 'concurrent'), 'orch', 99_000), hold);
+    // The writer's file is already renamed into place, its rows not yet committed.
+    expect(listEventFiles(events)).toHaveLength(24);
+    const started = Date.now();
+    const result = checkCache(board);
+    const waited = Date.now() - started;
+    expect(await writer.exited).toBe(0);
+    expect(result.differences).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(waited).toBeGreaterThanOrEqual(hold - 150);
+    expect(board.db.isTransaction).toBe(false);
+    expect(readTicket(board.db, T3)?.comments.map((c) => c.text)).toEqual(['concurrent']);
+    expect(checkCache(board).ok).toBe(true);
+  }, 20_000);
+
+  it('holds the write lock: with the lock taken elsewhere it fails busy instead of racing', () => {
+    const { board } = seeded();
+    board.db.exec('PRAGMA busy_timeout = 50');
+    const holder = new DatabaseSync(board.cachePath);
+    holder.exec('BEGIN IMMEDIATE');
+    const dump = dumpCache(board.db);
+    try {
+      checkCache(board);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(BoardError);
+      expect([(error as BoardError).exitCode, (error as BoardError).reason]).toEqual([5, 'busy']);
+    } finally {
+      holder.exec('ROLLBACK');
+      holder.close();
+    }
+    expect(board.db.isTransaction).toBe(false);
+    expect(dumpCache(board.db)).toBe(dump);
+    expect(checkCache(board).ok).toBe(true);
+  });
+
+  it('releases the lock afterwards (rolls back), so a writer can proceed', () => {
+    const { board } = seeded();
+    checkCache(board);
+    const other = new DatabaseSync(board.cachePath);
+    try {
+      other.exec('PRAGMA busy_timeout = 0');
+      expect(() => {
+        other.exec('BEGIN IMMEDIATE');
+        other.exec('ROLLBACK');
+      }).not.toThrow();
+    } finally {
+      other.close();
+    }
   });
 });
 

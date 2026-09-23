@@ -14,6 +14,7 @@ import {
   reapStaleTemps,
   writeEventFile,
 } from '../eventfile.js';
+import { BoardError } from '../errors.js';
 import { P, T1, T2, allNames, ev, tempBoard } from './helpers.js';
 
 const eventsOf = (board: string): string => join(board, 'events');
@@ -70,12 +71,38 @@ describe('writeEventFile', () => {
     expect(allNames(dir)).toEqual([basename(first.path)]);
   });
 
-  it('never modifies an existing file of the same name', () => {
+  it('refuses with exit 5 when an existing file of the same name holds other bytes, touching nothing', () => {
     const dir = eventsOf(tempBoard());
     const hash = sha256Hex(canonicalEncode(CREATE));
     const path = raw(dir, `${hash}.json`, 'not the event');
-    expect(writeEventFile(dir, CREATE).existed).toBe(true);
+    let hookCalls = 0;
+    try {
+      writeEventFile(dir, CREATE, {
+        afterTempWrite: () => (hookCalls += 1),
+        afterRename: () => (hookCalls += 1),
+      });
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(BoardError);
+      const err = error as BoardError;
+      expect({ exitCode: err.exitCode, reason: err.reason }).toEqual({
+        exitCode: 5,
+        reason: 'integrity',
+      });
+      expect(err.message).toContain(path);
+    }
+    expect(hookCalls).toBe(0);
     expect(readFileSync(path, 'utf8')).toBe('not the event');
+    expect(allNames(dir)).toEqual([`${hash}.json`]);
+  });
+
+  it('refuses with exit 5 when the existing file is another valid event under the wrong name', () => {
+    const dir = eventsOf(tempBoard());
+    const hash = sha256Hex(canonicalEncode(CREATE));
+    const other = canonicalEncode(COMMENT);
+    const path = raw(dir, `${hash}.json`, other);
+    expect(() => writeEventFile(dir, CREATE)).toThrow(BoardError);
+    expect(Buffer.compare(readFileSync(path), Buffer.from(other))).toBe(0);
   });
 
   it('writes the temporary file in the events directory and renames it', () => {

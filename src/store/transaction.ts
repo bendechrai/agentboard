@@ -119,7 +119,14 @@ export interface CommandResult {
  *    rejection reason>, ...)`; for `already-assigned` the message names the
  *    current assignee.
  * 5. Writes the event file with `writeEventFile` (atomic temp write, fsync,
- *    rename, directory fsync), passing the hooks.
+ *    rename, directory fsync), passing the hooks. The event's `ts` sorts
+ *    after every event catch-up recorded, so its file cannot legitimately
+ *    exist yet: if `writeEventFile` reports `existed: true` (a file with the
+ *    event's exact bytes appeared that catch-up did not record), or throws
+ *    `BoardError(5, 'integrity')` because a file of that name holds other
+ *    bytes, the command rolls back and throws `BoardError(5, 'integrity',
+ *    ...)` naming the path. No file is written or modified and no row
+ *    changes.
  * 6. Applies the event to the cache rows, records it in `folded` as
  *    applied, and updates `last_position`.
  * 7. Commits.
@@ -134,6 +141,7 @@ export interface CommandResult {
  *
  * @throws BoardError exit 1 reason `missing-actor` when `actor` is empty,
  *   before anything is read or written.
+ * @throws BoardError exit 5 reason `integrity` as described in step 5.
  */
 export function runCommand(
   board: Board,

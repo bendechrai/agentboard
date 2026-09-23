@@ -50,9 +50,11 @@ export interface WriteResult {
   /** Absolute path of `<eventsDir>/<hash>.json`. */
   path: string;
   /**
-   * True when a file with that name already existed before this call, in
-   * which case nothing was written (dedupe): no temporary file was created
-   * and the existing file was not touched.
+   * True when a file with that name already existed before this call and
+   * its bytes hash to that name (so it holds exactly this event), in which
+   * case nothing was written (dedupe): no temporary file was created and the
+   * existing file was not touched. An existing file whose bytes do not hash
+   * to its name is never reported as `existed`; see `writeEventFile`.
    */
   existed: boolean;
 }
@@ -83,8 +85,12 @@ export interface WriteHooks {
  * Atomically writes `event` as an event file.
  *
  * Steps: encode with `canonicalEncode`; hash with `sha256Hex`; if
- * `<hash>.json` already exists return `{ existed: true }` without writing
- * anything and without calling any hook. Otherwise create
+ * `<hash>.json` already exists, read it: when `sha256Hex` of its bytes is
+ * `<hash>`, return `{ existed: true }` without writing anything and without
+ * calling any hook; otherwise throw `BoardError(5, 'integrity', ...)` naming
+ * its path, again without writing anything, calling any hook or touching
+ * the existing file (board-cli exit 5: an existing event file whose content
+ * does not match its name). Otherwise create
  * `<eventsDir>/.tmp-<random>` (random part: at least 16 hex characters from a
  * cryptographic source), write the bytes, fsync, close, call
  * `hooks.afterTempWrite`, rename to `<hash>.json`, fsync the directory (on
@@ -97,6 +103,8 @@ export interface WriteHooks {
  *
  * @throws CanonicalError when `event` cannot be canonically encoded (nothing
  *   is written).
+ * @throws BoardError exit 5, reason `integrity`, when `<hash>.json` exists
+ *   but its bytes do not hash to `<hash>`.
  */
 export function writeEventFile(eventsDir: string, event: unknown, hooks?: WriteHooks): WriteResult {
   const bytes = canonicalEncode(event);

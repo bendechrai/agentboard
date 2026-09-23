@@ -273,8 +273,17 @@ export interface CatchUpOptions {
  * indistinguishable except for `refolded`).
  *
  * Runs inside the caller's transaction when `board.db.isTransaction` is
- * true; otherwise wraps its work in its own `BEGIN IMMEDIATE` ... `COMMIT`
- * (rolled back on error). A call that finds nothing new changes no rows.
+ * true. Otherwise it first looks without taking the write lock (a plain read
+ * of `folded`, a listing of `events/` and of stale temporaries): when there
+ * is no stale temporary file to reap and no unrecorded file to record
+ * (every unrecorded name, if any, is corrupt), it returns at once without
+ * ever taking the write lock, with empty event arrays, `reaped` empty,
+ * `refolded` false and `corrupt` listing the corrupt files; a concurrent
+ * writer holding `BEGIN IMMEDIATE` therefore never blocks it. Only when
+ * there is something to fold or reap does it take `BEGIN IMMEDIATE` (with
+ * the busy retry, then `BoardError(5, 'busy')`), redo the work above under
+ * the lock, and `COMMIT` (rolled back on error). A call that finds nothing
+ * new changes no rows.
  */
 export function catchUp(board: Board, options?: CatchUpOptions): CatchUpReport {
   const now = options?.now ?? Date.now();

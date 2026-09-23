@@ -51,7 +51,9 @@ export interface OpenBoardOptions {
  * `openCache` (creating it when absent), then, unless `catchUp` is false,
  * runs `catchUp`, whose report becomes `opened`. A deleted cache therefore
  * comes back with the same rows as before, as long as the event files are
- * unchanged.
+ * unchanged. Opening a cache that already has the current schema, when
+ * catch-up finds nothing to fold or reap, never takes the write lock, so a
+ * reader is not blocked by a writer holding `BEGIN IMMEDIATE`.
  *
  * @throws BoardError exit 2, reason `board-not-found`, naming `dir`, when
  *   `boardExists(dir)` is false. Nothing is created in that case.

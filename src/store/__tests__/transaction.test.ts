@@ -489,6 +489,67 @@ describe('runCommand: order inside the transaction', () => {
   });
 });
 
+describe("runCommand: an existing file at the new event's name", () => {
+  /** The event `run(board, 'impl', P.comment(T1, text), () => START + 1000)` builds after a create at START. */
+  const next = (text: string): ReturnType<typeof ev> =>
+    ev(P.comment(T1, text), 'impl', START + 1000);
+
+  it('refuses with exit 5 integrity when a corrupt file sits at that name, changing no rows', () => {
+    const { board, events } = setup();
+    run(board, 'orch', P.create(T1), () => START);
+    const hash = sha256Hex(canonicalEncode(next('x')));
+    const planted = join(events, `${hash}.json`);
+    writeFileSync(planted, 'planted junk');
+
+    const err = expectNoWrite(
+      board,
+      () => run(board, 'impl', P.comment(T1, 'x'), () => START + 1000),
+      5,
+      'integrity',
+    );
+    expect(err.message).toContain(planted);
+    expect(readFileSync(planted, 'utf8')).toBe('planted junk');
+    expect(readTicket(board.db, T1)?.comments).toEqual([]);
+    expect(board.db.prepare('SELECT COUNT(*) AS n FROM folded WHERE hash = ?').get(hash)).toEqual({
+      n: 0,
+    });
+  });
+
+  it('refuses with exit 5 integrity when its exact file appears after catch-up, changing no rows', () => {
+    const { board, events } = setup();
+    run(board, 'orch', P.create(T1), () => START);
+    const dump = dumpCache(board.db);
+    const before = allNames(events);
+    const event = next('y');
+    const hash = sha256Hex(canonicalEncode(event));
+    let planted = '';
+    const op: Operation = () => {
+      // An out-of-band writer (not holding the lock) drops the identical file now.
+      planted = join(events, `${putEvent(events, event)}.json`);
+      return { ok: true, event: P.comment(T1, 'y') };
+    };
+    expectBoardError(() => run(board, 'impl', op, () => START + 1000), 5, 'integrity');
+    expect(planted).toBe(join(events, `${hash}.json`));
+    expect(allNames(events)).toEqual([...before, `${hash}.json`].sort());
+    expect(dumpCache(board.db)).toBe(dump);
+    expect(board.db.isTransaction).toBe(false);
+  });
+
+  it('folds the identical file normally once it is recorded by a later catch-up', () => {
+    const { board, events } = setup();
+    run(board, 'orch', P.create(T1), () => START);
+    const event = next('z');
+    const op: Operation = () => {
+      putEvent(events, event);
+      return { ok: true, event: P.comment(T1, 'z') };
+    };
+    expect(() => run(board, 'impl', op, () => START + 1000)).toThrow(BoardError);
+    const later = run(board, 'impl', P.comment(T1, 'after'), () => START + 2000);
+    expect(later.catchUp.applied).toEqual([sha256Hex(canonicalEncode(event))]);
+    expect(later.ticket?.comments.map((c) => c.text)).toEqual(['z', 'after']);
+  });
+});
+
 describe('crash injection hook', () => {
   it('names the environment variable', () => {
     expect(TEST_PAUSE_ENV).toBe('AGENTBOARD_TEST_PAUSE');

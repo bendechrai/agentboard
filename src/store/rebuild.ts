@@ -128,10 +128,20 @@ export interface CheckResult {
 /**
  * `agentboard rebuild --check`: rebuilds from the event files into a
  * temporary database (`openCache(':memory:')`), compares it with the live
- * cache using `diffCaches`, and closes the temporary database. Never writes
- * to the live cache or to the board directory, never runs catch-up and never
- * reaps temporary files, so an event file the live cache has not folded yet
- * shows up as a difference.
+ * cache using `diffCaches`, and closes the temporary database.
+ *
+ * It holds the write lock on the live connection (`BEGIN IMMEDIATE` on
+ * `board.db`, with the busy retry, then `BoardError(5, 'busy')`) across the
+ * listing of `events/`, the refold and the diff, and then rolls back. A
+ * concurrent writer is therefore either fully committed (file and rows) or
+ * not started, so `--check` never reports a false divergence while writers
+ * run; waiting for the lock is expected. Under the lock, an event file the
+ * live cache has not folded can only come from a crashed command, and it
+ * shows up as a real difference.
+ *
+ * Never writes to the live cache (the transaction is always rolled back) or
+ * to the board directory, never runs catch-up and never reaps temporary
+ * files.
  */
 export function checkCache(board: Board): CheckResult {
   const temp = openCache(':memory:');

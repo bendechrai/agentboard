@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { canonicalDecode } from '../../events/canonical.js';
+import { canonicalDecode, canonicalEncode } from '../../events/canonical.js';
 import { openBoard, type Board } from '../board.js';
 import {
   BUSY_TIMEOUT_MS,
@@ -18,6 +18,7 @@ import {
   readTicket,
 } from '../cache.js';
 import { BoardError } from '../errors.js';
+import { checkCache, rebuild } from '../rebuild.js';
 import {
   MISSING,
   P,
@@ -208,6 +209,24 @@ describe('openBoard', () => {
     first.close();
     const second = openB(dir);
     expect(dumpCache(second.db)).toBe(dump);
+  });
+
+  it('drops cursor rows when it recreates a cache of a different schema version', () => {
+    const dir = tempBoard();
+    seedRich(join(dir, 'events'));
+    const first = openBoard(dir);
+    first.db
+      .prepare(
+        "INSERT INTO cursors (actor, last_wall, last_counter, last_actor, last_hash) VALUES ('orch', 1, 0, 'orch', 'h')",
+      )
+      .run();
+    first.db.prepare("UPDATE meta SET value = '999' WHERE key = 'schema_version'").run();
+    first.close();
+    const second = openB(dir);
+    expect(second.db.prepare('SELECT * FROM cursors').all()).toEqual([]);
+    expect(second.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
+      value: String(CACHE_SCHEMA_VERSION),
+    });
   });
 
   it('close is idempotent', () => {
@@ -446,6 +465,227 @@ describe('catchUp', () => {
     utimesSync(temp, 100, 100);
     expect(catchUp(board, { now: 100_000 + 60_000 }).reaped).toEqual([]);
     expect(catchUp(board, { now: 100_000 + 60_001 }).reaped).toEqual([temp]);
+  });
+});
+
+/** A second connection holding the write lock until `release` is called. */
+function holdWriteLock(board: Board): { release: () => void } {
+  const holder = new DatabaseSync(board.cachePath);
+  holder.exec('BEGIN IMMEDIATE');
+  return {
+    release: () => {
+      if (holder.isOpen) {
+        holder.exec('ROLLBACK');
+        holder.close();
+      }
+    },
+  };
+}
+
+/** Asserts `fn` fails with BoardError(5, 'busy'), i.e. it tried to take the write lock. */
+function expectBusy(fn: () => unknown): void {
+  try {
+    fn();
+  } catch (error) {
+    expect(error).toBeInstanceOf(BoardError);
+    expect({
+      exitCode: (error as BoardError).exitCode,
+      reason: (error as BoardError).reason,
+    }).toEqual({ exitCode: 5, reason: 'busy' });
+    return;
+  }
+  throw new Error('expected BoardError(5, busy)');
+}
+
+describe('catch-up and the write lock', () => {
+  it('with nothing to fold or reap, catchUp does not take the write lock', () => {
+    const dir = tempBoard();
+    const events = join(dir, 'events');
+    seedRich(events);
+    const young = join(events, '.tmp-5555555555555555');
+    writeFileSync(young, 'in progress');
+    const board = openB(dir);
+    board.db.exec('PRAGMA busy_timeout = 50');
+    const dump = dumpCache(board.db);
+    const lock = holdWriteLock(board);
+    try {
+      const report = catchUp(board, { now: Date.now() });
+      expect(report).toEqual({
+        applied: [],
+        rejected: [],
+        unknown: [],
+        malformed: [],
+        corrupt: [],
+        reaped: [],
+        refolded: false,
+      });
+    } finally {
+      lock.release();
+    }
+    expect(dumpCache(board.db)).toBe(dump);
+    expect(existsSync(young)).toBe(true);
+    expect(board.db.isTransaction).toBe(false);
+  });
+
+  it('reports corrupt files without taking the write lock when nothing else is new', () => {
+    const dir = tempBoard();
+    const events = join(dir, 'events');
+    putEvent(events, ev(P.create(T1), 'orch', 1000));
+    const corrupt = join(events, 'notes.txt');
+    writeFileSync(corrupt, 'hello');
+    const board = openB(dir);
+    board.db.exec('PRAGMA busy_timeout = 50');
+    const lock = holdWriteLock(board);
+    try {
+      const report = catchUp(board);
+      expect(report.corrupt.map((c) => c.path)).toEqual([corrupt]);
+      expect(report.applied).toEqual([]);
+    } finally {
+      lock.release();
+    }
+  });
+
+  it('openBoard on a current cache with nothing new returns promptly while a writer holds the lock', () => {
+    const dir = tempBoard();
+    seedRich(join(dir, 'events'));
+    const first = openBoard(dir);
+    const dump = dumpCache(first.db);
+    const lock = holdWriteLock(first);
+    const started = Date.now();
+    let second: Board | null = null;
+    try {
+      second = openBoard(dir);
+      expect(Date.now() - started).toBeLessThan(2000);
+      expect(second.opened?.applied).toEqual([]);
+      expect(second.opened?.refolded).toBe(false);
+    } finally {
+      lock.release();
+      second?.close();
+    }
+    expect(dumpCache(first.db)).toBe(dump);
+    first.close();
+  }, 30_000);
+
+  it('with an unrecorded event file, catchUp takes the write lock', () => {
+    const dir = tempBoard();
+    const events = join(dir, 'events');
+    putEvent(events, ev(P.create(T1), 'orch', 1000));
+    const board = openB(dir);
+    board.db.exec('PRAGMA busy_timeout = 50');
+    const h = putEvent(events, ev(P.comment(T1, 'new'), 'orch', 2000));
+    const lock = holdWriteLock(board);
+    try {
+      expectBusy(() => catchUp(board));
+    } finally {
+      lock.release();
+    }
+    expect(readTicket(board.db, T1)?.comments).toEqual([]);
+    expect(catchUp(board).applied).toEqual([h]);
+  });
+
+  it('with an unrecorded malformed file, catchUp takes the write lock', () => {
+    const dir = tempBoard();
+    const events = join(dir, 'events');
+    const board = openB(dir);
+    board.db.exec('PRAGMA busy_timeout = 50');
+    const bad = putEvent(events, { v: 1, kind: 'ticket.comment' });
+    const lock = holdWriteLock(board);
+    try {
+      expectBusy(() => catchUp(board));
+    } finally {
+      lock.release();
+    }
+    expect(catchUp(board).malformed.map((m) => m.hash)).toEqual([bad]);
+  });
+
+  it('with a stale temporary file to reap, catchUp takes the write lock and reaps nothing without it', () => {
+    const dir = tempBoard();
+    const events = join(dir, 'events');
+    const board = openB(dir);
+    board.db.exec('PRAGMA busy_timeout = 50');
+    const stale = join(events, '.tmp-6666666666666666');
+    writeFileSync(stale, 'x');
+    utimesSync(stale, 0, 0);
+    const lock = holdWriteLock(board);
+    try {
+      expectBusy(() => catchUp(board));
+      expect(existsSync(stale)).toBe(true);
+    } finally {
+      lock.release();
+    }
+    expect(catchUp(board).reaped).toEqual([stale]);
+  });
+});
+
+describe('late events that are themselves rejected or unknown', () => {
+  it('a late event rejected at its position still triggers a refold (it would apply incrementally)', () => {
+    const dir = tempBoard();
+    const events = join(dir, 'events');
+    putEvent(events, ev(P.create(T1), 'orch', 1000));
+    putEvent(events, ev(P.move(T1, 'tests'), 'orch', 3000));
+    const board = openB(dir);
+    // At wall 2000 the ticket is still in todo, so this move is invalid there,
+    // although applying it to the current state (tests) would succeed.
+    const late = putEvent(events, ev(P.move(T1, 'implementing'), 'orch', 2000));
+    const report = catchUp(board);
+    expect(report.refolded).toBe(true);
+    expect(report.applied).toEqual([]);
+    expect(report.rejected).toEqual([
+      { hash: late, kind: 'ticket.move', ticket: T1, reason: 'invalid-transition' },
+    ]);
+    expect(readTicket(board.db, T1)?.status).toBe('tests');
+    expect(dumpCache(board.db)).toBe(freshDump(events));
+    expect(canon(readState(board.db))).toBe(canon(foldDir(events).state));
+  });
+
+  it('a late event of an unknown kind still triggers a refold', () => {
+    const dir = tempBoard();
+    const events = join(dir, 'events');
+    putEvent(events, ev(P.create(T1), 'orch', 1000));
+    putEvent(events, ev(P.comment(T1, 'c'), 'orch', 3000));
+    const board = openB(dir);
+    const late = putEvent(events, {
+      v: 1,
+      kind: 'ticket.estimate',
+      ticket: T1,
+      actor: 'orch',
+      ts: { wall: 2000, counter: 0, actor: 'orch' },
+      body: { points: 1 },
+    });
+    const report = catchUp(board);
+    expect(report.refolded).toBe(true);
+    expect(report.unknown.map((u) => u.hash)).toEqual([late]);
+    expect(dumpCache(board.db)).toBe(freshDump(events));
+  });
+});
+
+describe('an event file tampered with after it was recorded', () => {
+  it('is invisible to catch-up but reported by rebuild --check and rebuild', () => {
+    const dir = tempBoard();
+    const events = join(dir, 'events');
+    putEvent(events, ev(P.create(T1), 'orch', 1000));
+    const comment = putEvent(events, ev(P.comment(T1, 'original'), 'orch', 2000));
+    const board = openB(dir);
+    const dump = dumpCache(board.db);
+    const path = join(events, `${comment}.json`);
+    // Overwrite in place with another valid event: the name no longer matches.
+    writeFileSync(path, canonicalEncode(ev(P.comment(T1, 'forged'), 'orch', 2000)));
+
+    const report = catchUp(board);
+    expect(report.applied).toEqual([]);
+    expect(report.corrupt).toEqual([]);
+    expect(dumpCache(board.db)).toBe(dump);
+    expect(readTicket(board.db, T1)?.comments.map((c) => c.text)).toEqual(['original']);
+
+    const check = checkCache(board);
+    expect(check.ok).toBe(false);
+    expect(check.report.corruptFiles.map((c) => c.path)).toEqual([path]);
+    expect(check.differences.some((d) => d.table === 'comments' && d.ticket === T1)).toBe(true);
+    expect(dumpCache(board.db)).toBe(dump);
+
+    const rebuilt = rebuild(board);
+    expect(rebuilt.corruptFiles.map((c) => c.path)).toEqual([path]);
+    expect(readTicket(board.db, T1)?.comments).toEqual([]);
   });
 });
 
