@@ -14,9 +14,10 @@ check: build typecheck lint test ascii validate-specs
 
 # Runs `make check` inside the pinned dev toolchain container (see
 # Dockerfile.dev / docker-compose.yml) instead of whatever Node happens
-# to be installed on the host.
+# to be installed on the host. node_modules is a container volume (so
+# host and container binaries never mix), so it is installed first.
 check-in-docker:
-	docker compose run --rm dev make check
+	docker compose run --rm --build dev sh -c 'make install && make check'
 
 # Points git at the repo-tracked hooks directory so pre-push runs the
 # fast local checks before every push. Run once per clone/worktree.

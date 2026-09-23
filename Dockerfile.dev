@@ -14,9 +14,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd -g ${UID} dev \
-    && useradd -m -u ${UID} -g dev -s /bin/bash dev \
-    && mkdir -p /workspace /home/dev/.npm \
+# The node base image already has a `node` user and group at uid/gid 1000.
+# Rename whichever user holds ${UID} to `dev` instead of creating a second
+# one, which would fail on the duplicate id.
+RUN existing="$(getent passwd ${UID} | cut -d: -f1)" \
+    && if [ -n "$existing" ]; then \
+        groupmod -n dev "$(id -gn "$existing")" \
+        && usermod -l dev -d /home/dev -m -s /bin/bash "$existing"; \
+    else \
+        groupadd -g ${UID} dev \
+        && useradd -m -u ${UID} -g dev -s /bin/bash dev; \
+    fi \
+    && mkdir -p /workspace/node_modules /home/dev/.npm \
     && chown -R dev:dev /workspace /home/dev
 
 USER dev
