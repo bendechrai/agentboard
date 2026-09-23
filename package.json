@@ -1,0 +1,37 @@
+{
+  "name": "@bendechrai/agentboard",
+  "version": "0.0.1",
+  "private": false,
+  "type": "module",
+  "description": "A local, offline, conflict-free ticket board for AI agents working on one project.",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "bin": {
+    "agentboard": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run --coverage",
+    "check": "npm run build && npm run typecheck && npm run lint && npm run test",
+    "format": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.2",
+    "@vitest/coverage-v8": "^5.0.1",
+    "eslint": "^10.11.0",
+    "prettier": "^3.9.9",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.70.1",
+    "vitest": "^5.0.1"
+  }
+}

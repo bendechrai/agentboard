@@ -1,0 +1,18 @@
+# Pinned dev toolchain for agentboard. No HTTP service exists (agentboard
+# is a local CLI), so this does not join the devtun network or publish
+# any ports.
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - node-modules-cache:/workspace/node_modules
+      - npm-cache:/home/dev/.npm
+    command: sleep infinity
+
+volumes:
+  node-modules-cache:
+  npm-cache:
