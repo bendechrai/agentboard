@@ -34,10 +34,32 @@ export interface Hlc {
  *   `actor` is empty.
  */
 export function nextHlc(prev: Hlc | null, wallMs: number, actor: string): Hlc {
-  void prev;
-  void wallMs;
-  void actor;
-  throw new Error('not implemented');
+  checkParts(wallMs, 0, actor);
+  if (prev === null || wallMs > prev.wall) {
+    return { wall: wallMs, counter: 0, actor };
+  }
+  return { wall: prev.wall, counter: prev.counter + 1, actor };
+}
+
+/** Throws RangeError unless both numbers are non-negative safe integers and `actor` is non-empty. */
+function checkParts(wall: number, counter: number, actor: string): void {
+  if (!isNonNegativeSafeInteger(wall) || !isNonNegativeSafeInteger(counter)) {
+    throw new RangeError('timestamp wall and counter must be non-negative safe integers');
+  }
+  if (actor === '') {
+    throw new RangeError('timestamp actor must be non-empty');
+  }
+}
+
+function isNonNegativeSafeInteger(n: number): boolean {
+  return Number.isSafeInteger(n) && n >= 0;
+}
+
+function compareValues<T extends number | string>(a: T, b: T): -1 | 0 | 1 {
+  if (a < b) {
+    return -1;
+  }
+  return a > b ? 1 : 0;
 }
 
 /**
@@ -46,9 +68,11 @@ export function nextHlc(prev: Hlc | null, wallMs: number, actor: string): Hlc {
  * strings). Returns 0 only when all three fields are equal.
  */
 export function compareHlc(a: Hlc, b: Hlc): -1 | 0 | 1 {
-  void a;
-  void b;
-  throw new Error('not implemented');
+  return (
+    compareValues(a.wall, b.wall) ||
+    compareValues(a.counter, b.counter) ||
+    compareValues(a.actor, b.actor)
+  );
 }
 
 /**
@@ -65,8 +89,15 @@ export function compareHlc(a: Hlc, b: Hlc): -1 | 0 | 1 {
  *   integer or `actor` is empty.
  */
 export function encodeHlc(ts: Hlc): string {
-  void ts;
-  throw new Error('not implemented');
+  checkParts(ts.wall, ts.counter, ts.actor);
+  return `${pad(ts.wall)}-${pad(ts.counter)}-${ts.actor}`;
+}
+
+const WIRE_DIGITS = 16;
+const WIRE_PATTERN = /^([0-9]{16})-([0-9]{16})-([\s\S]+)$/;
+
+function pad(n: number): string {
+  return String(n).padStart(WIRE_DIGITS, '0');
 }
 
 /**
@@ -78,6 +109,12 @@ export function encodeHlc(ts: Hlc): string {
  *   `Number.MAX_SAFE_INTEGER`).
  */
 export function decodeHlc(text: string): Hlc {
-  void text;
-  throw new Error('not implemented');
+  const match = WIRE_PATTERN.exec(text);
+  const wall = Number(match?.[1]);
+  const counter = Number(match?.[2]);
+  const actor = match?.[3];
+  if (actor === undefined || !Number.isSafeInteger(wall) || !Number.isSafeInteger(counter)) {
+    throw new Error(`not an encoded timestamp: ${JSON.stringify(text)}`);
+  }
+  return { wall, counter, actor };
 }

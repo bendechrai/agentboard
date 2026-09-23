@@ -7,6 +7,8 @@
  * built. Pure: no IO, no clock, no randomness.
  */
 
+import { createHash } from 'node:crypto';
+
 /** A JSON value as it appears in an event. Numbers are always safe integers. */
 export type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
 
@@ -78,8 +80,50 @@ export class CanonicalError extends Error {
  *   `CanonicalErrorCode`). Nothing is returned partially.
  */
 export function canonicalEncode(value: unknown): Uint8Array {
-  void value;
-  throw new Error('not implemented');
+  return new TextEncoder().encode(encodeValue(value, new Set()));
+}
+
+/** Canonical text of `value`; `ancestors` holds the containers being encoded, to detect cycles. */
+function encodeValue(value: unknown, ancestors: Set<object>): string {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') {
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) {
+      throw new CanonicalError('float', `number ${String(value)} is not a safe integer`);
+    }
+    return JSON.stringify(value);
+  }
+  if (typeof value !== 'object' || ancestors.has(value)) {
+    throw new CanonicalError('unsupported-type', `cannot encode a ${describe(value)}`);
+  }
+  const isArray = Array.isArray(value);
+  const proto: unknown = Object.getPrototypeOf(value);
+  if (!isArray && proto !== Object.prototype && proto !== null) {
+    throw new CanonicalError('unsupported-type', `cannot encode a ${describe(value)}`);
+  }
+  ancestors.add(value);
+  let text: string;
+  if (isArray) {
+    // for-of rather than map, so holes are visited (as undefined) and rejected.
+    const parts: string[] = [];
+    for (const item of value as unknown[]) {
+      parts.push(encodeValue(item, ancestors));
+    }
+    text = `[${parts.join(',')}]`;
+  } else {
+    const record = value as Record<string, unknown>;
+    const parts = Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${encodeValue(record[key], ancestors)}`);
+    text = `{${parts.join(',')}}`;
+  }
+  ancestors.delete(value);
+  return text;
+}
+
+function describe(value: unknown): string {
+  return typeof value === 'object' ? 'cyclic or non-plain object' : typeof value;
 }
 
 /**
@@ -93,8 +137,158 @@ export function canonicalEncode(value: unknown): Uint8Array {
  *   `invalid-json`, `duplicate-key`, `float`, `non-canonical`.
  */
 export function canonicalDecode(bytes: Uint8Array): JsonValue {
-  void bytes;
-  throw new Error('not implemented');
+  let text: string;
+  try {
+    // ignoreBOM keeps a leading byte order mark in the text, so it is later
+    // reported as non-canonical rather than silently dropped.
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    throw new CanonicalError('invalid-utf8', 'input is not well-formed UTF-8');
+  }
+  const parser = new StrictParser(text.startsWith(BOM) ? text.slice(BOM.length) : text);
+  const value = parser.parseDocument();
+  if (parser.duplicateKey !== null) {
+    throw new CanonicalError('duplicate-key', `duplicate object key ${parser.duplicateKey}`);
+  }
+  if (parser.float !== null) {
+    throw new CanonicalError('float', `number ${parser.float} is not a safe integer`);
+  }
+  if (!sameBytes(canonicalEncode(value), bytes)) {
+    throw new CanonicalError('non-canonical', 'input is valid JSON but not in canonical form');
+  }
+  return value;
+}
+
+const BOM = String.fromCharCode(0xfeff);
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((byte, i) => byte === b[i]);
+}
+
+const NUMBER_TOKEN = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
+// Raw control characters are not allowed inside a JSON string (RFC 8259).
+// eslint-disable-next-line no-control-regex
+const STRING_TOKEN = /"(?:[^"\\\u0000-\u001f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"/y;
+const LITERAL_TOKEN = /true|false|null/y;
+const WHITESPACE = /[ \t\n\r]*/y;
+
+/**
+ * RFC 8259 recursive-descent parser. Syntax errors throw `invalid-json`
+ * immediately; the first duplicate key and the first float are recorded
+ * instead, so that the caller can apply the documented precedence once the
+ * whole input is known to be JSON.
+ */
+class StrictParser {
+  duplicateKey: string | null = null;
+  float: string | null = null;
+  private pos = 0;
+
+  constructor(private readonly text: string) {}
+
+  parseDocument(): JsonValue {
+    const value = this.parseValue();
+    this.skipWhitespace();
+    if (this.pos !== this.text.length) {
+      this.fail();
+    }
+    return value;
+  }
+
+  private parseValue(): JsonValue {
+    this.skipWhitespace();
+    const ch = this.text[this.pos];
+    if (ch === '{') {
+      return this.parseObject();
+    }
+    if (ch === '[') {
+      return this.parseArray();
+    }
+    if (ch === '"') {
+      return this.parseString();
+    }
+    const literal = this.match(LITERAL_TOKEN);
+    if (literal !== null) {
+      return JSON.parse(literal) as JsonValue;
+    }
+    const number = this.match(NUMBER_TOKEN) ?? this.fail();
+    const parsed = Number(number);
+    if (this.float === null && (/[.eE]/.test(number) || !Number.isSafeInteger(parsed))) {
+      this.float = number;
+    }
+    return parsed;
+  }
+
+  private parseObject(): JsonValue {
+    this.pos += 1;
+    const entries: [string, JsonValue][] = [];
+    const seen = new Set<string>();
+    if (!this.consume('}')) {
+      do {
+        this.skipWhitespace();
+        const key = this.parseString();
+        if (seen.has(key) && this.duplicateKey === null) {
+          this.duplicateKey = JSON.stringify(key);
+        }
+        seen.add(key);
+        this.skipWhitespace();
+        this.expect(':');
+        entries.push([key, this.parseValue()]);
+      } while (this.consume(','));
+      this.expect('}');
+    }
+    // fromEntries defines own properties, so a "__proto__" key stays data.
+    return Object.fromEntries(entries) as JsonValue;
+  }
+
+  private parseArray(): JsonValue {
+    this.pos += 1;
+    const items: JsonValue[] = [];
+    if (!this.consume(']')) {
+      do {
+        items.push(this.parseValue());
+      } while (this.consume(','));
+      this.expect(']');
+    }
+    return items;
+  }
+
+  private parseString(): string {
+    return JSON.parse(this.match(STRING_TOKEN) ?? this.fail()) as string;
+  }
+
+  /** Skips whitespace, then consumes `ch` if it is next. */
+  private consume(ch: string): boolean {
+    this.skipWhitespace();
+    if (this.text[this.pos] === ch) {
+      this.pos += 1;
+      return true;
+    }
+    return false;
+  }
+
+  private expect(ch: string): void {
+    if (!this.consume(ch)) {
+      this.fail();
+    }
+  }
+
+  private skipWhitespace(): void {
+    this.match(WHITESPACE);
+  }
+
+  private match(token: RegExp): string | null {
+    token.lastIndex = this.pos;
+    const found = token.exec(this.text);
+    if (found === null) {
+      return null;
+    }
+    this.pos = token.lastIndex;
+    return found[0];
+  }
+
+  private fail(): never {
+    throw new CanonicalError('invalid-json', `invalid JSON at offset ${String(this.pos)}`);
+  }
 }
 
 /**
@@ -102,8 +296,7 @@ export function canonicalDecode(bytes: Uint8Array): JsonValue {
  * name (without `.json`) for a file with these bytes.
  */
 export function sha256Hex(bytes: Uint8Array): string {
-  void bytes;
-  throw new Error('not implemented');
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
 /**
@@ -113,6 +306,5 @@ export function sha256Hex(bytes: Uint8Array): string {
  * @throws CanonicalError exactly as `canonicalEncode` does.
  */
 export function canonicalHash(value: unknown): string {
-  void value;
-  throw new Error('not implemented');
+  return sha256Hex(canonicalEncode(value));
 }

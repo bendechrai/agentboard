@@ -9,6 +9,7 @@
 
 import type { JsonValue } from './canonical.js';
 import type { Hlc } from './hlc.js';
+import { isUlid } from './ulid.js';
 
 /** The schema version this code writes and folds. */
 export const SCHEMA_VERSION = 1;
@@ -53,8 +54,17 @@ export const TASK_SOURCE_PATTERN = /^[a-z][a-z0-9-]*$/;
  * `add-board-core-3` and `Open Spec:x#1` give `null`.
  */
 export function parseTaskRef(text: string): TaskRef | null {
-  void text;
-  throw new Error('not implemented');
+  const colon = text.indexOf(':');
+  const hash = text.lastIndexOf('#');
+  if (colon < 0 || hash < colon) {
+    return null;
+  }
+  const ref = {
+    source: text.slice(0, colon),
+    ref: text.slice(colon + 1, hash),
+    item: text.slice(hash + 1),
+  };
+  return taskRefProblems(ref, '').length === 0 ? ref : null;
 }
 
 /**
@@ -63,8 +73,7 @@ export function parseTaskRef(text: string): TaskRef | null {
  * valid `r` whose `item` contains no `#`.
  */
 export function formatTaskRef(ref: TaskRef): string {
-  void ref;
-  throw new Error('not implemented');
+  return `${ref.source}:${ref.ref}#${ref.item}`;
 }
 
 /** `ticket.create`: `title` required; everything else optional. */
@@ -205,8 +214,7 @@ export type KnownKind = (typeof KNOWN_KINDS)[number];
 
 /** True when `kind` is one of `KNOWN_KINDS`. */
 export function isKnownKind(kind: string): kind is KnownKind {
-  void kind;
-  throw new Error('not implemented');
+  return (KNOWN_KINDS as readonly string[]).includes(kind);
 }
 
 /**
@@ -227,8 +235,7 @@ export interface UnknownKindEvent {
 
 /** True when `event.kind` is one of `KNOWN_KINDS`. */
 export function isKnownEvent(event: BoardEvent | UnknownKindEvent): event is BoardEvent {
-  void event;
-  throw new Error('not implemented');
+  return isKnownKind(event.kind);
 }
 
 /**
@@ -309,6 +316,287 @@ export type ValidationResult =
  * reason, not a cascade); order is unspecified.
  */
 export function validateEvent(value: unknown): ValidationResult {
-  void value;
-  throw new Error('not implemented');
+  if (!isObject(value)) {
+    return { ok: false, reasons: [{ field: '', message: 'event is not a JSON object' }] };
+  }
+  const reasons: MalformedReason[] = [];
+  const report: Report = (field, message) => {
+    reasons.push({ field, message });
+  };
+
+  if (value.v !== SCHEMA_VERSION) {
+    report('v', `must be ${String(SCHEMA_VERSION)}`);
+  }
+  const kind = isNonEmptyString(value.kind) ? value.kind : null;
+  if (kind === null) {
+    report('kind', 'must be a non-empty string');
+  }
+  checkTicket(value, kind, report);
+  const actor = isNonEmptyString(value.actor) ? value.actor : null;
+  if (actor === null) {
+    report('actor', 'must be a non-empty string');
+  }
+  checkTs(value.ts, actor, report);
+  const body = value.body;
+  if (!isObject(body)) {
+    report('body', 'must be a JSON object');
+  } else if (kind !== null && isKnownKind(kind)) {
+    BODY_CHECKS[kind](body, report);
+  }
+  reportExtraKeys(value, ENVELOPE_KEYS, '', report);
+
+  if (reasons.length > 0) {
+    return { ok: false, reasons };
+  }
+  // Every rule of the matching type has been checked above.
+  return kind !== null && isKnownKind(kind)
+    ? { ok: true, known: true, event: value as unknown as BoardEvent }
+    : { ok: true, known: false, event: value as unknown as UnknownKindEvent };
 }
+
+type JsonRecord = Record<string, unknown>;
+type Report = (field: string, message: string) => void;
+
+const ENVELOPE_KEYS = ['v', 'kind', 'ticket', 'actor', 'ts', 'body'];
+const TS_KEYS = ['wall', 'counter', 'actor'];
+const TASK_REF_KEYS = ['source', 'ref', 'item'];
+
+function isObject(value: unknown): value is JsonRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value !== '';
+}
+
+function isNonNegativeSafeInteger(value: unknown): boolean {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isStatus(value: unknown): boolean {
+  return (STATUSES as readonly unknown[]).includes(value);
+}
+
+/** Reports `<prefix><key>` for every key of `obj` not in `allowed`. */
+function reportExtraKeys(
+  obj: JsonRecord,
+  allowed: readonly string[],
+  prefix: string,
+  report: Report,
+): void {
+  for (const key of Object.keys(obj)) {
+    if (!allowed.includes(key)) {
+      report(`${prefix}${key}`, 'unexpected field');
+    }
+  }
+}
+
+/** `ticket` is absent on board.meta, required on other known kinds, optional otherwise. */
+function checkTicket(event: JsonRecord, kind: string | null, report: Report): void {
+  if (!Object.hasOwn(event, 'ticket')) {
+    if (kind !== null && kind !== 'board.meta' && isKnownKind(kind)) {
+      report('ticket', 'is required');
+    }
+  } else if (kind === 'board.meta') {
+    report('ticket', 'must be absent on board.meta');
+  } else if (!(typeof event.ticket === 'string' && isUlid(event.ticket))) {
+    report('ticket', 'must be a ULID');
+  }
+}
+
+function checkTs(ts: unknown, actor: string | null, report: Report): void {
+  if (!isObject(ts)) {
+    report('ts', 'must be a JSON object');
+    return;
+  }
+  if (!isNonNegativeSafeInteger(ts.wall)) {
+    report('ts.wall', 'must be a non-negative safe integer');
+  }
+  if (!isNonNegativeSafeInteger(ts.counter)) {
+    report('ts.counter', 'must be a non-negative safe integer');
+  }
+  if (!isNonEmptyString(ts.actor)) {
+    report('ts.actor', 'must be a non-empty string');
+  } else if (actor !== null && ts.actor !== actor) {
+    report('ts.actor', 'must equal actor');
+  }
+  reportExtraKeys(ts, TS_KEYS, 'ts.', report);
+}
+
+/** Problems with a task reference at `path` (`''` for a bare value), as reasons. */
+function taskRefProblems(value: unknown, path: string): MalformedReason[] {
+  const at = (key: string): string => (path === '' ? key : `${path}.${key}`);
+  if (!isObject(value)) {
+    return [{ field: path, message: 'task reference must be a JSON object' }];
+  }
+  const problems: MalformedReason[] = [];
+  if (!(typeof value.source === 'string' && TASK_SOURCE_PATTERN.test(value.source))) {
+    problems.push({ field: at('source'), message: `must match ${String(TASK_SOURCE_PATTERN)}` });
+  }
+  for (const key of ['ref', 'item']) {
+    if (!isNonEmptyString(value[key])) {
+      problems.push({ field: at(key), message: 'must be a non-empty string' });
+    }
+  }
+  reportExtraKeys(value, TASK_REF_KEYS, `${path}.`, (field, message) => {
+    problems.push({ field, message });
+  });
+  return problems;
+}
+
+/** A body field check: returns true when `value` is acceptable. */
+type FieldRule = (value: unknown) => boolean;
+
+const nonEmptyString: FieldRule = isNonEmptyString;
+const anyValue: FieldRule = () => true;
+
+/**
+ * Checks a body against field rules and reports `body.<key>` for a missing
+ * required field, a field breaking its rule, and any unlisted key.
+ */
+function checkFields(
+  body: JsonRecord,
+  required: Record<string, FieldRule>,
+  optional: Record<string, FieldRule>,
+  report: Report,
+): void {
+  for (const [key, rule] of Object.entries(required)) {
+    if (!Object.hasOwn(body, key) || !rule(body[key])) {
+      report(`body.${key}`, 'missing or invalid');
+    }
+  }
+  for (const [key, rule] of Object.entries(optional)) {
+    if (Object.hasOwn(body, key) && !rule(body[key])) {
+      report(`body.${key}`, 'invalid');
+    }
+  }
+  reportExtraKeys(body, [...Object.keys(required), ...Object.keys(optional)], 'body.', report);
+}
+
+/** Checks an optional array of non-empty strings, reporting the array or each bad element. */
+function checkStringList(body: JsonRecord, key: string, report: Report): void {
+  if (!Object.hasOwn(body, key)) {
+    return;
+  }
+  const list = body[key];
+  if (!Array.isArray(list)) {
+    report(`body.${key}`, 'must be an array of non-empty strings');
+    return;
+  }
+  list.forEach((item: unknown, i) => {
+    if (!isNonEmptyString(item)) {
+      report(`body.${key}.${String(i)}`, 'must be a non-empty string');
+    }
+  });
+}
+
+/**
+ * Checks a body that must name exactly one of `targets`. Reports `body` when
+ * zero or several are present; otherwise checks the one present with its rule.
+ */
+function checkExactlyOne(
+  body: JsonRecord,
+  targets: Record<string, (value: unknown, report: Report) => void>,
+  report: Report,
+): void {
+  const present = Object.keys(targets).filter((key) => Object.hasOwn(body, key));
+  const [only] = present;
+  if (only === undefined || present.length > 1) {
+    report('body', `must have exactly one of ${Object.keys(targets).join(', ')}`);
+  } else {
+    targets[only]?.(body[only], report);
+  }
+  reportExtraKeys(body, Object.keys(targets), 'body.', report);
+}
+
+function checkTaskRef(value: unknown, report: Report): void {
+  for (const problem of taskRefProblems(value, 'body.task')) {
+    report(problem.field, problem.message);
+  }
+}
+
+function fieldCheck(key: string, rule: FieldRule): (value: unknown, report: Report) => void {
+  return (value, report) => {
+    if (!rule(value)) {
+      report(`body.${key}`, 'invalid');
+    }
+  };
+}
+
+const BODY_CHECKS: Record<KnownKind, (body: JsonRecord, report: Report) => void> = {
+  'ticket.create': (body, report) => {
+    checkFields(
+      body,
+      { title: nonEmptyString },
+      {
+        description: (v) => typeof v === 'string',
+        labels: anyValue,
+        checklist: anyValue,
+        task: anyValue,
+        adhoc: nonEmptyString,
+      },
+      report,
+    );
+    checkStringList(body, 'labels', report);
+    checkStringList(body, 'checklist', report);
+    if (Object.hasOwn(body, 'task')) {
+      checkTaskRef(body.task, report);
+      if (isNonEmptyString(body.adhoc)) {
+        report('body.adhoc', 'must not be present together with task');
+      }
+    }
+  },
+  'ticket.comment': (body, report) => {
+    checkFields(body, { text: nonEmptyString }, {}, report);
+  },
+  'ticket.move': (body, report) => {
+    checkFields(body, { to: isStatus }, {}, report);
+  },
+  'ticket.assign': (body, report) => {
+    checkFields(body, { to: nonEmptyString }, {}, report);
+  },
+  'ticket.claim': (body, report) => {
+    checkFields(body, {}, {}, report);
+  },
+  'ticket.release': (body, report) => {
+    checkFields(body, {}, {}, report);
+  },
+  'ticket.handoff': (body, report) => {
+    checkFields(body, { to: nonEmptyString, status: isStatus, note: nonEmptyString }, {}, report);
+  },
+  'ticket.link': (body, report) => {
+    checkExactlyOne(
+      body,
+      {
+        task: checkTaskRef,
+        pr: fieldCheck(
+          'pr',
+          (v) => isNonEmptyString(v) || (Number.isSafeInteger(v) && (v as number) > 0),
+        ),
+        decision: fieldCheck('decision', nonEmptyString),
+      },
+      report,
+    );
+  },
+  'ticket.close': (body, report) => {
+    checkExactlyOne(
+      body,
+      {
+        decision: fieldCheck('decision', nonEmptyString),
+        noDecision: fieldCheck('noDecision', (v) => v === true),
+      },
+      report,
+    );
+  },
+  'ticket.checklist': (body, report) => {
+    checkFields(
+      body,
+      { index: Number.isSafeInteger, done: (v) => typeof v === 'boolean' },
+      {},
+      report,
+    );
+  },
+  'board.meta': (body, report) => {
+    checkFields(body, { key: nonEmptyString, value: anyValue }, {}, report);
+  },
+};

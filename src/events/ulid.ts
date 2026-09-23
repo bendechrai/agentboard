@@ -13,6 +13,19 @@
  * a ULID here (callers that accept user-typed prefixes normalise first).
  */
 
+import { getRandomValues } from 'node:crypto';
+
+/** Crockford base32 alphabet, in digit order. */
+const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+/** Canonical ULID: first character 0-7, then 25 Crockford base32 characters. */
+const ULID_PATTERN = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+
+const TIME_LENGTH = 10;
+const RANDOM_LENGTH = 16;
+const RANDOM_BYTES = 10;
+const RANDOM_LIMIT = 1n << 80n;
+
 /** Length of a ULID string. */
 export const ULID_LENGTH = 26;
 
@@ -35,8 +48,31 @@ export type UlidGenerator = (now?: number) => string;
  * @throws RangeError when `ms` is not an integer in `[0, ULID_MAX_TIME]`.
  */
 export function encodeTime(ms: number): string {
-  void ms;
-  throw new Error('not implemented');
+  if (!Number.isInteger(ms) || ms < 0 || ms > ULID_MAX_TIME) {
+    throw new RangeError(`ULID time must be an integer in [0, ${String(ULID_MAX_TIME)}]`);
+  }
+  let rest = ms;
+  let out = '';
+  for (let i = 0; i < TIME_LENGTH; i += 1) {
+    out = ALPHABET.charAt(rest % 32) + out;
+    rest = Math.floor(rest / 32);
+  }
+  return out;
+}
+
+/** Encodes an 80-bit unsigned integer as 16 Crockford base32 characters. */
+function encodeRandom(value: bigint): string {
+  let rest = value;
+  let out = '';
+  for (let i = 0; i < RANDOM_LENGTH; i += 1) {
+    out = ALPHABET.charAt(Number(rest & 31n)) + out;
+    rest >>= 5n;
+  }
+  return out;
+}
+
+function defaultRandom(byteLength: number): Uint8Array {
+  return getRandomValues(new Uint8Array(byteLength));
 }
 
 /**
@@ -58,10 +94,26 @@ export function encodeTime(ms: number): string {
  * @throws Error when incrementing the random part would overflow 80 bits;
  *   the generator's state is left unchanged.
  */
-export function monotonicFactory(random?: RandomSource): UlidGenerator {
-  void random;
-  throw new Error('not implemented');
+export function monotonicFactory(random: RandomSource = defaultRandom): UlidGenerator {
+  let lastTime = -1;
+  let lastRandom = 0n;
+  return (now = Date.now()) => {
+    const timePart = encodeTime(now);
+    if (now > lastTime) {
+      lastTime = now;
+      lastRandom = random(RANDOM_BYTES).reduce((acc, byte) => (acc << 8n) | BigInt(byte), 0n);
+      return timePart + encodeRandom(lastRandom);
+    }
+    const next = lastRandom + 1n;
+    if (next >= RANDOM_LIMIT) {
+      throw new Error('ULID random part overflow within one millisecond');
+    }
+    lastRandom = next;
+    return encodeTime(lastTime) + encodeRandom(next);
+  };
 }
+
+const sharedGenerator = monotonicFactory();
 
 /**
  * Returns a new ULID from a module-level monotonic generator (created with
@@ -70,8 +122,7 @@ export function monotonicFactory(random?: RandomSource): UlidGenerator {
  * `monotonicFactory`.
  */
 export function newUlid(now?: number): string {
-  void now;
-  throw new Error('not implemented');
+  return sharedGenerator(now);
 }
 
 /** Components of a parsed ULID. */
@@ -86,8 +137,14 @@ export interface ParsedUlid {
  * Parses a ULID. Returns `null` for anything `isUlid` rejects.
  */
 export function parseUlid(text: string): ParsedUlid | null {
-  void text;
-  throw new Error('not implemented');
+  if (!isUlid(text)) {
+    return null;
+  }
+  let time = 0;
+  for (const ch of text.slice(0, TIME_LENGTH)) {
+    time = time * 32 + ALPHABET.indexOf(ch);
+  }
+  return { time, random: text.slice(TIME_LENGTH) };
 }
 
 /**
@@ -95,6 +152,5 @@ export function parseUlid(text: string): ParsedUlid | null {
  * whose first character is `0` to `7` (so the timestamp fits 48 bits).
  */
 export function isUlid(text: string): boolean {
-  void text;
-  throw new Error('not implemented');
+  return ULID_PATTERN.test(text);
 }

@@ -9,8 +9,16 @@
  */
 
 import type { JsonValue } from './canonical.js';
-import type { Hlc } from './hlc.js';
-import type { BoardEvent, Status, TaskRef, UnknownKindEvent } from './schema.js';
+import { compareHlc, type Hlc } from './hlc.js';
+import {
+  isKnownEvent,
+  type BoardEvent,
+  type Status,
+  type TaskRef,
+  type TicketCreateEvent,
+  type TicketEvent,
+  type UnknownKindEvent,
+} from './schema.js';
 
 /**
  * One event to fold, with the lowercase hex SHA-256 of its canonical bytes
@@ -145,10 +153,24 @@ export interface FoldResult {
  * Total for inputs with distinct hashes. Returns 0 only for equal hashes.
  */
 export function compareFoldOrder(a: FoldInput, b: FoldInput): -1 | 0 | 1 {
-  void a;
-  void b;
-  throw new Error('not implemented');
+  const byTs = compareHlc(a.event.ts, b.event.ts);
+  if (byTs !== 0) {
+    return byTs;
+  }
+  if (a.hash < b.hash) {
+    return -1;
+  }
+  return a.hash > b.hash ? 1 : 0;
 }
+
+/** Forward transitions of the state machine; `blocked` is handled separately. */
+const FORWARD: Record<Exclude<Status, 'blocked'>, readonly Status[]> = {
+  todo: ['tests'],
+  tests: ['implementing'],
+  implementing: ['review'],
+  review: ['implementing', 'tests', 'merged'],
+  merged: [],
+};
 
 /**
  * Whether the state machine permits moving from `from` to `to`, where
@@ -163,10 +185,13 @@ export function compareFoldOrder(a: FoldInput, b: FoldInput): -1 | 0 | 1 {
  * `merged` (terminal).
  */
 export function isTransitionAllowed(from: Status, to: Status, blockedFrom: Status | null): boolean {
-  void from;
-  void to;
-  void blockedFrom;
-  throw new Error('not implemented');
+  if (from === 'blocked') {
+    return to === blockedFrom;
+  }
+  if (to === 'blocked') {
+    return from !== 'merged';
+  }
+  return FORWARD[from].includes(to);
 }
 
 /**
@@ -219,6 +244,178 @@ export function isTransitionAllowed(from: Status, to: Status, blockedFrom: Statu
  *   rejected, whether their `ticket` exists, does not exist, or is absent.
  */
 export function fold(inputs: readonly FoldInput[]): FoldResult {
-  void inputs;
-  throw new Error('not implemented');
+  const byHash = new Map<string, FoldInput>();
+  for (const input of inputs) {
+    if (!byHash.has(input.hash)) {
+      byHash.set(input.hash, input);
+    }
+  }
+  const ordered = [...byHash.values()].sort(compareFoldOrder);
+
+  // A null prototype keeps a meta key such as "__proto__" an ordinary entry.
+  const meta = Object.create(null) as Record<string, JsonValue>;
+  const state: BoardState = { tickets: {}, meta };
+  const rejected: Rejected[] = [];
+  const unknown: UnknownReport[] = [];
+
+  for (const { hash, event } of ordered) {
+    if (!isKnownEvent(event)) {
+      unknown.push({ hash, kind: event.kind, event });
+    } else if (event.kind === 'board.meta') {
+      meta[event.body.key] = event.body.value;
+    } else {
+      const reason = applyTicketEvent(state.tickets, hash, event);
+      if (reason !== null) {
+        rejected.push({ hash, kind: event.kind, ticket: event.ticket, reason });
+      }
+    }
+  }
+
+  const last = ordered.at(-1);
+  return { state, rejected, unknown, latest: last === undefined ? null : { ...last.event.ts } };
+}
+
+/**
+ * Applies one ticket event to `tickets`, returning the rejection reason, or
+ * null when it was applied (and counted in the ticket's version).
+ */
+function applyTicketEvent(
+  tickets: Record<string, Ticket>,
+  hash: string,
+  event: TicketEvent,
+): RejectionReason | null {
+  const ticket: Ticket | undefined = tickets[event.ticket];
+  if (event.kind === 'ticket.create') {
+    if (ticket !== undefined) {
+      return 'duplicate-create';
+    }
+    tickets[event.ticket] = createTicket(event);
+    return null;
+  }
+  if (ticket === undefined) {
+    return 'unknown-ticket';
+  }
+  const reason = applyToTicket(ticket, hash, event);
+  if (reason === null) {
+    ticket.version += 1;
+    ticket.updatedAt = { ...event.ts };
+  }
+  return reason;
+}
+
+function createTicket(event: TicketCreateEvent): Ticket {
+  const { body } = event;
+  return {
+    id: event.ticket,
+    title: body.title,
+    description: body.description ?? null,
+    status: 'todo',
+    blockedFrom: null,
+    assignee: null,
+    labels: [...(body.labels ?? [])],
+    task: body.task === undefined ? null : copyTaskRef(body.task),
+    adhoc: body.adhoc ?? null,
+    checklist: (body.checklist ?? []).map((text) => ({ text, done: false })),
+    comments: [],
+    links: [],
+    closed: false,
+    disposition: null,
+    createdBy: event.actor,
+    createdAt: { ...event.ts },
+    version: 1,
+    updatedAt: { ...event.ts },
+  };
+}
+
+function copyTaskRef(ref: TaskRef): TaskRef {
+  return { source: ref.source, ref: ref.ref, item: ref.item };
+}
+
+/**
+ * Applies a non-create event to an existing ticket, mutating it only when
+ * the event is accepted. Returns the rejection reason, or null.
+ */
+function applyToTicket(
+  ticket: Ticket,
+  hash: string,
+  event: Exclude<TicketEvent, TicketCreateEvent>,
+): RejectionReason | null {
+  const { actor, ts } = event;
+  switch (event.kind) {
+    case 'ticket.comment':
+      ticket.comments.push({ actor, ts: { ...ts }, text: event.body.text, hash });
+      return null;
+    case 'ticket.move':
+      return moveTo(ticket, event.body.to);
+    case 'ticket.assign':
+      ticket.assignee = event.body.to;
+      return null;
+    case 'ticket.claim':
+      if (ticket.assignee !== null) {
+        return 'already-assigned';
+      }
+      ticket.assignee = actor;
+      return null;
+    case 'ticket.release':
+      if (ticket.assignee !== actor) {
+        return 'not-assignee';
+      }
+      ticket.assignee = null;
+      return null;
+    case 'ticket.handoff': {
+      const { to, status, note } = event.body;
+      // A handoff to the current status is a reassignment, not a transition.
+      const reason = status === ticket.status ? null : moveTo(ticket, status);
+      if (reason === null) {
+        ticket.assignee = to;
+        ticket.comments.push({ actor, ts: { ...ts }, text: note, hash });
+      }
+      return reason;
+    }
+    case 'ticket.link': {
+      const { body } = event;
+      if ('task' in body) {
+        ticket.task = copyTaskRef(body.task);
+        ticket.adhoc = null;
+      } else if ('pr' in body) {
+        ticket.links.push({ type: 'pr', pr: body.pr, actor, ts: { ...ts }, hash });
+      } else {
+        ticket.links.push({ type: 'decision', path: body.decision, actor, ts: { ...ts }, hash });
+      }
+      return null;
+    }
+    case 'ticket.close':
+      if (ticket.closed || (ticket.status !== 'merged' && ticket.status !== 'blocked')) {
+        return 'invalid-transition';
+      }
+      ticket.closed = true;
+      ticket.disposition =
+        'decision' in event.body ? { decision: event.body.decision } : { noDecision: true };
+      return null;
+    case 'ticket.checklist': {
+      const item: ChecklistItem | undefined = ticket.checklist[event.body.index];
+      if (item === undefined) {
+        return 'checklist-index';
+      }
+      item.done = event.body.done;
+      return null;
+    }
+  }
+}
+
+/**
+ * Moves `ticket` to `to` when the state machine and the task-link rule allow
+ * it, recording or clearing the blocked origin. Returns the rejection reason,
+ * or null when moved.
+ */
+function moveTo(ticket: Ticket, to: Status): RejectionReason | null {
+  if (!isTransitionAllowed(ticket.status, to, ticket.blockedFrom)) {
+    return 'invalid-transition';
+  }
+  if (to === 'implementing' && ticket.task === null) {
+    return 'needs-task-link';
+  }
+  ticket.blockedFrom = to === 'blocked' ? ticket.status : null;
+  ticket.status = to;
+  return null;
 }
