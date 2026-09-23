@@ -1152,6 +1152,30 @@ describe('fold: board.meta', () => {
     const result = fold([mv, ...setup]);
     expect(result.rejected.map((r) => r.hash)).toEqual([mv.hash]);
   });
+
+  it('stores keys named __proto__ and constructor as ordinary own entries', () => {
+    const result = fold([
+      E.meta('__proto__', { polluted: true }),
+      E.meta('constructor', 'x'),
+      E.meta('name', 'board'),
+    ]);
+    const { meta } = result.state;
+    expect(Object.hasOwn(meta, '__proto__')).toBe(true);
+    expect(Object.hasOwn(meta, 'constructor')).toBe(true);
+    expect(Object.getOwnPropertyDescriptor(meta, '__proto__')?.value).toEqual({ polluted: true });
+    expect(Object.getOwnPropertyDescriptor(meta, 'constructor')?.value).toBe('x');
+    expect(Object.keys(meta).sort()).toEqual(['__proto__', 'constructor', 'name']);
+    // Neither the meta object's prototype nor any other object's is altered.
+    const proto: unknown = Object.getPrototypeOf(meta);
+    expect(proto === null || proto === Object.prototype).toBe(true);
+    expect('polluted' in meta).toBe(false);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(Object.hasOwn(Object.prototype, 'polluted')).toBe(false);
+    expect(result.rejected).toEqual([]);
+    expect(new TextDecoder().decode(canonicalEncode(result.state))).toBe(
+      '{"meta":{"__proto__":{"polluted":true},"constructor":"x","name":"board"},"tickets":{}}',
+    );
+  });
 });
 
 // Deterministic PRNG for the property test.

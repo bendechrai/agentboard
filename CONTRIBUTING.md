@@ -126,9 +126,10 @@ back on lowering a threshold for convenience.
 
 - Every PR targets `staging` (release PRs target `main` from `staging`).
 - Only the reviewer opens a feature PR, only after a verdict of APPROVE or
-  APPROVE WITH NITS, and only after running both `make check` and
-  `make check-in-docker` to completion, with `REVIEW.md` (including both
-  results) as the PR body. Because no status checks are required, auto-merge
+  APPROVE WITH NITS, and only after running `make check`,
+  `make check-in-docker` and `make check-floor` (the oldest supported Node)
+  to completion, with `REVIEW.md` (including all three results) as the PR
+  body. Because no status checks are required, auto-merge
   fires as soon as the PR is opened: opening the PR is the merge decision.
   The one exception: test-only follow-ups on already-approved code may be
   opened by the test author.

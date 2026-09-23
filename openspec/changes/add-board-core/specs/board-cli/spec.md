@@ -139,8 +139,10 @@ the contents of the cache file or raw event files unless asked with `show
 Exit codes SHALL be: 0 success; 1 usage error or missing actor; 2 board not
 found or unreadable; 3 conflict during sync that needs a human (see
 board-concurrency); 4 action rejected by board state (invalid transition,
-already assigned, not assignee, unknown ticket); 5 event log integrity
-problem (corrupt or malformed file encountered where the command needed it).
+already assigned, not assignee, unknown ticket); 5 event log or cache
+integrity problem (corrupt or malformed file encountered where the command
+needed it, an existing event file whose content does not match its name, or
+the cache still locked after the busy timeout and one retry).
 
 #### Scenario: Unknown ticket
 - **WHEN** `agentboard comment 01NOPE00 --as a "x"` names a ticket that does not exist

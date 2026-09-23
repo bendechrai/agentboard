@@ -7,7 +7,7 @@
 
 SHELL := /bin/sh
 
-.PHONY: install build typecheck lint test check ascii validate-specs hooks check-in-docker dev-shell
+.PHONY: install build typecheck lint test check ascii validate-specs hooks check-in-docker check-floor dev-shell
 
 check: build typecheck lint test ascii validate-specs
 	@echo "make check: build, typecheck, lint, test, ascii and validate-specs all passed"
@@ -18,6 +18,12 @@ check: build typecheck lint test ascii validate-specs
 # host and container binaries never mix), so it is installed first.
 check-in-docker:
 	docker compose run --rm --build dev sh -c 'make install && make check'
+
+# Runs `make check` on the oldest supported Node (the engines floor in
+# package.json), which check-in-docker does not, because its image tracks
+# the latest Node 22.
+check-floor:
+	docker compose run --rm --build dev-floor sh -c 'make install && make check'
 
 # Points git at the repo-tracked hooks directory so pre-push runs the
 # fast local checks before every push. Run once per clone/worktree.
