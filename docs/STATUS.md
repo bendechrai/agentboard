@@ -22,6 +22,15 @@ full workflow, and docs/adr/ for design decisions.
   `b458f34`). Its specs are not yet in `openspec/specs/` (that only happens
   when the change is archived after implementation), and `openspec/changes/archive/`
   is currently empty.
+- `add-board-core` was amended (PR #5) so tickets carry a source-neutral
+  task reference (`openspec:<change>#<group>`) instead of OpenSpec-only
+  `change`/`group` fields, and the MCP server (group 9) is fully specified
+  and no longer optional.
+- The `add-agent-guidance` OpenSpec change (generated help, `help agents`,
+  error hints, `agents install`/`agents check` for Claude Code skills,
+  `AGENTS.md`, OpenSpec config and `.mcp.json`, and the guide over MCP) is
+  proposed. It depends on `add-board-core` groups 3 and 9 and is built
+  after that change.
 - No board functionality is implemented yet. `src/` contains no code under
   `src/events/` or `src/store/`; task group 1 (events, canonical JSON and
   fold) has not been started.
