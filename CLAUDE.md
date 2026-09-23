@@ -7,6 +7,9 @@ through an OpenSpec change proposal before implementation.
 
 Decisions are recorded as ADRs in `docs/adr/`.
 
+See `docs/STATUS.md` for a cold-start handover: what exists, what to build
+next, and the current gap list.
+
 Workflow, branch model and the test-author / implementer / reviewer split
 are in CONTRIBUTING.md; follow it.
 
