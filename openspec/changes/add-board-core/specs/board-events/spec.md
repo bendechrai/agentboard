@@ -18,7 +18,7 @@ it is missing.
 
 #### Scenario: Init creates the board
 - **WHEN** `agentboard init` runs at the root of a git repository with no `.board` directory
-- **THEN** a `.board` directory is created containing an initialized git repository, an empty `events` directory and a `.gitignore` that excludes the cache file, and the host project's `.gitignore` contains a `.board/` entry
+- **THEN** a `.board` directory is created containing an initialized git repository, an `events` directory containing only an empty `.gitkeep` (so the directory survives a git clone) and a `.gitignore` that excludes the cache file, and the host project's `.gitignore` contains a `.board/` entry
 
 #### Scenario: Init is idempotent
 - **WHEN** `agentboard init` runs where a `.board` directory already exists
@@ -59,6 +59,15 @@ no-op that reports the existing file.
 #### Scenario: Two identical events dedupe
 - **WHEN** the same event (same canonical bytes) is written twice
 - **THEN** exactly one file exists and the second write reports it as already present
+
+Readers SHALL ignore every entry under `events/` whose name begins with `.`
+(temporary files and placeholders such as `.gitkeep`). Any other name that
+is not `<sha256-hex>.json` SHALL be reported as corrupt. A board SHALL be
+considered to exist when `<board>/events` is a directory.
+
+#### Scenario: Placeholder is not corrupt
+- **WHEN** `events/` contains `.gitkeep` and valid event files
+- **THEN** reading the log reports no corrupt file
 
 #### Scenario: A mismatched file is rejected on read
 - **WHEN** a file under `events/` has a name that is not the SHA-256 of its bytes

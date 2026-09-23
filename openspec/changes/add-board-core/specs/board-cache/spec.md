@@ -11,8 +11,12 @@ how the cache is rebuilt from the event log.
 ### Requirement: Cache is derived and disposable
 The board SHALL keep a SQLite database at `.board/cache.sqlite`, excluded from
 the board's own git repository. The cache SHALL contain nothing that is not
-derivable from the event log. Deleting the cache SHALL never lose board data;
-the next command SHALL rebuild it from the events before proceeding.
+derivable from the event log, with one exception: `cursors`, which record
+what each actor has acknowledged through `inbox`. Losing cursors SHALL only
+cause events to be delivered again, never skipped. Deleting the cache SHALL
+never lose board data; the next command SHALL rebuild it from the events
+before proceeding. `rebuild` SHALL keep existing cursor rows, and
+`rebuild --check` SHALL compare everything except cursors.
 
 #### Scenario: Cache deleted between commands
 - **WHEN** `cache.sqlite` is removed and `agentboard list` runs
