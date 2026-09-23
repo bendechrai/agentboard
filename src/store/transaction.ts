@@ -200,6 +200,15 @@ export function runCommand(
 
     // 5. Write the event file (atomic), then 6. apply to rows and 7. commit.
     const written = writeEventFile(board.eventsDir, event, hooks);
+    if (written.existed) {
+      // Catch-up recorded every file and ts sorts after all of them, so the
+      // file can only have been dropped out of band since: never fold it here.
+      throw new BoardError(
+        5,
+        'integrity',
+        `event file ${written.path} appeared while the command ran; nothing was written`,
+      );
+    }
     commitOwnEvent(db, session, input, outcome);
     const ticket = event.kind === 'board.meta' ? null : readTicket(db, event.ticket);
     db.exec('COMMIT');

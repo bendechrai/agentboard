@@ -10,9 +10,11 @@ import type { Rejected, UnknownReport } from '../events/fold.js';
 import type { Board } from './board.js';
 import { DUMP_TABLES, openCache, type DumpTable } from './cache.js';
 import {
+  beginImmediate,
   inImmediate,
   jsonText,
   refold,
+  rollback,
   tableRows,
   type KeyedRow,
   type RefoldResult,
@@ -146,9 +148,16 @@ export interface CheckResult {
 export function checkCache(board: Board): CheckResult {
   const temp = openCache(':memory:');
   try {
-    const report = toReport(inImmediate(temp, () => refold(temp, board.eventsDir)));
-    const differences = diffCaches(board.db, temp);
-    return { ok: differences.length === 0, differences, report };
+    // The live write lock spans listing, refold and diff, so a concurrent
+    // writer is either fully committed (file and rows) or not started.
+    beginImmediate(board.db);
+    try {
+      const report = toReport(inImmediate(temp, () => refold(temp, board.eventsDir)));
+      const differences = diffCaches(board.db, temp);
+      return { ok: differences.length === 0, differences, report };
+    } finally {
+      rollback(board.db);
+    }
   } finally {
     temp.close();
   }

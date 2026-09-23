@@ -97,7 +97,15 @@ import { DatabaseSync } from 'node:sqlite';
 import { canonicalEncode } from '../events/canonical.js';
 import type { BoardState, Rejected, Ticket, UnknownReport } from '../events/fold.js';
 import type { Board } from './board.js';
-import { catchUpLocked, inImmediate, loadState, loadTicket, stmt, tableRows } from './engine.js';
+import {
+  catchUpLocked,
+  catchUpUnlocked,
+  inImmediate,
+  loadState,
+  loadTicket,
+  stmt,
+  tableRows,
+} from './engine.js';
 import type { CorruptFile, MalformedFile } from './eventfile.js';
 
 /** File name of the cache inside the board directory. */
@@ -290,7 +298,8 @@ export function catchUp(board: Board, options?: CatchUpOptions): CatchUpReport {
   if (board.db.isTransaction) {
     return catchUpLocked(board, now);
   }
-  return inImmediate(board.db, () => catchUpLocked(board, now));
+  const quiet = catchUpUnlocked(board, now);
+  return quiet ?? inImmediate(board.db, () => catchUpLocked(board, now));
 }
 
 /**

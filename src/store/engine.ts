@@ -27,7 +27,15 @@ import { isKnownEvent, type Status } from '../events/schema.js';
 import type { Board } from './board.js';
 import type { CatchUpReport, DumpTable } from './cache.js';
 import { BoardError } from './errors.js';
-import { readEventLog, reapStaleTemps, type CorruptFile, type MalformedFile } from './eventfile.js';
+import {
+  STALE_TEMP_MS,
+  TEMP_PREFIX,
+  readEventLog,
+  reapStaleTemps,
+  type CorruptFile,
+  type MalformedFile,
+} from './eventfile.js';
+import { staleTemps } from './temps.js';
 
 /** A row as `node:sqlite` returns it. */
 export type Row = Record<string, SQLOutputValue>;
@@ -487,15 +495,47 @@ export function refold(db: DatabaseSync, eventsDir: string): RefoldResult {
   };
 }
 
-/** `catchUp` with the transaction already held by the caller. */
-export function catchUpLocked(board: Board, now: number): CatchUpReport {
-  const { db, eventsDir } = board;
-  const reaped = reapStaleTemps(eventsDir, { now });
-  const recorded = new Set(
+/**
+ * The lock-free first look of `catchUp`: when there is no stale temporary
+ * file to reap and no unrecorded event or malformed file to record, returns
+ * the (empty) report, with the corrupt files, without taking the write
+ * lock. Returns null when there is work, which must then be redone under the
+ * lock by `catchUpLocked` (another process may have done it meanwhile).
+ */
+export function catchUpUnlocked(board: Board, now: number): CatchUpReport | null {
+  const { eventsDir } = board;
+  if (staleTemps(eventsDir, TEMP_PREFIX, now - STALE_TEMP_MS).length > 0) {
+    return null;
+  }
+  const log = readEventLog(eventsDir, recordedHashes(board.db));
+  if (log.inputs.length > 0 || log.malformed.length > 0) {
+    return null;
+  }
+  const report: CatchUpReport = {
+    applied: [],
+    rejected: [],
+    unknown: [],
+    malformed: [],
+    corrupt: log.corrupt,
+    reaped: [],
+    refolded: false,
+  };
+  return report;
+}
+
+function recordedHashes(db: DatabaseSync): Set<string> {
+  return new Set(
     stmt(db, 'SELECT hash FROM folded')
       .all()
       .map((row) => text(row, 'hash')),
   );
+}
+
+/** `catchUp` with the transaction already held by the caller. */
+export function catchUpLocked(board: Board, now: number): CatchUpReport {
+  const { db, eventsDir } = board;
+  const reaped = reapStaleTemps(eventsDir, { now });
+  const recorded = recordedHashes(db);
   const log = readEventLog(eventsDir, recorded);
   const last = readLastPosition(db);
   const late = last !== null && log.inputs.some((input) => compareToPosition(input, last) < 0);

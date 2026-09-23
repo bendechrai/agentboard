@@ -19,7 +19,6 @@ import {
   readdirSync,
   renameSync,
   rmSync,
-  statSync,
   writeSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -32,6 +31,8 @@ import {
 } from '../events/canonical.js';
 import type { FoldInput } from '../events/fold.js';
 import { validateEvent, type MalformedReason } from '../events/schema.js';
+import { BoardError } from './errors.js';
+import { staleTemps } from './temps.js';
 
 /**
  * Prefix of temporary files in the events directory. Readers ignore them
@@ -111,6 +112,13 @@ export function writeEventFile(eventsDir: string, event: unknown, hooks?: WriteH
   const hash = sha256Hex(bytes);
   const path = join(eventsDir, `${hash}.json`);
   if (existsSync(path)) {
+    if (sha256Hex(readFileSync(path)) !== hash) {
+      throw new BoardError(
+        5,
+        'integrity',
+        `event file ${path} already exists but its content does not match its name`,
+      );
+    }
     return { hash, path, existed: true };
   }
   const tempPath = join(eventsDir, `${TEMP_PREFIX}${randomBytes(16).toString('hex')}`);
@@ -306,19 +314,9 @@ export interface ReapOptions {
  */
 export function reapStaleTemps(eventsDir: string, options?: ReapOptions): string[] {
   const cutoff = (options?.now ?? Date.now()) - (options?.maxAgeMs ?? STALE_TEMP_MS);
-  const removed: string[] = [];
-  for (const entry of readdirSync(eventsDir, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.startsWith(TEMP_PREFIX)) {
-      continue;
-    }
-    const path = join(eventsDir, entry.name);
-    // A file that vanished since the listing (its writer renamed it, or
-    // another command reaped it) has no stats and is skipped.
-    const stats = statSync(path, { throwIfNoEntry: false });
-    if (stats !== undefined && stats.mtimeMs < cutoff) {
-      rmSync(path, { force: true });
-      removed.push(path);
-    }
+  const removed = staleTemps(eventsDir, TEMP_PREFIX, cutoff);
+  for (const path of removed) {
+    rmSync(path, { force: true });
   }
-  return removed.sort();
+  return removed;
 }
