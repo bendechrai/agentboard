@@ -70,13 +70,20 @@ integer, 1 for this specification), `kind` (string), `ticket` (ULID string
 identifying the ticket, present on every kind except `board.meta`), `actor`
 (non-empty string naming the agent or human), `ts` (hybrid timestamp object
 with `wall` milliseconds since the Unix epoch as an integer, `counter` as a
-non-negative integer, and `actor` repeated), and `body` (object whose shape
-depends on `kind`). Unknown top-level fields SHALL cause the event to be
-reported as malformed and not folded.
+non-negative integer, and `actor` repeated, equal to the top-level `actor`),
+and `body` (object whose shape depends on `kind`). Unknown top-level fields
+SHALL cause the event to be reported as malformed and not folded. `ticket`
+SHALL be absent on `board.meta`. For a kind not defined by this
+specification, `ticket` SHALL be optional and, when present, SHALL be a
+ULID, so that a later version can add board-level kinds.
 
 #### Scenario: Well-formed event is accepted
 - **WHEN** an event file contains all required fields with valid types
 - **THEN** it is folded into ticket state
+
+#### Scenario: Unknown kind without a ticket
+- **WHEN** an event of an undefined kind `board.archive` has no `ticket` field and is otherwise well-formed
+- **THEN** it is preserved and reported as unknown, not as malformed
 
 #### Scenario: Missing actor is malformed
 - **WHEN** an event file lacks the `actor` field
@@ -178,6 +185,23 @@ reference into `implementing` SHALL be rejected with reason
 `needs-task-link` (see board-openspec-integration). Rejected
 events SHALL be listed in the fold report with hash, kind, ticket and reason
 and SHALL never be deleted.
+
+Where the requirements above leave a case open, the fold SHALL behave as
+follows. A `ticket.close` on a ticket not in `merged` or `blocked`, or on an
+already closed ticket, SHALL be rejected with reason `invalid-transition`.
+Events after a close SHALL fold by their own rules (a comment on a closed
+ticket is accepted; a move out of `merged` is still rejected). A task link
+SHALL replace the ticket's task reference and clear its ad hoc reason; pr
+and decision links SHALL be appended in fold order. `version` SHALL count
+every applied event of a defined kind, including one that leaves the state
+unchanged, such as ticking an already ticked checklist line. `board.meta`
+events SHALL be stored in the board state's meta map and SHALL NOT change
+the six statuses or the state machine. A ticket SHALL always be created in
+`todo`; an import that needs another status writes the permitted moves.
+
+#### Scenario: Close from implementing is refused
+- **WHEN** a `ticket.close` is folded for a ticket in `implementing`
+- **THEN** it is rejected with reason `invalid-transition`
 
 #### Scenario: Concurrent claims fold to one winner
 - **WHEN** two `ticket.claim` events for the same unassigned ticket exist with different timestamps
