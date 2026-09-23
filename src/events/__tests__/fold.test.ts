@@ -149,6 +149,10 @@ const E = {
     const s = stamp(o);
     return { hash: s.hash, event: { v: 1, kind, ticket, actor: s.actor, ts: s.ts, body } };
   },
+  unknownBoardLevel(kind: string, body: Record<string, JsonValue>, o: Opts = {}): FoldInput {
+    const s = stamp(o);
+    return { hash: s.hash, event: { v: 1, kind, actor: s.actor, ts: s.ts, body } };
+  },
 };
 
 function ticketOf(result: FoldResult, id: string): Ticket {
@@ -182,13 +186,14 @@ function reach(ticket: string, status: Status): FoldInput[] {
 const ALL: Status[] = ['todo', 'tests', 'implementing', 'review', 'merged', 'blocked'];
 
 // Hand-written from board-cli "Status state machine" (blocked origin: tests).
+// A move to the current status is never allowed, blocked -> blocked included.
 const ALLOWED_FROM: Record<Status, Status[]> = {
   todo: ['tests', 'blocked'],
   tests: ['implementing', 'blocked'],
   implementing: ['review', 'blocked'],
   review: ['implementing', 'tests', 'merged', 'blocked'],
   merged: [],
-  blocked: ['tests', 'blocked'],
+  blocked: ['tests'],
 };
 
 describe('fold: basics', () => {
@@ -517,7 +522,7 @@ describe('isTransitionAllowed', () => {
 
   for (const origin of ['todo', 'tests', 'implementing', 'review'] as Status[]) {
     for (const to of ALL) {
-      const expected = to === origin || to === 'blocked';
+      const expected = to === origin;
       it(`blocked (from ${origin}) -> ${to} is ${expected ? 'allowed' : 'refused'}`, () => {
         expect(isTransitionAllowed('blocked', to, origin)).toBe(expected);
       });
@@ -542,7 +547,7 @@ describe('fold: every move transition', () => {
           expect(t.version).toBe(before.version + 1);
           expect(t.updatedAt).toEqual(tsOf(mv));
           if (to === 'blocked') {
-            expect(t.blockedFrom).toBe(from === 'blocked' ? 'tests' : from);
+            expect(t.blockedFrom).toBe(from);
           } else {
             expect(t.blockedFrom).toBeNull();
           }
@@ -586,12 +591,15 @@ describe('fold: blocked remembers where it came from', () => {
     },
   );
 
-  it('keeps the original origin through blocked -> blocked', () => {
-    const events = [...reach(T1, 'review'), E.move(T1, 'blocked'), E.move(T1, 'blocked')];
-    const t = ticketOf(fold(events), T1);
-    expect(t.blockedFrom).toBe('review');
-    const back = fold([...events, E.move(T1, 'review')]);
-    expect(back.rejected).toEqual([]);
+  it('rejects blocked -> blocked and keeps the original origin', () => {
+    const setup = [...reach(T1, 'review'), E.move(T1, 'blocked')];
+    const again = E.move(T1, 'blocked');
+    const result = fold([...setup, again]);
+    expect(result.rejected).toEqual([
+      { hash: again.hash, kind: 'ticket.move', ticket: T1, reason: 'invalid-transition' },
+    ]);
+    expect(ticketOf(result, T1).blockedFrom).toBe('review');
+    const back = fold([...setup, again, E.move(T1, 'review')]);
     expect(ticketOf(back, T1).status).toBe('review');
   });
 
@@ -827,13 +835,55 @@ describe('fold: handoff', () => {
     expect(ticketOf(result, T1)).toEqual(before);
   });
 
-  it('rejects a handoff that keeps the same status', () => {
-    const setup = reach(T1, 'implementing');
-    const h = E.handoff(T1, 'impl2', 'implementing', 'swap');
+  it('hands off within the same status as a reassignment (spec scenario)', () => {
+    const setup = [...reach(T1, 'implementing'), E.claim(T1, { actor: 'impl-1' })];
+    const before = ticketOf(fold(setup), T1);
+    const h = E.handoff(T1, 'impl-2', 'implementing', 'over to you', { actor: 'impl-1' });
     const result = fold([...setup, h]);
-    expect(result.rejected).toEqual([
-      { hash: h.hash, kind: 'ticket.handoff', ticket: T1, reason: 'invalid-transition' },
-    ]);
+    expect(result.rejected).toEqual([]);
+    expect(ticketOf(result, T1)).toEqual({
+      ...before,
+      assignee: 'impl-2',
+      comments: [{ actor: 'impl-1', ts: tsOf(h), text: 'over to you', hash: h.hash }],
+      version: before.version + 1,
+      updatedAt: tsOf(h),
+    });
+  });
+
+  it.each(['todo', 'tests', 'review', 'merged'] as Status[])(
+    'allows a same-status handoff in %s without a transition',
+    (status) => {
+      const setup = reach(T1, status);
+      const before = ticketOf(fold(setup), T1);
+      const h = E.handoff(T1, 'next', status, 'n');
+      const result = fold([...setup, h]);
+      expect(result.rejected).toEqual([]);
+      const t = ticketOf(result, T1);
+      expect(t.status).toBe(status);
+      expect(t.blockedFrom).toBe(before.blockedFrom);
+      expect(t.assignee).toBe('next');
+      expect(t.comments.map((c) => c.text)).toEqual(['n']);
+    },
+  );
+
+  it('leaves blockedFrom untouched on a same-status handoff in blocked', () => {
+    const setup = [...reach(T1, 'implementing'), E.move(T1, 'blocked')];
+    const h = E.handoff(T1, 'unblocker', 'blocked', 'please look');
+    const result = fold([...setup, h]);
+    expect(result.rejected).toEqual([]);
+    const t = ticketOf(result, T1);
+    expect(t.status).toBe('blocked');
+    expect(t.blockedFrom).toBe('implementing');
+    expect(t.assignee).toBe('unblocker');
+    const back = fold([...setup, h, E.move(T1, 'implementing')]);
+    expect(back.rejected).toEqual([]);
+    expect(ticketOf(back, T1).status).toBe('implementing');
+  });
+
+  it('allows a same-status handoff on an ad hoc ticket in tests', () => {
+    const setup = [E.create(T1, { title: 'x', adhoc: 'h' }), E.move(T1, 'tests')];
+    const h = E.handoff(T1, 'other', 'tests', 'n');
+    expect(fold([...setup, h]).rejected).toEqual([]);
   });
 
   it('interleaves handoff notes with comments in fold order', () => {
@@ -940,7 +990,64 @@ describe('fold: checklist', () => {
   });
 });
 
+describe('fold: move to the current status', () => {
+  it('rejects blocked -> blocked (spec scenario)', () => {
+    const setup = reach(T1, 'blocked');
+    const mv = E.move(T1, 'blocked');
+    const result = fold([...setup, mv]);
+    expect(result.rejected).toEqual([
+      { hash: mv.hash, kind: 'ticket.move', ticket: T1, reason: 'invalid-transition' },
+    ]);
+  });
+
+  it.each(ALL)('rejects %s -> itself', (status) => {
+    const setup = reach(T1, status);
+    const before = ticketOf(fold(setup), T1);
+    const mv = E.move(T1, status);
+    const result = fold([...setup, mv]);
+    expect(result.rejected).toEqual([
+      { hash: mv.hash, kind: 'ticket.move', ticket: T1, reason: 'invalid-transition' },
+    ]);
+    expect(ticketOf(result, T1)).toEqual(before);
+  });
+
+  it.each(ALL)('isTransitionAllowed refuses %s -> itself', (status) => {
+    expect(isTransitionAllowed(status, status, 'tests')).toBe(false);
+    expect(isTransitionAllowed(status, status, null)).toBe(false);
+  });
+});
+
 describe('fold: close', () => {
+  it('refuses a close from implementing (spec scenario)', () => {
+    const setup = reach(T1, 'implementing');
+    const cl = E.close(T1, { noDecision: true });
+    const result = fold([...setup, cl]);
+    expect(result.rejected).toEqual([
+      { hash: cl.hash, kind: 'ticket.close', ticket: T1, reason: 'invalid-transition' },
+    ]);
+    expect(ticketOf(result, T1).closed).toBe(false);
+  });
+
+  it('folds later events by their own rules: a comment on a closed ticket is accepted', () => {
+    const setup = [...reach(T1, 'merged'), E.close(T1, { noDecision: true })];
+    const before = ticketOf(fold(setup), T1);
+    const cm = E.comment(T1, 'post-merge note');
+    const result = fold([...setup, cm]);
+    expect(result.rejected).toEqual([]);
+    const t = ticketOf(result, T1);
+    expect(t.comments.map((c) => c.text)).toEqual(['post-merge note']);
+    expect(t.version).toBe(before.version + 1);
+    expect(t.closed).toBe(true);
+  });
+
+  it('folds later events by their own rules: a move out of merged is still rejected', () => {
+    const setup = [...reach(T1, 'merged'), E.close(T1, { noDecision: true })];
+    const mv = E.move(T1, 'review');
+    expect(fold([...setup, mv]).rejected).toEqual([
+      { hash: mv.hash, kind: 'ticket.move', ticket: T1, reason: 'invalid-transition' },
+    ]);
+  });
+
   it('closes a merged ticket with no decision', () => {
     const result = fold([...reach(T1, 'merged'), E.close(T1, { noDecision: true })]);
     expect(result.rejected).toEqual([]);
@@ -985,6 +1092,18 @@ describe('fold: close', () => {
 });
 
 describe('fold: unknown kinds are preserved', () => {
+  it('lists an unknown kind without a ticket as unknown (spec scenario)', () => {
+    const c = E.create(T1);
+    const archive = E.unknownBoardLevel('board.archive', { before: 1000 });
+    const result = fold([archive, c]);
+    expect(result.rejected).toEqual([]);
+    expect(result.unknown).toEqual([
+      { hash: archive.hash, kind: 'board.archive', event: archive.event },
+    ]);
+    expect(result.state).toEqual(fold([c]).state);
+    expect(result.latest).toEqual(tsOf(archive));
+  });
+
   it('lists a ticket.estimate event and leaves known state unaffected (spec scenario)', () => {
     const known = [E.create(T1), E.comment(T1, 'hi')];
     const estimate = E.unknown(T1, 'ticket.estimate', { points: 3 });

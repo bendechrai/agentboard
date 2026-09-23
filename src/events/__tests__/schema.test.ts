@@ -234,8 +234,41 @@ describe('validateEvent: unknown kinds', () => {
     expect(validateEvent(ev('ticket.estimate', {}))).toMatchObject({ ok: true, known: false });
   });
 
+  it('accepts an unknown kind without a ticket as unknown, not malformed (spec scenario)', () => {
+    const value = without(ev('board.archive', { before: 1000 }), 'ticket');
+    expect('ticket' in value).toBe(false);
+    expect(validateEvent(value)).toEqual({ ok: true, known: false, event: value });
+  });
+
+  it('still requires a ULID ticket on an unknown kind when one is present', () => {
+    expectOnlyField({ ...ev('board.archive', {}), ticket: 'T1' }, 'ticket');
+    expectOnlyField({ ...ev('ticket.estimate', {}), ticket: T1.toLowerCase() }, 'ticket');
+    expectOnlyField({ ...ev('ticket.estimate', {}), ticket: 5 }, 'ticket');
+  });
+
+  it('still requires a ticket on every known kind except board.meta', () => {
+    const validBodies: [string, Obj][] = [
+      ['ticket.create', { title: 'x' }],
+      ['ticket.comment', { text: 'x' }],
+      ['ticket.move', { to: 'tests' }],
+      ['ticket.assign', { to: 'a' }],
+      ['ticket.claim', {}],
+      ['ticket.release', {}],
+      ['ticket.handoff', { to: 'a', status: 'tests', note: 'n' }],
+      ['ticket.link', { pr: 1 }],
+      ['ticket.close', { noDecision: true }],
+      ['ticket.checklist', { index: 0, done: true }],
+    ];
+    expect(validBodies.map(([k]) => k).sort()).toEqual(
+      KNOWN_KINDS.filter((k) => k !== 'board.meta').sort(),
+    );
+    for (const [kind, body] of validBodies) {
+      expect(validateEvent(ev(kind, body)).ok).toBe(true);
+      expectOnlyField(without(ev(kind, body), 'ticket'), 'ticket');
+    }
+  });
+
   it('still checks the envelope of an unknown kind', () => {
-    expectOnlyField(without(ev('ticket.estimate', {}), 'ticket'), 'ticket');
     expectOnlyField(without(ev('ticket.estimate', {}), 'actor'), 'actor');
     expectOnlyField({ ...ev('ticket.estimate', {}), extra: 1 }, 'extra');
   });
