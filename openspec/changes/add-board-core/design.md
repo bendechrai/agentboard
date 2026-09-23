@@ -133,6 +133,26 @@ A small pattern list (PEM headers, AWS access key ids, GitHub `ghp_` and
 separator) is checked on free text before an event is written. It is a
 guard rail, not a scanner; `--allow-secret-like` bypasses it.
 
+## Interfaces (sketch; the test author's stubs are authoritative)
+
+`tasks.md` names files and behaviors, not signatures. The test author for
+each group defines the exported API as compile-only stubs with doc comments
+in its first commit, and that commit is the API of record. The sketch below
+covers group 1 only, to show the intended shape:
+
+- `src/events/canonical.ts`: `encode(value): Uint8Array` producing sorted-key,
+  whitespace-free JSON and rejecting floats; `decode(bytes): unknown`
+  rejecting duplicate keys and non-canonical input; `hash(value): string`
+  (hex SHA-256 of the encoding).
+- `src/events/ulid.ts`: `newUlid(now?): string` with a monotonic generator;
+  `parseUlid(s): { time: number } | null`; `isUlid(s): boolean`.
+- `src/events/hlc.ts`: `next(prev, wallMs, actor): Hlc`; `compare(a, b): -1 | 0 | 1`;
+  `encode`/`decode` for the wire form.
+- `src/events/schema.ts`: the `Event` envelope type, one body type per kind,
+  and `validate(value): { ok: true; event: Event } | { ok: false; reasons: string[] }`.
+- `src/events/fold.ts`: `fold(events: Event[]): { state: BoardState; rejected: Rejected[]; unknown: Event[] }`,
+  deterministic in the input order.
+
 ## Risks / Trade-offs
 
 - [Clock skew between machines reorders display] -> cosmetic only; state
