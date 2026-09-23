@@ -71,7 +71,7 @@ None. The baseline is empty.
   filesystem and `node:sqlite`, and the CLI. `src/index.ts` exports the
   library surface so other tools can embed the board.
 - New runtime dependency footprint is intentionally small: `node:sqlite`
-  (built into Node 22.13+), `git` on the PATH for `sync`, `gh` on the PATH
+  (built into Node 22.13+; the floor is 22.16, see design.md), `git` on the PATH for `sync`, `gh` on the PATH
   only for `close-merged`, and the official MCP TypeScript SDK for `mcp`. A ULID implementation is hand-rolled to avoid a
   dependency; see design.md.
 - Host projects add `.board/` to their `.gitignore` and run

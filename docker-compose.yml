@@ -13,6 +13,22 @@ services:
       - npm-cache:/home/dev/.npm
     command: sleep infinity
 
+  # Same toolchain pinned to the oldest supported Node (package.json
+  # engines), so the declared floor is actually tested.
+  dev-floor:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        NODE_IMAGE: node:22.16.0-bookworm-slim
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - node-modules-floor-cache:/workspace/node_modules
+      - npm-cache:/home/dev/.npm
+    command: sleep infinity
+
 volumes:
   node-modules-cache:
+  node-modules-floor-cache:
   npm-cache:

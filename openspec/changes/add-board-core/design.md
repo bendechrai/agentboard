@@ -6,8 +6,9 @@ See proposal.md for motivation and docs/adr/0001 for the decision that the
 event log is the source of truth and SQLite is a cache. This document covers
 how that is realized in a Node CLI with no server and no native dependencies.
 
-Constraints: Node 22.13 or later (the first release where `node:sqlite` is
-available without a flag); TypeScript strict; no `any`; vitest coverage
+Constraints: Node 22.16 or later (`node:sqlite` is available without a flag
+from 22.13, but `DatabaseSync.isTransaction`, which the store relies on,
+arrives in 22.16; the floor was raised from 22.13 during group 2 review); TypeScript strict; no `any`; vitest coverage
 thresholds of 90 percent; plain ASCII in docs; the tool must work from any
 git worktree of the host project and from a plain directory with no git at
 all.
