@@ -1,0 +1,87 @@
+# Spec Delta
+
+## Purpose
+
+States the guarantees a board gives when several processes write at once,
+when a process dies mid-command, and when two machines exchange events over
+git, in a form that tests can exercise with real child processes.
+
+## ADDED Requirements
+
+### Requirement: Claim race has exactly one winner
+When N processes concurrently run `claim` on the same unassigned ticket, the
+board SHALL end with exactly one assignee, exactly one process SHALL exit 0,
+and every other process SHALL exit 4 with reason `already-assigned` naming
+the winner. Exactly one `ticket.claim` event SHALL be folded as effective; any
+others written SHALL be recorded as rejected, never deleted.
+
+#### Scenario: Ten concurrent claims
+- **WHEN** ten child processes run `claim T1 --as agent-<n>` started within the same millisecond
+- **THEN** one exits 0, nine exit 4, `show T1` reports a single assignee, and `rebuild` reports at most nine rejected claim events
+
+### Requirement: Concurrent comments are never lost
+When N processes concurrently add one comment each to the same ticket, all N
+comments SHALL be present after the commands return, in a deterministic
+order, and the cache SHALL equal a fresh rebuild from the events.
+
+#### Scenario: Twenty concurrent comments
+- **WHEN** twenty child processes each run `comment T1 --as agent-<n> "c<n>"` concurrently
+- **THEN** `show T1` lists twenty comments, and `rebuild --check` reports no divergence
+
+### Requirement: Crash consistency
+If a process is killed at any point during a writing command, the board SHALL
+be left in a state from which the next command recovers without human
+action: either the event file does not exist and nothing changed, or the
+event file exists and the next command folds it. No partial event file SHALL
+ever be visible under its final hash name.
+
+#### Scenario: Killed after rename, before commit
+- **WHEN** a child process is killed with SIGKILL immediately after its event file is renamed into place (the test injects a pause at that point)
+- **THEN** `agentboard show` for that ticket reflects the event and `rebuild --check` reports no divergence
+
+#### Scenario: Killed during temporary write
+- **WHEN** a child process is killed while writing the temporary file
+- **THEN** no file with a hash name was created, a leftover temporary file is reported and removed by the next command, and the ticket is unchanged
+
+### Requirement: Inbox never misses an event
+`inbox --as <actor>` SHALL return every effective event whose fold position
+is after the actor's stored cursor, in fold order, and SHALL then advance the
+cursor to the last returned event unless `--peek` is given. Events that
+arrive between two inbox calls, including events synced from another
+machine with earlier timestamps than the cursor, SHALL still be returned:
+the cursor SHALL therefore be a set of seen hashes bounded by a position,
+not a timestamp alone.
+
+#### Scenario: Late-arriving synced event
+- **WHEN** an actor's cursor is at wall 2000 and `sync` brings in an event with wall 1500 from another machine
+- **THEN** the next `inbox` for that actor returns the wall 1500 event
+
+#### Scenario: Peek does not advance
+- **WHEN** `inbox --peek` is run twice with no new events in between
+- **THEN** both calls return the same events
+
+### Requirement: Sync converges
+`sync` SHALL commit any new event files in `.board`, pull with rebase from the
+board's remote, and push. Because event files are add-only and named by
+content, two clones that each added events SHALL merge without conflict, and
+after both have synced, `rebuild` on each SHALL produce byte-identical
+canonical dumps. If git reports a conflict on any path other than an event
+file, `sync` SHALL stop, leave the repository in the conflicted state for a
+human, and exit 3.
+
+#### Scenario: Divergent clones converge
+- **WHEN** clone A adds three events and clone B adds two events, both run `sync`, and A runs `sync` again
+- **THEN** both clones contain all five event files and their rebuilt caches are identical
+
+#### Scenario: Sync with no remote
+- **WHEN** the board's git repository has no remote configured
+- **THEN** `sync` commits local events, reports that no remote is configured, and exits 0
+
+### Requirement: Re-import is idempotent
+Running `import-change <name>` twice for the same change SHALL create no
+duplicate tickets: tickets are keyed by (change, group) and a second import
+SHALL update checklists for existing tickets by appending new lines only.
+
+#### Scenario: Second import adds nothing
+- **WHEN** `import-change add-board-core` runs twice with an unchanged tasks file
+- **THEN** the ticket count is unchanged and no new events are written
