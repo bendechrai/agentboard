@@ -1,14 +1,18 @@
 /**
- * CLI entry point for agentboard.
+ * CLI entry point for agentboard: runs `runCli` with the real process and
+ * sets the exit code (without `process.exit`, so stdout is flushed).
  */
 
-function usage(): string {
-  return ['Usage: agentboard <command>', '', 'agentboard is not yet implemented.'].join('\n');
-}
+import { runCli } from './cli/main.js';
 
-function main(): void {
-  console.log(usage());
-  process.exit(1);
-}
-
-main();
+process.exitCode = runCli({
+  argv: process.argv.slice(2),
+  cwd: process.cwd(),
+  env: process.env,
+  stdout: (text) => {
+    process.stdout.write(text);
+  },
+  stderr: (text) => {
+    process.stderr.write(text);
+  },
+});

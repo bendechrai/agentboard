@@ -54,6 +54,11 @@ export interface LocateOptions {
  *    `.board`, source `git`. Because the common dir is shared by every
  *    linked worktree, all worktrees of one repository (and every
  *    subdirectory of each) resolve to the main checkout's `.board`.
+ *    Exception: the board directory is itself a git repository (`init`
+ *    makes it one), so inside it (or any of its subdirectories) the common
+ *    dir is `<board>/.git`. When the parent of the common dir is named
+ *    `.board` and `boardExists` holds for it, that directory is the board
+ *    (source `git`), never `<board>/.board`.
  * 3. Otherwise (not in a git repository, or `git` is not installed):
  *    `path.resolve(cwd, '.board')`, source `cwd`.
  *
