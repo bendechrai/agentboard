@@ -212,13 +212,14 @@ export function isKnownKind(kind: string): kind is KnownKind {
 /**
  * A well-formed event whose `kind` is not in `KNOWN_KINDS` (written by a
  * newer version). Its envelope obeys the same rules as a ticket event
- * (including a required ULID `ticket`); its body is any JSON object and is
- * not inspected.
+ * except that `ticket` is optional (a ULID when present), so later versions
+ * can add board-level kinds; its body is any JSON object and is not
+ * inspected.
  */
 export interface UnknownKindEvent {
   v: 1;
   kind: string;
-  ticket: string;
+  ticket?: string;
   actor: string;
   ts: Hlc;
   body: Record<string, JsonValue>;
@@ -265,8 +266,9 @@ export type ValidationResult =
  * - `v`: missing or not exactly the number 1.
  * - `kind`: missing or not a non-empty string. When `kind` is invalid the
  *   body is not checked.
- * - `ticket`: for `board.meta`, must be absent; for every other kind, known
- *   or unknown, required and a ULID per `isUlid`.
+ * - `ticket`: for `board.meta`, must be absent; for every other known kind,
+ *   required and a ULID per `isUlid`; for an unknown kind, optional and a
+ *   ULID when present.
  * - `actor`: missing or not a non-empty string.
  * - `ts`: missing or not an object. Otherwise `ts.wall` and `ts.counter`
  *   must be non-negative safe integers, `ts.actor` a non-empty string equal

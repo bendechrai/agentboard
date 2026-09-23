@@ -156,10 +156,11 @@ export function compareFoldOrder(a: FoldInput, b: FoldInput): -1 | 0 | 1 {
  * is `blocked`). Permitted:
  * - `todo` -> `tests`; `tests` -> `implementing`; `implementing` -> `review`;
  * - `review` -> `implementing`, `review` -> `tests`, `review` -> `merged`;
- * - any status except `merged` -> `blocked` (including `blocked` itself);
- * - `blocked` -> `blockedFrom` (and to no other status except `blocked`).
- * Everything else is refused, including other self-transitions such as
- * `todo` -> `todo`, and every move out of `merged` (terminal).
+ * - any status except `merged` and `blocked` -> `blocked`;
+ * - `blocked` -> `blockedFrom` only.
+ * Everything else is refused, including every move to the current status
+ * (`from === to`, `blocked` -> `blocked` included) and every move out of
+ * `merged` (terminal).
  */
 export function isTransitionAllowed(from: Status, to: Status, blockedFrom: Status | null): boolean {
   void from;
@@ -185,20 +186,22 @@ export function isTransitionAllowed(from: Status, to: Status, blockedFrom: Statu
  * - `ticket.comment`: appends a comment.
  * - `ticket.move`: `invalid-transition` unless `isTransitionAllowed(status,
  *   to, blockedFrom)`; then `needs-task-link` if `to` is `implementing` and
- *   `task` is null. Moving to `blocked` from a non-blocked status records
- *   `blockedFrom`; `blocked` -> `blocked` keeps the original `blockedFrom`;
- *   leaving `blocked` clears it.
+ *   `task` is null. Moving to `blocked` records the previous status in
+ *   `blockedFrom`; leaving `blocked` clears it.
  * - `ticket.assign`: sets `assignee` to `body.to` unconditionally.
  * - `ticket.claim`: `already-assigned` if `assignee` is not null (even when
  *   it is the claiming actor); otherwise `assignee` becomes the event actor.
  * - `ticket.release`: `not-assignee` unless `assignee` equals the event
  *   actor (so releasing an unassigned ticket is refused); otherwise
  *   `assignee` becomes null.
- * - `ticket.handoff`: the same checks as a move to `body.status`, in the
- *   same order; if either fails the whole event is rejected and none of its
- *   effects apply. Otherwise, as one event: `assignee` = `body.to`, status
- *   moves as for `ticket.move`, and a comment with `text` = `body.note` by
- *   the event actor is appended. No assign, move or comment event is
+ * - `ticket.handoff`: when `body.status` equals the current status (any
+ *   status, `blocked` and `merged` included) it is a reassignment: no
+ *   transition checks, status and `blockedFrom` untouched. Otherwise the
+ *   same checks as a move to `body.status`, in the same order; if either
+ *   fails the whole event is rejected and none of its effects apply. When
+ *   applied, as one event: `assignee` = `body.to`, status moves as for
+ *   `ticket.move` (if it changes), and a comment with `text` = `body.note`
+ *   by the event actor is appended. No assign, move or comment event is
  *   synthesized; version goes up by exactly 1.
  * - `ticket.link`: `task` sets `task` (replacing any earlier one) and clears
  *   `adhoc`; `pr` and `decision` append to `links`.
@@ -213,7 +216,7 @@ export function isTransitionAllowed(from: Status, to: Status, blockedFrom: Statu
  * - `board.meta`: sets `state.meta[key] = value`; never rejected; affects no
  *   ticket.
  * - Unknown kinds: appended to `unknown`; affect no ticket and are never
- *   rejected, whether or not their ticket exists.
+ *   rejected, whether their `ticket` exists, does not exist, or is absent.
  */
 export function fold(inputs: readonly FoldInput[]): FoldResult {
   void inputs;
