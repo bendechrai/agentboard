@@ -60,7 +60,13 @@ and `blocked`. Permitted transitions SHALL be: `todo` to `tests`, `tests` to
 `implementing`, `implementing` to `review`, `review` to `implementing`
 (review sent it back), `review` to `tests` (tests need changing), `review` to
 `merged`, any non-`merged` status to `blocked`, and `blocked` back to the
-status it was in when blocked. `merged` SHALL be terminal. A board MAY
+status it was in when blocked. A move to the ticket's current status,
+including `blocked` to `blocked`, SHALL be rejected as `invalid-transition`;
+leaving `blocked` SHALL be permitted only to the remembered status, which
+the CLI supplies when no explicit target is given (the `ticket.move` event
+always names its target). A `handoff` whose `--status` equals the current
+status SHALL be permitted: it reassigns and comments without a transition.
+`merged` SHALL be terminal. A board MAY
 override the column names through a `board.meta` event with key `columns`
 but the terminal status SHALL remain `merged`.
 
@@ -71,6 +77,14 @@ but the terminal status SHALL remain `merged`.
 #### Scenario: Blocked remembers where it came from
 - **WHEN** a ticket in `implementing` is moved to `blocked` and later moved out of `blocked` with no explicit target
 - **THEN** its status becomes `implementing`
+
+#### Scenario: Handoff within the same status
+- **WHEN** a ticket in `implementing` held by `impl-1` is handed off with `--to impl-2 --status implementing`
+- **THEN** it is assigned to `impl-2`, still `implementing`, with the note as a comment
+
+#### Scenario: Move to the current status
+- **WHEN** a ticket in `blocked` is moved to `blocked`
+- **THEN** the command exits 4 with reason `invalid-transition`
 
 #### Scenario: Merged is terminal
 - **WHEN** a ticket in `merged` is moved to any status
