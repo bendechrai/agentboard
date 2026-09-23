@@ -5,7 +5,7 @@
   "type": "module",
   "description": "A local, offline, conflict-free ticket board for AI agents working on one project.",
   "engines": {
-    "node": ">=22.13"
+    "node": ">=22.16"
   },
   "bin": {
     "agentboard": "dist/cli.js"
