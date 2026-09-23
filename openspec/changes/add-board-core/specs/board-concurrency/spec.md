@@ -79,7 +79,8 @@ human, and exit 3.
 
 ### Requirement: Re-import is idempotent
 Running `import-change <name>` twice for the same change SHALL create no
-duplicate tickets: tickets are keyed by (change, group) and a second import
+duplicate tickets: tickets are keyed by their task reference (source, ref,
+item) and a second import
 SHALL update checklists for existing tickets by appending new lines only.
 
 #### Scenario: Second import adds nothing

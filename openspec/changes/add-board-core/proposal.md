@@ -29,15 +29,19 @@ a laptop through git without a hosted service.
   between the event write and the cache write is reconciled by `rebuild`,
   `inbox` never misses an event, and two clones with divergent events converge
   after `sync`.
+- A source-neutral task reference (`<source>:<ref>#<item>`, for example
+  `openspec:add-board-core#3`) on every ticket, so the event schema does not
+  hard-code OpenSpec; OpenSpec is the first source adapter and others (such
+  as Spec Kit) can be added later without a schema version change.
 - The rules that keep the board and OpenSpec from becoming two sources of
   truth: every ticket references a task, completion truth stays in
   `tasks.md`, in-flight truth lives on the board, and a decision made in a
   ticket thread must be promoted to a spec delta or ADR before the ticket can
   close.
-- A reserved `mcp` command that will expose the same operations as MCP tools
-  over stdio; it is specified here so the CLI surface and the MCP surface stay
-  one set of operations, but its implementation is the last, optional task
-  group.
+- An `mcp` command that serves the same operations as MCP tools over stdio,
+  generated from the same command registry as the CLI so the two surfaces
+  cannot drift. It is the last task group; until it lands, `mcp` exits 1
+  with a not-implemented message.
 
 ## Capabilities
 
@@ -48,12 +52,13 @@ a laptop through git without a hosted service.
 - `board-cache`: the derived SQLite cache, its tables, the single-transaction
   write discipline that makes every command atomic, and `rebuild`.
 - `board-cli`: the command surface, argument and output conventions, the
-  ticket status state machine, exit codes, and the reserved `mcp` command.
+  ticket status state machine, exit codes, the command registry, and the
+  `mcp` server.
 - `board-concurrency`: the externally observable guarantees under concurrent
   processes, crashes and cross-machine sync, stated so they can be tested by
   racing real child processes.
-- `board-openspec-integration`: how tickets relate to OpenSpec changes and
-  tasks, `import-change`, `close-merged`, the decision-promotion rule on
+- `board-openspec-integration`: the task reference and source adapters, how
+  tickets relate to OpenSpec changes and tasks, `import-change`, `close-merged`, the decision-promotion rule on
   `close`, and how an orchestrator is expected to use `inbox` between
   dispatches.
 
@@ -66,8 +71,8 @@ None. The baseline is empty.
   filesystem and `node:sqlite`, and the CLI. `src/index.ts` exports the
   library surface so other tools can embed the board.
 - New runtime dependency footprint is intentionally small: `node:sqlite`
-  (built into Node 22.13+), `git` on the PATH for `sync`, and `gh` on the PATH
-  only for `close-merged`. A ULID implementation is hand-rolled to avoid a
+  (built into Node 22.13+), `git` on the PATH for `sync`, `gh` on the PATH
+  only for `close-merged`, and the official MCP TypeScript SDK for `mcp`. A ULID implementation is hand-rolled to avoid a
   dependency; see design.md.
 - Host projects add `.board/` to their `.gitignore` and run
   `agentboard init` once per clone. The board data itself is versioned in its

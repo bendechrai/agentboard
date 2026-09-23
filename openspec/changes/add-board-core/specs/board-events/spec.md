@@ -82,17 +82,39 @@ reported as malformed and not folded.
 - **WHEN** an event file lacks the `actor` field
 - **THEN** the event is reported as malformed with its path and reason and is not folded
 
+### Requirement: Task reference
+A ticket's link to the planning artifact it implements SHALL be a task
+reference: an object with `source` (a lowercase identifier matching
+`^[a-z][a-z0-9-]*$` naming the planning tool, `openspec` for OpenSpec),
+`ref` (non-empty string naming the change, feature or plan within that
+source; for `openspec`, the change directory name) and `item` (non-empty
+string naming the unit of work within `ref`; for `openspec`, the task group
+number in decimal, for example `"3"`). The event schema SHALL NOT interpret
+`ref` or `item` beyond these type rules, so that a new source can be
+supported without a schema version change. A task reference SHALL be
+written in text form as `<source>:<ref>#<item>`, for example
+`openspec:add-board-core#3`.
+
+#### Scenario: Unknown source is accepted by the schema
+- **WHEN** a `ticket.create` event carries the task reference `{source: "speckit", ref: "001-photo-albums", item: "phase-2"}`
+- **THEN** the event is well-formed and folds, with the task reference stored as given
+
+#### Scenario: Malformed source is rejected
+- **WHEN** a task reference has `source` equal to `"Open Spec"`
+- **THEN** the event is reported as malformed naming the `source` field
+
 ### Requirement: Event kinds
 The following kinds SHALL be defined with these bodies:
 `ticket.create` (title, optional description, optional labels array, optional
-change and group, optional checklist array of strings);
+`task` reference, optional `adhoc` reason string, optional checklist array
+of strings; `task` and `adhoc` SHALL NOT both be present);
 `ticket.comment` (text);
 `ticket.move` (to: status);
 `ticket.assign` (to: actor);
 `ticket.claim` (no body fields; the event's actor claims the ticket);
 `ticket.release` (no body fields);
 `ticket.handoff` (to: actor, status, note);
-`ticket.link` (one of: change and group, pr URL or number, decision path);
+`ticket.link` (exactly one of: `task` reference, pr URL or number, decision path);
 `ticket.close` (either `decision` path string or `noDecision` true);
 `ticket.checklist` (index: integer, done: boolean);
 `board.meta` (key, value; board-level settings such as the default column
@@ -139,7 +161,7 @@ display order only, never correctness.
 
 ### Requirement: Fold semantics
 Folding SHALL produce, per ticket: id, title, description, status, assignee,
-labels, change and group, checklist with done flags, ordered comments (each
+labels, task reference or ad hoc reason, checklist with done flags, ordered comments (each
 with actor, timestamp and text), links, closed flag with its decision record
 path or explicit no-decision marker, `version` (the count of folded events
 that changed the ticket), and `updated_at` (the timestamp of the last such
@@ -150,7 +172,10 @@ SHALL be rejected with reason `duplicate-create`. A `ticket.move` to a status
 not permitted by the state machine (see board-cli) SHALL be rejected with
 reason `invalid-transition`; a `ticket.claim` on an assigned ticket SHALL be
 rejected with reason `already-assigned`; a `ticket.release` by an actor other
-than the assignee SHALL be rejected with reason `not-assignee`. Rejected
+than the assignee SHALL be rejected with reason `not-assignee`; a
+`ticket.move` or `ticket.handoff` that would take a ticket with no task
+reference into `implementing` SHALL be rejected with reason
+`needs-task-link` (see board-openspec-integration). Rejected
 events SHALL be listed in the fold report with hash, kind, ticket and reason
 and SHALL never be deleted.
 

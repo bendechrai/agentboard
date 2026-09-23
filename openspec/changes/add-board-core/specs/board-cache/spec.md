@@ -24,7 +24,8 @@ the next command SHALL rebuild it from the events before proceeding.
 
 ### Requirement: Cache schema
 The cache SHALL contain tables `tickets` (id, title, description, status,
-assignee, version, updated_at, change, group_no, labels as a JSON array,
+assignee, version, updated_at, task_source, task_ref, task_item, adhoc,
+labels as a JSON array,
 closed, decision, checklist as a JSON array), `comments` (ticket id, sequence,
 actor, ts, text), `links` (ticket id, kind, value), `cursors` (actor, last
 wall, last counter, last actor, last hash), `folded` (event hash, folded flag,
