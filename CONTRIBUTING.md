@@ -11,8 +11,12 @@ Specs in `openspec/` define behavior; ADRs in `docs/adr/` record decisions.
   closed unmerged.
 - `staging` is the integration branch and the repository default. All work
   is opened as a PR into `staging`.
-- Feature branches are named `<area>/<topic>` (for example `cli/init`,
-  `core/event-log`) and are cut from the current `staging`.
+- Feature branches are named `<area>/<group-slug>`, one branch per task
+  group of an OpenSpec change (for example `events/canonical-fold`,
+  `store/sqlite-cache`, `cli/core-commands`). All three roles commit on
+  that one branch, and follow-up rounds for the same group stay on it.
+- Always `git fetch origin` first and cut branches from `origin/staging`,
+  never from a local `staging` ref, which can be stale.
 - Agents never commit or push to `main` or `staging` directly. Both branches
   are protected by rulesets: changes land only through a PR, force pushes
   and deletions are blocked.
@@ -31,34 +35,75 @@ worktree.
 
 1. **Test author.** Writes tests from the spec deltas, `design.md` and the
    task group, covering the edge cases and failure modes the spec names. It
-   adds only the minimum compile stubs (types, function signatures throwing
-   "not implemented") needed for the tests to build. Red tests are expected
-   at this stage. The test author does not implement behavior.
+   defines the exported API of the group as compile-only stubs (types and
+   function signatures throwing "not implemented") with full doc comments
+   stating each contract; this first commit is the authoritative API for
+   the group. `tasks.md` names files and behaviors, not signatures, by
+   design. Red tests are expected at this stage. The test author does not
+   implement behavior.
 2. **Implementer.** Makes the tests green by writing production code. The
-   implementer must not edit test files. If a test contradicts the spec, or
-   cannot pass without violating it, the implementer stops and reports the
-   conflict instead of working around it; the test author or a human
-   resolves it, and the spec wins unless a change proposal says otherwise.
-3. **Reviewer.** Runs on a different model from the other two. It checks
-   conformance to the spec scenarios, test quality (do the tests actually
-   pin the behavior, would a wrong implementation still pass, are failure
-   paths covered), lint cleanliness and the coverage table. Its report is
-   used as the PR body. Blocking findings go back to the implementer (code)
-   or test author (tests).
+   implementer must not edit test files and must not change the stubs'
+   signatures; a signature change goes through the STOP protocol below. If
+   a test contradicts the spec, or cannot pass without violating it, the
+   implementer stops and reports the conflict instead of working around it
+   (see "STOP protocol").
+3. **Reviewer.** Runs on a different model from the implementer, so the
+   review is independent. It checks conformance to the spec scenarios, test
+   quality (do the tests actually pin the behavior, would a wrong
+   implementation still pass, are failure paths covered), lint cleanliness
+   and the coverage table. It verifies golden files and recorded fixtures
+   independently (recomputing at least one with a throwaway program that
+   does not use the package under review) rather than trusting the values
+   committed. Its report (`REVIEW.md`, uncommitted) is used as the PR body.
+   Blocking findings go back to the implementer (code) or test author
+   (tests). The verdict is one of APPROVE, APPROVE WITH NITS or REQUEST
+   CHANGES.
 
 `make check` must pass before the implementer hands off and again before
 the reviewer signs off.
+
+### Models
+
+The test author and the implementer use the strongest model available.
+The reviewer uses a different model from the implementer. For groups that
+are security-critical or concurrency-critical the orchestrator may run a
+second reviewer on the strongest model, in its own worktree. The PR body
+records the model used for each role.
+
+### STOP protocol
+
+When the implementer finds that a test contradicts a spec requirement, is
+internally inconsistent, or forces a change to an exported signature, it
+stops, keeps its work committed locally, and reports the exact test, what
+it asserts and why it is wrong. The orchestrator (or the human) rules. A
+ruling is applied either by the test author, who changes the tests, or by
+a spec delta (an OpenSpec change or an update to the change in progress),
+never by bending the implementation to a wrong test. Rulings are recorded
+in the PR body.
+
+### Definition of done for a task group
+
+A task group is done when all of its tasks are ticked in `tasks.md` with
+accurate Verify lines, the branch has been reviewed and merged into
+`staging`, and every decision taken during the group is recorded in a spec
+delta or an ADR rather than only in a review, a ticket or a chat.
 
 ## One worktree per agent
 
 Every agent (test author, implementer, reviewer, or any other) works in its
 own git worktree. Agents may run from a directory other than this
 repository's own checkout, so create a worktree explicitly rather than
-assuming one:
+assuming one, and fetch first so the branch is cut from the remote
+`staging`, never from a stale local ref:
 
 ```
-git worktree add ../agentboard-<branch> <branch>
+git fetch origin
+git worktree add -b <area>/<group-slug> ../agentboard-<group-slug> origin/staging
 ```
+
+For a branch that already exists on the remote (a later role joining a
+group), use `git worktree add ../agentboard-<group-slug> <area>/<group-slug>`
+after the fetch. Agents do not spawn sub-agents.
 
 Never run `git checkout` or `git switch` in a checkout shared with another
 running agent: a concurrent branch switch lands commits on the wrong branch
@@ -77,6 +122,13 @@ back on lowering a threshold for convenience.
 ## Pull requests
 
 - Every PR targets `staging` (release PRs target `main` from `staging`).
+- Only the reviewer opens a feature PR, only after a verdict of APPROVE or
+  APPROVE WITH NITS, and only after running both `make check` and
+  `make check-in-docker` to completion, with `REVIEW.md` (including both
+  results) as the PR body. Because no status checks are required, auto-merge
+  fires as soon as the PR is opened: opening the PR is the merge decision.
+  The one exception: test-only follow-ups on already-approved code may be
+  opened by the test author.
 - Feature-to-staging PRs are squash-merged; the PR title becomes the commit
   subject, so write it like one. Enable auto-merge when opening the PR
   (`gh pr merge --auto --squash`).

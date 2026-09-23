@@ -3,6 +3,10 @@
 Every group is delivered by a test author, an implementer and a reviewer in
 turn (see CONTRIBUTING.md). Verification for every task includes `make check`
 passing with vitest coverage at or above 90 percent for the package.
+One branch per group, named `<area>/<group-slug>` and cut from
+`origin/staging`; the test author's first commit defines the group's
+exported API as stubs; a group is done when its tasks are ticked, the
+branch is reviewed and merged, and its decisions are in a spec delta or ADR.
 
 ## 1. Events, canonical JSON and fold (pure, no IO)
 

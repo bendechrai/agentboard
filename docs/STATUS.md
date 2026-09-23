@@ -32,13 +32,13 @@ Start task group 1 (`openspec/changes/add-board-core/tasks.md`, section 1:
 "Events, canonical JSON and fold") using the three-role loop from
 CONTRIBUTING.md ("Three-agent workflow per task group"):
 
-1. Fetch and update local `staging` (`git fetch origin staging:staging` or
-   equivalent) before cutting anything from it -- a stale local `staging`
-   ref will silently branch from an old commit.
-2. Cut one feature branch per task group from the up-to-date `staging`
-   (`<area>/<topic>` naming, e.g. `events/fold`), then create a worktree per
-   agent from this directory:
-   `git worktree add ../agentboard-events-fold events/fold`.
+1. `git fetch origin` before cutting anything; branches are cut from
+   `origin/staging`, never from a local `staging` ref.
+2. Cut one feature branch per task group (`<area>/<group-slug>`, e.g.
+   `events/canonical-fold`), then one worktree per agent:
+   `git worktree add -b events/canonical-fold ../agentboard-canonical-fold origin/staging`
+   for the first role, and `git worktree add ../agentboard-canonical-fold-impl events/canonical-fold`
+   for later roles.
 3. Run the three roles in order, each in its own worktree, on the same
    branch: test author (red tests + compile stubs only) -> implementer
    (green tests, no test edits) -> reviewer (different model; spec
@@ -46,9 +46,10 @@ CONTRIBUTING.md ("Three-agent workflow per task group"):
 4. `make check` must pass before the implementer hands off and again before
    the reviewer signs off; the reviewer states the `make check` result in
    the PR body (its report becomes the PR body).
-5. Open the PR against `staging` with auto-merge enabled
-   (`gh pr merge --auto --squash`); no approvals are required, so the
-   reviewer's local `make check` run is the only gate.
+5. Only the reviewer opens the PR against `staging`, after APPROVE or
+   APPROVE WITH NITS and after both `make check` and `make check-in-docker`
+   pass, with auto-merge enabled (`gh pr merge --auto --squash`); no
+   approvals are required, so opening the PR is the merge decision.
 6. Tick the completed tasks in `tasks.md` once the group has landed on
    `staging`.
 
@@ -90,36 +91,10 @@ GAP rather than assumed from outside knowledge.
 
 ## Gaps found during a cold-start read
 
-- GAP: `src/events/{canonical,ulid,schema,hlc,fold}.ts` are named in
-  tasks.md and their behavior is described in prose (design.md and the
-  `board-events` spec delta), but no exported function signatures, type
-  names or module exports are given. A test author has to invent the exact
-  API shape before writing stubs, which the implementer might read
-  differently. -> Should be documented as an "Interfaces" section in
-  design.md, or the test author's first commit should be treated as the
-  API proposal that the reviewer checks against the spec's behavior (not
-  against a signature written down anywhere).
-- GAP: No branch-naming convention ties a task group number to a branch
-  name. CONTRIBUTING.md gives the `<area>/<topic>` pattern with generic
-  examples (`cli/init`, `core/event-log`) but does not map tasks.md's nine
-  groups to specific branch names. -> CONTRIBUTING.md, "Branch model", or a
-  short table added to tasks.md itself.
-- GAP: The reviewer is required to "run on a different model from the
-  other two" but nothing records which models are used for which role, or
-  how that assignment is made or enforced by an orchestrator. -> CONTRIBUTING.md,
-  "Three-agent workflow per task group".
-- GAP: It is not stated who opens the PR or when: whether the implementer
-  opens it once tests are green and the reviewer only edits the body and
-  merges, or whether the reviewer opens it after review, since auto-merge
-  triggers immediately on open with no required checks. -> CONTRIBUTING.md,
-  "Pull requests".
-- GAP: "Done" for a task group is assembled from several sections
-  (CONTRIBUTING.md's three-role loop and coverage gate, tasks.md's
-  checkbox instruction) but is never stated as a single rule in one place.
-  -> CONTRIBUTING.md or a short preamble note in tasks.md.
-- GAP: A freshly created worktree can be cut from a stale local `staging`
-  ref (this was observed directly while writing this document: the local
-  `staging` branch was one commit behind `origin/staging` until fetched).
-  CONTRIBUTING.md's "One worktree per agent" section does not say to
-  fetch/update `staging` first. -> CONTRIBUTING.md, "One worktree per
-  agent".
+None open. The six gaps found on 2026-09-23 (exported API definition,
+branch naming per group, model assignment per role, who opens the PR,
+definition of done, stale local staging) are closed in CONTRIBUTING.md
+("Branch model", "Three-agent workflow per task group", "Models", "STOP
+protocol", "Definition of done for a task group", "One worktree per
+agent", "Pull requests"), in design.md ("Interfaces (sketch)") and in the
+tasks.md preamble.
