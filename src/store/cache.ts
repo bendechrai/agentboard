@@ -1,0 +1,219 @@
+/**
+ * The derived SQLite cache (board-cache: "Cache is derived and disposable",
+ * "Cache schema", "Cache connection settings"; design.md: "One transaction
+ * per command, event file inside it").
+ *
+ * The cache holds nothing that cannot be derived from the event files,
+ * except the `cursors` table (acknowledgement state owned by `inbox`, task
+ * group 5), which is preserved by rebuilds and excluded from the canonical
+ * dump.
+ *
+ * Schema (version `CACHE_SCHEMA_VERSION`). Timestamps are stored as
+ * `encodeHlc` text; JSON columns hold canonical JSON text (`canonicalEncode`
+ * decoded as UTF-8); booleans are INTEGER 0 or 1.
+ *
+ * ```sql
+ * CREATE TABLE tickets (
+ *   id           TEXT PRIMARY KEY,
+ *   title        TEXT NOT NULL,
+ *   description  TEXT,            -- null when not given
+ *   status       TEXT NOT NULL,
+ *   blocked_from TEXT,            -- Ticket.blockedFrom
+ *   assignee     TEXT,
+ *   version      INTEGER NOT NULL,
+ *   updated_at   TEXT NOT NULL,   -- encodeHlc(Ticket.updatedAt)
+ *   created_by   TEXT NOT NULL,
+ *   created_at   TEXT NOT NULL,   -- encodeHlc(Ticket.createdAt)
+ *   task_source  TEXT,            -- the three task_* columns are all null
+ *   task_ref     TEXT,            --   (no task) or all non-null
+ *   task_item    TEXT,
+ *   adhoc        TEXT,
+ *   labels       TEXT NOT NULL,   -- JSON array of strings
+ *   closed       INTEGER NOT NULL,
+ *   decision     TEXT,            -- decision path when closed with one;
+ *                                 --   null when open or closed with noDecision
+ *   checklist    TEXT NOT NULL    -- JSON array of {"done":bool,"text":string}
+ * );
+ * CREATE TABLE comments (
+ *   ticket TEXT NOT NULL REFERENCES tickets(id),
+ *   seq    INTEGER NOT NULL,      -- 0-based index in Ticket.comments
+ *   actor  TEXT NOT NULL,
+ *   ts     TEXT NOT NULL,         -- encodeHlc
+ *   text   TEXT NOT NULL,
+ *   hash   TEXT NOT NULL,
+ *   PRIMARY KEY (ticket, seq)
+ * );
+ * CREATE TABLE links (
+ *   ticket TEXT NOT NULL REFERENCES tickets(id),
+ *   seq    INTEGER NOT NULL,      -- 0-based index in Ticket.links
+ *   kind   TEXT NOT NULL,         -- 'pr' or 'decision'
+ *   value  TEXT NOT NULL,         -- JSON of the pr (string or number) or path
+ *   actor  TEXT NOT NULL,
+ *   ts     TEXT NOT NULL,
+ *   hash   TEXT NOT NULL,
+ *   PRIMARY KEY (ticket, seq)
+ * );
+ * CREATE TABLE cursors (
+ *   actor        TEXT PRIMARY KEY,
+ *   last_wall    INTEGER,
+ *   last_counter INTEGER,
+ *   last_actor   TEXT,
+ *   last_hash    TEXT
+ * );
+ * CREATE TABLE folded (
+ *   hash     TEXT PRIMARY KEY,
+ *   folded   INTEGER NOT NULL,    -- 1 applied (known kind), 0 otherwise
+ *   reason   TEXT,                -- null when applied; else a fold
+ *                                 --   RejectionReason, 'unknown-kind' or
+ *                                 --   'malformed'
+ *   position TEXT                 -- encodeHlc(ts); null for malformed
+ * );
+ * CREATE TABLE meta (
+ *   key   TEXT PRIMARY KEY,
+ *   value TEXT NOT NULL
+ * );
+ * ```
+ *
+ * `meta` rows: `schema_version` (decimal text of `CACHE_SCHEMA_VERSION`);
+ * `last_position` (JSON `{"hash":...,"ts":{...}}` of the greatest
+ * well-formed event in fold order, or `null`); and one row per board meta
+ * key `k` from `board.meta` events, keyed `board.<k>` with the JSON of its
+ * value. Every table above has exactly these columns.
+ *
+ * Every event file with a valid name is recorded in `folded` once it has
+ * been read (applied, rejected, unknown kind or malformed), so catch-up only
+ * reads files not yet recorded. Corrupt files (name not the hash of the
+ * bytes) are never recorded and are reported by every catch-up and rebuild.
+ */
+
+import type { DatabaseSync } from 'node:sqlite';
+
+import type { BoardState, Rejected, Ticket, UnknownReport } from '../events/fold.js';
+import type { Board } from './board.js';
+import type { CorruptFile, MalformedFile } from './eventfile.js';
+
+/** File name of the cache inside the board directory. */
+export const CACHE_FILE = 'cache.sqlite';
+
+/** Version of the cache schema above, stored in `meta.schema_version`. */
+export const CACHE_SCHEMA_VERSION = 1;
+
+/** Minimum busy timeout on every connection, in milliseconds. */
+export const BUSY_TIMEOUT_MS = 5000;
+
+/**
+ * Opens (creating when absent) the SQLite database at `path` and prepares
+ * the connection: `PRAGMA journal_mode = WAL`, `PRAGMA busy_timeout` of at
+ * least `BUSY_TIMEOUT_MS`, `PRAGMA foreign_keys = ON`. Creates the schema
+ * when the database has no `meta.schema_version`, recording
+ * `CACHE_SCHEMA_VERSION` and `last_position` `null`. When the stored
+ * `schema_version` differs from `CACHE_SCHEMA_VERSION`, every table is
+ * dropped and recreated empty (the cache is disposable). Never folds events.
+ *
+ * `path` may be `':memory:'` (journal mode is then `memory`; used for the
+ * temporary database of `checkCache`).
+ */
+export function openCache(path: string): DatabaseSync {
+  void path;
+  throw new Error('not implemented');
+}
+
+/**
+ * What one catch-up did. The event arrays list only events newly recorded
+ * in `folded` by this call, in fold order (malformed by file name), even
+ * when a full refold happened; `corrupt` lists every corrupt file present.
+ */
+export interface CatchUpReport {
+  /** Hashes of newly recorded events that were applied (folded = 1). */
+  applied: string[];
+  /** Newly recorded events the fold rejected. */
+  rejected: Rejected[];
+  /** Newly recorded events of an unknown kind. */
+  unknown: UnknownReport[];
+  /** Newly recorded malformed files. */
+  malformed: MalformedFile[];
+  /** Every corrupt file currently in the events directory. */
+  corrupt: CorruptFile[];
+  /** Absolute paths of stale temporary files removed (see `reapStaleTemps`). */
+  reaped: string[];
+  /**
+   * True when the cache's derived tables were rebuilt from every event file
+   * rather than extended incrementally (required when a new event sorts
+   * before `last_position`, for example a late event synced from another
+   * machine).
+   */
+  refolded: boolean;
+}
+
+/** Options for `catchUp`. */
+export interface CatchUpOptions {
+  /** Clock for temp reaping, in ms since the epoch. Defaults to `Date.now()`. */
+  now?: number;
+}
+
+/**
+ * Brings the cache up to date with the events directory.
+ *
+ * Reaps stale temporary files (`reapStaleTemps`), then reads every event file
+ * whose hash is not in `folded` and records it. When every newly read
+ * well-formed event sorts after `last_position` in fold order, they are
+ * applied incrementally in fold order; otherwise all derived tables
+ * (everything but `cursors`) are refolded from every event file. Either way,
+ * afterwards `dumpCache(board.db)` equals the dump of a fresh rebuild of the
+ * same events directory (the incremental and full paths are
+ * indistinguishable except for `refolded`).
+ *
+ * Runs inside the caller's transaction when `board.db.isTransaction` is
+ * true; otherwise wraps its work in its own `BEGIN IMMEDIATE` ... `COMMIT`
+ * (rolled back on error). A call that finds nothing new changes no rows.
+ */
+export function catchUp(board: Board, options?: CatchUpOptions): CatchUpReport {
+  void board;
+  void options;
+  throw new Error('not implemented');
+}
+
+/**
+ * Reconstructs one ticket from the cache rows, or null when there is no row
+ * for `id` (exact id; prefix resolution is the CLI's job). Reads only the
+ * cache. For a cache that is up to date the result deep-equals
+ * `fold(<all well-formed events>).state.tickets[id]`, field for field.
+ */
+export function readTicket(db: DatabaseSync, id: string): Ticket | null {
+  void db;
+  void id;
+  throw new Error('not implemented');
+}
+
+/**
+ * Reconstructs the whole board state from the cache rows (tickets keyed by
+ * id; `meta` from the `board.<k>` rows, as a null-prototype object). For an
+ * up-to-date cache, `canonicalEncode(readState(db))` equals
+ * `canonicalEncode(fold(<all well-formed events>).state)`.
+ */
+export function readState(db: DatabaseSync): BoardState {
+  void db;
+  throw new Error('not implemented');
+}
+
+/** Tables covered by the canonical dump, in dump key order. */
+export const DUMP_TABLES = ['comments', 'folded', 'links', 'meta', 'tickets'] as const;
+
+/** A table covered by the canonical dump. */
+export type DumpTable = (typeof DUMP_TABLES)[number];
+
+/**
+ * Canonical dump of the derived tables, for comparing caches byte for byte.
+ *
+ * The result is the UTF-8 text of `canonicalEncode` applied to an object
+ * with one key per `DUMP_TABLES` entry, each an array of that table's rows in
+ * ascending primary key order (`tickets` by id; `comments` and `links` by
+ * ticket then seq; `folded` by hash; `meta` by key), each row an object
+ * mapping every column name to its value (INTEGER as a number, TEXT as a
+ * string, NULL as null). `cursors` is excluded. Two caches holding the same
+ * derived rows produce identical strings.
+ */
+export function dumpCache(db: DatabaseSync): string {
+  void db;
+  throw new Error('not implemented');
+}
