@@ -396,6 +396,23 @@ describe('catchUp', () => {
     expect(second.corrupt.map((c) => c.path)).toEqual([corruptPath]);
   });
 
+  it('ignores .gitkeep: never corrupt, never recorded, never reaped', () => {
+    const dir = tempBoard();
+    const events = join(dir, 'events');
+    const keep = join(events, '.gitkeep');
+    writeFileSync(keep, '');
+    utimesSync(keep, 0, 0);
+    const h = putEvent(events, ev(P.create(T1), 'orch', 1000));
+    const board = openB(dir, { now: 1_700_000_000_000 });
+    expect(board.opened?.corrupt).toEqual([]);
+    expect(board.opened?.malformed).toEqual([]);
+    expect(board.opened?.reaped).toEqual([]);
+    expect(board.opened?.applied).toEqual([h]);
+    expect(existsSync(keep)).toBe(true);
+    const hashes = board.db.prepare('SELECT hash FROM folded').all() as Row[];
+    expect(hashes.map((r) => r.hash)).toEqual([h]);
+  });
+
   it('keeps folding the rest of the log around a corrupt file', () => {
     const dir = tempBoard();
     const events = join(dir, 'events');

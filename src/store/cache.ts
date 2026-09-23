@@ -82,8 +82,14 @@
  *
  * Every event file with a valid name is recorded in `folded` once it has
  * been read (applied, rejected, unknown kind or malformed), so catch-up only
- * reads files not yet recorded. Corrupt files (name not the hash of the
- * bytes) are never recorded and are reported by every catch-up and rebuild.
+ * reads files not yet recorded. Corrupt files (a name that is not
+ * `<sha256>.json` of the bytes) are never recorded and are reported by every
+ * catch-up and rebuild. Dot-named entries of `events/` (temporary files,
+ * `.gitkeep`) are ignored entirely, as `listEventFiles` documents.
+ *
+ * The `cursors` table is the one non-derivable table (board-cache: losing
+ * cursors only causes redelivery, never a skipped event): `rebuild` keeps its
+ * rows and `rebuild --check` does not compare it.
  */
 
 import type { DatabaseSync } from 'node:sqlite';

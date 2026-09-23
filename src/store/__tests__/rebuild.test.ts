@@ -48,6 +48,8 @@ function seeded(): {
   const malformed = putEvent(events, { v: 1, kind: 'ticket.comment', ticket: T1, body: {} });
   const corrupt = join(events, `${'a'.repeat(64)}.json`);
   writeFileSync(corrupt, 'not json');
+  // The placeholder init creates: ignored, never counted.
+  writeFileSync(join(events, '.gitkeep'), '');
   return { board: openB(dir), dir, events, corrupt, malformed };
 }
 

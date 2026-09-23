@@ -161,16 +161,25 @@ describe('writeEventFile', () => {
 });
 
 describe('listEventFiles', () => {
-  it('lists regular files sorted, ignoring .tmp- names and subdirectories', () => {
+  it('lists regular files sorted, ignoring every dot-named entry and subdirectories', () => {
     const dir = eventsOf(tempBoard());
     const a = writeEventFile(dir, CREATE);
     const b = writeEventFile(dir, COMMENT);
     raw(dir, '.tmp-0123456789abcdef', 'partial');
     raw(dir, '.tmp-x', '');
+    raw(dir, '.gitkeep', '');
+    raw(dir, '.DS_Store', 'junk');
     raw(dir, 'garbage.json', '{}');
+    raw(dir, 'notes.txt', 'hello');
     mkdirSync(join(dir, 'subdir'));
-    const expected = [basename(a.path), basename(b.path), 'garbage.json'].sort();
+    const expected = [basename(a.path), basename(b.path), 'garbage.json', 'notes.txt'].sort();
     expect(listEventFiles(dir)).toEqual(expected);
+  });
+
+  it('is empty for an events directory holding only .gitkeep', () => {
+    const dir = eventsOf(tempBoard());
+    raw(dir, '.gitkeep', '');
+    expect(listEventFiles(dir)).toEqual([]);
   });
 
   it('is empty for an empty events directory', () => {
@@ -281,6 +290,7 @@ describe('readEventLog', () => {
     const corruptPath = raw(dir, corruptName, canonicalEncode(ev(P.create(T2), 'x', 1)));
     const bad = writeEventFile(dir, { v: 1, kind: 'ticket.comment' });
     raw(dir, '.tmp-deadbeefdeadbeef', 'partial');
+    raw(dir, '.gitkeep', '');
 
     const log = readEventLog(dir);
     expect(log.inputs.map((i) => i.hash)).toEqual([a.hash, b.hash].sort());
@@ -290,6 +300,27 @@ describe('readEventLog', () => {
     const result = fold(log.inputs);
     expect(Object.keys(result.state.tickets)).toEqual([T1]);
     expect(result.state.tickets[T1]?.comments.map((c) => c.text)).toEqual(['hello']);
+  });
+
+  it('reports no corrupt file for .gitkeep alongside valid events (placeholder is not corrupt)', () => {
+    const dir = eventsOf(tempBoard());
+    raw(dir, '.gitkeep', '');
+    const a = writeEventFile(dir, CREATE);
+    const b = writeEventFile(dir, COMMENT);
+    const log = readEventLog(dir);
+    expect(log.corrupt).toEqual([]);
+    expect(log.malformed).toEqual([]);
+    expect(log.inputs.map((i) => i.hash)).toEqual([a.hash, b.hash].sort());
+  });
+
+  it('still reports a non-dot junk name such as notes.txt as corrupt', () => {
+    const dir = eventsOf(tempBoard());
+    raw(dir, '.gitkeep', '');
+    writeEventFile(dir, CREATE);
+    const notes = raw(dir, 'notes.txt', 'hello');
+    const log = readEventLog(dir);
+    expect(log.corrupt.map((c) => [c.path, c.name])).toEqual([[notes, 'notes.txt']]);
+    expect(log.inputs).toHaveLength(1);
   });
 
   it('sorts every partition by file name', () => {
@@ -340,16 +371,19 @@ describe('reapStaleTemps', () => {
     expect(existsSync(edge)).toBe(true);
   });
 
-  it('never removes event files or other non-temporary files, however old', () => {
+  it('never removes event files, .gitkeep or other non-temporary files, however old', () => {
     const dir = eventsOf(tempBoard());
     const event = writeEventFile(dir, CREATE).path;
     const other = raw(dir, 'garbage.json', 'x');
-    for (const p of [event, other]) {
+    const keep = raw(dir, '.gitkeep', '');
+    const dot = raw(dir, '.other', 'x');
+    for (const p of [event, other, keep, dot]) {
       utimesSync(p, secondsAgo(3_600_000), secondsAgo(3_600_000));
     }
     expect(reapStaleTemps(dir, { now: NOW })).toEqual([]);
-    expect(existsSync(event)).toBe(true);
-    expect(existsSync(other)).toBe(true);
+    for (const p of [event, other, keep, dot]) {
+      expect(existsSync(p)).toBe(true);
+    }
   });
 
   it('honours a custom threshold', () => {

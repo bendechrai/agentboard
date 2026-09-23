@@ -12,7 +12,11 @@
 import type { FoldInput } from '../events/fold.js';
 import type { MalformedReason } from '../events/schema.js';
 
-/** Prefix of temporary files in the events directory. Readers ignore them. */
+/**
+ * Prefix of temporary files in the events directory. Readers ignore them
+ * (as they ignore every dot-named entry; see `listEventFiles`), and only
+ * names with this prefix are ever reaped.
+ */
 export const TEMP_PREFIX = '.tmp-';
 
 /** A temporary file older than this (by mtime) is stale: one minute. */
@@ -82,10 +86,13 @@ export function writeEventFile(eventsDir: string, event: unknown, hooks?: WriteH
 
 /**
  * Names of the event candidates in `eventsDir`: every regular file whose
- * name does not start with `TEMP_PREFIX`, sorted ascending by UTF-16 code
- * unit order. Subdirectories and other non-regular entries are skipped. The
- * names are not checked here (a name that is not `<sha256>.json` is reported
- * as corrupt by `readEventFile`).
+ * name does not start with `.`, sorted ascending by UTF-16 code unit order.
+ * Dot-named entries (temporary files such as `.tmp-<random>` and
+ * placeholders such as `.gitkeep`) are ignored entirely: never listed, read
+ * or reported. Subdirectories and other non-regular entries are skipped.
+ * The remaining names are not checked here (a name that is not
+ * `<sha256>.json`, such as `notes.txt`, is reported as corrupt by
+ * `readEventFile`).
  */
 export function listEventFiles(eventsDir: string): string[] {
   void eventsDir;
@@ -172,8 +179,9 @@ export interface ReapOptions {
  * Removes stale temporary files: every regular file in `eventsDir` whose
  * name starts with `TEMP_PREFIX` and whose mtime is strictly older than
  * `now - maxAgeMs`. Younger temporary files (possibly being written by a
- * live process) are left alone. A file that disappears concurrently is
- * ignored. Returns the absolute paths removed, sorted.
+ * live process) are left alone. Other dot-named entries, such as
+ * `.gitkeep`, are never removed however old. A file that disappears
+ * concurrently is ignored. Returns the absolute paths removed, sorted.
  */
 export function reapStaleTemps(eventsDir: string, options?: ReapOptions): string[] {
   void eventsDir;

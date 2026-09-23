@@ -59,8 +59,9 @@ export function locateBoard(options?: LocateOptions): BoardLocation {
 }
 
 /**
- * True when `dir` holds a board: `dir` is a directory containing an
- * `events` subdirectory. Never throws.
+ * True when `dir` holds a board: `<dir>/events` is a directory (board-events:
+ * "a board SHALL be considered to exist when `<board>/events` is a
+ * directory"). Never throws.
  */
 export function boardExists(dir: string): boolean {
   void dir;
