@@ -3,9 +3,12 @@
  * Every store operation takes one.
  */
 
+import { join, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
-import type { CatchUpReport } from './cache.js';
+import { CACHE_FILE, catchUp, openCache, type CatchUpReport } from './cache.js';
+import { BoardError } from './errors.js';
+import { boardExists } from './locate.js';
 
 /** An open board. Obtain with `openBoard`; release with `close`. */
 export interface Board {
@@ -54,7 +57,33 @@ export interface OpenBoardOptions {
  *   `boardExists(dir)` is false. Nothing is created in that case.
  */
 export function openBoard(dir: string, options?: OpenBoardOptions): Board {
-  void dir;
-  void options;
-  throw new Error('not implemented');
+  const abs = resolve(dir);
+  if (!boardExists(abs)) {
+    throw new BoardError(2, 'board-not-found', `no board found at ${abs} (no events directory)`);
+  }
+  const cachePath = join(abs, CACHE_FILE);
+  const db = openCache(cachePath);
+  let closed = false;
+  const board: { -readonly [K in keyof Board]: Board[K] } = {
+    dir: abs,
+    eventsDir: join(abs, 'events'),
+    cachePath,
+    db,
+    opened: null,
+    close(): void {
+      if (!closed) {
+        closed = true;
+        db.close();
+      }
+    },
+  };
+  if (options?.catchUp !== false) {
+    try {
+      board.opened = catchUp(board, { now: options?.now ?? Date.now() });
+    } catch (error) {
+      board.close();
+      throw error;
+    }
+  }
+  return board;
 }

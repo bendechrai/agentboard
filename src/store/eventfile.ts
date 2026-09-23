@@ -9,8 +9,29 @@
  * it performs is of stale temporary files.
  */
 
+import { randomBytes } from 'node:crypto';
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeSync,
+} from 'node:fs';
+import { join } from 'node:path';
+
+import {
+  CanonicalError,
+  canonicalDecode,
+  canonicalEncode,
+  sha256Hex,
+} from '../events/canonical.js';
 import type { FoldInput } from '../events/fold.js';
-import type { MalformedReason } from '../events/schema.js';
+import { validateEvent, type MalformedReason } from '../events/schema.js';
 
 /**
  * Prefix of temporary files in the events directory. Readers ignore them
@@ -78,10 +99,59 @@ export interface WriteHooks {
  *   is written).
  */
 export function writeEventFile(eventsDir: string, event: unknown, hooks?: WriteHooks): WriteResult {
-  void eventsDir;
-  void event;
-  void hooks;
-  throw new Error('not implemented');
+  const bytes = canonicalEncode(event);
+  const hash = sha256Hex(bytes);
+  const path = join(eventsDir, `${hash}.json`);
+  if (existsSync(path)) {
+    return { hash, path, existed: true };
+  }
+  const tempPath = join(eventsDir, `${TEMP_PREFIX}${randomBytes(16).toString('hex')}`);
+  try {
+    writeDurably(tempPath, bytes);
+  } catch (error) {
+    rmSync(tempPath, { force: true });
+    throw error;
+  }
+  hooks?.afterTempWrite?.(tempPath);
+  try {
+    renameSync(tempPath, path);
+  } catch (error) {
+    rmSync(tempPath, { force: true });
+    throw error;
+  }
+  fsyncDirectory(eventsDir);
+  hooks?.afterRename?.(path);
+  return { hash, path, existed: false };
+}
+
+/** Creates `path` (failing if it exists), writes all of `bytes`, fsyncs and closes. */
+function writeDurably(path: string, bytes: Uint8Array): void {
+  const fd = openSync(path, 'wx', 0o644);
+  try {
+    let offset = 0;
+    while (offset < bytes.length) {
+      offset += writeSync(fd, bytes, offset, bytes.length - offset);
+    }
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Fsyncs a directory so a rename inside it is durable. POSIX only: Windows
+ * cannot open a directory for fsync, and its rename is journaled by NTFS.
+ */
+function fsyncDirectory(dir: string): void {
+  if (process.platform === 'win32') {
+    return;
+  }
+  const fd = openSync(dir, 'r');
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
@@ -95,8 +165,10 @@ export function writeEventFile(eventsDir: string, event: unknown, hooks?: WriteH
  * `readEventFile`).
  */
 export function listEventFiles(eventsDir: string): string[] {
-  void eventsDir;
-  throw new Error('not implemented');
+  return readdirSync(eventsDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && !entry.name.startsWith('.'))
+    .map((entry) => entry.name)
+    .sort();
 }
 
 /** A file whose name is not the SHA-256 of its bytes. Never folded. */
@@ -143,9 +215,38 @@ export type ReadOutcome =
  * @throws the underlying IO error when the file cannot be read.
  */
 export function readEventFile(eventsDir: string, name: string): ReadOutcome {
-  void eventsDir;
-  void name;
-  throw new Error('not implemented');
+  const path = join(eventsDir, name);
+  const match = EVENT_NAME.exec(name);
+  const hash = match?.[1];
+  if (hash === undefined) {
+    return corrupt(path, name, 'name is not <sha256-hex>.json');
+  }
+  const bytes = readFileSync(path);
+  if (sha256Hex(bytes) !== hash) {
+    return corrupt(path, name, 'name is not the SHA-256 of the file content');
+  }
+  let decoded: unknown;
+  try {
+    decoded = canonicalDecode(bytes);
+  } catch (error) {
+    if (!(error instanceof CanonicalError)) {
+      throw error;
+    }
+    const reason = { field: '', message: `not canonical JSON (${error.code}): ${error.message}` };
+    return { status: 'malformed', file: { path, hash, reasons: [reason] } };
+  }
+  const result = validateEvent(decoded);
+  if (!result.ok) {
+    return { status: 'malformed', file: { path, hash, reasons: result.reasons } };
+  }
+  return { status: 'ok', input: { hash, event: result.event } };
+}
+
+/** An event file name: 64 lowercase hex characters then `.json`. */
+const EVENT_NAME = /^([0-9a-f]{64})\.json$/;
+
+function corrupt(path: string, name: string, why: string): ReadOutcome {
+  return { status: 'corrupt', file: { path, name, message: `corrupt event file ${path}: ${why}` } };
 }
 
 /** Result of `readEventLog`. Each array is sorted by file name. */
@@ -162,9 +263,21 @@ export interface EventLog {
  * being read.
  */
 export function readEventLog(eventsDir: string, skip?: ReadonlySet<string>): EventLog {
-  void eventsDir;
-  void skip;
-  throw new Error('not implemented');
+  const log: EventLog = { inputs: [], corrupt: [], malformed: [] };
+  for (const name of listEventFiles(eventsDir)) {
+    if (skip?.has(name.replace(/\.json$/, '')) === true) {
+      continue;
+    }
+    const outcome = readEventFile(eventsDir, name);
+    if (outcome.status === 'ok') {
+      log.inputs.push(outcome.input);
+    } else if (outcome.status === 'corrupt') {
+      log.corrupt.push(outcome.file);
+    } else {
+      log.malformed.push(outcome.file);
+    }
+  }
+  return log;
 }
 
 /** Options for `reapStaleTemps`. */
@@ -184,7 +297,20 @@ export interface ReapOptions {
  * concurrently is ignored. Returns the absolute paths removed, sorted.
  */
 export function reapStaleTemps(eventsDir: string, options?: ReapOptions): string[] {
-  void eventsDir;
-  void options;
-  throw new Error('not implemented');
+  const cutoff = (options?.now ?? Date.now()) - (options?.maxAgeMs ?? STALE_TEMP_MS);
+  const removed: string[] = [];
+  for (const entry of readdirSync(eventsDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.startsWith(TEMP_PREFIX)) {
+      continue;
+    }
+    const path = join(eventsDir, entry.name);
+    // A file that vanished since the listing (its writer renamed it, or
+    // another command reaped it) has no stats and is skipped.
+    const stats = statSync(path, { throwIfNoEntry: false });
+    if (stats !== undefined && stats.mtimeMs < cutoff) {
+      rmSync(path, { force: true });
+      removed.push(path);
+    }
+  }
+  return removed.sort();
 }

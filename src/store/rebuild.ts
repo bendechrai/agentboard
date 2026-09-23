@@ -8,7 +8,15 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { JsonValue } from '../events/canonical.js';
 import type { Rejected, UnknownReport } from '../events/fold.js';
 import type { Board } from './board.js';
-import type { DumpTable } from './cache.js';
+import { DUMP_TABLES, openCache, type DumpTable } from './cache.js';
+import {
+  inImmediate,
+  jsonText,
+  refold,
+  tableRows,
+  type KeyedRow,
+  type RefoldResult,
+} from './engine.js';
 import type { CorruptFile, MalformedFile } from './eventfile.js';
 
 /**
@@ -43,8 +51,21 @@ export interface RebuildReport {
  * temporary files.
  */
 export function rebuild(board: Board): RebuildReport {
-  void board;
-  throw new Error('not implemented');
+  return toReport(inImmediate(board.db, () => refold(board.db, board.eventsDir)));
+}
+
+function toReport(result: RefoldResult): RebuildReport {
+  return {
+    folded: result.applied.length,
+    rejected: result.rejected.length,
+    malformed: result.malformed.length,
+    corrupt: result.corrupt.length,
+    unknown: result.unknown.length,
+    rejectedEvents: result.rejected,
+    unknownEvents: result.unknown,
+    malformedFiles: result.malformed,
+    corruptFiles: result.corrupt,
+  };
 }
 
 /** One row that differs between the live cache and a fresh rebuild. */
@@ -70,9 +91,29 @@ export interface CacheDifference {
  * then key. Empty exactly when the two dumps are identical. Read-only.
  */
 export function diffCaches(live: DatabaseSync, rebuilt: DatabaseSync): CacheDifference[] {
-  void live;
-  void rebuilt;
-  throw new Error('not implemented');
+  const differences: CacheDifference[] = [];
+  for (const table of DUMP_TABLES) {
+    const byKey = (db: DatabaseSync): Map<string, KeyedRow> =>
+      new Map(tableRows(db, table).map((keyed) => [keyed.key, keyed]));
+    const left = byKey(live);
+    const right = byKey(rebuilt);
+    const keys = [...new Set([...left.keys(), ...right.keys()])].sort();
+    for (const key of keys) {
+      const a = left.get(key);
+      const b = right.get(key);
+      if (a !== undefined && b !== undefined && jsonText(a.row) === jsonText(b.row)) {
+        continue;
+      }
+      differences.push({
+        table,
+        key,
+        ticket: (a ?? b)?.ticket ?? null,
+        live: a?.row ?? null,
+        rebuilt: b?.row ?? null,
+      });
+    }
+  }
+  return differences;
 }
 
 /** Result of `checkCache`. */
@@ -93,6 +134,12 @@ export interface CheckResult {
  * shows up as a difference.
  */
 export function checkCache(board: Board): CheckResult {
-  void board;
-  throw new Error('not implemented');
+  const temp = openCache(':memory:');
+  try {
+    const report = toReport(inImmediate(temp, () => refold(temp, board.eventsDir)));
+    const differences = diffCaches(board.db, temp);
+    return { ok: differences.length === 0, differences, report };
+  } finally {
+    temp.close();
+  }
 }

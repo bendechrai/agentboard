@@ -4,11 +4,24 @@
  * transaction per command, event file inside it").
  */
 
+import { writeSync } from 'node:fs';
+
+import { canonicalHash } from '../events/canonical.js';
 import type { BoardState, Ticket } from '../events/fold.js';
-import type { BoardEvent } from '../events/schema.js';
+import { nextHlc } from '../events/hlc.js';
+import { validateEvent, type BoardEvent } from '../events/schema.js';
 import type { Board } from './board.js';
-import type { CatchUpReport } from './cache.js';
-import type { WriteHooks } from './eventfile.js';
+import { readState, readTicket, type CatchUpReport } from './cache.js';
+import {
+  FoldSession,
+  beginImmediate,
+  catchUpLocked,
+  commitOwnEvent,
+  readLastPosition,
+  rollback,
+} from './engine.js';
+import { BoardError } from './errors.js';
+import { writeEventFile, type WriteHooks } from './eventfile.js';
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
@@ -128,11 +141,65 @@ export function runCommand(
   operation: Operation,
   options?: CommandOptions,
 ): CommandResult {
-  void board;
-  void actor;
-  void operation;
-  void options;
-  throw new Error('not implemented');
+  if (actor === '') {
+    throw new BoardError(1, 'missing-actor', 'an actor is required to write to the board');
+  }
+  const hooks = options?.hooks ?? pauseHooks(options?.env ?? process.env);
+  const now = options?.now ?? Date.now;
+  const { db } = board;
+  beginImmediate(db);
+  try {
+    const t = now();
+    // 1. Catch-up, under the write lock.
+    const catchUp = catchUpLocked(board, t);
+
+    // 2. The operation decides against the caught-up state.
+    const decision = operation({
+      actor,
+      ticket: (id) => readTicket(db, id),
+      state: () => readState(db),
+    });
+    if (!decision.ok) {
+      throw new BoardError(decision.exitCode, decision.reason, decision.message);
+    }
+
+    // 3. Build the event, later than every folded event.
+    const ts = nextHlc(readLastPosition(db)?.ts ?? null, t, actor);
+    const built = { v: 1, ...decision.event, actor, ts };
+    const validated = validateEvent(built);
+    if (!validated.ok) {
+      const fields = validated.reasons.map((r) => `${r.field}: ${r.message}`).join('; ');
+      throw new BoardError(1, 'malformed-event', `the event is malformed (${fields})`);
+    }
+    if (!validated.known) {
+      throw new BoardError(1, 'malformed-event', `unknown event kind ${built.kind}`);
+    }
+    const event = validated.event;
+
+    // 4. Validate against the current state with the fold's own rules.
+    const input = { hash: canonicalHash(event), event };
+    const session = new FoldSession(db);
+    const holder = event.kind === 'board.meta' ? null : session.ticket(event.ticket)?.assignee;
+    const outcome = session.apply(input);
+    if (outcome.status === 'rejected') {
+      const { reason, ticket, kind } = outcome.rejected;
+      const message =
+        reason === 'already-assigned'
+          ? `ticket ${ticket} is already assigned to ${String(holder)}`
+          : `${kind} on ticket ${ticket} refused: ${reason}`;
+      throw new BoardError(4, reason, message);
+    }
+
+    // 5. Write the event file (atomic), then 6. apply to rows and 7. commit.
+    const written = writeEventFile(board.eventsDir, event, hooks);
+    commitOwnEvent(db, session, input, outcome);
+    const ticket = event.kind === 'board.meta' ? null : readTicket(db, event.ticket);
+    db.exec('COMMIT');
+    return { hash: written.hash, path: written.path, event, ticket, catchUp };
+  } catch (error) {
+    rollback(db);
+    throw error;
+  }
 }
 
 /**
@@ -159,6 +226,21 @@ export type PausePoint = 'after-temp-write' | 'after-rename';
  * line and blocks forever, as described on `TEST_PAUSE_ENV`.
  */
 export function pauseHooks(env: Readonly<Record<string, string | undefined>>): WriteHooks {
-  void env;
-  throw new Error('not implemented');
+  const point = env[TEST_PAUSE_ENV];
+  if (point === 'after-temp-write') {
+    return { afterTempWrite: (path) => pauseForever(point, path) };
+  }
+  if (point === 'after-rename') {
+    return { afterRename: (path) => pauseForever(point, path) };
+  }
+  return {};
+}
+
+/** Prints the pause line to stderr and blocks the thread until the process is killed. */
+function pauseForever(point: PausePoint, path: string): never {
+  writeSync(2, `agentboard: paused at ${point} ${path}\n`);
+  const cell = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    Atomics.wait(cell, 0, 0);
+  }
 }

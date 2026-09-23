@@ -92,10 +92,12 @@
  * rows and `rebuild --check` does not compare it.
  */
 
-import type { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync } from 'node:sqlite';
 
+import { canonicalEncode } from '../events/canonical.js';
 import type { BoardState, Rejected, Ticket, UnknownReport } from '../events/fold.js';
 import type { Board } from './board.js';
+import { catchUpLocked, inImmediate, loadState, loadTicket, stmt, tableRows } from './engine.js';
 import type { CorruptFile, MalformedFile } from './eventfile.js';
 
 /** File name of the cache inside the board directory. */
@@ -120,9 +122,110 @@ export const BUSY_TIMEOUT_MS = 5000;
  * temporary database of `checkCache`).
  */
 export function openCache(path: string): DatabaseSync {
-  void path;
-  throw new Error('not implemented');
+  const db = new DatabaseSync(path);
+  try {
+    // The busy timeout comes first so that switching to WAL waits for a
+    // concurrent opener instead of failing.
+    db.exec(`PRAGMA busy_timeout = ${String(BUSY_TIMEOUT_MS)}`);
+    db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA foreign_keys = ON');
+    if (storedSchemaVersion(db) !== String(CACHE_SCHEMA_VERSION)) {
+      inImmediate(db, () => {
+        // Re-checked under the write lock: a concurrent opener may have won.
+        if (storedSchemaVersion(db) !== String(CACHE_SCHEMA_VERSION)) {
+          db.exec(SCHEMA);
+          stmt(db, 'INSERT INTO meta (key, value) VALUES (?, ?)').run(
+            'schema_version',
+            String(CACHE_SCHEMA_VERSION),
+          );
+          stmt(db, "INSERT INTO meta (key, value) VALUES ('last_position', 'null')").run();
+        }
+      });
+    }
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+  return db;
 }
+
+/** `meta.schema_version`, or null when there is no such row or no meta table. */
+function storedSchemaVersion(db: DatabaseSync): string | null {
+  const table = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")
+    .get();
+  if (table === undefined) {
+    return null;
+  }
+  const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get();
+  return typeof row?.value === 'string' ? row.value : null;
+}
+
+/** Drops every table (children first) and creates the schema documented above. */
+const SCHEMA = `
+DROP TABLE IF EXISTS comments;
+DROP TABLE IF EXISTS links;
+DROP TABLE IF EXISTS tickets;
+DROP TABLE IF EXISTS cursors;
+DROP TABLE IF EXISTS folded;
+DROP TABLE IF EXISTS meta;
+CREATE TABLE tickets (
+  id           TEXT PRIMARY KEY,
+  title        TEXT NOT NULL,
+  description  TEXT,
+  status       TEXT NOT NULL,
+  blocked_from TEXT,
+  assignee     TEXT,
+  version      INTEGER NOT NULL,
+  updated_at   TEXT NOT NULL,
+  created_by   TEXT NOT NULL,
+  created_at   TEXT NOT NULL,
+  task_source  TEXT,
+  task_ref     TEXT,
+  task_item    TEXT,
+  adhoc        TEXT,
+  labels       TEXT NOT NULL,
+  closed       INTEGER NOT NULL,
+  decision     TEXT,
+  checklist    TEXT NOT NULL
+);
+CREATE TABLE comments (
+  ticket TEXT NOT NULL REFERENCES tickets(id),
+  seq    INTEGER NOT NULL,
+  actor  TEXT NOT NULL,
+  ts     TEXT NOT NULL,
+  text   TEXT NOT NULL,
+  hash   TEXT NOT NULL,
+  PRIMARY KEY (ticket, seq)
+);
+CREATE TABLE links (
+  ticket TEXT NOT NULL REFERENCES tickets(id),
+  seq    INTEGER NOT NULL,
+  kind   TEXT NOT NULL,
+  value  TEXT NOT NULL,
+  actor  TEXT NOT NULL,
+  ts     TEXT NOT NULL,
+  hash   TEXT NOT NULL,
+  PRIMARY KEY (ticket, seq)
+);
+CREATE TABLE cursors (
+  actor        TEXT PRIMARY KEY,
+  last_wall    INTEGER,
+  last_counter INTEGER,
+  last_actor   TEXT,
+  last_hash    TEXT
+);
+CREATE TABLE folded (
+  hash     TEXT PRIMARY KEY,
+  folded   INTEGER NOT NULL,
+  reason   TEXT,
+  position TEXT
+);
+CREATE TABLE meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+`;
 
 /**
  * What one catch-up did. The event arrays list only events newly recorded
@@ -174,9 +277,11 @@ export interface CatchUpOptions {
  * (rolled back on error). A call that finds nothing new changes no rows.
  */
 export function catchUp(board: Board, options?: CatchUpOptions): CatchUpReport {
-  void board;
-  void options;
-  throw new Error('not implemented');
+  const now = options?.now ?? Date.now();
+  if (board.db.isTransaction) {
+    return catchUpLocked(board, now);
+  }
+  return inImmediate(board.db, () => catchUpLocked(board, now));
 }
 
 /**
@@ -186,9 +291,7 @@ export function catchUp(board: Board, options?: CatchUpOptions): CatchUpReport {
  * `fold(<all well-formed events>).state.tickets[id]`, field for field.
  */
 export function readTicket(db: DatabaseSync, id: string): Ticket | null {
-  void db;
-  void id;
-  throw new Error('not implemented');
+  return loadTicket(db, id);
 }
 
 /**
@@ -198,8 +301,7 @@ export function readTicket(db: DatabaseSync, id: string): Ticket | null {
  * `canonicalEncode(fold(<all well-formed events>).state)`.
  */
 export function readState(db: DatabaseSync): BoardState {
-  void db;
-  throw new Error('not implemented');
+  return loadState(db);
 }
 
 /** Tables covered by the canonical dump, in dump key order. */
@@ -220,6 +322,9 @@ export type DumpTable = (typeof DUMP_TABLES)[number];
  * derived rows produce identical strings.
  */
 export function dumpCache(db: DatabaseSync): string {
-  void db;
-  throw new Error('not implemented');
+  const dump: Record<string, unknown[]> = {};
+  for (const table of DUMP_TABLES) {
+    dump[table] = tableRows(db, table).map((keyed) => keyed.row);
+  }
+  return new TextDecoder().decode(canonicalEncode(dump));
 }

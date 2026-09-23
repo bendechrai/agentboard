@@ -3,6 +3,12 @@
  * design.md: "Board discovery").
  */
 
+import { execFileSync } from 'node:child_process';
+import { statSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+
+import { BoardError } from './errors.js';
+
 /** Name of the board directory at the root of the main checkout. */
 export const BOARD_DIR_NAME = '.board';
 
@@ -54,8 +60,36 @@ export interface LocateOptions {
  * Never throws for a missing board; `git` failing is not an error.
  */
 export function locateBoard(options?: LocateOptions): BoardLocation {
-  void options;
-  throw new Error('not implemented');
+  const cwd = options?.cwd ?? process.cwd();
+  const env = options?.env ?? process.env;
+  const override = env[BOARD_DIR_ENV];
+  if (override !== undefined && override !== '') {
+    return { dir: resolve(cwd, override), source: 'env' };
+  }
+  const commonDir = gitCommonDir(cwd, env);
+  if (commonDir !== null) {
+    return { dir: join(dirname(resolve(cwd, commonDir)), BOARD_DIR_NAME), source: 'git' };
+  }
+  return { dir: resolve(cwd, BOARD_DIR_NAME), source: 'cwd' };
+}
+
+/** `git rev-parse --git-common-dir` in `cwd`, or null when git fails or is absent. */
+function gitCommonDir(
+  cwd: string,
+  env: Readonly<Record<string, string | undefined>>,
+): string | null {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--git-common-dir'], {
+      cwd,
+      env: { ...env },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const dir = out.replace(/\r?\n$/, '');
+    return dir === '' ? null : dir;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -64,8 +98,11 @@ export function locateBoard(options?: LocateOptions): BoardLocation {
  * directory"). Never throws.
  */
 export function boardExists(dir: string): boolean {
-  void dir;
-  throw new Error('not implemented');
+  try {
+    return statSync(join(dir, 'events')).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -77,6 +114,20 @@ export function boardExists(dir: string): boolean {
  *   (board-events scenario "Missing board is reported").
  */
 export function findBoard(options?: LocateOptions): BoardLocation {
-  void options;
-  throw new Error('not implemented');
+  const location = locateBoard(options);
+  if (!boardExists(location.dir)) {
+    throw new BoardError(
+      2,
+      'board-not-found',
+      `no board found at ${location.dir} (${SOURCE_TEXT[location.source]}); run agentboard init to create one`,
+    );
+  }
+  return location;
 }
+
+/** How each discovery rule is named in the not-found message. */
+const SOURCE_TEXT: Record<BoardSource, string> = {
+  env: `from ${BOARD_DIR_ENV}`,
+  git: `<git common dir>/../${BOARD_DIR_NAME}`,
+  cwd: `./${BOARD_DIR_NAME}, not inside a git repository`,
+};
