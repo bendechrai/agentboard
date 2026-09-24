@@ -43,7 +43,8 @@ other address.
 The server SHALL draw a new access token of 32 random bytes, encoded as
 43 base64url characters, at every start, and SHALL require it on every
 request whose path is `/api` or begins with `/api/`, the stream
-included, in exactly one form: the header `Authorization: Bearer <token>`.
+included, in exactly one form: exactly one `Authorization: Bearer <token>`
+header (a request with more than one `Authorization` header SHALL be 401).
 No other form SHALL be accepted: a `token` query parameter and every
 cookie SHALL be ignored, and the server SHALL set no cookie. Tokens SHALL
 be compared in constant time. An API request without a valid token SHALL
@@ -112,8 +113,10 @@ No response SHALL carry an `Access-Control-Allow-Origin` or any other
 style-src 'self'; connect-src 'self'; img-src 'self' data:;
 base-uri 'none'; form-action 'self'; frame-ancestors 'none'`,
 `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and
-`X-Frame-Options: DENY`, and every API and stream response SHALL carry
-`Cache-Control: no-store`.
+`X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Resource-Policy: same-origin` (so the tab that opened the
+start-up URL keeps no handle to the page), and every API and stream
+response SHALL carry `Cache-Control: no-store`.
 
 #### Scenario: Preflight is refused
 - **WHEN** a client sends `OPTIONS /api/board` with an `Origin` of another site
