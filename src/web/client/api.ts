@@ -281,8 +281,7 @@ export interface HealthResponse {
  * 3.2). Never runs the cache check. Rejects as `getJson`.
  */
 export async function loadHealth(conn: Connection): Promise<HealthResponse> {
-  void conn;
-  return Promise.reject(new Error('not implemented'));
+  return (await getJson(conn, '/api/health')) as HealthResponse;
 }
 
 /**
@@ -291,6 +290,5 @@ export async function loadHealth(conn: Connection): Promise<HealthResponse> {
  * the user presses the check button. Rejects as `getJson`.
  */
 export async function runHealthCheck(conn: Connection): Promise<HealthCheck> {
-  void conn;
-  return Promise.reject(new Error('not implemented'));
+  return (await getJson(conn, '/api/health/check')) as HealthCheck;
 }

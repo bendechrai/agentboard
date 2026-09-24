@@ -58,10 +58,15 @@
  */
 
 import type { JSX } from 'preact';
+import { useEffect, useState } from 'preact/hooks';
 
-import type { BoardModel } from '../../../view/types.js';
+import { boardColumns } from '../../../view/columns.js';
+import { describeEvent } from '../../../view/describe.js';
+import { replayCheckpoints, replayState, type ReplayCheckpoint } from '../../../view/replay.js';
+import type { BoardModel, EventView } from '../../../view/types.js';
 import type { Connection } from '../api.js';
 import type { Route } from '../hash.js';
+import { CardView } from './CardView.js';
 
 export interface ReplayViewProps {
   /** The live model; only its events at mount are replayed. */
@@ -74,7 +79,185 @@ export interface ReplayViewProps {
   conn: Connection;
 }
 
+/** The play speeds, in events per second. */
+const SPEEDS: readonly number[] = [1, 4, 16];
+
+/** The events frozen when the view opened, and their checkpoints. */
+interface Frozen {
+  events: EventView[];
+  checkpoints: ReplayCheckpoint[];
+}
+
 export function ReplayView(props: ReplayViewProps): JSX.Element {
-  void props;
-  throw new Error('not implemented');
+  const { now, navigate, conn } = props;
+  const [frozen] = useState<Frozen>(() => {
+    const events = props.model.events.slice();
+    return { events, checkpoints: replayCheckpoints(events) };
+  });
+  const last = frozen.events.length - 1;
+  const [position, setPosition] = useState(last);
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState(1);
+
+  // Play: one step every 1000 / speed ms, restarted when the speed changes.
+  useEffect(() => {
+    if (!playing) {
+      return undefined;
+    }
+    const handle = conn.deps.setInterval(() => {
+      setPosition((p) => Math.min(p + 1, last));
+    }, 1000 / speed);
+    return () => {
+      conn.deps.clearInterval(handle);
+    };
+  }, [playing, speed, conn, last]);
+
+  // Play stops by itself at the last position.
+  useEffect(() => {
+    if (playing && position >= last) {
+      setPlaying(false);
+    }
+  }, [playing, position, last]);
+
+  const back = (
+    <button
+      type="button"
+      class="back-to-live"
+      onClick={() => {
+        navigate({ view: 'board', change: null, assignee: null, closed: false });
+      }}
+    >
+      Back to live
+    </button>
+  );
+  const note = (
+    <p class="replay-note">
+      Replay follows the log&apos;s fold order, so an event synced late appears at its fold
+      position, not when it arrived.
+    </p>
+  );
+
+  if (last < 0) {
+    return (
+      <div class="replay-view">
+        {note}
+        <p class="empty">No events to replay.</p>
+        {back}
+      </div>
+    );
+  }
+
+  const replay = replayState(frozen.events, position, frozen.checkpoints);
+  const view = frozen.events[position];
+  const columns = boardColumns(replay.state.tickets, now, { includeClosed: false });
+
+  return (
+    <div class="replay-view">
+      {note}
+      <form
+        class="replay-controls"
+        aria-label="Replay controls"
+        onSubmit={(e) => e.preventDefault()}
+      >
+        <span class="field replay-slider">
+          <label for="replay-position">Position</label>
+          <input
+            id="replay-position"
+            type="range"
+            min={0}
+            max={last}
+            step={1}
+            value={position}
+            onInput={(e) => {
+              const next = Number(e.currentTarget.value);
+              if (Number.isInteger(next) && next >= 0 && next <= last) {
+                setPosition(next);
+              }
+            }}
+          />
+        </span>
+        <p class="replay-counter">{`Event ${String(position + 1)} of ${String(last + 1)}`}</p>
+        <span class="replay-buttons">
+          <button
+            type="button"
+            disabled={position <= 0}
+            onClick={() => {
+              setPosition((p) => Math.max(0, p - 1));
+            }}
+          >
+            Step back
+          </button>
+          <button
+            type="button"
+            disabled={position >= last}
+            onClick={() => {
+              setPosition((p) => Math.min(last, p + 1));
+            }}
+          >
+            Step forward
+          </button>
+          <button
+            type="button"
+            disabled={!playing && position >= last}
+            onClick={() => {
+              setPlaying(!playing);
+            }}
+          >
+            {playing ? 'Pause' : 'Play'}
+          </button>
+          {back}
+        </span>
+        <span class="field">
+          <label for="replay-speed">Speed</label>
+          <select
+            id="replay-speed"
+            value={String(speed)}
+            onChange={(e) => {
+              const next = Number(e.currentTarget.value);
+              if (SPEEDS.includes(next)) {
+                setSpeed(next);
+              }
+            }}
+          >
+            {SPEEDS.map((s) => (
+              <option key={s} value={String(s)}>
+                {`${String(s)} event${s === 1 ? '' : 's'}/s`}
+              </option>
+            ))}
+          </select>
+        </span>
+      </form>
+      {view !== undefined ? (
+        <p
+          class={`replay-event ${replay.outcome}`}
+          data-hash={view.hash}
+          data-outcome={replay.outcome}
+        >
+          <span class="actor">{view.actor}</span>{' '}
+          <span class="description">{describeEvent(view.event)}</span>
+          {replay.outcome === 'rejected' ? (
+            <span class="reason">{` rejected: ${replay.reason ?? 'unknown'}`}</span>
+          ) : null}
+        </p>
+      ) : null}
+      <div class="columns">
+        {columns.map((column) => (
+          <section
+            key={column.status}
+            class="column"
+            data-status={column.status}
+            aria-labelledby={`replay-column-${column.status}`}
+          >
+            <h2 id={`replay-column-${column.status}`} class="column-title">
+              {column.status}
+              <span class="count">{String(column.cards.length)}</span>
+            </h2>
+            {column.cards.map((card) => (
+              <CardView key={card.id} card={card} />
+            ))}
+          </section>
+        ))}
+      </div>
+    </div>
+  );
 }

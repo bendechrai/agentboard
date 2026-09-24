@@ -91,8 +91,42 @@ export interface ObservedLog {
  * `LATE_LIMIT`).
  */
 export function createObservedLog(limit: number = LATE_LIMIT): ObservedLog {
-  void limit;
-  throw new Error('not implemented');
+  /** Observation order: oldest first. */
+  const entries: LateArrival[] = [];
+  const seen = new Map<string, { kind: string; ticket: string | null }>();
+  const add = (entry: LateArrival): void => {
+    entries.push(entry);
+    if (entries.length > limit) {
+      entries.splice(0, entries.length - limit);
+    }
+  };
+  return {
+    observe(message, observedAt) {
+      if (message.type === 'append') {
+        for (const event of message.events) {
+          seen.set(event.hash, { kind: event.kind, ticket: event.ticket });
+        }
+        return;
+      }
+      for (const event of message.late) {
+        seen.set(event.hash, { kind: event.kind, ticket: event.ticket });
+        add({ hash: event.hash, kind: event.kind, ticket: event.ticket, type: 'late', observedAt });
+      }
+      for (const hash of message.removed) {
+        const known = seen.get(hash);
+        add({
+          hash,
+          kind: known?.kind ?? '',
+          ticket: known?.ticket ?? null,
+          type: 'removed',
+          observedAt,
+        });
+      }
+    },
+    list() {
+      return entries.map((entry) => ({ ...entry })).reverse();
+    },
+  };
 }
 
 /** The part of the store's `CheckResult` a health check reports. */
@@ -103,9 +137,7 @@ export type CacheCheckOutcome = Pick<CheckResult, 'ok' | 'differences'>;
  * result.ok, differingRows: result.differences.length }`. Pure.
  */
 export function checkSummary(result: CacheCheckOutcome, ranAt: number): HealthCheck {
-  void result;
-  void ranAt;
-  throw new Error('not implemented');
+  return { ranAt, matches: result.ok, differingRows: result.differences.length };
 }
 
 /** Options of `createCacheChecker`. */
@@ -148,6 +180,34 @@ export interface CacheChecker {
 
 /** A new `CacheChecker`; creating it runs nothing. */
 export function createCacheChecker(options: CacheCheckerOptions): CacheChecker {
-  void options;
-  throw new Error('not implemented');
+  const reuseMs = options.reuseMs ?? CHECK_REUSE_MS;
+  let kept: HealthCheck | null = null;
+  let running: Promise<HealthCheck> | null = null;
+  const start = async (): Promise<HealthCheck> => {
+    const ranAt = options.now();
+    const summary = checkSummary(await options.check(), ranAt);
+    kept = summary;
+    return summary;
+  };
+  return {
+    async run() {
+      if (running === null) {
+        if (kept !== null && options.now() - kept.ranAt < reuseMs) {
+          return { ...kept };
+        }
+        const flight = start();
+        running = flight;
+        const clear = (): void => {
+          if (running === flight) {
+            running = null;
+          }
+        };
+        void flight.then(clear, clear);
+      }
+      return { ...(await running) };
+    },
+    last() {
+      return kept === null ? null : { ...kept };
+    },
+  };
 }

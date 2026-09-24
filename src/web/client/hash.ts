@@ -41,6 +41,8 @@
  *   threshold.
  */
 
+import { parseDuration } from '../../view/health.js';
+
 /** The views of the client. */
 export type ViewName = 'board' | 'feed' | 'ticket' | 'lanes' | 'health' | 'replay' | 'graph';
 
@@ -156,6 +158,19 @@ export function parseHash(hash: string): Route {
   if (path === 'lanes') {
     return { view: 'lanes' };
   }
+  const duration = (name: string): string | null => {
+    const value = one(name);
+    return value !== null && parseDuration(value) !== null ? value : null;
+  };
+  if (path === 'health') {
+    return { view: 'health', stale: duration('stale'), blocked: duration('blocked') };
+  }
+  if (path === 'replay') {
+    return { view: 'replay' };
+  }
+  if (path === 'graph') {
+    return { view: 'graph', change: one('change'), since: duration('since') };
+  }
   if (path.startsWith('ticket/') && path.length > 'ticket/'.length) {
     const id = decodeSafely(path.slice('ticket/'.length));
     if (id !== null && id !== '') {
@@ -213,6 +228,24 @@ export function formatHash(route: Route): string {
       return `#/ticket/${encodeURIComponent(route.id)}`;
     case 'lanes':
       return '#/lanes';
+    case 'health':
+      if (route.stale !== null) {
+        query.append('stale', route.stale);
+      }
+      if (route.blocked !== null) {
+        query.append('blocked', route.blocked);
+      }
+      break;
+    case 'replay':
+      return '#/replay';
+    case 'graph':
+      if (route.change !== null) {
+        query.append('change', route.change);
+      }
+      if (route.since !== null) {
+        query.append('since', route.since);
+      }
+      break;
   }
   const text = query.toString();
   return text === '' ? `#/${route.view}` : `#/${route.view}?${text}`;
