@@ -231,6 +231,83 @@ export function agentsHelpOutput(version: string, role: string | undefined): Com
   return { text: out, json };
 }
 
+/**
+ * The URI of the MCP resource that serves the guide (board-agent-guidance:
+ * "Guide over MCP"). Its text is exactly `renderGuide(VERSION)`, the stdout
+ * of `agentboard help agents`. The resource of each role's checklist is
+ * this URI, a slash and the role (`agentboard://guide/implementer`), and
+ * its text is exactly the stdout of `agentboard help agents --role <role>`
+ * (see `createMcpServer` in `src/mcp/server.ts`).
+ */
+export const GUIDE_RESOURCE_URI = 'agentboard://guide';
+
+/** The most characters the guide summary (the MCP server `instructions`) may have. */
+export const GUIDE_SUMMARY_MAX_CHARS = 2000;
+
+/**
+ * The summary of the guide that the MCP server sends as its
+ * `instructions` at initialization (board-agent-guidance: "Guide over
+ * MCP"; add-agent-guidance task 4.1). Many clients put the instructions
+ * in the model's context unasked, while the full guide is only read on
+ * demand, so the summary carries the rules an agent must never break and
+ * points to the full guide for the rest.
+ *
+ * Decisions recorded here (test author, task group 4):
+ * - The summary is its own template in this module, beside the guide, not
+ *   cut out of the guide's text: the guide is written for a shell and
+ *   would not fit in 2000 characters. It is kept consistent with the guide
+ *   by the tests instead: every command line it shows is also a command
+ *   line of the guide, and every tool it names is served.
+ * - It is written for an MCP client: tools (`board_...`) rather than
+ *   command lines, and the `as` argument rather than `--as`.
+ *
+ * Format:
+ * - First line exactly `Agent guide summary for agentboard <version>` (the
+ *   version stamp, which must not begin with `agentboard `).
+ * - At most `GUIDE_SUMMARY_MAX_CHARS` characters in all, the final newline
+ *   included. Plain ASCII (printable characters and newlines only, no
+ *   tabs), no trailing spaces, ends with one newline (not an empty line).
+ * - The command line rule of this module holds: a line whose text,
+ *   ignoring leading spaces, begins with `agentboard ` is a complete
+ *   command line that parses against the registry, passes `--as` when its
+ *   command writes or tracks a cursor, and is also a command line of the
+ *   guide; prose lines never begin with the word agentboard. Every tool
+ *   name it mentions (`board_...`) is one the server lists.
+ * - It ends by naming the full guide: its last line ends with
+ *   `agentboard://guide.` (`GUIDE_RESOURCE_URI` and a period), and that
+ *   last sentence calls it the `full guide` (or `full agent guide`).
+ *
+ * Content (the rules the installed guidance also states):
+ * - What the tools are: `board_` plus the command, the same arguments
+ *   without the leading `--`.
+ * - The actor rule: pass the `as` argument (the words `as argument`
+ *   appear) on every call; without it the server's own actor, from the
+ *   command line `agentboard mcp --as <actor>` (on a line of its own), and
+ *   then `AGENTBOARD_ACTOR`, is used; the actor is never guessed.
+ * - Finding work: `board_inbox` before starting work, and the board
+ *   (`board_list`, `board_show`) rather than memory for its state.
+ * - Claim before work: `board_claim` before any work on a ticket;
+ *   `already-assigned` means another actor holds it, so do not work on it.
+ * - Never stop silently: `board_handoff` with a note when done, or
+ *   `board_move` to `blocked` plus a `board_comment` saying why when stuck.
+ * - Decisions: a comment beginning `DECISION:` records a decision, which is
+ *   promoted to a `spec delta` or an `ADR` before `board_close`.
+ * - Completion: the board is not the record of completion (the word
+ *   `completion` appears); the task lines in `tasks.md` are ticked in the
+ *   implementing pull request.
+ * - Secrets: the board is not a secret store (the word `secret` appears);
+ *   text that looks like one is refused.
+ * - Errors: a failed call returns `exitCode`, `reason`, `message` and
+ *   `hint`, and the hint names what to do next.
+ * - Role checklists: the text `agentboard://guide/<role>` names the
+ *   checklist resources, with the four roles.
+ *
+ * Pure.
+ */
+export function renderGuideSummary(version: string): string {
+  throw new Error(`not implemented: renderGuideSummary(${version})`);
+}
+
 /** `lines` joined into text that ends with one newline. */
 function text(lines: readonly string[]): string {
   return `${lines.join('\n')}\n`;
