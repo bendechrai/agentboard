@@ -17,22 +17,16 @@ full workflow, and docs/adr/ for design decisions.
   inside it), 0003 (inbox cursors as a position plus a seen set), 0004
   (source-neutral task reference) and 0005 (sync commits only its own
   paths, as a fixed identity).
-- The `add-board-core` OpenSpec change (proposal, design, five spec deltas,
-  `tasks.md` with 9 task groups). Its deltas were clarified by ruling
-  commits during the build (`git log --oneline -- openspec/changes/add-board-core`
-  lists them). Its specs are not yet in `openspec/specs/`; that happens
-  when the change is archived after every group has landed.
-- `add-board-core` groups 1 to 7 and 9 are implemented, reviewed and
-  merged into `staging`: events, canonical JSON and fold (`src/events/`);
-  the store, discovery, atomic writes, cache and rebuild (`src/store/`);
-  every CLI command (`src/cli/`, operations in `src/board/`); the
-  concurrency and crash property tests; `inbox` and `watch`; `sync`; the
-  OpenSpec integration (`import-change`, source adapters,
-  `close-merged`); and the MCP server (`agentboard mcp`, `src/mcp/`).
-- Group 8 (documentation and consumer setup: README usage, ADRs 0002 to
-  0005, "Using agentboard in a project" in CONTRIBUTING.md) is in the PR
-  from the branch `docs/usage-adrs`. With it, every `add-board-core` task
-  is ticked.
+- The `add-board-core` OpenSpec change is complete and archived as
+  `openspec/changes/archive/2026-09-24-add-board-core/`; its requirements
+  are the main specs in `openspec/specs/` (board-cache, board-cli,
+  board-concurrency, board-events, board-openspec-integration). Its deltas
+  were clarified by ruling commits during the build
+  (`git log --oneline -- openspec/changes/add-board-core` on history before
+  the archive lists them). Every CLI command, the MCP server
+  (`agentboard mcp`), the concurrency and crash property tests, and the
+  documentation (README usage, ADRs 0002 to 0005, "Using agentboard in a
+  project" in CONTRIBUTING.md) are merged into `staging`.
 - The `add-agent-guidance` OpenSpec change (generated help, `help agents`,
   error hints, `agents install`/`agents check` for Claude Code skills,
   `AGENTS.md`, OpenSpec config and `.mcp.json`, and the guide over MCP) is
@@ -41,10 +35,10 @@ full workflow, and docs/adr/ for design decisions.
 
 ## What to do next
 
-1. Land group 8, then archive `add-board-core` in its own PR so its deltas
-   are folded into `openspec/specs/`.
-2. Continue `add-agent-guidance` (group 1 is in progress), one task group
-   at a time.
+1. Continue `add-agent-guidance` (group 1 is in progress), one task group
+   at a time, then archive it.
+2. A human reviews `staging` and promotes it to `main` (a merge-commit PR
+   from `staging`), then publishes the npm package.
 
 Each task group uses the three-role loop from CONTRIBUTING.md
 ("Three-agent workflow per task group"):
