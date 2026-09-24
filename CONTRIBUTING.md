@@ -180,6 +180,32 @@ generic instead.
 - When every task in a change is complete and merged, archive the change so
   its deltas are folded into the main specs, in its own PR.
 
+## Using agentboard in a project
+
+This section is for host projects that coordinate their agents with
+agentboard (including this repository, once it runs its own loop on the
+board). See README.md for the full command reference.
+
+- Run `agentboard init` once per clone, at the root of the main checkout.
+  It creates `.board/` (its own git repository) and adds `.board/` to the
+  project's `.gitignore`; commit that `.gitignore` entry. Linked worktrees
+  find the main checkout's board on their own, so worktrees need no setup.
+- The board never enters the host repository's history, so `make hooks`
+  and the pre-push checks are unaffected: nothing under `.board/` is
+  staged, linted or tested. Board history is synced separately with
+  `agentboard sync`.
+- Run `agentboard import-change <name> --as orchestrator` whenever a new
+  OpenSpec change is merged into `staging`, and again whenever its
+  `tasks.md` gains lines. It creates one ticket per task group; a second
+  run creates nothing new and only appends new checklist lines.
+- Coordination goes through the board, decisions go back into specs:
+  agents claim their ticket, hand off with a note, and record decisions as
+  `DECISION:` comments that are promoted to a spec delta or ADR before the
+  ticket closes. Completion is still recorded by ticking `tasks.md` in the
+  implementing PR, never by the board.
+- Every agent passes `--as <role-instance>` (or sets `AGENTBOARD_ACTOR`);
+  the board never guesses who is acting.
+
 ## Before you push
 
 Run `make check` from the repository root (or `make check-in-docker` for
