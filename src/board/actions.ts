@@ -25,7 +25,7 @@ import { dirname } from 'node:path';
 
 import type { Ticket } from '../events/fold.js';
 import type { TaskRef, Status } from '../events/schema.js';
-import { asciiText } from '../cli/render.js';
+import { asciiText } from './text.js';
 import type { Board } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
 import { runCommand, type ProposedEvent } from '../store/transaction.js';
@@ -396,7 +396,11 @@ export function closeTicket(
     actor,
     input.id,
     (ticket) => {
-      const open = 'noDecision' in body ? openDecisions(ticket.comments) : [];
+      // A ticket that cannot be closed is left to the fold's own
+      // invalid-transition refusal, which comes before the decision guard.
+      const closable =
+        !ticket.closed && (ticket.status === 'merged' || ticket.status === 'blocked');
+      const open = closable && 'noDecision' in body ? openDecisions(ticket.comments) : [];
       if (open.length > 0) {
         const quoted = open.map((c) => `  ${asciiText(c.actor)}: "${asciiText(c.text)}"`);
         throw new BoardError(

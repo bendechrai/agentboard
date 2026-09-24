@@ -10,10 +10,10 @@
 
 import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
-import { asciiText } from '../cli/render.js';
-import type { Env } from '../cli/types.js';
+import { asciiText } from './text.js';
+import type { Env } from './text.js';
 import { BoardError } from '../store/errors.js';
 
 /** Where a path argument is resolved from. */
@@ -63,7 +63,7 @@ export function treePath(text: string, options?: TreePathOptions): TreePath {
   }
   const cwd = realpathSync(options?.cwd ?? process.cwd());
   const root = realpathSync(worktreeRoot(cwd, options?.env ?? process.env) ?? cwd);
-  const absolute = resolve(cwd, text);
+  const absolute = realTarget(resolve(cwd, text));
   const rel = relative(root, absolute);
   if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     throw new BoardError(
@@ -73,6 +73,28 @@ export function treePath(text: string, options?: TreePathOptions): TreePath {
     );
   }
   return { absolute, recorded: rel.split(sep).join('/') };
+}
+
+/**
+ * `path` with symbolic links resolved: the realpath of the path itself when
+ * it exists, otherwise the realpath of its nearest existing ancestor with
+ * the missing remainder appended.
+ */
+function realTarget(path: string): string {
+  const missing: string[] = [];
+  let current = path;
+  for (;;) {
+    try {
+      return join(realpathSync(current), ...missing);
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) {
+        return path;
+      }
+      missing.unshift(basename(current));
+      current = parent;
+    }
+  }
 }
 
 /** `git rev-parse --show-toplevel` in `cwd`, or null when it fails. */

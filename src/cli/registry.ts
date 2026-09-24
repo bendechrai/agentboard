@@ -23,6 +23,7 @@ import {
   type LinkTarget,
 } from '../board/actions.js';
 import { initBoard } from '../board/init.js';
+import { TASK_RULE } from '../board/text.js';
 import { parseTaskFilter, taskRefFromArgs, type TaskFilter } from '../board/resolve.js';
 import { listTickets, newTicket, showRaw, showTicket } from '../board/tickets.js';
 import type { WriteOutcome } from '../board/types.js';
@@ -86,18 +87,8 @@ export const CLOSE_RULE =
   'a decision made in a ticket must be recorded in a spec delta or ADR ' +
   '(name it with --decision-recorded-in), or declared absent with --no-decision';
 
-/**
- * The explanation `new` gives when no task reference and no ad hoc reason
- * is given (board-openspec-integration: "Ticket without a task is
- * refused").
- *
- * Layering: `src/board` never imports from `src/cli` (not even types), so
- * this is defined in `src/board` (for example `src/board/text.ts`) and
- * re-exported here unchanged.
- */
-export const TASK_RULE =
-  'tickets must reference a task (--task <source>:<ref>#<item>, or --change <name> ' +
-  'with --group <n>) or be marked ad hoc with a reason (--adhoc <reason>)';
+/** Defined in `src/board/text.ts` (layering) and re-exported here unchanged. */
+export { TASK_RULE };
 
 function flag(
   name: string,

@@ -11,7 +11,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { asciiText } from '../cli/render.js';
+import { asciiText } from './text.js';
 import type { Ticket } from '../events/fold.js';
 
 /**

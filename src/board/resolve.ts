@@ -5,7 +5,7 @@
 
 import type { BoardState } from '../events/fold.js';
 import { TASK_SOURCE_PATTERN, parseTaskRef, type TaskRef } from '../events/schema.js';
-import { asciiText } from '../cli/render.js';
+import { asciiText } from './text.js';
 import { BoardError } from '../store/errors.js';
 
 /** Shortest accepted id prefix. */

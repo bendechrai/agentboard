@@ -17,10 +17,10 @@ import { inSnapshot, stmt } from '../store/engine.js';
 import { BoardError } from '../store/errors.js';
 import { readEventFile, readEventLog } from '../store/eventfile.js';
 import { runCommand } from '../store/transaction.js';
-import { TASK_RULE } from '../cli/registry.js';
 import { requireActor, resolveTicket, ticketOf } from './lookup.js';
 import type { TaskFilter } from './resolve.js';
 import { refuseSecretLike } from './secrets.js';
+import { TASK_RULE } from './text.js';
 import type { WriteOptions, WriteOutcome } from './types.js';
 
 /** Input of `newTicket`. */

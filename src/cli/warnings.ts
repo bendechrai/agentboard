@@ -3,6 +3,9 @@
  * round 2 ruling).
  */
 
+/** The Node option that turns process warnings off. */
+const NO_WARNINGS = '--no-warnings';
+
 /**
  * True when Node was asked not to print warnings, which the entry point
  * must honour even though it replaces Node's own warning listener:
@@ -16,5 +19,9 @@ export function warningsDisabled(
   execArgv: readonly string[],
   env: Readonly<Record<string, string | undefined>>,
 ): boolean {
-  throw new Error(`not implemented (${String(execArgv.length)}, ${String(Object.keys(env).length)})`);
+  return (
+    execArgv.includes(NO_WARNINGS) ||
+    (env.NODE_OPTIONS ?? '').split(/\s+/).includes(NO_WARNINGS) ||
+    env.NODE_NO_WARNINGS === '1'
+  );
 }

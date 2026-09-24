@@ -17,12 +17,16 @@
  * warning at all is printed, as Node itself would do.
  */
 
+import { warningsDisabled } from './cli/warnings.js';
+
 // Installed before the CLI module (and with it node:sqlite) is loaded.
 // Removing the default listeners also removes Node's own printing, so every
-// other warning is printed here in Node's format.
+// other warning is printed here in Node's format, unless Node was asked not
+// to print warnings at all.
+const silent = warningsDisabled(process.execArgv, process.env);
 process.removeAllListeners('warning');
 process.on('warning', (warning) => {
-  if (warning.name === 'ExperimentalWarning' && /sqlite/i.test(warning.message)) {
+  if (silent || (warning.name === 'ExperimentalWarning' && /sqlite/i.test(warning.message))) {
     return;
   }
   const code = 'code' in warning && typeof warning.code === 'string' ? `[${warning.code}] ` : '';
