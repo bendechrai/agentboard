@@ -49,6 +49,8 @@ cannot drift.
 Every writing command SHALL require `--as <actor>` or the `AGENTBOARD_ACTOR`
 environment variable; with neither, it SHALL exit 1 and explain. The actor
 SHALL be recorded on the event and SHALL never be inferred from the OS user.
+Every command SHALL accept `--as`; commands that neither write nor track a
+per-actor cursor SHALL ignore it, so an agent can pass it habitually.
 
 #### Scenario: Missing actor
 - **WHEN** `agentboard comment T1 "hi"` runs with no `--as` and no `AGENTBOARD_ACTOR`
@@ -93,7 +95,8 @@ but the terminal status SHALL remain `merged`.
 ### Requirement: Claim, release and handoff
 `claim` SHALL assign the ticket to the actor only if it is unassigned, and
 SHALL exit 4 with reason `already-assigned` otherwise, naming the current
-assignee. `release` SHALL clear the assignment only when the actor is the
+assignee; a `claim` by the current assignee SHALL exit 0, write no event and
+report that the actor already holds the ticket, so a retried claim is safe. `release` SHALL clear the assignment only when the actor is the
 assignee. `handoff` SHALL, in one event, set the assignee to `--to`, set the
 status to `--status` (subject to the state machine), and add the note as a
 comment attributed to the actor.
@@ -109,7 +112,13 @@ comment attributed to the actor.
 ### Requirement: Close requires a decision disposition
 `close` SHALL require exactly one of `--decision-recorded-in <path>` (a path
 that exists in the host project, expected to be a spec delta, ADR or tasks
-file) or `--no-decision`. `close` SHALL be permitted only from `merged` or
+file) or `--no-decision`. A relative decision path SHALL be resolved against
+the current directory, SHALL lie inside the current working tree (the output
+of `git rev-parse --show-toplevel`, or the current directory outside git),
+and SHALL be recorded relative to that root with `/` separators, so the
+recorded path means the same thing in every worktree and clone; a path
+outside the working tree SHALL exit 1. `link --decision` SHALL record its
+path the same way but SHALL NOT require it to exist. `close` SHALL be permitted only from `merged` or
 `blocked`. Closed tickets SHALL be excluded from `list` unless `--closed` is
 given.
 

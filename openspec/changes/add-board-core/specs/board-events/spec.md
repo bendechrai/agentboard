@@ -30,7 +30,10 @@ order SHALL be: the `AGENTBOARD_DIR` environment variable when set; otherwise,
 when inside a git repository, `<git common dir>/../.board`, where the git
 common dir is the value of `git rev-parse --git-common-dir` resolved to an
 absolute path, so that every linked worktree of the same repository resolves
-to the same board; otherwise `./.board` relative to the current directory. A
+to the same board; otherwise `./.board` relative to the current directory.
+As an exception, when the directory that would be the host root is itself a
+board directory named `.board` (the command runs inside `.board` or below
+it), that directory SHALL be the board. A
 command other than `init` that resolves to a path with no board SHALL fail
 with exit code 2 and a message naming the path it looked at.
 
