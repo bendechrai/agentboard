@@ -504,10 +504,12 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   `--json` is accepted and ignored (it is implied for every tool);
  *   `--as <actor>` sets the server's default actor, used by a tool call
  *   that has no `as` of its own, before `AGENTBOARD_ACTOR`.
- * - `help [<topic>] [<subtopic>]`: `helpOutput(HELP_SOURCE, <the given
- *   words>)`: the overview, or one command's help, as text or (`--json`)
- *   one JSON document. Needs no board and no actor. `parseArgs` also turns
- *   `agentboard`, `--help`, `-h` and `<command> --help` into `help`.
+ * - `help [<topic>] [<subtopic>] [--role <role>]`: `helpOutput(HELP_SOURCE,
+ *   <the given words>, <the --role value>)`: the overview, one command's
+ *   help, or (topic `agents`) the agent guide with an optional role
+ *   checklist, as text or (`--json`) one JSON document. Needs no board and
+ *   no actor. `parseArgs` also turns `agentboard`, `--help`, `-h` and
+ *   `<command> --help` into `help`.
  *
  * Argument mapping: `--change`/`--group`/`--task` go through
  * `taskRefFromArgs`; `list --change <name>` is `list --task openspec:<name>`
@@ -1373,9 +1375,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'help',
-    summary: 'Show the overview, or the help of one command',
+    summary: 'Show the overview, the help of one command, or the agent guide',
     description:
-      "With no topic, prints the overview of every command; with a command name (one or two words), prints that command's synopsis, arguments, exit codes and examples. agentboard <command> --help and -h are the same. Needs no board and no actor. With --json, prints the same help as JSON.",
+      "With no topic, prints the overview of every command; with a command name (one or two words), prints that command's synopsis, arguments, exit codes and examples. agentboard <command> --help and -h are the same. The topic agents prints the agent guide, and --role adds the checklist of one role (orchestrator, test-author, implementer or reviewer). Needs no board and no actor. With --json, prints the same help as JSON.",
     group: 'setup',
     examples: [
       { command: 'agentboard help', summary: 'Print the overview of every command' },
@@ -1384,20 +1386,32 @@ export const COMMANDS: readonly CommandSpec[] = [
         command: 'agentboard help checklist tick --json',
         summary: 'Print the help of checklist tick as one JSON document',
       },
+      { command: 'agentboard help agents', summary: 'Print the agent guide' },
+      {
+        command: 'agentboard help agents --role implementer',
+        summary: 'Print the agent guide and the implementer checklist',
+      },
     ],
     exitCodes: [
       EXIT_OK,
       {
         code: 1,
         reason: 'usage',
-        meaning: 'The topic is not a command (close matches are suggested)',
+        meaning:
+          'The topic is not a command (close matches are suggested), or the role is not one of the four',
       },
     ],
     positionals: [
-      positional('topic', 'string', 'Command name, or its first word', false),
+      positional('topic', 'string', 'Command name, its first word, or agents', false),
       positional('subtopic', 'string', 'Second word of a two-word command name', false),
     ],
-    flags: [],
+    flags: [
+      flag(
+        'role',
+        'string',
+        'With the topic agents: orchestrator, test-author, implementer or reviewer',
+      ),
+    ],
     exclusive: [],
     writes: false,
     operation: null,
@@ -1407,6 +1421,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         [str(values, 'topic'), str(values, 'subtopic')].filter(
           (word): word is string => word !== undefined,
         ),
+        str(values, 'role'),
       ),
   },
 ];
