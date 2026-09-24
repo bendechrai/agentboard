@@ -140,6 +140,22 @@ export interface TicketChecklistBody {
   done: boolean;
 }
 
+/** One line appended by `ticket.checklist.add`. */
+export interface TicketChecklistAddItem {
+  /** Non-empty. */
+  text: string;
+  done: boolean;
+}
+
+/**
+ * `ticket.checklist.add` (added by the group 7 ruling for re-import):
+ * `items` is a non-empty array of checklist lines, appended by the fold in
+ * array order after the ticket's existing lines.
+ */
+export interface TicketChecklistAddBody {
+  items: TicketChecklistAddItem[];
+}
+
 /** `board.meta`: `key` non-empty; `value` any JSON value, including null. */
 export interface BoardMetaBody {
   key: string;
@@ -168,6 +184,10 @@ export type TicketHandoffEvent = TicketEnvelope<'ticket.handoff', TicketHandoffB
 export type TicketLinkEvent = TicketEnvelope<'ticket.link', TicketLinkBody>;
 export type TicketCloseEvent = TicketEnvelope<'ticket.close', TicketCloseBody>;
 export type TicketChecklistEvent = TicketEnvelope<'ticket.checklist', TicketChecklistBody>;
+export type TicketChecklistAddEvent = TicketEnvelope<
+  'ticket.checklist.add',
+  TicketChecklistAddBody
+>;
 
 /** `board.meta` is the only kind without a `ticket` field. */
 export interface BoardMetaEvent {
@@ -189,7 +209,8 @@ export type TicketEvent =
   | TicketHandoffEvent
   | TicketLinkEvent
   | TicketCloseEvent
-  | TicketChecklistEvent;
+  | TicketChecklistEvent
+  | TicketChecklistAddEvent;
 
 /** Discriminated union of every known event, narrowed by `kind`. */
 export type BoardEvent = TicketEvent | BoardMetaEvent;
@@ -206,6 +227,7 @@ export const KNOWN_KINDS = [
   'ticket.link',
   'ticket.close',
   'ticket.checklist',
+  'ticket.checklist.add',
   'board.meta',
 ] as const;
 
@@ -307,6 +329,13 @@ export type ValidationResult =
  *   one reason `body`.
  * - `ticket.checklist`: `index` a safe integer (negative is well-formed
  *   here and rejected by the fold), `done` a boolean; both required.
+ * - `ticket.checklist.add`: `items` required, an array (else `body.items`)
+ *   with at least one element (an empty array is one reason
+ *   `body.items`). Each element must be an object (else `body.items.<i>`)
+ *   with `text` a non-empty string (else `body.items.<i>.text`, also when
+ *   missing) and `done` a boolean (else `body.items.<i>.done`, also when
+ *   missing); any other key of an element is reported as
+ *   `body.items.<i>.<key>`, and any other body key as `body.<key>`.
  * - `board.meta`: `key` non-empty string and `value` (any JSON value,
  *   including null) both required.
  *
@@ -595,6 +624,9 @@ const BODY_CHECKS: Record<KnownKind, (body: JsonRecord, report: Report) => void>
       {},
       report,
     );
+  },
+  'ticket.checklist.add': () => {
+    throw new Error('not implemented');
   },
   'board.meta': (body, report) => {
     checkFields(body, { key: nonEmptyString, value: anyValue }, {}, report);

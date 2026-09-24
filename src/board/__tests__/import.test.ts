@@ -290,30 +290,50 @@ describe('import-change: re-import (scenario: second import adds nothing)', () =
     );
   });
 
-  it('appends new task lines of an existing group to its checklist, copying done flags', () => {
-    // Depends on the pending ruling on how a checklist line is appended
-    // (board-events defines no such event yet); see src/board/import.ts.
+  it('appends new task lines with one ticket.checklist.add per ticket, copying done flags', () => {
     const { board, root, first } = imported();
     const extended = FIXTURE.replace(
       /^(- \[ \] 7\.3 .*)$/m,
       '$1\n- [ ] 7.4 A new task\n- [x] 7.5 A task done already',
-    );
+    ).replace(/^(- \[ \] 8\.3 .*)$/m, '$1\n- [ ] 8.4 Another new task');
     writeTasks(root, extended);
     const again = importChange(board, 'orch', TARGET);
     const seven = again.tickets.find((t) => t.item === '7');
+    const eight = again.tickets.find((t) => t.item === '8');
     expect(seven).toMatchObject({ action: 'updated', appended: 2 });
-    expect(seven?.events.length).toBeGreaterThan(0);
+    expect(eight).toMatchObject({ action: 'updated', appended: 1 });
+    expect(seven?.events).toHaveLength(1);
+    expect(eight?.events).toHaveLength(1);
+    expect(again.events).toBe(2);
+    expect(eventCount(board)).toBe(TOTAL_EVENTS + 2);
     expect(seven?.ticket.checklist).toEqual([
       ...byItem(first, '7').checklist,
       { text: '7.4 A new task', done: false },
       { text: '7.5 A task done already', done: true },
     ]);
     expect(seven?.ticket.status).toBe('todo');
-    expect(again.events).toBe(seven?.events.length);
-    const others = again.tickets.filter((t) => t.item !== '7');
-    expect(others.map((t) => t.action)).toEqual(Array(8).fill('unchanged'));
+    expect(seven?.ticket.version).toBe(byItem(first, '7').version + 1);
+    // The one event of each ticket is a ticket.checklist.add carrying the new lines.
+    const lastEvent = (id: string): unknown => showRaw(board, id).at(-1)?.event;
+    expect(lastEvent(seven?.id ?? '')).toMatchObject({
+      kind: 'ticket.checklist.add',
+      actor: 'orch',
+      body: {
+        items: [
+          { text: '7.4 A new task', done: false },
+          { text: '7.5 A task done already', done: true },
+        ],
+      },
+    });
+    expect(showRaw(board, seven?.id ?? '').at(-1)?.hash).toBe(seven?.events[0]);
+    expect(lastEvent(eight?.id ?? '')).toMatchObject({
+      kind: 'ticket.checklist.add',
+      body: { items: [{ text: '8.4 Another new task', done: false }] },
+    });
+    const others = again.tickets.filter((t) => t.item !== '7' && t.item !== '8');
+    expect(others.map((t) => t.action)).toEqual(Array(7).fill('unchanged'));
     expect(others.map((t) => t.ticket)).toEqual(
-      first.tickets.filter((t) => t.item !== '7').map((t) => t.ticket),
+      first.tickets.filter((t) => t.item !== '7' && t.item !== '8').map((t) => t.ticket),
     );
     // A third import of the same file writes nothing.
     const third = importChange(board, 'orch', TARGET);

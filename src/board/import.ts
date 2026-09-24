@@ -118,12 +118,10 @@ export interface ImportResult {
  * never moves a ticket another agent may hold.
  * - Task lines at indexes at or beyond the ticket's checklist length are
  *   appended to its checklist, in order, each with its done state copied
- *   (appended then ticked when ticked in the file); the unit is `updated`.
- *   OPEN: board-events defines no event that adds a checklist line to an
- *   existing ticket (`ticket.create` is the only source of checklist
- *   lines), so appending needs a spec delta adding one; the ruling is
- *   pending with the orchestrator. The tests pin the resulting ticket and
- *   that no other ticket changes, not the event shape.
+ *   (the done flag comes from the checkbox); the unit is `updated`.
+ *   The lines are appended with exactly one `ticket.checklist.add` event
+ *   per ticket that gained lines, whose `items` are the new lines in order
+ *   with their done flags (no separate ticks).
  * - Nothing else changes: not the title, the labels, the status, the text
  *   or done state of an existing checklist line (even when the tasks file
  *   changed them), and no line is removed when the file has fewer lines.
