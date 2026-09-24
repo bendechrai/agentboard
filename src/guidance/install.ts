@@ -23,7 +23,6 @@ import { BoardError } from '../store/errors.js';
 import {
   AGENTS_MD_PATH,
   GUIDANCE_VERSION,
-  MCP_ENTRY,
   MCP_JSON_PATH,
   MCP_SERVER_NAME,
   OPENSPEC_CONFIG_PATH,
@@ -31,6 +30,7 @@ import {
   OPENSPEC_OPERATIONS,
   SKILL_PATH,
   manualOpenSpecLines,
+  mcpEntry,
   openSpecVersionComment,
   renderAgentsBlock,
   renderSkill,
@@ -43,6 +43,7 @@ import {
   hasSkillMarker,
   isAgentboardItem,
   isJsonObject,
+  isManagedMcpEntry,
   jsonEqual,
   openSpecItems,
   parseConfig,
@@ -593,11 +594,14 @@ function installOpenSpec(path: string, version: number, force: boolean): Handled
   return done('updated', `wrote the agentboard guidance entries in ${OPENSPEC_CONFIG_PATH}`);
 }
 
-/** The `mcp-json` target: the `mcpServers.agentboard` key of `.mcp.json`. */
-function installMcpJson(path: string, force: boolean): Handled {
+/**
+ * The `mcp-json` target: the `mcpServers.agentboard` key of `.mcp.json`.
+ * `mcpCommand` is the `--mcp-command` executable, undefined when not given.
+ */
+function installMcpJson(path: string, force: boolean, mcpCommand: string | undefined): Handled {
   const text = readText(path);
   const serialize = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`;
-  const entry = { command: MCP_ENTRY.command, args: [...MCP_ENTRY.args] };
+  const entry = mcpEntry(mcpCommand);
   if (text === null) {
     write(path, serialize({ mcpServers: { [MCP_SERVER_NAME]: entry } }));
     return done('created', `wrote ${MCP_JSON_PATH} with the agentboard MCP server`);
@@ -612,13 +616,15 @@ function installMcpJson(path: string, force: boolean): Handled {
   }
   const map = servers ?? {};
   if (Object.hasOwn(map, MCP_SERVER_NAME)) {
-    if (jsonEqual(map[MCP_SERVER_NAME], MCP_ENTRY)) {
-      return done('unchanged', `${MCP_JSON_PATH} is up to date`);
-    }
-    if (!force) {
+    const existing = map[MCP_SERVER_NAME];
+    if (isManagedMcpEntry(existing)) {
+      if (mcpCommand === undefined || jsonEqual(existing, entry)) {
+        return done('unchanged', `${MCP_JSON_PATH} is up to date`);
+      }
+    } else if (!force) {
       return refuse(
         'entry-differs',
-        `${MCP_JSON_PATH} already has an mcpServers.agentboard entry that differs from the managed one`,
+        `${MCP_JSON_PATH} already has an mcpServers.agentboard entry that agentboard does not manage (extra keys or other arguments)`,
       );
     }
   }
@@ -634,6 +640,7 @@ function runHandler(
   path: string,
   version: number,
   force: boolean,
+  mcpCommand: string | undefined,
 ): Handled {
   switch (target) {
     case 'claude':
@@ -643,7 +650,7 @@ function runHandler(
     case 'openspec':
       return installOpenSpec(path, version, force);
     case 'mcp-json':
-      return installMcpJson(path, force);
+      return installMcpJson(path, force, mcpCommand);
   }
 }
 
@@ -658,6 +665,7 @@ function installTarget(
   root: string,
   version: number,
   force: boolean,
+  mcpCommand: string | undefined,
 ): Handled {
   const rel = TARGET_FILES[target];
   const where = targetPath(root, rel);
@@ -671,7 +679,7 @@ function installTarget(
     return refuse('not-a-file', `${rel} ${where.what} (${where.code}); nothing was written`);
   }
   try {
-    return runHandler(target, where.path, version, force);
+    return runHandler(target, where.path, version, force, mcpCommand);
   } catch (error) {
     const code = errorCode(error);
     if (code !== null && PERMISSION_CODES.includes(code)) {
@@ -687,33 +695,55 @@ function installTarget(
   }
 }
 
+/** The reason `mcp-json` is selected when `--mcp-command` is given. */
+const MCP_COMMAND_REASON = 'requested with --mcp-command';
+
+/** Throws `usage` when `--mcp-command` was given an empty value or a line feed. */
+function validateMcpCommand(mcpCommand: string | undefined): void {
+  if (mcpCommand === '') {
+    throw new BoardError(1, 'usage', '--mcp-command must not be empty');
+  }
+  if (mcpCommand?.includes('\n') === true) {
+    throw new BoardError(1, 'usage', '--mcp-command must not contain a newline');
+  }
+}
+
 /** The selected targets of `options`, in `GUIDANCE_TARGETS` order. */
 function selectTargets(
   root: string,
   given: readonly string[],
+  mcpCommand: string | undefined,
 ): { selections: TargetSelection[]; autoDetected: boolean } {
   const all = GUIDANCE_TARGETS.join(', ');
-  if (given.length === 0) {
-    const selections = detectTargets(root);
-    if (selections.length === 0) {
-      throw new BoardError(
-        1,
-        'no-targets',
-        `nothing to install detected in ${root} (no .claude/, ${AGENTS_MD_PATH} or ${OPENSPEC_CONFIG_PATH}); choose targets with --target: ${all}`,
-      );
-    }
-    return { selections, autoDetected: true };
-  }
   for (const t of given) {
     if (!(GUIDANCE_TARGETS as readonly string[]).includes(t)) {
       throw new BoardError(1, 'usage', `unknown target ${t}; expected one of ${all}`);
     }
   }
-  const selections = GUIDANCE_TARGETS.filter((t) => given.includes(t)).map((target) => ({
-    target,
-    reason: 'requested with --target',
-  }));
-  return { selections, autoDetected: false };
+  const autoDetected = given.length === 0;
+  const chosen: TargetSelection[] = autoDetected
+    ? detectTargets(root)
+    : GUIDANCE_TARGETS.filter((t) => given.includes(t)).map((target) => ({
+        target,
+        reason: 'requested with --target',
+      }));
+  const selections =
+    mcpCommand === undefined
+      ? chosen
+      : GUIDANCE_TARGETS.flatMap((target): TargetSelection[] => {
+          if (target === 'mcp-json') {
+            return [{ target, reason: MCP_COMMAND_REASON }];
+          }
+          return chosen.filter((s) => s.target === target);
+        });
+  if (selections.length === 0) {
+    throw new BoardError(
+      1,
+      'no-targets',
+      `nothing to install detected in ${root} (no .claude/, ${AGENTS_MD_PATH} or ${OPENSPEC_CONFIG_PATH}); choose targets with --target: ${all}`,
+    );
+  }
+  return { selections, autoDetected };
 }
 
 /**
@@ -826,15 +856,20 @@ function selectTargets(
  * (no `--target`, nothing detected and no `mcpCommand`).
  */
 export function installGuidance(options: InstallOptions): InstallResult {
+  validateMcpCommand(options.mcpCommand);
   const root = workingTreeRoot(options.cwd, options.env ?? process.env);
   const version = options.version ?? GUIDANCE_VERSION;
   const force = options.force ?? false;
-  const { selections, autoDetected } = selectTargets(root, options.targets ?? []);
+  const { selections, autoDetected } = selectTargets(
+    root,
+    options.targets ?? [],
+    options.mcpCommand,
+  );
   const targets: TargetOutcome[] = selections.map(({ target, reason }) => ({
     target,
     path: TARGET_FILES[target],
     reason,
-    ...installTarget(target, root, version, force),
+    ...installTarget(target, root, version, force, options.mcpCommand),
   }));
   return {
     root,
@@ -862,8 +897,8 @@ export function installGuidance(options: InstallOptions): InstallResult {
  */
 export function renderInstall(result: InstallResult): string {
   const lines: string[] = [];
-  if (result.autoDetected) {
-    for (const t of result.targets) {
+  for (const t of result.targets) {
+    if (result.autoDetected || t.reason === MCP_COMMAND_REASON) {
       lines.push(`selected ${t.target}: ${t.reason}`);
     }
   }

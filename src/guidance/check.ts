@@ -21,7 +21,6 @@ import type { CommandOutput, Env } from '../cli/types.js';
 import { GUIDANCE_TARGETS, TARGET_FILES, workingTreeRoot, type GuidanceTarget } from './install.js';
 import {
   GUIDANCE_VERSION,
-  MCP_ENTRY,
   MCP_SERVER_NAME,
   OPENSPEC_GUIDANCE,
   OPENSPEC_OPERATIONS,
@@ -35,7 +34,7 @@ import {
   errorCode,
   hasSkillMarker,
   isJsonObject,
-  jsonEqual,
+  isManagedMcpEntry,
   openSpecCommentVersion,
   openSpecItems,
   parseConfig,
@@ -298,7 +297,7 @@ function checkMcpJson(path: string): Found | null {
   return {
     target: 'mcp-json',
     installedVersion: null,
-    state: jsonEqual(servers[MCP_SERVER_NAME], MCP_ENTRY) ? 'current' : 'modified',
+    state: isManagedMcpEntry(servers[MCP_SERVER_NAME]) ? 'current' : 'modified',
   };
 }
 

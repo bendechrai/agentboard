@@ -10,7 +10,13 @@ import { basename, dirname, join, resolve, sep } from 'node:path';
 
 import { isMap, isScalar, isSeq, parseDocument, type Document } from 'yaml';
 
-import { BLOCK_END, OPENSPEC_OPERATIONS, OPENSPEC_PREFIX } from './installed-text.js';
+import {
+  BLOCK_END,
+  MCP_ENTRY,
+  MCP_LOCAL_ARGS,
+  OPENSPEC_OPERATIONS,
+  OPENSPEC_PREFIX,
+} from './installed-text.js';
 
 /** The `code` of a Node.js system error, or null. */
 export function errorCode(error: unknown): string | null {
@@ -381,5 +387,17 @@ export function parseMcpJson(text: string): Record<string, unknown> | null {
  * `--force`, and `agents check` reports it `modified`. Pure.
  */
 export function isManagedMcpEntry(value: unknown): boolean {
-  throw new Error(`not implemented: isManagedMcpEntry(${typeof value})`);
+  if (jsonEqual(value, MCP_ENTRY)) {
+    return true;
+  }
+  if (!isJsonObject(value)) {
+    return false;
+  }
+  const keys = Object.keys(value);
+  return (
+    keys.length === 2 &&
+    typeof value.command === 'string' &&
+    value.command !== '' &&
+    jsonEqual(value.args, MCP_LOCAL_ARGS)
+  );
 }

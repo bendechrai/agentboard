@@ -266,5 +266,7 @@ export const MCP_LOCAL_ARGS: readonly string[] = ['mcp'];
  * anything is written.
  */
 export function mcpEntry(command?: string): McpServerEntry {
-  throw new Error(`not implemented: mcpEntry(${String(command)})`);
+  return command === undefined
+    ? { command: MCP_ENTRY.command, args: [...MCP_ENTRY.args] }
+    : { command, args: [...MCP_LOCAL_ARGS] };
 }
