@@ -6,8 +6,25 @@
  * that needs another status writes the permitted moves").
  */
 
+import { dirname } from 'node:path';
+
 import type { Ticket } from '../events/fold.js';
+import {
+  TASK_SOURCE_PATTERN,
+  type Status,
+  type TaskRef,
+  type TicketCreateBody,
+} from '../events/schema.js';
+import { newUlid } from '../events/ulid.js';
 import type { Board } from '../store/board.js';
+import { stmt } from '../store/engine.js';
+import { BoardError } from '../store/errors.js';
+import { runCommand, type CommandResult, type ProposedEvent } from '../store/transaction.js';
+import { requireActor, ticketOf } from './lookup.js';
+import { OPENSPEC_SOURCE } from './openspec.js';
+import { refuseSecretLike } from './secrets.js';
+import { SOURCE_ADAPTERS, sourceAdapter, type TaskUnit } from './sources.js';
+import { asciiText } from './text.js';
 import type { WriteOptions } from './types.js';
 
 /** What `import-change` imports: a source and a ref within it. */
@@ -35,8 +52,34 @@ export interface ImportTarget {
  * does).
  */
 export function parseImportTarget(text: string): ImportTarget {
-  void text;
-  throw new Error('not implemented');
+  if (text === '') {
+    throw new BoardError(1, 'usage', 'import-change needs a change name or <source>:<ref>');
+  }
+  if (text.includes('#')) {
+    throw new BoardError(
+      1,
+      'malformed-task-ref',
+      `${asciiText(text)} names an item; import-change takes a whole change or <source>:<ref>`,
+    );
+  }
+  const colon = text.indexOf(':');
+  if (colon < 0) {
+    return { source: OPENSPEC_SOURCE, ref: text };
+  }
+  const source = text.slice(0, colon);
+  const ref = text.slice(colon + 1);
+  if (!TASK_SOURCE_PATTERN.test(source)) {
+    throw new BoardError(
+      1,
+      'malformed-task-ref',
+      `the task source ${JSON.stringify(asciiText(source))} must match ` +
+        `${String(TASK_SOURCE_PATTERN)}`,
+    );
+  }
+  if (ref === '') {
+    throw new BoardError(1, 'usage', `import-change ${asciiText(text)} names no ref`);
+  }
+  return { source, ref };
 }
 
 /** What an import did to one unit's ticket. */
@@ -142,9 +185,155 @@ export function importChange(
   target: ImportTarget,
   options?: WriteOptions,
 ): ImportResult {
-  void board;
-  void actor;
-  void target;
-  void options;
-  throw new Error('not implemented');
+  requireActor(actor);
+  const adapter = sourceAdapter(target.source);
+  if (adapter === undefined) {
+    throw new BoardError(
+      1,
+      'unsupported-source',
+      `task source ${asciiText(target.source)} has no adapter in this version; only ` +
+        `${SOURCE_ADAPTERS.map((a) => a.source).join(', ')} can be imported`,
+    );
+  }
+  const units = adapter.listUnits(dirname(board.dir), target.ref);
+  refuseSecretLike(
+    units.flatMap((unit) => [unit.title, ...unit.lines.map((line) => line.text)]),
+    false,
+  );
+  const tickets = units.map((unit) =>
+    importUnit(board, actor, target, adapter.labels(target.ref, unit), unit, options),
+  );
+  return {
+    source: target.source,
+    ref: target.ref,
+    tasksFile: adapter.tasksPath(target.ref),
+    tickets,
+    events: tickets.reduce((sum, t) => sum + t.events.length, 0),
+  };
+}
+
+/**
+ * Thrown inside a unit's transaction when its ticket exists and has
+ * nothing to append, so the transaction is rolled back without writing.
+ * Never escapes this module.
+ */
+class Unchanged extends Error {
+  readonly ticket: Ticket;
+
+  constructor(ticket: Ticket) {
+    super(`ticket ${ticket.id} is unchanged`);
+    this.ticket = ticket;
+  }
+}
+
+/** The id of the unit's ticket (smallest id with this task reference), or null. */
+function ticketIdFor(board: Board, task: TaskRef): string | null {
+  const row = stmt(
+    board.db,
+    'SELECT id FROM tickets WHERE task_source = ? AND task_ref = ? AND task_item = ? ' +
+      'ORDER BY id LIMIT 1',
+  ).get(task.source, task.ref, task.item);
+  return row === undefined ? null : String(row.id);
+}
+
+/** Imports one unit: creates its ticket, or appends to the existing one, or does nothing. */
+function importUnit(
+  board: Board,
+  actor: string,
+  target: ImportTarget,
+  labels: string[],
+  unit: TaskUnit,
+  options: WriteOptions | undefined,
+): ImportedTicket {
+  const task: TaskRef = { source: target.source, ref: target.ref, item: unit.item };
+  let first: CommandResult;
+  try {
+    // One transaction decides between create, append and nothing, so two
+    // concurrent imports cannot both create a ticket for the unit.
+    first = runCommand(
+      board,
+      actor,
+      (ctx) => {
+        const id = ticketIdFor(board, task);
+        const existing = id === null ? null : ctx.ticket(id);
+        return { ok: true, event: firstEvent(existing, task, labels, unit) };
+      },
+      options,
+    );
+  } catch (error) {
+    if (error instanceof Unchanged) {
+      return {
+        item: unit.item,
+        id: error.ticket.id,
+        action: 'unchanged',
+        appended: 0,
+        events: [],
+        ticket: error.ticket,
+      };
+    }
+    throw error;
+  }
+  const events = [first.hash];
+  let ticket = ticketOf(first.ticket);
+  if (first.event.kind === 'ticket.checklist.add') {
+    return {
+      item: unit.item,
+      id: ticket.id,
+      action: 'updated',
+      appended: first.event.body.items.length,
+      events,
+      ticket,
+    };
+  }
+  const follow: ProposedEvent[] = [];
+  unit.lines.forEach((line, index) => {
+    if (line.done) {
+      follow.push({ kind: 'ticket.checklist', ticket: ticket.id, body: { index, done: true } });
+    }
+  });
+  if (unit.lines.length > 0 && unit.lines.every((line) => line.done)) {
+    for (const to of MERGED_PATH) {
+      follow.push({ kind: 'ticket.move', ticket: ticket.id, body: { to } });
+    }
+  }
+  for (const event of follow) {
+    const result = runCommand(board, actor, () => ({ ok: true, event }), options);
+    events.push(result.hash);
+    ticket = ticketOf(result.ticket);
+  }
+  return { item: unit.item, id: ticket.id, action: 'created', appended: 0, events, ticket };
+}
+
+/** The permitted moves from `todo` to `merged`, in order. */
+const MERGED_PATH: readonly Status[] = ['tests', 'implementing', 'review', 'merged'];
+
+/**
+ * The first event of a unit: the create when it has no ticket, the append
+ * of its new task lines when it has one, or `Unchanged` thrown.
+ */
+function firstEvent(
+  existing: Ticket | null,
+  task: TaskRef,
+  labels: string[],
+  unit: TaskUnit,
+): ProposedEvent {
+  if (existing === null) {
+    const body: TicketCreateBody = { title: unit.title, task };
+    if (labels.length > 0) {
+      body.labels = [...labels];
+    }
+    if (unit.lines.length > 0) {
+      body.checklist = unit.lines.map((line) => line.text);
+    }
+    return { kind: 'ticket.create', ticket: newUlid(), body };
+  }
+  const added = unit.lines.slice(existing.checklist.length);
+  if (added.length === 0) {
+    throw new Unchanged(existing);
+  }
+  return {
+    kind: 'ticket.checklist.add',
+    ticket: existing.id,
+    body: { items: added.map((line) => ({ text: line.text, done: line.done })) },
+  };
 }

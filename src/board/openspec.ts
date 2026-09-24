@@ -8,7 +8,12 @@
  * (`openspec/changes/<name>/tasks.md`) and its tasks file format.
  */
 
-import type { SourceAdapter, TaskUnit } from './sources.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { BoardError } from '../store/errors.js';
+import type { SourceAdapter, TaskLocation, TaskUnit } from './sources.js';
+import { asciiText } from './text.js';
 
 /** The task reference `source` of OpenSpec. */
 export const OPENSPEC_SOURCE = 'openspec';
@@ -46,9 +51,104 @@ export const OPENSPEC_SOURCE = 'openspec';
  *   root-relative tasks file path).
  */
 export function parseOpenSpecTasks(text: string, path?: string): TaskUnit[] {
-  void text;
-  void path;
-  throw new Error('not implemented');
+  const where = path === undefined ? '' : `${asciiText(path)}: `;
+  const units: TaskUnit[] = [];
+  const seen = new Map<string, number>();
+  let current: TaskUnit | null = null;
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    const raw = lines[i] ?? '';
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    const number = i + 1;
+    if (line.startsWith('## ')) {
+      current = groupHeading(line, number, seen, where);
+      if (current !== null) {
+        units.push(current);
+      }
+      continue;
+    }
+    const task = TASK_LINE.exec(line);
+    if (current === null || task === null) {
+      continue;
+    }
+    const taskText = (task[2] ?? '').trimEnd();
+    if (taskText === '') {
+      throw new BoardError(
+        1,
+        'malformed-tasks',
+        `${where}line ${String(number)}: the task line has no text after its checkbox`,
+      );
+    }
+    current.lines.push({ text: taskText, done: task[1] !== ' ', line: number });
+  }
+  return units;
+}
+
+/**
+ * The unit a `## ` line starts, or null when it is not a numbered group
+ * heading with a title. Records the group number in `seen` and refuses one
+ * used twice.
+ */
+function groupHeading(
+  line: string,
+  number: number,
+  seen: Map<string, number>,
+  where: string,
+): TaskUnit | null {
+  const heading = GROUP_HEADING.exec(line);
+  const item = heading?.[1];
+  const title = heading?.[2]?.trim() ?? '';
+  if (item === undefined || title === '') {
+    return null;
+  }
+  const first = seen.get(item);
+  if (first !== undefined) {
+    throw new BoardError(
+      1,
+      'malformed-tasks',
+      `${where}line ${String(number)}: task group ${item} is already defined on line ${String(first)}`,
+    );
+  }
+  seen.set(item, number);
+  return { item, title, line: number, lines: [] };
+}
+
+/** A numbered group heading: number and title part. */
+const GROUP_HEADING = /^## ([0-9]+)\. (.*)$/;
+
+/** A task line at column 0: checkbox mark and the rest of the line. */
+const TASK_LINE = /^- \[([ xX])\] (.*)$/;
+
+/** `ref` as a single safe path segment, or `BoardError(1, 'usage')`. */
+function checkRef(ref: string): string {
+  if (ref === '' || ref === '.' || ref === '..' || /[/\\]/.test(ref) || ref.includes('\0')) {
+    throw new BoardError(
+      1,
+      'usage',
+      `the OpenSpec change name ${JSON.stringify(asciiText(ref))} is not a single directory name`,
+    );
+  }
+  return ref;
+}
+
+/** The root-relative tasks file path of change `ref`. */
+function changeTasksPath(ref: string): string {
+  return `openspec/changes/${checkRef(ref)}/tasks.md`;
+}
+
+function listChangeUnits(hostRoot: string, ref: string): TaskUnit[] {
+  const path = changeTasksPath(ref);
+  let text: string;
+  try {
+    text = readFileSync(join(hostRoot, ...path.split('/')), 'utf8');
+  } catch {
+    throw new BoardError(
+      1,
+      'tasks-not-found',
+      `cannot read the tasks file ${asciiText(path)} (is ${asciiText(ref)} an OpenSpec change?)`,
+    );
+  }
+  return parseOpenSpecTasks(text, path);
 }
 
 /**
@@ -72,28 +172,27 @@ export function parseOpenSpecTasks(text: string, path?: string): TaskUnit[] {
 export const openspecAdapter: SourceAdapter = {
   source: OPENSPEC_SOURCE,
   root(hostRoot: string): string {
-    void hostRoot;
-    throw new Error('not implemented');
+    return join(hostRoot, 'openspec');
   },
   tasksPath(ref: string): string {
-    void ref;
-    throw new Error('not implemented');
+    return changeTasksPath(ref);
   },
   listUnits(hostRoot: string, ref: string): TaskUnit[] {
-    void hostRoot;
-    void ref;
-    throw new Error('not implemented');
+    return listChangeUnits(hostRoot, ref);
   },
-  locate(hostRoot: string, ref: string, item: string, index: number) {
-    void hostRoot;
-    void ref;
-    void item;
-    void index;
-    throw new Error('not implemented');
+  locate(hostRoot: string, ref: string, item: string, index: number): TaskLocation {
+    const path = changeTasksPath(ref);
+    let units: TaskUnit[];
+    try {
+      units = listChangeUnits(hostRoot, ref);
+    } catch {
+      return { path, line: null };
+    }
+    const unit = units.find((u) => u.item === item);
+    const entry = index >= 0 ? unit?.lines[index] : undefined;
+    return { path, line: entry?.line ?? null };
   },
   labels(ref: string, unit: TaskUnit): string[] {
-    void ref;
-    void unit;
-    throw new Error('not implemented');
+    return [`change:${ref}`, `group:${unit.item}`];
   },
 };

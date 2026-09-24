@@ -438,7 +438,10 @@ function applyToTicket(
       return null;
     }
     case 'ticket.checklist.add':
-      throw new Error('not implemented');
+      for (const item of event.body.items) {
+        ticket.checklist.push({ text: item.text, done: item.done });
+      }
+      return null;
   }
 }
 

@@ -118,6 +118,5 @@ export const SOURCE_ADAPTERS: readonly SourceAdapter[] = [openspecAdapter];
  * example `speckit`). Exact, case-sensitive match on `SourceAdapter.source`.
  */
 export function sourceAdapter(source: string): SourceAdapter | undefined {
-  void source;
-  throw new Error('not implemented');
+  return SOURCE_ADAPTERS.find((adapter) => adapter.source === source);
 }

@@ -563,8 +563,15 @@ export const COMMANDS: readonly CommandSpec[] = [
     run: (ctx, values) => {
       const target = parseImportTarget(req(values, 'name'));
       const result = importChange(ctx.board(), actorOf(ctx), target);
-      void result;
-      throw new Error('not implemented');
+      const count = (action: string): number =>
+        result.tickets.filter((t) => t.action === action).length;
+      const lines = result.tickets.map((t) => `${t.action} ${renderListLine(t.ticket)}`);
+      lines.push(
+        `imported ${asciiText(result.source)}:${asciiText(result.ref)}: ` +
+          `${String(count('created'))} created, ${String(count('updated'))} updated, ` +
+          `${String(count('unchanged'))} unchanged, ${String(result.events)} events`,
+      );
+      return { json: result, text: `${lines.join('\n')}\n` };
     },
   },
   {
@@ -577,8 +584,25 @@ export const COMMANDS: readonly CommandSpec[] = [
     operation: 'closeMerged',
     run: (ctx) => {
       const result = closeMerged(ctx.board(), actorOf(ctx), { cwd: ctx.cwd, env: ctx.env });
-      void result;
-      throw new Error('not implemented');
+      const lines = [
+        ...result.closed.map(
+          (c) =>
+            `closed ${renderListLine(c.ticket)} (${
+              'decision' in c.disposition
+                ? `decision ${asciiText(c.disposition.decision)}`
+                : 'no decision'
+            })`,
+        ),
+        ...result.unmerged.map(
+          (u) =>
+            `unmerged ${renderListLine(u.ticket)} ` +
+            `(PR ${asciiText(String(u.pr))} is ${asciiText(u.state)})`,
+        ),
+        ...result.skipped.map((k) => `skipped ${renderListLine(k.ticket)} (${k.reason})`),
+        `close-merged: ${String(result.closed.length)} closed, ` +
+          `${String(result.unmerged.length)} unmerged, ${String(result.skipped.length)} skipped`,
+      ];
+      return { json: result, text: `${lines.join('\n')}\n` };
     },
   },
   {

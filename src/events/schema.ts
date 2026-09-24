@@ -544,6 +544,21 @@ function checkTaskRef(value: unknown, report: Report): void {
   }
 }
 
+/** Checks one `ticket.checklist.add` item: an object with non-empty `text` and boolean `done`. */
+function checkChecklistAddItem(item: unknown, field: string, report: Report): void {
+  if (!isObject(item)) {
+    report(field, 'must be an object with text and done');
+    return;
+  }
+  if (!isNonEmptyString(item.text)) {
+    report(`${field}.text`, 'missing or not a non-empty string');
+  }
+  if (typeof item.done !== 'boolean') {
+    report(`${field}.done`, 'missing or not a boolean');
+  }
+  reportExtraKeys(item, ['text', 'done'], `${field}.`, report);
+}
+
 function fieldCheck(key: string, rule: FieldRule): (value: unknown, report: Report) => void {
   return (value, report) => {
     if (!rule(value)) {
@@ -625,8 +640,16 @@ const BODY_CHECKS: Record<KnownKind, (body: JsonRecord, report: Report) => void>
       report,
     );
   },
-  'ticket.checklist.add': () => {
-    throw new Error('not implemented');
+  'ticket.checklist.add': (body, report) => {
+    const items = body.items;
+    if (!Array.isArray(items) || items.length === 0) {
+      report('body.items', 'missing or not a non-empty array');
+    } else {
+      items.forEach((item: unknown, i) => {
+        checkChecklistAddItem(item, `body.items.${String(i)}`, report);
+      });
+    }
+    reportExtraKeys(body, ['items'], 'body.', report);
   },
   'board.meta': (body, report) => {
     checkFields(body, { key: nonEmptyString, value: anyValue }, {}, report);

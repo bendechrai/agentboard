@@ -11,10 +11,18 @@
  * `env.PATH`, never on the test process's own `PATH`).
  */
 
-import type { CloseDisposition, Ticket } from '../events/fold.js';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
+import type { CloseDisposition, Ticket, TicketLink } from '../events/fold.js';
 import type { Board } from '../store/board.js';
-import type { Env } from './text.js';
-import type { WriteOptions } from './types.js';
+import { BoardError } from '../store/errors.js';
+import { closeTicket } from './actions.js';
+import { requireActor } from './lookup.js';
+import { listTickets } from './tickets.js';
+import { asciiText, type Env } from './text.js';
+import type { WriteOptions, WriteOutcome } from './types.js';
 
 /** What running `gh` produced. */
 export type GhResult =
@@ -38,15 +46,35 @@ export type GhRunner = (
  * other spawn error propagates.
  */
 export function runGh(args: readonly string[], where: { cwd: string; env: Env }): GhResult {
-  void args;
-  void where;
-  throw new Error('not implemented');
+  const result = spawnSync('gh', args, {
+    cwd: where.cwd,
+    env: { ...where.env },
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: GH_TIMEOUT_MS,
+  });
+  const error = result.error as NodeJS.ErrnoException | undefined;
+  if (error?.code === 'ENOENT') {
+    return { status: 'missing' };
+  }
+  if (error !== undefined && error.code !== 'ETIMEDOUT') {
+    throw error;
+  }
+  const stderr = error === undefined ? result.stderr : `gh timed out after 30 seconds\n`;
+  return {
+    status: 'exited',
+    code: result.status ?? 1,
+    stdout: result.stdout,
+    stderr,
+  };
 }
+
+/** How long `runGh` lets `gh` run. */
+const GH_TIMEOUT_MS = 30_000;
 
 /** The arguments `closeMerged` passes to `gh` for PR `pr`: `pr view <pr> --json state`. */
 export function ghPrViewArgs(pr: string | number): string[] {
-  void pr;
-  throw new Error('not implemented');
+  return ['pr', 'view', String(pr), '--json', 'state'];
 }
 
 /** Input of `closeMerged`. */
@@ -156,9 +184,127 @@ export function closeMerged(
   input?: CloseMergedInput,
   options?: WriteOptions,
 ): CloseMergedResult {
-  void board;
-  void actor;
-  void input;
-  void options;
-  throw new Error('not implemented');
+  requireActor(actor);
+  const cwd = input?.cwd ?? process.cwd();
+  const env = input?.env ?? process.env;
+  const gh = input?.gh ?? runGh;
+  const result: CloseMergedResult = { closed: [], unmerged: [], skipped: [] };
+  const candidates = listTickets(board, { status: 'merged' }).flatMap((ticket) => {
+    const pr = lastLink(ticket, 'pr');
+    return pr === undefined ? [] : [{ ticket, pr: pr.pr }];
+  });
+  let root: string | null = null;
+  for (const { ticket, pr } of candidates) {
+    const answer = gh(ghPrViewArgs(pr), { cwd, env });
+    if (answer.status === 'missing') {
+      throw new BoardError(
+        1,
+        'gh-missing',
+        'close-merged requires the GitHub CLI gh, which was not found on PATH',
+      );
+    }
+    const state = prState(answer);
+    if (typeof state !== 'string') {
+      result.skipped.push({ id: ticket.id, pr, reason: 'gh-error', message: state.error, ticket });
+      continue;
+    }
+    if (state !== 'MERGED') {
+      result.unmerged.push({ id: ticket.id, pr, state, ticket });
+      continue;
+    }
+    const decision = lastLink(ticket, 'decision');
+    try {
+      let outcome: WriteOutcome;
+      if (decision === undefined) {
+        outcome = closeTicket(board, actor, { id: ticket.id, noDecision: true }, options);
+      } else {
+        root ??= treeRoot(cwd, env);
+        const absolute = join(root, ...decision.path.split('/'));
+        if (!existsSync(absolute)) {
+          result.skipped.push({
+            id: ticket.id,
+            pr,
+            reason: 'decision-path-missing',
+            message: `the decision record ${asciiText(decision.path)} does not exist`,
+            ticket,
+          });
+          continue;
+        }
+        outcome = closeTicket(
+          board,
+          actor,
+          { id: ticket.id, decisionRecordedIn: absolute, cwd: root, env },
+          options,
+        );
+      }
+      const closed = outcome.ticket;
+      result.closed.push({
+        id: ticket.id,
+        pr,
+        disposition: closed.disposition ?? { noDecision: true },
+        hash: outcome.hash ?? '',
+        ticket: closed,
+      });
+    } catch (error) {
+      if (!(error instanceof BoardError) || error.reason !== 'unpromoted-decision') {
+        throw error;
+      }
+      result.skipped.push({
+        id: ticket.id,
+        pr,
+        reason: 'unpromoted-decision',
+        message: error.message,
+        ticket,
+      });
+    }
+  }
+  return result;
+}
+
+/** The last link of `type` on `ticket` in fold order, or undefined. */
+function lastLink<T extends TicketLink['type']>(
+  ticket: Ticket,
+  type: T,
+): Extract<TicketLink, { type: T }> | undefined {
+  return ticket.links.filter((l): l is Extract<TicketLink, { type: T }> => l.type === type).at(-1);
+}
+
+/** The PR state `gh` reported, or an error message for a `gh-error` skip. */
+function prState(answer: Extract<GhResult, { status: 'exited' }>): string | { error: string } {
+  if (answer.code !== 0) {
+    const first = answer.stderr.split('\n')[0]?.trim() ?? '';
+    return {
+      error: `gh exited with code ${String(answer.code)}${
+        first === '' ? '' : `: ${asciiText(first)}`
+      }`,
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(answer.stdout);
+  } catch {
+    parsed = null;
+  }
+  const state =
+    typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>).state
+      : undefined;
+  return typeof state === 'string'
+    ? state
+    : { error: 'gh output was not the expected JSON object with a string state' };
+}
+
+/** The working tree root of `cwd` (`git rev-parse --show-toplevel`), or `cwd` when there is none. */
+function treeRoot(cwd: string, env: Env): string {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd,
+      env: { ...env },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).replace(/\r?\n$/, '');
+    return out === '' ? cwd : out;
+  } catch {
+    return cwd;
+  }
 }
