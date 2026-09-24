@@ -374,7 +374,18 @@ export function watchBoard(board: Board, options: WatchBoardOptions): Promise<vo
   const listEffective =
     options.listEffective ?? ((d: Board['db']) => recordedPositions(d, { effectiveOnly: true }));
 
+  // True while an examination runs (a tick's or a join's): they never overlap.
+  let examining = false;
   const examine = (): void => {
+    examining = true;
+    try {
+      examineOnce();
+    } finally {
+      examining = false;
+    }
+  };
+
+  const examineOnce = (): void => {
     const report = catchUp(board);
     const current = changeMarker(db);
     if (state !== null && current === version && report.applied.length === 0 && !report.refolded) {
@@ -408,6 +419,24 @@ export function watchBoard(board: Board, options: WatchBoardOptions): Promise<vo
   // The state a consumer joining now joins at (`joinBoardFeed`).
   let delivering: FeedState | null = null;
   joins.set(options, (since) => {
+    if (options.signal.aborted) {
+      return undefined;
+    }
+    // Bring the feed up to date with the board first, in this same turn
+    // (not from inside an examination: that one is already delivering).
+    if (!examining) {
+      try {
+        examine();
+      } catch (error) {
+        if (error instanceof BoardError && error.exitCode === 5 && error.reason === 'busy') {
+          options.onWarning?.(error.message);
+        } else if (options.onProblem !== undefined) {
+          options.onProblem(error);
+        } else {
+          throw error;
+        }
+      }
+    }
     const at = delivering ?? state;
     if (at === null) {
       return undefined;

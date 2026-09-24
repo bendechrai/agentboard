@@ -32,12 +32,6 @@
  *   method other than `GET` is 405 without any token. None ever carries an
  *   `Access-Control-Allow-*` header.
  * - `HEAD` is refused with 405 like every method but `GET`.
- * - Round 2 type note: `cookieName`, `sessionCookie`, the `query` and
- *   `cookie` members of `TokenForm` and the `enter` member of `Verdict`
- *   belong to the dropped cookie flow. They stay declared only so that the
- *   round 1 implementation still compiles; the implementer deletes them,
- *   and no test uses them. `RequestHead` gains `headersDistinct`, which
- *   the one-Host-header rule needs.
  */
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -89,30 +83,6 @@ export function tokensEqual(given: string, token: string): boolean {
 }
 
 /**
- * Obsolete (round 2: no cookie); to be deleted by the implementer.
- *
- * The name of the session cookie of the server on `port`:
- * `agentboard-<port>` (the port in decimal). Browsers do not isolate
- * cookies by port, so the name carries it and two servers on one machine
- * never overwrite each other's cookie. Pure.
- */
-export function cookieName(port: number): string {
-  return `agentboard-${String(port)}`;
-}
-
-/**
- * Obsolete (round 2: no cookie, no 303); to be deleted by the implementer.
- *
- * The `Set-Cookie` value sent with the 303 answer to the entry URL:
- * `agentboard-<port>=<token>; HttpOnly; SameSite=Strict; Path=/`. No
- * `Max-Age` and no `Expires` (a session cookie), no `Domain`, and no
- * `Secure` (the server speaks plain HTTP on loopback). Pure.
- */
-export function sessionCookie(port: number, token: string): string {
-  return `${cookieName(port)}=${token}; HttpOnly; SameSite=Strict; Path=/`;
-}
-
-/**
  * True exactly when the request carries one `Host` header whose value is
  * `127.0.0.1:<port>` or `localhost:<port>`, compared as exact strings:
  * no other name or address (not `[::1]`, not `127.0.0.2`), no missing
@@ -124,11 +94,16 @@ export function sessionCookie(port: number, token: string): string {
  * two or more values (even equal ones) are false. Pure.
  */
 export function hostAllowed(host: string | readonly string[] | undefined, port: number): boolean {
-  if (typeof host !== 'string') {
+  let value: string;
+  if (typeof host === 'string') {
+    value = host;
+  } else if (host?.length === 1 && typeof host[0] === 'string') {
+    value = host[0];
+  } else {
     return false;
   }
   const suffix = `:${String(port)}`;
-  return host === `127.0.0.1${suffix}` || host === `localhost${suffix}`;
+  return value === `127.0.0.1${suffix}` || value === `localhost${suffix}`;
 }
 
 /**
@@ -164,11 +139,8 @@ export function securityHeaders(api: boolean): Record<string, string> {
   return headers;
 }
 
-/**
- * How the token was presented. Since round 2 only `bearer` is ever
- * produced; `query` and `cookie` are obsolete and to be deleted.
- */
-export type TokenForm = 'query' | 'cookie' | 'bearer';
+/** How the token was presented: only ever `Authorization: Bearer`. */
+export type TokenForm = 'bearer';
 
 /** A request as the checks see it. */
 export interface RequestHead {
@@ -185,8 +157,8 @@ export interface RequestHead {
    * Every value of every header, as `node:http` gives them in
    * `req.headersDistinct` (lower-case names, repeated headers kept). The
    * Host check reads `headersDistinct.host`; when this field is absent the
-   * request counts as having no `Host` header (403). Optional only so that
-   * the round 1 server still compiles; the server always passes it.
+   * request counts as having no `Host` header (403). The server always
+   * passes it.
    */
   readonly headersDistinct?: NodeJS.Dict<string[]>;
 }
@@ -206,25 +178,15 @@ export interface Guard {
  * parameter and every cookie are ignored, on every path and method. Pure.
  */
 export function presentedTokens(head: RequestHead, guard: Guard): TokenForm[] {
-  const forms: TokenForm[] = [];
-  const { path, query } = splitTarget(head.url);
-  if (head.method === ALLOWED_METHOD && path === '/') {
-    const given = new URLSearchParams(query).get('token');
-    if (given !== null && tokensEqual(given, guard.token)) {
-      forms.push('query');
-    }
-  }
-  const cookie = cookieValue(head.headers.cookie, cookieName(guard.port));
-  if (cookie !== null && tokensEqual(cookie, guard.token)) {
-    forms.push('cookie');
-  }
   const authorization = head.headers.authorization;
-  if (typeof authorization === 'string' && authorization.startsWith(BEARER_PREFIX)) {
-    if (tokensEqual(authorization.slice(BEARER_PREFIX.length), guard.token)) {
-      forms.push('bearer');
-    }
+  if (
+    typeof authorization === 'string' &&
+    authorization.startsWith(BEARER_PREFIX) &&
+    tokensEqual(authorization.slice(BEARER_PREFIX.length), guard.token)
+  ) {
+    return ['bearer'];
   }
-  return forms;
+  return [];
 }
 
 /** The outcome of `checkRequest`. */
@@ -242,8 +204,6 @@ export type Verdict =
       /** `isApiPath(path)`. */
       readonly api: boolean;
     }
-  /** Obsolete (round 2): never returned; to be deleted by the implementer. */
-  | { readonly kind: 'enter'; readonly setCookie: string }
   /**
    * A `GET` that passed the checks (an API path with a valid bearer token,
    * or any other path): route `path` (the URL path, not decoded) with
@@ -279,27 +239,26 @@ export type Verdict =
 export function checkRequest(head: RequestHead, guard: Guard): Verdict {
   const { path, query } = splitTarget(head.url);
   const api = isApiPath(path);
-  if (!hostAllowed(head.headers.host, guard.port)) {
+  if (!hostAllowed(head.headersDistinct?.host, guard.port)) {
     return {
       kind: 'refuse',
       status: 403,
       error: new BoardError(
         1,
         'forbidden-host',
-        `the Host header must be 127.0.0.1:${String(guard.port)} or localhost:${String(guard.port)}`,
+        `the request must carry exactly one Host header, 127.0.0.1:${String(guard.port)} or localhost:${String(guard.port)}`,
       ),
       api,
     };
   }
-  const forms = presentedTokens(head, guard);
-  if (forms.length === 0) {
+  if (api && presentedTokens(head, guard).length === 0) {
     return {
       kind: 'refuse',
       status: 401,
       error: new BoardError(
         1,
         'unauthorized',
-        'no valid access token: open the URL printed by agentboard serve at start-up',
+        'no valid access token: open the URL printed by agentboard serve at start-up, or send Authorization: Bearer <token>',
       ),
       api,
     };
@@ -315,9 +274,6 @@ export function checkRequest(head: RequestHead, guard: Guard): Verdict {
       ),
       api,
     };
-  }
-  if (forms.includes('query')) {
-    return { kind: 'enter', setCookie: sessionCookie(guard.port, guard.token) };
   }
   return { kind: 'route', path, query: new URLSearchParams(query), api };
 }
@@ -335,22 +291,4 @@ function splitTarget(url: string): { path: string; query: string } {
   return mark < 0
     ? { path: url, query: '' }
     : { path: url.slice(0, mark), query: url.slice(mark + 1) };
-}
-
-/**
- * The value of the first cookie named `name` in a `Cookie` header
- * (`name=value` pairs separated by `;` and optional spaces), or null.
- */
-function cookieValue(header: string | undefined, name: string): string | null {
-  if (header === undefined) {
-    return null;
-  }
-  for (const pair of header.split(';')) {
-    const trimmed = pair.trim();
-    const eq = trimmed.indexOf('=');
-    if (eq > 0 && trimmed.slice(0, eq) === name) {
-      return trimmed.slice(eq + 1);
-    }
-  }
-  return null;
 }

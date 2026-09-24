@@ -411,22 +411,18 @@ export async function startServer(
     let api = true;
     try {
       const verdict = checkRequest(
-        { method: req.method ?? '', url: req.url ?? '', headers: req.headers },
+        {
+          method: req.method ?? '',
+          url: req.url ?? '',
+          headers: req.headers,
+          headersDistinct: req.headersDistinct,
+        },
         guard,
       );
-      api = verdict.kind === 'enter' ? false : verdict.api;
+      api = verdict.api;
       switch (verdict.kind) {
         case 'refuse':
           refuse(res, verdict.status, verdict.error, verdict.api);
-          return;
-        case 'enter':
-          res.writeHead(303, {
-            ...securityHeaders(false),
-            Location: '/',
-            'Set-Cookie': verdict.setCookie,
-            'Content-Length': '0',
-          });
-          res.end();
           return;
         case 'route':
           if (verdict.path === '/api/stream') {
@@ -507,7 +503,7 @@ export async function startServer(
 
   let closing: Promise<void> | null = null;
   return {
-    url: `http://${LOOPBACK}:${String(port)}/?token=${token}`,
+    url: `http://${LOOPBACK}:${String(port)}/#token=${token}`,
     port,
     token,
     address: bound.address,
@@ -652,8 +648,12 @@ function readAsset(dir: string, name: string): Buffer | null {
   }
   let fd: number;
   try {
-    // O_NOFOLLOW is absent on Windows; 0 there leaves the flags unchanged.
-    fd = openSync(join(dir, name), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    // O_NONBLOCK and O_NOFOLLOW are absent on Windows; 0 there leaves the flags unchanged.
+    // Non-blocking: opening a FIFO never waits for a writer.
+    fd = openSync(
+      join(dir, name),
+      constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0),
+    );
   } catch {
     return null;
   }
