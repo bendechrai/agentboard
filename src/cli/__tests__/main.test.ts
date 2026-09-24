@@ -77,6 +77,7 @@ describe('every command prints exactly one JSON document with --json', () => {
       // serve runs a server; through the synchronous runCli it refuses
       // with one error document (it is tested in src/web/__tests__).
       serve: () => run(['serve', '--json'], root),
+      health: () => run(['health', '--json'], root),
       rebuild: () => run(['rebuild', '--json'], root),
       sync: () => {
         git(join(root, '.board'), 'init', '-q');
@@ -130,6 +131,12 @@ describe('every command prints exactly one JSON document with --json', () => {
     expect(docs.inbox).toMatchObject({ actor: 'watcher', advanced: true });
     expect((docs.inbox as { entries: unknown[] }).entries).toHaveLength(11);
     expect(docs.watch).toMatchObject({ error: { exitCode: 1, reason: 'streaming-command' } });
+    expect(docs.health).toMatchObject({
+      staleClaims: [],
+      closeMerged: { ready: [], heldByDecision: [], missingPr: [] },
+      late: null,
+      check: null,
+    });
     expect(docs.rebuild).toMatchObject({ folded: 11, rejected: 0 });
     expect(docs.sync).toMatchObject({ remote: null, pushed: false, warnings: [] });
     expect(docs['import-change']).toMatchObject({ source: 'openspec', ref: 'c', events: 1 });

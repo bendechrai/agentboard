@@ -27,6 +27,7 @@ export const SPEC_TOOLS: readonly string[] = [
   'board_inbox',
   'board_import_change',
   'board_close_merged',
+  'board_health',
 ];
 
 /** A connected client of a spawned `agentboard mcp`. */
