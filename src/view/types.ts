@@ -79,3 +79,50 @@ export interface BoardModel {
    */
   late: string[];
 }
+
+/**
+ * A board feed message saying that new effective events follow the head
+ * (board-feed: "Append and resync messages"). Every field is always
+ * present, so the message is sent as JSON unchanged.
+ */
+export interface AppendMessage {
+  type: 'append';
+  /** The position id `<head>.<digest>` after this message (board-feed: "Position ids"). */
+  id: string;
+  /**
+   * The newly effective events, in fold order, each with outcome `applied`
+   * and reason null. Empty only in the first message of a feed started
+   * without a position on a board with no effective event.
+   */
+  events: EventView[];
+  /**
+   * The current state of every ticket named by `events` (each once),
+   * ascending by id, read from the same snapshot as the events.
+   */
+  tickets: Ticket[];
+  /**
+   * The whole board `meta` (as `BoardState.meta`) from the same snapshot
+   * when one of `events` is a `board.meta`; otherwise null.
+   */
+  meta: Record<string, JsonValue> | null;
+}
+
+/**
+ * A board feed message telling the consumer to reload its snapshot: some
+ * change was not a pure append (board-feed: "Append and resync messages").
+ */
+export interface ResyncMessage {
+  type: 'resync';
+  /** The position id after this message. */
+  id: string;
+  /**
+   * The late events: newly effective and sorting before the previous head,
+   * in fold order, each with outcome `applied`.
+   */
+  late: EventView[];
+  /** Hashes of delivered events that are no longer effective, in fold order. */
+  removed: string[];
+}
+
+/** One message of the board feed. */
+export type FeedMessage = AppendMessage | ResyncMessage;

@@ -102,3 +102,14 @@ export function effectiveExcept(
 export function dataVersion(db: DatabaseSync): number {
   return Number(db.prepare('PRAGMA data_version').get()?.data_version);
 }
+
+/**
+ * The change marker of `watch` and the board feed: `PRAGMA data_version`
+ * (moves when another connection commits) and `total_changes()` (moves
+ * when this connection changes rows, including commits by other callers
+ * sharing the `Board`, which `data_version` never counts). Reads no table.
+ */
+export function changeMarker(db: DatabaseSync): string {
+  const row = db.prepare('SELECT total_changes() AS n').get();
+  return `${String(dataVersion(db))}:${String(row?.n)}`;
+}
