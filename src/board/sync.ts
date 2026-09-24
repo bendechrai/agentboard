@@ -181,7 +181,11 @@ export interface SyncResult {
  *    message containing `no remote configured`. Exit 0. Several remotes, no
  *    upstream and no `origin`: `BoardError(1, 'ambiguous-remote')` naming
  *    them (after the commit).
- * 4. Pull: when the branch exists on the remote,
+ * 4. Pull: first, when anything is still staged after step 2 (content
+ *    sync does not commit), `BoardError(3, 'sync-failed')` naming those
+ *    paths and saying to commit or unstage them in the board repository;
+ *    nothing is pulled or pushed and they stay staged. Then, when the
+ *    branch exists on the remote,
  *    `git pull --rebase --no-autostash <remote> <branch>`; when it does not
  *    (a fresh, empty remote), no pull. Before the pull `sync` lists
  *    `events/`; `arrived` is the set of event files present after the pull
@@ -241,11 +245,11 @@ export function syncBoard(board: Board, options?: SyncOptions): SyncResult {
 
   // 1. Stage. 2. Commit when something is staged.
   const { commit, committedEvents } = stageAndCommit(git, board);
-  const lines = [
-    commit === null
+  const committedLine = (id: string | null): string =>
+    id === null
       ? 'nothing new to commit'
-      : `committed ${plural(committedEvents, 'event file')} (${commit.slice(0, 12)})`,
-  ];
+      : `committed ${plural(committedEvents, 'event file')} (${id.slice(0, 12)})`;
+  const lines = [committedLine(commit)];
   const base = { dir, commit, committedEvents, branch, hostTracked, warnings };
 
   // 3. Remote.
@@ -266,6 +270,7 @@ export function syncBoard(board: Board, options?: SyncOptions): SyncResult {
   }
 
   // 4. Pull and 5. push, retried once when the push is rejected.
+  checkNothingForeignStaged(git, dir);
   const before = new Set(eventFileNames(board));
   const upstreamSet = upstream === null;
   let pulled = false;
@@ -285,6 +290,8 @@ export function syncBoard(board: Board, options?: SyncOptions): SyncResult {
 
   // 6. Catch-up.
   const report = catchUp(board);
+  // A rebase replays the local commit: report the commit on the branch now.
+  const onBranch = commit === null ? null : git.run('rev-parse', 'HEAD').trim();
 
   lines.push(
     pulled
@@ -292,8 +299,10 @@ export function syncBoard(board: Board, options?: SyncOptions): SyncResult {
       : `${remote} has no branch ${branch} yet; nothing to pull`,
   );
   lines.push(`pushed ${branch} to ${remote}${upstreamSet ? ' and set it as the upstream' : ''}`);
+  lines[0] = committedLine(onBranch);
   return {
     ...base,
+    commit: onBranch,
     remote,
     pulled,
     pushed: true,
@@ -495,24 +504,54 @@ function eventFileNames(board: Board): string[] {
   );
 }
 
-/** Steps 1 and 2: stage new event files and `.gitignore`, and commit when anything is staged. */
+/** Steps 1 and 2: stage new event files and `.gitignore`, and commit them when any is staged. */
 function stageAndCommit(
   git: GitRunner,
   board: Board,
 ): { commit: string | null; committedEvents: number } {
-  const paths = ['events', ':(exclude)events/.tmp-*'];
+  const own = ['events', ':(exclude)events/.tmp-*'];
   if (existsSync(join(board.dir, '.gitignore'))) {
-    paths.push('.gitignore');
+    own.push('.gitignore');
   }
-  git.run('add', '--ignore-removal', '--', ...paths);
-  const staged = zList(git.run('diff', '--cached', '--name-only', '-z'));
+  git.run('add', '--ignore-removal', '--', ...own);
+  const staged = zList(git.run('diff', '--cached', '--name-only', '-z', '--', ...own));
   if (staged.length === 0) {
     return { commit: null, committedEvents: 0 };
   }
-  const added = zList(git.run('diff', '--cached', '--name-only', '--diff-filter=A', '-z'));
+  const added = zList(
+    git.run('diff', '--cached', '--name-only', '--diff-filter=A', '-z', '--', ...own),
+  );
   const committedEvents = added.filter((path) => EVENT_PATH.test(path)).length;
-  git.run('commit', '--quiet', '--no-verify', '-m', syncCommitMessage(committedEvents));
+  // The pathspec limits the commit to sync's own paths: anything else
+  // already staged stays staged and uncommitted.
+  git.run(
+    'commit',
+    '--quiet',
+    '--no-verify',
+    '-m',
+    syncCommitMessage(committedEvents),
+    '--',
+    ...own,
+  );
   return { commit: git.run('rev-parse', 'HEAD').trim(), committedEvents };
+}
+
+/**
+ * Refuses to pull while content other than sync's own is staged in the
+ * board repository: `pull --rebase` cannot run over it, and sync never
+ * commits it.
+ */
+function checkNothingForeignStaged(git: GitRunner, dir: string): void {
+  const foreign = zList(git.run('diff', '--cached', '--name-only', '-z')).sort();
+  if (foreign.length > 0) {
+    throw new BoardError(
+      3,
+      'sync-failed',
+      `the board repository at ${dir} has staged changes that agentboard sync does not commit: ` +
+        `${foreign.map((p) => asciiText(p)).join(', ')}; commit them or unstage them ` +
+        `(git -C ${dir} restore --staged <path>) in the board repository, then run agentboard sync again`,
+    );
+  }
 }
 
 /** The remote of the branch's configured upstream, or null when it has none. */
