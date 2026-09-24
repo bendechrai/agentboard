@@ -199,11 +199,16 @@ describe('--help, -h and help in process', () => {
 
   it('help with a subtopic after a one-word command exits 1 pointing to its help', () => {
     const out = run(['help', 'claim', 'extra'], empty(), cliEnv());
-    expect(out).toEqual({
-      code: 1,
-      stdout: '',
-      stderr: "agentboard: claim has no help subtopic extra; run 'agentboard help claim'\n",
-    });
+    expect(out.code).toBe(1);
+    expect(out.stdout).toBe('');
+    // The second line is the hint (add-agent-guidance task 2.2).
+    expect(out.stderr.split('\n')).toHaveLength(3);
+    const [message, hint, end] = out.stderr.split('\n');
+    expect(message).toBe(
+      "agentboard: claim has no help subtopic extra; run 'agentboard help claim'",
+    );
+    expect(hint).toMatch(/^hint: \S/);
+    expect(end).toBe('');
   });
 
   it('help with an unknown topic exits 1 with a suggestion on stderr', () => {

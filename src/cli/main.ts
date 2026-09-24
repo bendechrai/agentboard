@@ -119,9 +119,13 @@ export function errorDocument(error: unknown, context?: HintContext): ErrorDocum
  *    or, when parsing failed, the name of the registry command the leading
  *    arguments select (the longest match, as `parseArgs` selects it), else
  *    null; `id` the parsed `id` value when there is one (undefined when
- *    parsing failed); `actor` the parsed `--as` when non-empty, else
- *    `AGENTBOARD_ACTOR` from `io.env` when non-empty, else undefined. The
- *    same applies to a failing streaming command in `runCliAsync`.
+ *    parsing failed); `actor` the parsed `--as` when non-empty (when
+ *    parsing failed: the argument after the first `--as`, or the value of
+ *    the first `--as=<value>`, before any lone `--`), else
+ *    `AGENTBOARD_ACTOR` from `io.env` when non-empty, else undefined. So
+ *    `close <id> --as orch` without a disposition hints commands with
+ *    `--as orch`. The same applies to a failing streaming command in
+ *    `runCliAsync`.
  *
  * Steps 1 and 2 happen before any board lookup, so a usage error or a
  * missing actor exits 1 even where there is no board. Diagnostics never go

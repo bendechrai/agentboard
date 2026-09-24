@@ -89,8 +89,9 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
  * - MCP, when `command` is an MCP tool (`toolName`, not in
  *   `EXCLUDED_COMMANDS`): `<tool> <json>` without quotes, where `<json>` is
  *   `JSON.stringify` of `args` with its keys in the order given (for
- *   example `board_inbox {"as":"reviewer"}`), and `true` stays a JSON
- *   boolean. The JSON is accepted by `toolArguments` for that tool.
+ *   example `board_inbox {"as":"reviewer"}`); `true` stays a JSON
+ *   boolean, and the value of an integer argument (a checklist index) is a
+ *   JSON number. The JSON is accepted by `toolArguments` for that tool.
  * - MCP, when `command` is not a tool (`init`, `sync`, `rebuild`, `watch`,
  *   `mcp`, `version`, `help`): the CLI form, which the agent runs in a
  *   shell.
@@ -119,7 +120,12 @@ export function hintStep(
  *
  * Contract per reason (I is the id or `<id>`, A the actor or `<actor>`; a
  * step `X` below means `hintStep(context.surface, ...)` of it, so on MCP
- * a tool step becomes a tool call):
+ * a tool step becomes a tool call). Every hint of an exit 1 or exit 4
+ * reason contains at least one step (board-agent-guidance: the hint names
+ * a command that moves the caller forward); where an entry below names no
+ * step, the hint ends with step `help <command>`, or step `help` when the
+ * command is unknown or is `help`. Over MCP, the only steps written in
+ * CLI form are those of commands that are not tools.
  *
  * Exit 1:
  * - `usage`: CLI: step `help <command>` when the command is known and is
@@ -131,13 +137,18 @@ export function hintStep(
  *   `agentboard mcp`. MCP: says to pass the `as` argument (the words
  *   `as argument` appear) or to start the server with
  *   `'agentboard mcp --as <actor>'` (that step, in its CLI form), and does
- *   not tell the agent to set `AGENTBOARD_ACTOR`.
+ *   not mention `AGENTBOARD_ACTOR`, which a tool caller cannot set.
  * - `malformed-event`: an agentboard bug; names step `version` to include in
  *   a report.
  * - `id-too-short`, `ambiguous-id`: give a longer unique prefix; step
  *   `list`.
- * - `secret-like`: remove the secret, or pass `--allow-secret-like` (the
- *   text `--allow-secret-like` appears) for a false positive.
+ * - `secret-like`: remove the secret from the text; for a command that has
+ *   the flag `--allow-secret-like` (`new`, `comment`, `handoff`), also
+ *   pass it for a false positive (the text `--allow-secret-like` appears).
+ *   For a known command without that flag (`import-change`, whose text
+ *   comes from the tasks file) the flag is never mentioned: the secret
+ *   must be removed at its source, the tasks file (the word `tasks`
+ *   appears).
  * - `malformed-task-ref`: the form `<source>:<ref>#<item>` and the
  *   OpenSpec shorthand `--change <name> --group <n>`, both literally.
  * - `missing-status`: step `move` with `id` I, `status` `<status>`, `as` A.
@@ -157,8 +168,11 @@ export function hintStep(
  * - `unknown-cursor`: step `inbox` with `as` A (and `peek`).
  * - `unsupported-source`: only the `openspec` adapter ships; step `new`
  *   with `title` `<title>`, `task` `<source>:<ref>#<item>`, A.
- * - `tasks-not-found`, `malformed-tasks`: names
- *   `openspec/changes/<name>/tasks.md`.
+ * - `tasks-not-found`, `malformed-tasks`: fix the tasks file named in the
+ *   message (the word `tasks` appears), then step `import-change` with
+ *   `name` `<change>`, A. The OpenSpec directory layout itself is never
+ *   written here: only `src/board/openspec.ts` may name it (the layering
+ *   test in src/board/__tests__/sources.test.ts).
  * - `git-missing`, `gh-missing`: install `git` or `gh` and put it on the
  *   `PATH` (the word `PATH` appears); `gh-missing` also names
  *   `gh auth login`.

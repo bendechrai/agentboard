@@ -388,4 +388,3 @@ export async function serveMcp(io: McpIo): Promise<ExitCode> {
   }
   return 0;
 }
-
