@@ -12,4 +12,4 @@ passing with coverage at or above 90 percent.
 
 ## 2. Documentation
 
-- [ ] 2.1 Update README.md (the MCP section, "Installing agent guidance into a project", and the from-source install steps recommending `agents install --mcp-command agentboard` after `npm link`) and verify with `make ascii` and by running the documented commands on a fresh temporary project with a linked build
+- [x] 2.1 Update README.md (the MCP section, "Installing agent guidance into a project", and the from-source install steps recommending `agents install --mcp-command agentboard` after `npm link`) and verify with `make ascii` and by running the documented commands on a fresh temporary project with a linked build
