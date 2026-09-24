@@ -1,0 +1,40 @@
+agentboard top  todo:2 tests:1 implementing:1 review:1 blocked:1 merged:0  last event just now  /work/agentboard/.board                     
+todo 2         |tests 1        |implementing 1 |review 1       |blocked 1      |merged 0            |activity                               
+Caf\u00E9 \u00~|Render the boa~|Decode raw key~|Review the fra~|Wait for the f~|                    |just now impl 01D0000000 handed off to~
+orch           |test-author    |impl           |rev            |-              |                    |10m ago  late impl 01D0000000 commente~
+Write the READ~|               |               |               |               |                    |19m ago  impl 01D0000000 moved to impl~
+-              |               |               |               |               |                    |20m ago  impl 01D0000000 moved to tests
+               |               |               |               |               |                    |36m ago  orch 01F0000000 closed (decis~
+               |               |               |               |               |                    |37m ago  orch 01F0000000 moved to merg~
+               |               |               |               |               |                    |38m ago  orch 01F0000000 moved to revi~
+               |               |               |               |               |                    |39m ago  orch 01F0000000 moved to impl~
+               |               |               |               |               |                    |40m ago  orch 01F0000000 moved to tests
+               |               |               |               |               |                    |48m ago  orch 01E0000000 moved to bloc~
+               |               |               |               |               |                    |49m ago  orch 01E0000000 moved to impl~
+               |               |               |               |               |                    |50m ago  orch 01E0000000 moved to tests
+               |               |               |               |               |                    |59m ago  test-author 01ARZ3NDEK moved ~
+               |               |               |               |               |                    |1h ago   test-author 01ARZ3NDEK claimed
+               |               |               |               |               |                    |1h ago   impl 01ARYZ6S41 linked pr 42  
+               |               |               |               |               |                    |1h ago   impl 01ARYZ6S41 checked 1     
+               |               |               |               |               |                    |1h ago   impl 01ARYZ6S41 commented: DE~
+               |               |               |               |               |                    |2h ago   impl 01ARYZ6S41 commented: RE~
+               |               |               |               |               |                    |3h ago   impl 01ARYZ6S41 commented: DE~
+               |               |               |               |               |                    |4h ago   impl 01ARYZ6S41 moved to impl~
+               |               |               |               |               |                    |4h ago   impl 01ARYZ6S41 moved to tests
+               |               |               |               |               |                    |5h ago   impl 01ARYZ6S41 claimed       
+               |               |               |               |               |                    |22h ago  orch 01C0000000 assigned to o~
+               |               |               |               |               |                    |23h ago  orch 01F0000000 created Pick ~
+               |               |               |               |               |                    |23h ago  orch 01E0000000 created Wait ~
+               |               |               |               |               |                    |1d ago   orch 01D0000000 created Revie~
+               |               |               |               |               |                    |1d ago   orch 01C0000000 created Caf\u~
+               |               |               |               |               |                    |1d ago   orch 01BX5ZZKBK created Write~
+               |               |               |               |               |                    |1d ago   orch 01ARZ3NDEK created Rende~
+               |               |               |               |               |                    |1d ago   orch 01ARYZ6S41 created Decod~
+               |               |               |               |               |                    |1d ago   orch - set project            
+               |               |               |               |               |                    |                                       
+               |               |               |               |               |                    |                                       
+               |               |               |               |               |                    |                                       
+               |               |               |               |               |                    |                                       
+               |               |               |               |               |                    |                                       
+               |               |               |               |               |                    |                                       
+[1 board] 2 feed 3 lanes  tab  hjkl move  enter open  c closed  ? help  q quit                                                              
