@@ -35,13 +35,14 @@ full workflow, and docs/adr/ for design decisions.
   `agents check`, the `init` suggestion, and the guide over MCP
   (instructions summary and `agentboard://guide` resources). There are no
   open OpenSpec changes.
+- This repository uses its own guidance: `agentboard agents install`
+  wrote `.claude/skills/agentboard/SKILL.md` and the `agentboard:` apply
+  and archive guidance in `openspec/config.yaml`; `agentboard agents
+  check` reports both current.
 
 ## What to do next
 
-1. Run `agentboard agents install` in this repository and commit the
-   skill and OpenSpec guidance it writes (see CONTRIBUTING.md, "Using
-   agentboard in a project").
-2. A human reviews `staging` and promotes it to `main` (a merge-commit PR
+1. A human reviews `staging` and promotes it to `main` (a merge-commit PR
    from `staging`), then publishes the npm package.
 
 Each task group uses the three-role loop from CONTRIBUTING.md

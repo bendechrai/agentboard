@@ -30,3 +30,13 @@ schema: spec-driven
 #     archive:
 #       guidance:
 #         - Summarize the archive outcome before finishing
+operations:
+  apply:
+    guidance:
+      - "agentboard: Before implementing a task group, claim its ticket: find it with `agentboard list --change <change>` and run `agentboard claim <id> --as <you>`. If the change has no tickets yet, run `agentboard import-change <change> --as <you>` first." # agentboard-guidance: v1
+      - "agentboard: Before you stop, hand the ticket off with `agentboard handoff <id> --to <next> --status <status> --note \"<what is done>\" --as <you>`, or say why with `agentboard comment <id> \"<why>\" --as <you>` and block it with `agentboard move <id> blocked --as <you>`." # agentboard-guidance: v1
+      - "agentboard: Tick finished tasks in tasks.md in the implementing pull request; the board is not the record of completion. Run `agentboard help agents` for the full guide." # agentboard-guidance: v1
+  archive:
+    guidance:
+      - "agentboard: Run `agentboard close-merged --as <you>` first, then check with `agentboard list --change <change>` that no ticket of the change is still open; do not archive while one is." # agentboard-guidance: v1
+      - "agentboard: Promote every DECISION: comment on the change tickets to a spec delta or ADR before archiving." # agentboard-guidance: v1
