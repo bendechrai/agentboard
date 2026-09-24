@@ -423,11 +423,18 @@ Names are indicative; the test author's stubs are authoritative.
   for the target scale and freed on exit.
 - [A tab left open for days] -> the feed's delivered set grows by one hash
   per effective event, like `watch`'s examined set (ADR 0003).
-- [A local user who can read the terminal or the process list sees the
-  token] -> out of scope, stated in the README: the token protects against
-  web pages and other users' processes, not against your own account.
-  `--open` passes the URL to the system opener, which is visible in the
-  process list for the moment it runs.
+- [A local user who can read the terminal sees the token] -> out of
+  scope, stated in the README: the token protects against web pages and
+  other users' processes, not against your own account.
+- [`--open` puts the token on a command line] -> on macOS, and on Linux
+  unless `/proc` is mounted with `hidepid`, every local user can read
+  process command lines with `ps`. On macOS `open` passes the URL by Apple
+  Event, so only the short-lived `open` process shows it; on Linux
+  `xdg-open` starts the browser with the URL (including `#token=`) as an
+  argument, where it can stay visible for the browser's lifetime if
+  `--open` started it. With `--open` on a shared machine the token does
+  not protect against other users' processes; the README advises copying
+  the printed URL by hand there instead.
 - [The start-up URL is in browser history] -> the page drops the fragment
   with `history.replaceState`, but a browser may still record the URL it
   first loaded, fragment included, in its history database. That is

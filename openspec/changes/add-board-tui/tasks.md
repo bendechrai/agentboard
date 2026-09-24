@@ -2,10 +2,10 @@
 
 Depends on `add-board-web` groups 1 and 2 (the view-model and the board
 feed) and on its snapshot loader (group 3); it does not need the web
-client. Archive after `add-board-web` and `add-board-insights`; the
-`board-cli` delta text includes both (if this change is archived before
-`add-board-insights`, drop `health` and `board_health` from that text
-first). Every group is delivered by a test author, an implementer and a
+client. The `board-cli` delta text is the current main spec (with
+`add-board-web` archived) plus `top`; if `add-board-insights` is archived
+first, re-sync that MODIFIED text with the main spec (keeping `health` and
+`board_health`) before archiving this change. Every group is delivered by a test author, an implementer and a
 reviewer in turn (see CONTRIBUTING.md), on one branch per group named
 `<area>/<group-slug>` and cut from `origin/staging`; the test author's
 first commit defines the group's exported API as stubs. Verification for

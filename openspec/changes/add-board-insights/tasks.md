@@ -1,8 +1,10 @@
 # Tasks
 
 Depends on `add-board-web` (all groups): the view-model layer, the board
-feed, the server and the client. Archive after `add-board-web`; the
-`board-cli` delta text includes `add-board-web`'s additions. Every group
+feed, the server and the client. The `board-cli` delta text is the
+current main spec (with `add-board-web` archived) plus `health`; if
+`add-board-tui` is archived first, re-sync that MODIFIED text with the
+main spec (keeping `top`) before archiving this change. Every group
 is delivered by a test author, an implementer and a reviewer in turn (see
 CONTRIBUTING.md), on one branch per group named `<area>/<group-slug>` and
 cut from `origin/staging`; the test author's first commit defines the
