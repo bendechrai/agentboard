@@ -34,12 +34,11 @@ full workflow, and docs/adr/ for design decisions.
   checklists, error hints on the CLI and MCP, `agents install` and
   `agents check`, the `init` suggestion, and the guide over MCP
   (instructions summary and `agentboard://guide` resources).
-- The `add-mcp-command` OpenSpec change is in progress: `agents install
-  --mcp-command <executable>` writes a local MCP command (for example
-  `agentboard` after `npm link`) instead of the `npx` entry, which only
-  works once the package is published, and both entry shapes are
-  recognised as managed. Group 1 (the flag and managed entries) is merged
-  (#29); group 2 (README documentation) is on `docs/mcp-command`.
+- The `add-mcp-command` OpenSpec change is complete and archived as
+  `openspec/changes/archive/2026-09-24-add-mcp-command/`:
+  `agents install --mcp-command <executable>` writes a local MCP command
+  (for example `agentboard` after `npm link`) instead of the `npx` entry,
+  and both entry shapes are managed. There are no open OpenSpec changes.
 - This repository uses its own guidance: `agentboard agents install`
   wrote `.claude/skills/agentboard/SKILL.md` and the `agentboard:` apply
   and archive guidance in `openspec/config.yaml`; `agentboard agents
@@ -47,10 +46,9 @@ full workflow, and docs/adr/ for design decisions.
 
 ## What to do next
 
-1. Land `add-mcp-command` group 2 (docs) on `staging`, then archive the
-   change.
-2. A human reviews `staging` and promotes it to `main` (a merge-commit PR
-   from `staging`), then publishes the npm package.
+1. A human reviews `staging` and promotes it to `main` (a merge-commit PR
+   from `staging`) when ready. Publishing to npm is deferred: agentboard
+   is used locally through `npm link`.
 
 Each task group uses the three-role loop from CONTRIBUTING.md
 ("Three-agent workflow per task group"):
