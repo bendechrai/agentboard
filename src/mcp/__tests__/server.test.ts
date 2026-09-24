@@ -91,18 +91,37 @@ function ok(result: ToolCallResult): Record<string, unknown> {
   return result.structuredContent;
 }
 
-/** The structured content of a failed call. */
+/**
+ * The structured content of a failed call. Its text content is the
+ * message, then `hint: <hint>` on a second line when there is a hint
+ * (add-agent-guidance task 2.2).
+ */
 function failed(result: ToolCallResult): {
   exitCode: number;
   reason: string | null;
   message: string;
+  hint: string | null;
 } {
   expect(result.isError, JSON.stringify(result)).toBe(true);
+  const content = result.structuredContent as { message: string; hint: string | null };
   expect(result.content).toEqual([
-    { type: 'text', text: (result.structuredContent as { message: string }).message },
+    {
+      type: 'text',
+      text: content.hint === null ? content.message : `${content.message}\nhint: ${content.hint}`,
+    },
   ]);
-  expect(Object.keys(result.structuredContent).sort()).toEqual(['exitCode', 'message', 'reason']);
-  return result.structuredContent as { exitCode: number; reason: string | null; message: string };
+  expect(Object.keys(result.structuredContent).sort()).toEqual([
+    'exitCode',
+    'hint',
+    'message',
+    'reason',
+  ]);
+  return result.structuredContent as {
+    exitCode: number;
+    reason: string | null;
+    message: string;
+    hint: string | null;
+  };
 }
 
 function newId(h: Harness, actor = 'orch'): string {
@@ -218,9 +237,19 @@ describe('callTool', () => {
     expect(err).toMatchObject({ exitCode: 1, reason: 'missing-actor' });
     expect(err.message).toContain('--as');
     expect(err.message).toContain('AGENTBOARD_ACTOR');
-    expect(err).toEqual(
-      (oneJson(run(['comment', id, 'hi', '--json'], h.root)) as { error: unknown }).error,
-    );
+    // Exactly the CLI's exit code, reason and message; the hint is written
+    // for a tool caller (add-agent-guidance task 2.2), so it differs.
+    const cli = (
+      oneJson(run(['comment', id, 'hi', '--json'], h.root)) as {
+        error: { exitCode: number; reason: string; message: string; hint: string };
+      }
+    ).error;
+    expect({ exitCode: err.exitCode, reason: err.reason, message: err.message }).toEqual({
+      exitCode: cli.exitCode,
+      reason: cli.reason,
+      message: cli.message,
+    });
+    expect(err.hint).not.toBe(cli.hint);
     expect(count(h.boardDir)).toBe(before);
   });
 

@@ -8,7 +8,9 @@
 import { openBoard, type Board } from '../store/board.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
 import { findBoard } from '../store/locate.js';
-import { parseArgs, resolveActor, type ParsedCommand } from './parse.js';
+import { hintFor, type HintContext } from '../guidance/hints.js';
+import { ACTOR_ENV, parseArgs, resolveActor, type ParsedCommand } from './parse.js';
+import { COMMANDS } from './registry.js';
 import type { BoardOpenOptions, CommandSpec, Env, RunContext } from './types.js';
 
 /** The process surroundings `runCli` uses; nothing else is read or written. */
@@ -35,13 +37,27 @@ export interface AsyncCliIo extends CliIo {
   stopSignal(): AbortSignal;
 }
 
-/** The `--json` document printed on stdout when a command fails. */
+/**
+ * The `--json` document printed on stdout when a command fails, and (as
+ * `error`) the structured content of a failed MCP tool call.
+ *
+ * Decision (add-agent-guidance task group 2): the CLI's `--json` error
+ * document carries the `hint` too, so an agent reading JSON gets the same
+ * advice as one reading stderr, and the MCP error content stays exactly
+ * `errorDocument(...).error`.
+ */
 export interface ErrorDocument {
   error: {
     exitCode: Exclude<ExitCode, 0>;
     /** The `BoardError` reason, or null. */
     reason: string | null;
     message: string;
+    /**
+     * `hintFor(error, context)` (board-agent-guidance: "Error hints"): one
+     * ASCII line naming what to run next, or null when the error has no
+     * reason (an unexpected failure). Always present.
+     */
+    hint: string | null;
   };
 }
 
@@ -55,14 +71,18 @@ export function exitCodeFor(error: unknown): Exclude<ExitCode, 0> {
 
 /**
  * The `ErrorDocument` for a thrown value: `exitCodeFor(error)`, the
- * `BoardError` reason (null for other errors) and the error message. Pure.
+ * `BoardError` reason (null for other errors), the error message and
+ * `hintFor(error, context)`. `context` defaults to
+ * `{ surface: 'cli', command: null }` (placeholders for the id and actor).
+ * Pure.
  */
-export function errorDocument(error: unknown): ErrorDocument {
+export function errorDocument(error: unknown, context?: HintContext): ErrorDocument {
   return {
     error: {
       exitCode: exitCodeFor(error),
       reason: error instanceof BoardError ? error.reason : null,
       message: error instanceof Error ? error.message : String(error),
+      hint: hintFor(error, context ?? { surface: 'cli', command: null }),
     },
   };
 }
@@ -87,10 +107,24 @@ export function errorDocument(error: unknown): ErrorDocument {
  *    nothing else; without it, `output.text`. Returns `output.exitCode`
  *    when present (1 for a divergent `rebuild --check`), otherwise 0.
  * 5. Failure (anything thrown in steps 1 to 3): stderr receives
- *    `agentboard: <message>` and a newline; with `--json` (detected
- *    anywhere in `io.argv`, even when parsing failed), stdout also receives
- *    `JSON.stringify(errorDocument(error))` and a newline. Returns
- *    `exitCodeFor(error)`.
+ *    `agentboard: <message>` and a newline, then, when the error has a
+ *    hint, `hint: <hint>` and a newline (board-agent-guidance: "Error
+ *    hints"); with `--json` (detected anywhere in `io.argv`, even when
+ *    parsing failed), stdout also receives
+ *    `JSON.stringify(errorDocument(error, context))` and a newline, whose
+ *    `hint` is the same text. Returns `exitCodeFor(error)`.
+ *
+ *    The hint context: surface `cli`; `command` the parsed command's name,
+ *    or, when parsing failed, the name of the registry command the leading
+ *    arguments select (the longest match, as `parseArgs` selects it), else
+ *    null; `id` the parsed `id` value when there is one (undefined when
+ *    parsing failed); `actor` the parsed `--as` when non-empty (when
+ *    parsing failed: the argument after the first `--as`, or the value of
+ *    the first `--as=<value>`, before any lone `--`), else
+ *    `AGENTBOARD_ACTOR` from `io.env` when non-empty, else undefined. So
+ *    `close <id> --as orch` without a disposition hints commands with
+ *    `--as orch`. The same applies to a failing streaming command in
+ *    `runCliAsync`.
  *
  * Steps 1 and 2 happen before any board lookup, so a usage error or a
  * missing actor exits 1 even where there is no board. Diagnostics never go
@@ -212,12 +246,80 @@ function context(io: CliIo, parsed: ParsedCommand, opened: LazyBoard): RunContex
 
 /** Step 5 of `runCli`: reports `error` and returns its exit code. */
 function fail(io: CliIo, parsed: ParsedCommand | null, error: unknown): Exclude<ExitCode, 0> {
-  const doc = errorDocument(error);
+  const doc = errorDocument(error, cliHintContext(io, parsed));
   io.stderr(`agentboard: ${doc.error.message}\n`);
+  if (doc.error.hint !== null) {
+    io.stderr(`hint: ${doc.error.hint}\n`);
+  }
   if (parsed?.json ?? io.argv.includes('--json')) {
     io.stdout(`${JSON.stringify(doc)}\n`);
   }
   return doc.error.exitCode;
+}
+
+/** A non-empty string, else undefined. */
+function nonEmpty(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+/** The hint context of a failed CLI run (step 5 of `runCli`). */
+function cliHintContext(io: CliIo, parsed: ParsedCommand | null): HintContext {
+  const fromEnv = nonEmpty(io.env[ACTOR_ENV]);
+  if (parsed !== null) {
+    const id = nonEmpty(parsed.values.id);
+    const actor = nonEmpty(parsed.values.as) ?? fromEnv;
+    return {
+      surface: 'cli',
+      command: parsed.command.name,
+      ...(id === undefined ? {} : { id }),
+      ...(actor === undefined ? {} : { actor }),
+    };
+  }
+  const actor = argvActor(io.argv) ?? fromEnv;
+  return {
+    surface: 'cli',
+    command: leadingCommand(io.argv),
+    ...(actor === undefined ? {} : { actor }),
+  };
+}
+
+/**
+ * The registry command the leading arguments select (the longest name
+ * whose words equal them, as `parseArgs` selects it), or null.
+ */
+function leadingCommand(argv: readonly string[]): string | null {
+  let best: string | null = null;
+  for (const command of COMMANDS) {
+    const words = command.name.split(' ');
+    if (
+      words.every((word, i) => argv[i] === word) &&
+      (best === null || words.length > best.split(' ').length)
+    ) {
+      best = command.name;
+    }
+  }
+  return best;
+}
+
+/**
+ * The actor of arguments that failed to parse: the argument after the
+ * first `--as`, or the value of the first `--as=<value>`, before any lone
+ * `--`; undefined when empty or absent.
+ */
+function argvActor(argv: readonly string[]): string | undefined {
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--') {
+      return undefined;
+    }
+    if (arg === '--as') {
+      return nonEmpty(argv[i + 1]);
+    }
+    if (arg?.startsWith('--as=') === true) {
+      return nonEmpty(arg.slice('--as='.length));
+    }
+  }
+  return undefined;
 }
 
 /**

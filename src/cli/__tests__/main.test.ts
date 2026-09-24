@@ -8,6 +8,7 @@ import { SECRET_PATTERN_NAMES } from '../../board/secrets.js';
 import { version } from '../../index.js';
 import { BoardError } from '../../store/errors.js';
 import { ev, eventNames, git, gitRepo, putEvent, tempDir } from '../../store/__tests__/helpers.js';
+import { renderHint } from '../../guidance/hints.js';
 import { errorDocument, exitCodeFor } from '../main.js';
 import { CLOSE_RULE, COMMANDS } from '../registry.js';
 import { cliEnv, oneJson, project, run, written, type Run } from './cli-helpers.js';
@@ -289,12 +290,23 @@ describe('exit codes and error output', () => {
   it('exitCodeFor and errorDocument map BoardError and anything else', () => {
     const err = new BoardError(4, 'already-assigned', 'held by impl');
     expect(exitCodeFor(err)).toBe(4);
+    // The hint (add-agent-guidance task 2.2): CLI context with placeholders by default.
+    const cli = { surface: 'cli', command: null } as const;
     expect(errorDocument(err)).toEqual({
-      error: { exitCode: 4, reason: 'already-assigned', message: 'held by impl' },
+      error: {
+        exitCode: 4,
+        reason: 'already-assigned',
+        message: 'held by impl',
+        hint: renderHint('already-assigned', cli),
+      },
     });
+    expect(errorDocument(err).error.hint).toContain("'agentboard inbox --as <actor>'");
+    const mcp = { surface: 'mcp', command: 'claim', id: '01J9K3', actor: 'reviewer' } as const;
+    expect(errorDocument(err, mcp).error.hint).toBe(renderHint('already-assigned', mcp));
+    expect(errorDocument(err, mcp).error.hint).toContain('board_inbox {"as":"reviewer"}');
     expect(exitCodeFor(new Error('disk on fire'))).toBe(5);
     expect(errorDocument(new Error('disk on fire'))).toEqual({
-      error: { exitCode: 5, reason: null, message: 'disk on fire' },
+      error: { exitCode: 5, reason: null, message: 'disk on fire', hint: null },
     });
   });
 });
@@ -670,8 +682,9 @@ describe('other commands', () => {
     const out = run(['mcp'], tempDir());
     expect(out.code).toBe(1);
     expect(out.stdout).toBe('');
-    expect(out.stderr).toBe(
-      'agentboard: agentboard mcp serves MCP over stdio and runs only from the agentboard executable\n',
+    // Then the hint line (add-agent-guidance task 2.2).
+    expect(out.stderr).toMatch(
+      /^agentboard: agentboard mcp serves MCP over stdio and runs only from the agentboard executable\nhint: \S[^\n]*\n$/,
     );
   });
 

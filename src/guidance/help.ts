@@ -24,6 +24,7 @@ import type {
 import { asciiText } from '../board/text.js';
 import { COMMAND_GROUPS } from '../cli/types.js';
 import { BoardError } from '../store/errors.js';
+import { agentsHelpOutput } from './guide.js';
 import { unknownCommandMessage } from './suggest.js';
 
 /** The last line of the overview, exactly. */
@@ -310,11 +311,37 @@ export function overviewDocument(source: HelpSource): CommandHelpDocument[] {
  *   unknownCommandMessage(topic, source.commands))`, so `help clam`
  *   suggests `claim` and points to `agentboard help`.
  *
- * Topics that are not commands (`help agents`) are reserved for the agent
- * guide (task group 2 of add-agent-guidance). Pure; needs no board and no
- * actor.
+ * - exactly `['agents']`: the agent guide,
+ *   `agentsHelpOutput(source.version, role)` from `src/guidance/guide.ts`,
+ *   which also handles an unknown role. This is checked before any
+ *   command lookup, so it holds even when the registry has commands whose
+ *   first word is `agents` (add-agent-guidance task group 3 adds
+ *   `agents install` and `agents check`): `help agents` is always the
+ *   guide, while `help agents install` is that command's help like any
+ *   other two-word command. No command may be named `agents` alone.
+ *
+ * `role` is the `--role` value of the `help` command. Given with any topic
+ * other than exactly `['agents']` (including no topic), it throws
+ * `BoardError(1, 'usage')` saying that `--role` applies only to
+ * `agentboard help agents`, before anything else is checked.
+ *
+ * Pure; needs no board and no actor.
  */
-export function helpOutput(source: HelpSource, topic: readonly string[]): CommandOutput {
+export function helpOutput(
+  source: HelpSource,
+  topic: readonly string[],
+  role?: string,
+): CommandOutput {
+  if (topic.length === 1 && topic[0] === AGENTS_TOPIC) {
+    return agentsHelpOutput(source.version, role);
+  }
+  if (role !== undefined) {
+    throw new BoardError(
+      1,
+      'usage',
+      `--role applies only to 'agentboard ${HELP_AGENTS}'; run 'agentboard ${HELP_AGENTS} --role <role>'`,
+    );
+  }
   if (topic.length === 0) {
     return { json: overviewDocument(source), text: renderOverview(source) };
   }
@@ -337,6 +364,12 @@ export function helpOutput(source: HelpSource, topic: readonly string[]): Comman
   }
   return { json: commandHelpDocument(source, command), text: renderCommandHelp(source, command) };
 }
+
+/** The help topic of the agent guide: `agentboard help agents`. */
+export const AGENTS_TOPIC = 'agents';
+
+/** The command line words of the agent guide. */
+const HELP_AGENTS = `help ${AGENTS_TOPIC}`;
 
 /** The column at which command help wraps the description. */
 const WRAP_COLUMNS = 78;

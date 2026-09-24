@@ -41,9 +41,15 @@ function count(boardDir: string): number {
   return eventNames(join(boardDir, 'events')).length;
 }
 
-function errorOf(out: Run): { exitCode: number; reason: string | null; message: string } {
-  return (oneJson(out) as { error: { exitCode: number; reason: string | null; message: string } })
-    .error;
+interface ErrorFields {
+  exitCode: number;
+  reason: string | null;
+  message: string;
+  hint: string | null;
+}
+
+function errorOf(out: Run): ErrorFields {
+  return (oneJson(out) as { error: ErrorFields }).error;
 }
 
 interface ImportDoc {
@@ -158,10 +164,17 @@ describe('agentboard import-change', SLOW, () => {
     const out = run(['import-change', 'add-board-core', ...AS, '--json'], root);
     expect(out.code).toBe(1);
     expect(errorOf(out).reason).toBe('secret-like');
-    expect(out.stderr).toBe(
+    const [message, hint, end] = out.stderr.split('\n');
+    expect(out.stderr.split('\n')).toHaveLength(3);
+    expect(message).toBe(
       'agentboard: refused: the text matches the secret pattern(s) github-token; ' +
-        'the board is not a secret store\n',
+        'the board is not a secret store',
     );
+    // The hint (add-agent-guidance task 2.2) must not suggest the flag either.
+    expect(hint).toMatch(/^hint: \S/);
+    expect(hint).not.toContain('--allow-secret-like');
+    expect(end).toBe('');
+    expect(errorOf(out).hint).toBe(hint?.slice('hint: '.length));
     expect(count(boardDir)).toBe(0);
     // And indeed the flag is unknown to import-change.
     const flagged = run(

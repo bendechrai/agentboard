@@ -103,7 +103,10 @@ describe('the help data of record in the registry', () => {
     expect(h.writes).toBe(false);
     expect(h.tracksCursor ?? false).toBe(false);
     expect(h.operation).toBeNull();
-    expect(h.flags).toEqual([]);
+    // --role (add-agent-guidance task group 2): the role checklist of help agents.
+    expect(h.flags.map((f) => [f.name, f.type, f.required, f.repeatable])).toEqual([
+      ['role', 'string', false, false],
+    ]);
     expect(h.positionals.map((p) => [p.name, p.type, p.required])).toEqual([
       ['topic', 'string', false],
       ['subtopic', 'string', false],
@@ -314,7 +317,7 @@ describe('synopsis', () => {
     ['checklist tick', 'agentboard checklist tick <id> <index> --as <actor> [--json]'],
     ['inbox', 'agentboard inbox [--since <since>] [--peek] --as <actor> [--json]'],
     ['show', 'agentboard show <id> [--raw] [--json]'],
-    ['help', 'agentboard help [<topic>] [<subtopic>] [--json]'],
+    ['help', 'agentboard help [<topic>] [<subtopic>] [--role <role>] [--json]'],
     ['version', 'agentboard version [--json]'],
   ])('of %s', (name, expected) => {
     expect(synopsis(command(name))).toBe(expected);
