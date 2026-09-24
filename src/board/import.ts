@@ -129,10 +129,11 @@ export interface ImportResult {
  * 3. The units, `adapter.listUnits(dirname(board.dir), target.ref)`:
  *    `usage`, `tasks-not-found` (naming the tasks file path) or
  *    `malformed-tasks` from the adapter propagate unchanged.
- * 4. `refuseSecretLike` over every unit title and every task line text
- *    (exit 1 `secret-like`, pattern name only); there is no bypass flag.
- *    So a refused import writes nothing at all, not even for the units
- *    before the offending one.
+ * 4. `refuseSecretLike(texts, false, false)` over every unit title and
+ *    every task line text (exit 1 `secret-like`, naming the pattern only).
+ *    There is no bypass flag, so the message does not mention
+ *    `--allow-secret-like`. A refused import writes nothing at all, not
+ *    even for the units before the offending one.
  *
  * Ticket identity (board-concurrency: "keyed by their task reference"):
  * the ticket of a unit is the ticket, open or closed, whose task reference

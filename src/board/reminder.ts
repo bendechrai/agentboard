@@ -23,7 +23,8 @@ import { asciiText } from './text.js';
  * - `path`: for a source with an adapter, the adapter's tasks file path
  *   (for `openspec`, `openspec/changes/<ref>/tasks.md`; POSIX separators,
  *   relative to the host project root); null for a source without an
- *   adapter and for ad hoc tickets.
+ *   adapter, for a ref the adapter cannot map to a tasks file, and for ad
+ *   hoc tickets.
  * - `line`: the 1-based line number in that file of the task line that
  *   corresponds to the ticked checklist index, or null when the file cannot
  *   be read or the line cannot be found.
@@ -32,8 +33,14 @@ import { asciiText } from './text.js';
  *   task line must be ticked in the tasks file in the implementing PR,
  *   because the board never marks a task complete. For a source without an
  *   adapter it says that no tasks-file reminder is available for source
- *   `<source>`. For an ad hoc ticket it
- *   says the ticket has no task reference, so there is no tasks file.
+ *   `<source>`. For a ref the adapter cannot map to a tasks file (its
+ *   `locate` throws a `BoardError`, as the `openspec` adapter does for a
+ *   ref that is not a single path segment, such as the ref `a/b` of
+ *   `openspec:a/b#1`), `path` and `line` are null and the message is
+ *   exactly `no tasks-file reminder is available: <ref> does not name a
+ *   tasks file of source <source>` (both through `asciiText`); the tick
+ *   itself has already succeeded. For an ad hoc ticket it says the ticket
+ *   has no task reference, so there is no tasks file.
  */
 export interface TaskReminder {
   source: string | null;

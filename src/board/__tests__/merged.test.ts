@@ -5,15 +5,21 @@
  * script on a PATH built for the test, never the real one.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import type { Ticket } from '../../events/fold.js';
-import type { Board } from '../../store/board.js';
-import { commentTicket, linkTicket } from '../actions.js';
-import { closeMerged, ghPrViewArgs, runGh, type CloseMergedInput } from '../merged.js';
+import { openBoard, type Board } from '../../store/board.js';
+import { closeTicket, commentTicket, linkTicket } from '../actions.js';
+import {
+  closeMerged,
+  ghPrViewArgs,
+  runGh,
+  type CloseMergedInput,
+  type GhRunner,
+} from '../merged.js';
 import { showTicket } from '../tickets.js';
 import { emptyPath, fakeGhOnPath, fakeRunner, ghCalls, missingRunner } from './gh-fake.js';
 import { cleanEnv, eventCount, expectBoardError, setup, tempDir, ticketIn } from './helpers.js';
@@ -222,6 +228,89 @@ describe('closeMerged: tickets it leaves open', () => {
     expect(calls.map((c) => c[2])).toEqual(['7', '8', '9', '10']);
     expect(out.closed.map((c) => c.id)).toEqual([ids[0], ids[2]]);
     expect(out.unmerged.map((c) => c.id)).toEqual([ids[1], ids[3]]);
+  });
+});
+
+describe('closeMerged: a per-ticket error while closing is skipped, never fatal', () => {
+  /**
+   * A runner that answers MERGED for every PR, and before answering for
+   * `racePr` closes that PR's ticket through a second board handle, as a
+   * concurrent `close` by another process would between listing and
+   * closing.
+   */
+  function racingRunner(board: Board, racePr: string, raceId: string): GhRunner {
+    return (args) => {
+      if (args[2] === racePr) {
+        const other = openBoard(board.dir);
+        try {
+          closeTicket(other, 'someone-else', { id: raceId, noDecision: true });
+        } finally {
+          other.close();
+        }
+      }
+      return { status: 'exited', code: 0, stdout: '{"state":"MERGED"}\n', stderr: '' };
+    };
+  }
+
+  it('lists a ticket closed concurrently as skipped invalid-transition and goes on', () => {
+    const { board, root } = setup();
+    const raced = mergedWithPr(board, 7);
+    const next = mergedWithPr(board, 8);
+    const out = closeMerged(board, 'orch', where(root, racingRunner(board, '7', raced.id)));
+    expect(out.skipped).toHaveLength(1);
+    expect(out.skipped[0]).toMatchObject({ id: raced.id, pr: 7, reason: 'invalid-transition' });
+    expect(out.skipped[0]?.message.length).toBeGreaterThan(0);
+    // The ticket as listed, before the concurrent close.
+    expect(out.skipped[0]?.ticket).toEqual(raced);
+    expect(out.closed.map((c) => c.id)).toEqual([next.id]);
+    // The concurrent close stands; close-merged wrote nothing for it.
+    const after = current(board, raced.id);
+    expect(after.closed).toBe(true);
+    expect(after.version).toBe(raced.version + 1);
+  });
+
+  it('lists a decision path that now resolves outside the tree as path-outside-tree', () => {
+    const { board, root } = setup();
+    const t = mergedWithPr(board, 7);
+    const next = mergedWithPr(board, 8);
+    // Linked while docs/ did not exist; docs/ then becomes a symlink out of the tree.
+    decisionLink(board, root, t.id, 'docs/adr/0002.md');
+    const outside = tempDir();
+    mkdirSync(join(outside, 'adr'));
+    writeFileSync(join(outside, 'adr', '0002.md'), '# elsewhere\n');
+    symlinkSync(outside, join(root, 'docs'));
+    const before = eventCount(board);
+    const out = closeMerged(
+      board,
+      'orch',
+      where(root, fakeRunner({ '7': 'MERGED', '8': 'MERGED' }).gh),
+    );
+    expect(out.skipped.map((x) => [x.id, x.reason])).toEqual([[t.id, 'path-outside-tree']]);
+    expect(out.skipped[0]?.message).toContain('docs/adr/0002.md');
+    expect(out.closed.map((c) => c.id)).toEqual([next.id]);
+    expect(eventCount(board)).toBe(before + 1);
+    expect(current(board, t.id).closed).toBe(false);
+  });
+
+  it('lists a DECISION comment added after listing as unpromoted-decision and goes on', () => {
+    const { board, root } = setup();
+    const t = mergedWithPr(board, 7);
+    const next = mergedWithPr(board, 8);
+    const gh: GhRunner = (args) => {
+      if (args[2] === '7') {
+        const other = openBoard(board.dir);
+        try {
+          commentTicket(other, 'impl', { id: t.id, text: 'DECISION: late decision' });
+        } finally {
+          other.close();
+        }
+      }
+      return { status: 'exited', code: 0, stdout: '{"state":"MERGED"}', stderr: '' };
+    };
+    const out = closeMerged(board, 'orch', where(root, gh));
+    expect(out.skipped.map((x) => [x.id, x.reason])).toEqual([[t.id, 'unpromoted-decision']]);
+    expect(out.skipped[0]?.message).toContain('DECISION: late decision');
+    expect(out.closed.map((c) => c.id)).toEqual([next.id]);
   });
 });
 

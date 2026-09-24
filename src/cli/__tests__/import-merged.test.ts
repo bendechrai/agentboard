@@ -6,14 +6,14 @@
  * all; the real `gh` is never run.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
 import { emptyPath, fakeGhOnPath, ghCalls } from '../../board/__tests__/gh-fake.js';
-import { gitRepo, makeBoardDir, tempDir } from '../../board/__tests__/helpers.js';
+import { SAMPLES, gitRepo, makeBoardDir, tempDir } from '../../board/__tests__/helpers.js';
 import { eventNames } from '../../store/__tests__/helpers.js';
 import { cliEnv, oneJson, project, run, written, type Run } from './cli-helpers.js';
 
@@ -152,6 +152,26 @@ describe('agentboard import-change', SLOW, () => {
     expect(count(boardDir)).toBe(0);
   });
 
+  it('refuses secret-looking text without suggesting a flag it does not have', () => {
+    const { root, boardDir } = project();
+    writeTasks(root, `## 1. One\n- [ ] 1.1 uses ${SAMPLES['github-token']}\n`);
+    const out = run(['import-change', 'add-board-core', ...AS, '--json'], root);
+    expect(out.code).toBe(1);
+    expect(errorOf(out).reason).toBe('secret-like');
+    expect(out.stderr).toBe(
+      'agentboard: refused: the text matches the secret pattern(s) github-token; ' +
+        'the board is not a secret store\n',
+    );
+    expect(count(boardDir)).toBe(0);
+    // And indeed the flag is unknown to import-change.
+    const flagged = run(
+      ['import-change', 'add-board-core', '--allow-secret-like', ...AS, '--json'],
+      root,
+    );
+    expect(flagged.code).toBe(1);
+    expect(errorOf(flagged).reason).toBe('usage');
+  });
+
   it('reads the tasks file of the host root, not of the directory it runs in', () => {
     const root = gitRepo(join(tempDir(), 'host'));
     const boardDir = makeBoardDir(root);
@@ -261,6 +281,23 @@ describe('agentboard close-merged with a fake gh', SLOW, () => {
     expect(out.stdout).toMatch(/^skipped .* \(unpromoted-decision\)$/m);
     const shown = oneJson(run(['show', id, '--json'], root)) as { ticket: { closed: boolean } };
     expect(shown.ticket.closed).toBe(false);
+  });
+
+  it('lists a close refused for one ticket as skipped and still exits 0', () => {
+    const { root } = project();
+    const id = mergedTicket(root, '7');
+    const other = mergedTicket(root, '8');
+    expect(run(['link', id, '--decision', 'docs/adr/0002.md', ...AS], root).code).toBe(0);
+    const outside = tempDir();
+    mkdirSync(join(outside, 'adr'));
+    writeFileSync(join(outside, 'adr', '0002.md'), '# elsewhere\n');
+    symlinkSync(outside, join(root, 'docs'));
+    const { dir } = fakeGhOnPath({ '7': 'MERGED', '8': 'MERGED' });
+    const out = run(['close-merged', ...AS, '--json'], root, cliEnv({ PATH: dir }));
+    expect(out.code, out.stderr).toBe(0);
+    const doc = oneJson(out) as MergedDoc;
+    expect(doc.skipped.map((x) => [x.id, x.reason])).toEqual([[id, 'path-outside-tree']]);
+    expect(doc.closed.map((x) => x.id)).toEqual([other]);
   });
 
   it('exits 1 with a clear message when gh is not on PATH, writing nothing', () => {

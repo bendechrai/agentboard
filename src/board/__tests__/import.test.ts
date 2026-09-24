@@ -443,7 +443,12 @@ describe('import-change: refusals write nothing', () => {
     const token = SAMPLES['github-token'];
     writeTasks(root, `## 1. One\n- [ ] 1.1 a\n## 2. Two\n- [ ] 2.1 uses ${token}\n`);
     const err = expectBoardError(() => importChange(board, 'orch', TARGET), 1, 'secret-like');
-    expect(err.message).toContain('github-token');
+    // import-change has no --allow-secret-like, so the message must not suggest it.
+    expect(err.message).toBe(
+      'refused: the text matches the secret pattern(s) github-token; ' +
+        'the board is not a secret store',
+    );
+    expect(err.message).not.toContain('--allow-secret-like');
     expect(err.message).not.toContain(token);
     expect(eventCount(board)).toBe(0);
   });
@@ -451,7 +456,10 @@ describe('import-change: refusals write nothing', () => {
   it('refuses secret-looking text in a group title', () => {
     const { board, root } = setup();
     writeTasks(root, `## 1. Rotate ${SAMPLES['aws-access-key-id']}\n- [ ] 1.1 a\n`);
-    expectBoardError(() => importChange(board, 'orch', TARGET), 1, 'secret-like');
+    const err = expectBoardError(() => importChange(board, 'orch', TARGET), 1, 'secret-like');
+    expect(err.message).toContain('aws-access-key-id');
+    expect(err.message).not.toContain('--allow-secret-like');
+    expect(err.message).not.toContain(SAMPLES['aws-access-key-id']);
     expect(eventCount(board)).toBe(0);
   });
 

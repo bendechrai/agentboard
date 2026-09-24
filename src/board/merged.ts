@@ -32,10 +32,7 @@ export type GhResult =
   | { status: 'exited'; code: number; stdout: string; stderr: string };
 
 /** Runs `gh <args>` in `cwd` with `env`. Must not throw for a missing `gh`. */
-export type GhRunner = (
-  args: readonly string[],
-  where: { cwd: string; env: Env },
-) => GhResult;
+export type GhRunner = (args: readonly string[], where: { cwd: string; env: Env }) => GhResult;
 
 /**
  * The default `GhRunner`: spawns `gh` synchronously (no shell) with `args`,
@@ -114,8 +111,15 @@ export interface NotMerged {
   ticket: Ticket;
 }
 
-/** Why a candidate with a merged (or unknown) PR was left open. */
-export type SkipReason = 'unpromoted-decision' | 'decision-path-missing' | 'gh-error';
+/**
+ * Why a candidate with a merged (or unknown) PR was left open: `gh-error`,
+ * `decision-path-missing`, or the `reason` of the `BoardError` (exit 1 or
+ * 4) that closing the ticket threw, such as `unpromoted-decision`,
+ * `path-outside-tree` or `invalid-transition` (the ticket was closed by
+ * someone else between listing and closing). Open-ended by design, so a new
+ * refusal of `closeTicket` is listed rather than aborting the run.
+ */
+export type SkipReason = string;
 
 /** A candidate left open for a reason other than an unmerged PR. */
 export interface SkippedByMerge {
@@ -127,7 +131,8 @@ export interface SkippedByMerge {
    * `closeTicket` gives (quoting each open `DECISION:` comment and the
    * rule); for `decision-path-missing`, naming the path; for `gh-error`,
    * the `gh` exit code and the first line of its stderr, or that its
-   * output was not the expected JSON.
+   * output was not the expected JSON; for any other reason, the message of
+   * the `BoardError` closing threw.
    */
   message: string;
   ticket: Ticket;
@@ -173,7 +178,19 @@ export interface CloseMergedResult {
  *   it is skipped with reason `unpromoted-decision` and the guard's
  *   message, and left open.
  * Each close is its own command transaction (`runCommand` through
- * `closeTicket`) with `actor` and `options`.
+ * `closeTicket`) with `actor` and `options`, run against the state at that
+ * moment, which may differ from the listing (another process may have
+ * closed the ticket or commented on it since).
+ *
+ * Any `BoardError` with exit code 1 or 4 thrown while closing one ticket
+ * (for example `unpromoted-decision`, `path-outside-tree` for a decision
+ * path that now resolves outside the working tree, or `invalid-transition`
+ * for a ticket closed concurrently) leaves that ticket open and lists it in
+ * `skipped` with the error's reason and message and the ticket as listed;
+ * the remaining candidates are still processed and the command succeeds.
+ * A `BoardError` with exit code 2 or 5 (board or integrity problems, a
+ * busy cache) and any other error propagate and end the run; closes
+ * already written stay written.
  *
  * @throws BoardError exit 1 `missing-actor` when `actor` is empty.
  * @throws BoardError exit 1 `gh-missing` as above.
