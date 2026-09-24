@@ -42,6 +42,7 @@ describe('the command registry', () => {
       'checklist untick',
       'close',
       'rebuild',
+      'sync',
       'mcp',
       'version',
     ]);

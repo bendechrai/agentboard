@@ -26,6 +26,7 @@ export * from './board/paths.js';
 export * from './board/reminder.js';
 export * from './board/tickets.js';
 export * from './board/actions.js';
+export * from './board/sync.js';
 export * from './cli/types.js';
 export * from './cli/registry.js';
 export * from './cli/parse.js';

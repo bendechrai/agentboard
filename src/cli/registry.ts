@@ -7,9 +7,9 @@
  * from it.
  *
  * Task group 3 registered the ticket lifecycle commands plus `version` and
- * the `mcp` placeholder; task group 4 adds `rebuild`. `inbox`, `watch`,
- * `sync`, `import-change` and `close-merged` are added by the task groups
- * that implement them.
+ * the `mcp` placeholder; task group 4 adds `rebuild` and task group 6 adds
+ * `sync`. `inbox`, `watch`, `import-change` and `close-merged` are added by
+ * the task groups that implement them.
  */
 
 import {
@@ -24,6 +24,7 @@ import {
   type LinkTarget,
 } from '../board/actions.js';
 import { initBoard } from '../board/init.js';
+import { syncBoard } from '../board/sync.js';
 import { TASK_RULE } from '../board/text.js';
 import { parseTaskFilter, taskRefFromArgs, type TaskFilter } from '../board/resolve.js';
 import { listTickets, newTicket, showRaw, showTicket } from '../board/tickets.js';
@@ -344,7 +345,7 @@ function checklistRun(done: boolean): CommandSpec['run'] {
 /**
  * Every command of this version, in this order: `init`, `new`, `show`,
  * `list`, `claim`, `release`, `move`, `comment`, `handoff`, `link`,
- * `checklist tick`, `checklist untick`, `close`, `rebuild`, `mcp`,
+ * `checklist tick`, `checklist untick`, `close`, `rebuild`, `sync`, `mcp`,
  * `version` (the board-cli order, in which `rebuild` follows `inbox` and
  * `watch` and precedes `sync`).
  *
@@ -388,6 +389,9 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   so stdout still receives the full report (the document with `--json`)
  *   and the process exits 1. `rebuild` writes no event, so it needs no
  *   actor (`--as` is accepted and ignored).
+ * - `sync`: `SyncResult` (`syncBoard` with `ctx.env`; writes no event, so
+ *   no actor is needed); text: its `message` and a newline; `warnings`:
+ *   the result's `warnings`, printed to stderr by `runCli`.
  * - `version`: `{ version }`; text: the version.
  * - `mcp`: always `BoardError(1, 'not-implemented')`, with a message saying
  *   `agentboard mcp` is not implemented yet (it arrives with task group 9).
@@ -666,6 +670,19 @@ export const COMMANDS: readonly CommandSpec[] = [
     writes: false,
     operation: 'rebuild',
     run: (ctx, values) => (bool(values, 'check') ? runCheck(ctx) : runRebuild(ctx)),
+  },
+  {
+    name: 'sync',
+    summary: "Commit new events, pull with rebase from the board's remote and push",
+    positionals: [],
+    flags: [],
+    exclusive: [],
+    writes: false,
+    operation: 'syncBoard',
+    run: (ctx) => {
+      const result = syncBoard(ctx.board(), { env: ctx.env });
+      return { json: result, text: `${result.message}\n`, warnings: result.warnings };
+    },
   },
   {
     name: 'mcp',
