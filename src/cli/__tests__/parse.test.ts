@@ -44,6 +44,7 @@ describe('the command registry', () => {
       'inbox',
       'watch',
       'serve',
+      'top',
       'health',
       'rebuild',
       'sync',
@@ -57,7 +58,7 @@ describe('the command registry', () => {
     ]);
   });
 
-  it('marks exactly inbox and watch as tracking a cursor, and watch and serve as streaming', () => {
+  it('marks exactly inbox and watch as tracking a cursor, and watch, serve and top as streaming', () => {
     expect(COMMANDS.filter((c) => c.tracksCursor === true).map((c) => c.name)).toEqual([
       'inbox',
       'watch',
@@ -65,7 +66,10 @@ describe('the command registry', () => {
     expect(COMMANDS.filter((c) => c.stream !== undefined).map((c) => c.name)).toEqual([
       'watch',
       'serve',
+      'top',
     ]);
+    // add-board-tui task 2.2: top is the one command given a terminal.
+    expect(COMMANDS.filter((c) => c.terminal === true).map((c) => c.name)).toEqual(['top']);
     expect(command('inbox').operation).toBe('readInbox');
     expect(command('watch').operation).toBe('watchInbox');
   });
@@ -144,10 +148,10 @@ describe('the command registry', () => {
     }
   });
 
-  it('names an exported library operation for every command but mcp, serve, version and help', () => {
+  it('names an exported library operation for every command but mcp, serve, top, version and help', () => {
     const exported = lib as unknown as Record<string, unknown>;
     for (const c of COMMANDS) {
-      if (c.name === 'mcp' || c.name === 'serve' || c.name === 'version' || c.name === 'help') {
+      if (['mcp', 'serve', 'top', 'version', 'help'].includes(c.name)) {
         expect(c.operation).toBeNull();
       } else {
         expect(typeof exported[String(c.operation)], c.name).toBe('function');
@@ -262,6 +266,8 @@ describe('the command registry', () => {
       ],
       exclusive: [],
     });
+    // add-board-tui: top has no flags of its own (filters are keys).
+    expect(shape('top')).toEqual({ positionals: [], flags: [], exclusive: [] });
   });
 
   it('findCommand finds by full name only', () => {

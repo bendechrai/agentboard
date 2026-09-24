@@ -41,6 +41,7 @@ export const EXCLUDED_COMMANDS: readonly string[] = [
   'init',
   'watch',
   'serve',
+  'top',
   'rebuild',
   'sync',
   'mcp',

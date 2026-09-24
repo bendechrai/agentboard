@@ -11,6 +11,7 @@ import { findBoard } from '../store/locate.js';
 import { hintFor, type HintContext } from '../guidance/hints.js';
 import { ACTOR_ENV, parseArgs, resolveActor, type ParsedCommand } from './parse.js';
 import { COMMANDS } from './registry.js';
+import type { TerminalIo } from '../tui/terminal.js';
 import type { BoardOpenOptions, CommandSpec, Env, RunContext } from './types.js';
 
 /** The process surroundings `runCli` uses; nothing else is read or written. */
@@ -35,6 +36,16 @@ export interface AsyncCliIo extends CliIo {
    * signal behaviour.
    */
   stopSignal(): AbortSignal;
+  /**
+   * Returns the interactive terminal (`processTerminal()` for
+   * `src/cli.ts`). Called at most once, only for a command whose spec has
+   * `terminal` true (`top`), after parsing and before `stopSignal`; its
+   * result is passed as `StreamIo.terminal`. When absent, such a command
+   * gets no terminal (and `top` refuses with `not-a-tty`). Never called
+   * for any other command, so `watch`, `serve` and the rest never touch
+   * the terminal.
+   */
+  terminal?(): Promise<TerminalIo>;
 }
 
 /**
@@ -326,10 +337,13 @@ function argvActor(argv: readonly string[]): string | undefined {
  * `runCli` for the executable (`src/cli.ts`): identical to `runCli`, with
  * the same output and exit codes, for every command without `stream`.
  *
- * For a streaming command (`watch`): steps 1 and 2 of `runCli` (parse,
- * resolve the actor; failures exit 1 before any board lookup), then
- * `io.stopSignal()`, then `command.stream(ctx, values, { stdout:
- * io.stdout, stderr: io.stderr, json, signal })` with the same lazily opened board as `runCli`
+ * For a streaming command (`watch`, `serve`, `top`): steps 1 and 2 of
+ * `runCli` (parse, resolve the actor; failures exit 1 before any board
+ * lookup), then, for a command whose spec has `terminal` true (`top`)
+ * only, `terminal = await io.terminal?.()`, then `io.stopSignal()`, then
+ * `command.stream(ctx, values, { stdout: io.stdout, stderr: io.stderr,
+ * json, signal, terminal })` (`terminal` present only when obtained) with
+ * the same lazily opened board as `runCli`
  * (stale temporary and corrupt file diagnostics on stderr likewise). When
  * the stream resolves (the signal aborted), the board is closed and the
  * result is 0: SIGINT and SIGTERM are the normal way to stop `watch`. When
@@ -359,12 +373,14 @@ export async function runCliAsync(io: AsyncCliIo): Promise<ExitCode> {
   const opened = cliBoard(io);
   try {
     const ctx = context(io, parsed, opened);
+    const terminal = command.terminal === true ? await io.terminal?.() : undefined;
     const signal = io.stopSignal();
     await command.stream(ctx, values, {
       stdout: io.stdout,
       stderr: io.stderr,
       json: parsed.json,
       signal,
+      ...(terminal === undefined ? {} : { terminal }),
     });
     return 0;
   } catch (error) {

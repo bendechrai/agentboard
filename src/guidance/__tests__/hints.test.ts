@@ -65,6 +65,7 @@ const PINNED: Readonly<Record<string, number>> = {
   'no-cache': 5,
   'no-disposition': 1,
   'no-targets': 1,
+  'not-a-tty': 1,
   'not-assignee': 4,
   'not-found': 1,
   'path-outside-tree': 1,
@@ -455,6 +456,9 @@ describe('hint contracts (CLI)', () => {
     ['method-not-allowed', 'serve', ['read-only', 'GET', "'agentboard help serve'"]],
     ['too-many-streams', 'serve', ['64', 'reconnect', "'agentboard help serve'"]],
     ['unknown-cursor', 'serve', ['after', '/api/events', "'agentboard help serve'"]],
+    // add-board-tui group 2: top without an interactive terminal.
+    ['not-a-tty', 'top', ['terminal', "'agentboard list'", "'agentboard watch --as impl'"]],
+    ['streaming-command', 'top', ["'agentboard top'"]],
   ])('%s (from %s) contains %j', (reason, command, fragments) => {
     const hint = cli(reason, command, { id: '01J9K3', actor: 'impl' });
     for (const fragment of fragments) {

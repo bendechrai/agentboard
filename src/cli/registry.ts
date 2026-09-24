@@ -480,7 +480,7 @@ function checklistRun(done: boolean): CommandSpec['run'] {
 /**
  * Every command of this version, in this order: `init`, `new`, `show`,
  * `list`, `claim`, `release`, `move`, `comment`, `handoff`, `link`,
- * `checklist tick`, `checklist untick`, `close`, `inbox`, `watch`, `serve`, `health`, `rebuild`,
+ * `checklist tick`, `checklist untick`, `close`, `inbox`, `watch`, `serve`, `top`, `health`, `rebuild`,
  * `sync`, `import-change`, `close-merged`, `mcp` (the board-cli order), then
  * `agents install` and `agents check`, `version` and `help`
  * (add-agent-guidance).
@@ -515,6 +515,13 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   web server and runs only from the agentboard executable. Writes no
  *   event and tracks no cursor, so it needs no actor. Calls no library
  *   operation of `src/index.ts` (`operation` null).
+ * - `top`: streams (`stream` imports `src/tui/terminal.ts` dynamically, so
+ *   no other command loads the terminal driver, and runs `topCommand`);
+ *   `terminal` true, so it is the one command given `StreamIo.terminal`.
+ *   Its `run` throws `BoardError(1, 'streaming-command')` saying that top
+ *   drives the terminal and runs only from the agentboard executable.
+ *   Writes no event and tracks no cursor, so it needs no actor; no flags
+ *   of its own; `operation` null.
  * - `health`: `HealthReport` (`boardHealth`); text: `renderHealth`. See
  *   `runHealth` for the duration flags, the check and the exit code (0
  *   whatever the report contains). Needs no actor.
@@ -1281,6 +1288,49 @@ export const COMMANDS: readonly CommandSpec[] = [
     },
   },
   {
+    name: 'top',
+    summary: 'Show a live, read-only view of the whole board in this terminal',
+    description:
+      'Runs a full-screen, read-only view of the board in the current terminal: the board columns, the activity feed, the agent lanes and any ticket with its conversation, updated live as events arrive from any process. Keys: 1, 2 and 3 switch between the board, feed and lanes views (Tab cycles), the arrow keys or h, j, k and l move, Enter opens a ticket and Escape closes it, c shows closed tickets, ? shows the keys, and q or Ctrl-C quits. It needs an interactive terminal (standard input and output must be a terminal and TERM must not be dumb); otherwise it exits 1 with not-a-tty, and agentboard list or agentboard watch --as <actor> are the commands to use instead. With NO_COLOR set it uses no color. Writes no event and needs no actor (--as is ignored). Runs until quit or interrupted (SIGINT or SIGTERM), then restores the terminal and exits 0.',
+    group: 'awareness',
+    examples: [
+      { command: 'agentboard top', summary: 'Watch the whole board live in this terminal' },
+      {
+        command: 'agentboard top --json',
+        summary: 'Same screen; a failure is reported as a JSON error document on stdout',
+      },
+    ],
+    exitCodes: [
+      { code: 0, meaning: 'Quit with q or Ctrl-C, or stopped by SIGINT or SIGTERM' },
+      { code: 1, reason: 'usage', meaning: 'Invalid arguments: unknown flag or extra argument' },
+      {
+        code: 1,
+        reason: 'not-a-tty',
+        meaning:
+          'Standard input or output is not a terminal, or TERM is dumb; use agentboard list or agentboard watch instead',
+      },
+      EXIT_NO_BOARD,
+      EXIT_INTEGRITY,
+    ],
+    positionals: [],
+    flags: [],
+    exclusive: [],
+    writes: false,
+    terminal: true,
+    operation: null,
+    run: () => {
+      throw new BoardError(
+        1,
+        'streaming-command',
+        'agentboard top drives the terminal and runs only from the agentboard executable',
+      );
+    },
+    stream: async (ctx, values, io) => {
+      const { topCommand } = await import('../tui/terminal.js');
+      return topCommand(ctx, values, io);
+    },
+  },
+  {
     name: 'health',
     summary:
       'Report stale claims, long-blocked tickets, unpromoted decisions and close-merged candidates',
@@ -1519,7 +1569,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'mcp',
     summary: 'Serve the board as MCP tools over stdio',
     description:
-      'Serves the board as MCP tools over stdio, one tool per board command (not init, watch, serve, rebuild, sync, mcp, version, help or the agents commands), for agents that prefer tools to the shell. Runs until the client disconnects or the process gets SIGINT or SIGTERM. --as sets the default actor for tool calls that pass no as of their own, before AGENTBOARD_ACTOR. Nothing but protocol messages is written to stdout. It exits 2 when no board is found from this directory.',
+      'Serves the board as MCP tools over stdio, one tool per board command (not init, watch, serve, top, rebuild, sync, mcp, version, help or the agents commands), for agents that prefer tools to the shell. Runs until the client disconnects or the process gets SIGINT or SIGTERM. --as sets the default actor for tool calls that pass no as of their own, before AGENTBOARD_ACTOR. Nothing but protocol messages is written to stdout. It exits 2 when no board is found from this directory.',
     group: 'setup',
     examples: [
       { command: 'agentboard mcp', summary: 'Serve the board over MCP on stdio' },
