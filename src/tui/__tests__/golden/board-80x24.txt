@@ -1,0 +1,24 @@
+agentboard top  todo:2 tests:1 implementing:1 review:1 blocked:1 merged:0  last~
+todo 2      |tests 1     |implement~ 1|review 1    |blocked 1   |merged 0       
+01C0000000 ~|01ARZ3NDEK ~|01ARYZ6S41 ~|01D0000000 ~|01E0000000 ~|               
+01BX5ZZKBK ~|            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+[1 board] 2 feed 3 lanes  tab  hjkl move  enter open  c closed  ? help  q quit  

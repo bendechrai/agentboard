@@ -1,0 +1,24 @@
+agentboard top  todo:2 tests:1 implementing:1 review:1 blocked:1 merged:0  last~
+impl  last seen just now                                                        
+  01ARYZ6S41 implementing Decode raw key bytes                                  
+                                                                                
+orch  last seen 36m ago                                                         
+  01C0000000 todo         Caf\u00E9 \u00FCber keys                              
+                                                                                
+test-author  last seen 59m ago                                                  
+  01ARZ3NDEK tests        Render the board frame with six equal columns and a f~
+                                                                                
+rev  last seen never                                                            
+  01D0000000 review       Review the frames                                     
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+1 board 2 feed [3 lanes]  tab  jk move  enter open  ? help  q quit              
