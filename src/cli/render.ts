@@ -146,18 +146,28 @@ export function renderRebuild(report: RebuildReport): string {
  * The `--json` document of `agentboard rebuild --check` (board-cache:
  * "Rebuild").
  *
- * - The cache file exists: the store's `CheckResult` plus `noCache: false`.
+ * - The cache is a cache of the running schema version: the store's
+ *   `CheckResult` plus `noCache: false` and `schemaMismatch: false`.
  * - No cache file exists (`<board>/cache.sqlite` is absent): `{ ok: false,
- *   noCache: true, differences: [], report: null }`. Nothing is opened or
- *   created and no event file is read.
+ *   noCache: true, schemaMismatch: false, differences: [], report: null }`.
+ *   Nothing is created and no event file is read.
+ * - The cache file exists but is not a cache of `CACHE_SCHEMA_VERSION`
+ *   (another `meta.schema_version`, an empty file, not a SQLite database,
+ *   no `meta` table): `{ ok: false, noCache: false, schemaMismatch: true,
+ *   differences: [], report: null }`. The file is left byte for byte
+ *   unchanged, cursor rows included.
  */
 export type CheckDocument =
-  (CheckResult & { noCache: false }) | { ok: false; noCache: true; differences: []; report: null };
+  | (CheckResult & { noCache: false; schemaMismatch: false })
+  | { ok: false; noCache: true; schemaMismatch: false; differences: []; report: null }
+  | { ok: false; noCache: false; schemaMismatch: true; differences: []; report: null };
 
 /**
  * Human output of `agentboard rebuild --check`, ending with a newline.
  *
  * - No cache file (`doc.noCache`): one line, `no-cache: there is no cache file`.
+ * - Not a cache of this version (`doc.schemaMismatch`): one line,
+ *   `schema-mismatch: the cache file is not a cache of schema version <CACHE_SCHEMA_VERSION>`.
  * - No divergence (`doc.ok`): one line,
  *   `no divergence: <renderCounts(doc.report)>`.
  * - Divergence: a first line `divergence: <n> differing row(s)` (`<n>` the
@@ -180,6 +190,9 @@ export type CheckDocument =
 export function renderCheck(doc: CheckDocument): string {
   if (doc.noCache) {
     return 'no-cache: there is no cache file\n';
+  }
+  if (doc.schemaMismatch) {
+    throw new Error('not implemented: renderCheck schema-mismatch');
   }
   if (doc.ok) {
     return `no divergence: ${renderCounts(doc.report)}\n`;

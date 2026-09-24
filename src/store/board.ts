@@ -40,6 +40,15 @@ export interface OpenBoardOptions {
    * `rebuild --check` uses this so it never modifies the live cache.
    */
   catchUp?: boolean;
+  /**
+   * Passed to `openCache` as `prepare` (default true). False opens the
+   * cache for inspection only: it must exist and be a cache of
+   * `CACHE_SCHEMA_VERSION`, and the file is never created or modified
+   * (`BoardError(5, 'no-cache')` or `BoardError(5, 'schema-mismatch')`
+   * otherwise, see `OpenCacheOptions`). With `prepare: false`, catch-up is
+   * never run, whatever `catchUp` says. `rebuild --check` opens this way.
+   */
+  prepare?: boolean;
   /** Clock for temp reaping, in ms since the epoch. Defaults to `Date.now()`. */
   now?: number;
 }

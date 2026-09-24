@@ -109,6 +109,14 @@ const MAX_BUSY_SLEEP_MS = 25;
  * busy handler, notably `PRAGMA journal_mode = WAL` while another
  * connection is creating or converting the same database file. `fn` must be
  * safe to run again after a busy failure.
+ *
+ * `fn` is always run at least once, even when `deadline` has already
+ * passed; the deadline is only checked after a busy failure. The deadline
+ * bounds when a new attempt may start, not how long one attempt blocks: an
+ * attempt that waits in SQLite's busy handler (or in `beginImmediate`'s
+ * retry) can end up to that wait after the deadline. A `BoardError`
+ * (including `BoardError(5, 'busy')` from `beginImmediate`) is not
+ * SQLITE_BUSY and propagates at once.
  */
 export function retryBusy<T>(fn: () => T, deadline: number): T {
   const cell = new Int32Array(new SharedArrayBuffer(4));

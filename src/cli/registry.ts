@@ -268,18 +268,22 @@ function runRebuild(ctx: RunContext): CommandOutput {
 function runCheck(ctx: RunContext): CommandOutput {
   const cachePath = join(ctx.boardDir(), CACHE_FILE);
   if (!existsSync(cachePath)) {
-    const doc: CheckDocument = { ok: false, noCache: true, differences: [], report: null };
+    const doc: CheckDocument = {
+      ok: false,
+      noCache: true,
+      schemaMismatch: false,
+      differences: [],
+      report: null,
+    };
     return {
       json: doc,
       text: renderCheck(doc),
       exitCode: 1,
-      warnings: [
-        `there is no cache file at ${cachePath}; run agentboard rebuild to create it`,
-      ],
+      warnings: [`there is no cache file at ${cachePath}; run agentboard rebuild to create it`],
     };
   }
   const result = checkCache(ctx.board({ catchUp: false }));
-  const doc: CheckDocument = { ...result, noCache: false };
+  const doc: CheckDocument = { ...result, noCache: false, schemaMismatch: false };
   if (result.ok) {
     return { json: doc, text: renderCheck(doc) };
   }
@@ -333,11 +337,19 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   `noCache` one, the output carries `exitCode: 1` and the warning
  *   `there is no cache file at <path>; run agentboard rebuild to create it`,
  *   and the board is never opened, so no cache file is created. Otherwise
- *   the store's `checkCache` runs on the board opened with
- *   `ctx.board({ catchUp: false })`, so no event file is folded and no
- *   temporary file is reaped before the comparison and the live cache is
- *   left exactly as it was (board-cache: "Check detects divergence"); the
- *   document is its `CheckResult` with `noCache: false`; text:
+ *   the board is opened with `ctx.board({ catchUp: false, prepare: false })`,
+ *   so the cache file is never created, migrated or written, no event file
+ *   is folded and no temporary file is reaped before the comparison
+ *   (board-cache: "Rebuild", `rebuild --check` SHALL NOT modify the live
+ *   cache file). If that open throws `BoardError` reason `no-cache` (the
+ *   file vanished after the existence check), the result is the `noCache`
+ *   one above. If it throws reason `schema-mismatch`, the document is the
+ *   `schemaMismatch` one, the output carries `exitCode: 1` and the warning
+ *   `the cache file at <path> is not a cache of schema version <CACHE_SCHEMA_VERSION>; run agentboard rebuild to replace it`,
+ *   and the file is left byte for byte unchanged, cursor rows included.
+ *   Otherwise the store's `checkCache` runs on that board and the document
+ *   is its `CheckResult` with `noCache: false` and `schemaMismatch: false`;
+ *   text:
  *   `renderCheck`. With no difference it exits 0. On divergence the output
  *   carries `exitCode: 1` and one warning,
  *   `the cache differs from the event log in <n> row(s); run agentboard rebuild to replace it`,

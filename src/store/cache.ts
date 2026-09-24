@@ -119,6 +119,29 @@ export const CACHE_SCHEMA_VERSION = 1;
 /** Minimum busy timeout on every connection, in milliseconds. */
 export const BUSY_TIMEOUT_MS = 5000;
 
+/** Options of `openCache`. */
+export interface OpenCacheOptions {
+  /**
+   * True (the default): the open described on `openCache` (creates the
+   * file, switches to WAL, creates or recreates the schema).
+   *
+   * False: open an existing cache for inspection without modifying the
+   * file in any way (board-cache: `rebuild --check` SHALL NOT modify the
+   * live cache file). The file is never created, the journal mode is never
+   * switched (a WAL cache stays WAL: the mode is stored in the file), no
+   * table is created, dropped or migrated, and no row is written; only
+   * `busy_timeout` and `foreign_keys`, which are per connection, are set.
+   * - When `path` does not exist: `BoardError(5, 'no-cache')` naming it.
+   * - When the file is not a cache of `CACHE_SCHEMA_VERSION` (empty, not a
+   *   SQLite database, no `meta` table, or a `meta.schema_version` other
+   *   than `CACHE_SCHEMA_VERSION`): the connection is closed and
+   *   `BoardError(5, 'schema-mismatch')` naming the path and, when there is
+   *   one, the stored version, is thrown. The file is left byte for byte
+   *   unchanged, cursor rows included.
+   */
+  readonly prepare?: boolean;
+}
+
 /**
  * Opens (creating when absent) the SQLite database at `path` and prepares
  * the connection: `PRAGMA journal_mode = WAL`, `PRAGMA busy_timeout` of at
@@ -131,14 +154,28 @@ export const BUSY_TIMEOUT_MS = 5000;
  * Every statement of the open waits on the busy timeout, including the
  * switch to WAL, which SQLite can fail with SQLITE_BUSY without consulting
  * the busy handler while another process creates the same file: such a
- * step is retried with a short sleep until `BUSY_TIMEOUT_MS` after the open
- * began, then `BoardError(5, 'busy')` is thrown. Many processes opening a
- * board with no cache at once therefore all succeed.
+ * step is retried (`retryBusy`) with a short sleep until a deadline of
+ * `BUSY_TIMEOUT_MS` after the open began, then `BoardError(5, 'busy')` is
+ * thrown. Many processes opening a board with no cache at once therefore
+ * all succeed.
+ *
+ * Worst-case wait: the deadline bounds the retries, not each attempt. The
+ * schema step runs `BEGIN IMMEDIATE` (`beginImmediate`), which itself waits
+ * up to the busy timeout and retries once, so an attempt started just
+ * before the deadline can wait about `2 * BUSY_TIMEOUT_MS` more. An open
+ * therefore gives up after at most about `3 * BUSY_TIMEOUT_MS` (15 s), and
+ * never hangs. A `BoardError(5, 'busy')` from `beginImmediate` is not
+ * retried.
+ *
+ * With `options.prepare` false the open only inspects (see
+ * `OpenCacheOptions`).
  *
  * `path` may be `':memory:'` (journal mode is then `memory`; used for the
  * temporary database of `checkCache`).
  */
-export function openCache(path: string): DatabaseSync {
+export function openCache(path: string, options?: OpenCacheOptions): DatabaseSync {
+  // prepare: false is not implemented yet (task group 4, ruling 05f4334).
+  void options;
   const deadline = Date.now() + BUSY_TIMEOUT_MS;
   const db = new DatabaseSync(path);
   try {

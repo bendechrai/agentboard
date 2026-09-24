@@ -107,6 +107,13 @@ export interface RunContext {
 export interface BoardOpenOptions {
   /** False to open without catch-up (see `RunContext.board`). Default true. */
   readonly catchUp?: boolean;
+  /**
+   * Passed to `openBoard` as `prepare` (default true): false opens the
+   * cache for inspection only, never creating, migrating or writing it,
+   * and implies no catch-up (see `OpenBoardOptions.prepare`). Applies to
+   * the first call only, like `catchUp`.
+   */
+  readonly prepare?: boolean;
 }
 
 /** What a command produced. */

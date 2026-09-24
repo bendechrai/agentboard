@@ -7,13 +7,13 @@
  * exactly as it was (no catch-up, no reaping, no row change).
  */
 
-import { existsSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { describe, expect, it } from 'vitest';
 
-import { dumpCache } from '../../store/cache.js';
+import { CACHE_SCHEMA_VERSION, dumpCache } from '../../store/cache.js';
 import { canon, ev, putEvent, tempDir } from '../../store/__tests__/helpers.js';
 import { findCommand } from '../registry.js';
 import { oneJson, project, run, spawnCli, written, type Run } from './cli-helpers.js';
@@ -213,6 +213,7 @@ describe('agentboard rebuild --check', () => {
     expect(checkDoc(out)).toMatchObject({
       ok: true,
       noCache: false,
+      schemaMismatch: false,
       differences: [],
       report: { folded: 4 },
     });
@@ -318,13 +319,97 @@ describe('agentboard rebuild --check', () => {
 
     const json = run(['rebuild', '--check', '--json'], root);
     expect(json.code).toBe(1);
-    expect(oneJson(json)).toEqual({ ok: false, noCache: true, differences: [], report: null });
+    expect(oneJson(json)).toEqual({
+      ok: false,
+      noCache: true,
+      schemaMismatch: false,
+      differences: [],
+      report: null,
+    });
     expect(existsSync(cache)).toBe(false);
 
     // rebuild creates it, after which the check is clean.
     expect(run(['rebuild'], root).code).toBe(0);
     expect(existsSync(cache)).toBe(true);
     expect(run(['rebuild', '--check'], root).code).toBe(0);
+  });
+
+  describe('a cache file that is not a cache of this schema version', () => {
+    const MISMATCH_LINE = `schema-mismatch: the cache file is not a cache of schema version ${String(CACHE_SCHEMA_VERSION)}\n`;
+    const mismatchWarning = (cache: string): string =>
+      `agentboard: the cache file at ${cache} is not a cache of schema version ${String(CACHE_SCHEMA_VERSION)}; run agentboard rebuild to replace it\n`;
+
+    /** Removes the WAL companions, so only cache.sqlite remains. */
+    function onlyMainFile(boardDir: string): string {
+      for (const name of ['cache.sqlite-wal', 'cache.sqlite-shm']) {
+        rmSync(join(boardDir, name), { force: true });
+      }
+      return join(boardDir, 'cache.sqlite');
+    }
+
+    /** Asserts `rebuild --check` reports schema-mismatch, human and --json, touching nothing. */
+    function expectMismatch(root: string, cache: string): void {
+      const bytes = readFileSync(cache);
+      const out = run(['rebuild', '--check'], root);
+      expect(out).toEqual({ code: 1, stdout: MISMATCH_LINE, stderr: mismatchWarning(cache) });
+      expect(readFileSync(cache).equals(bytes)).toBe(true);
+      const json = run(['rebuild', '--check', '--json'], root);
+      expect(json.code).toBe(1);
+      expect(json.stderr).toBe(mismatchWarning(cache));
+      expect(oneJson(json)).toEqual({
+        ok: false,
+        noCache: false,
+        schemaMismatch: true,
+        differences: [],
+        report: null,
+      });
+      expect(readFileSync(cache).equals(bytes)).toBe(true);
+    }
+
+    it('scenario: another schema_version is reported, the file and its cursor rows unchanged', () => {
+      const { root, boardDir } = seeded();
+      handEdit(boardDir, "UPDATE meta SET value = '0' WHERE key = 'schema_version'");
+      handEdit(
+        boardDir,
+        "INSERT INTO cursors (actor, last_wall, last_counter, last_actor, last_hash) VALUES ('orch', 1, 0, 'orch', 'abc')",
+      );
+      const cache = onlyMainFile(boardDir);
+      expectMismatch(root, cache);
+
+      const db = new DatabaseSync(cache, { readOnly: true });
+      try {
+        expect(db.prepare('SELECT actor, last_hash FROM cursors').all()).toEqual([
+          { actor: 'orch', last_hash: 'abc' },
+        ]);
+        expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
+          value: '0',
+        });
+        expect(db.prepare('SELECT COUNT(*) AS n FROM tickets').get()).toEqual({ n: 2 });
+      } finally {
+        db.close();
+      }
+
+      // A real rebuild replaces it, after which the check is clean.
+      expect(run(['rebuild'], root).code).toBe(0);
+      expect(run(['rebuild', '--check'], root).code).toBe(0);
+    });
+
+    it('a zero-byte cache file is reported and stays zero bytes', () => {
+      const { root, boardDir } = seeded();
+      const cache = onlyMainFile(boardDir);
+      writeFileSync(cache, '');
+      expectMismatch(root, cache);
+      expect(statSync(cache).size).toBe(0);
+      expect(run(['rebuild'], root).code).toBe(0);
+      expect(run(['rebuild', '--check'], root).code).toBe(0);
+    });
+
+    it('a file that is not a SQLite database is reported and left as it is', () => {
+      const { root, boardDir } = seeded();
+      const cache = onlyMainFile(boardDir);
+      writeFileSync(cache, 'this is not a database\n'.repeat(64));
+      expectMismatch(root, cache);
+    });
   });
 
   it('does not reap a stale temporary file', () => {
