@@ -2,7 +2,8 @@
  * `agentboard agents install` (board-agent-guidance: "Installing guidance
  * into a host project", "Installed guidance never clobbers user content";
  * design.md: "Ownership markers", "Where files are written",
- * "Auto-detection"; add-agent-guidance tasks 3.1 and 3.2).
+ * "Auto-detection"; add-agent-guidance tasks 3.1 and 3.2; "Managed MCP
+ * entry" and `--mcp-command`, add-mcp-command tasks 1.1 and 1.2).
  *
  * Writes the text of `./installed-text.ts` into the root of the current
  * working tree. Each target owns only its marked region of its file, and
@@ -106,6 +107,22 @@ export interface InstallOptions {
   /** `--force`: overwrite content agentboard does not own (see `RefusalReason`). */
   readonly force?: boolean;
   /**
+   * `--mcp-command <executable>` (add-mcp-command): the executable the
+   * `mcp-json` target runs, written as `mcpEntry(mcpCommand)`, that is
+   * `{"command": <executable>, "args": ["mcp"]}`, instead of the default
+   * `npx` entry. Giving it (any value, even one that is then refused)
+   * selects `mcp-json` in addition to the `--target` or auto-detected
+   * targets, with reason `requested with --mcp-command`. It must be
+   * non-empty and must not contain a line feed (`\n`), else
+   * `installGuidance` throws `BoardError(1, 'usage', <message naming
+   * --mcp-command>)` before anything is read or written. Otherwise it is
+   * used exactly as given (never trimmed, resolved or checked for
+   * existence); absolute paths and paths with spaces are fine. Absent: no
+   * executable was requested (see `installGuidance`, `mcp-json`, for what
+   * that means for an existing entry).
+   */
+  readonly mcpCommand?: string;
+  /**
    * The guidance version to install; default `GUIDANCE_VERSION`. Only tests
    * pass it, to simulate an older or newer CLI.
    */
@@ -118,7 +135,10 @@ export interface TargetSelection {
   /**
    * With `--target`: exactly `requested with --target`. Auto-detected:
    * exactly `.claude/ exists`, `AGENTS.md exists` or
-   * `openspec/config.yaml exists`.
+   * `openspec/config.yaml exists`. The `mcp-json` target when
+   * `--mcp-command` is given: exactly `requested with --mcp-command`, also
+   * when `--target mcp-json` is given too (add-mcp-command: the output
+   * names `--mcp-command` as the reason).
    */
   readonly reason: string;
 }
@@ -152,9 +172,12 @@ export type InstallAction = 'created' | 'updated' | 'unchanged' | 'refused';
  *   `--force` each such value is replaced by a map or list holding only
  *   the agentboard entries.
  * - `entry-differs` (`mcp-json`): `mcpServers.agentboard` exists and is not
- *   deep-equal to `MCP_ENTRY` (extra keys, such as `env`, count as a
- *   difference). With `--force` it is replaced in place (same key
- *   position).
+ *   a managed entry (`isManagedMcpEntry`: neither the default `npx` entry
+ *   nor exactly `{command: <non-empty string>, args: ["mcp"]}`; extra keys,
+ *   such as `env`, or other arguments make it unrecognised). Refused
+ *   whether or not `--mcp-command` is given. With `--force` it is replaced
+ *   in place (same key position) by the requested entry,
+ *   `mcpEntry(mcpCommand)`.
  * - `malformed-file` (`openspec`, `mcp-json`): the file cannot be parsed
  *   (YAML errors; invalid JSON), its top level is not a map/object, or (for
  *   `.mcp.json`) `mcpServers` exists and is not an object.
@@ -698,14 +721,22 @@ function selectTargets(
  *
  * 1. `root = workingTreeRoot(cwd, env)`; `version = options.version ??
  *    GUIDANCE_VERSION`.
- * 2. Selection. Every `--target` value must be one of `GUIDANCE_TARGETS`,
- *    else `BoardError(1, 'usage', 'unknown target <t>; expected one of
- *    claude, agents-md, openspec, mcp-json')` before anything is written.
- *    Given targets are de-duplicated, each with reason `requested with
- *    --target`. With none given, `detectTargets(root)`; when that is empty,
- *    `BoardError(1, 'no-targets', <message>)` whose message names `root`,
- *    says nothing was detected, and lists all four targets (`claude,
- *    agents-md, openspec, mcp-json`) with `--target`. Nothing is written.
+ * 2. Selection. `mcpCommand`, when given, must be non-empty and contain no
+ *    `\n`, else `BoardError(1, 'usage', <message>)` naming `--mcp-command`
+ *    and saying why (empty, or contains a newline), before anything else is
+ *    checked and before anything is written. Every `--target` value must
+ *    be one of `GUIDANCE_TARGETS`, else `BoardError(1, 'usage', 'unknown
+ *    target <t>; expected one of claude, agents-md, openspec, mcp-json')`
+ *    before anything is written. Given targets are de-duplicated, each with
+ *    reason `requested with --target`. With none given, `detectTargets(root)`
+ *    (`autoDetected` true). When `mcpCommand` is given, `mcp-json` is
+ *    selected as well, in its `GUIDANCE_TARGETS` position, with reason
+ *    `requested with --mcp-command` (replacing `requested with --target`
+ *    when `--target mcp-json` is also given). When, after that, nothing is
+ *    selected, `BoardError(1, 'no-targets', <message>)` whose message names
+ *    `root`, says nothing was detected, and lists all four targets
+ *    (`claude, agents-md, openspec, mcp-json`) with `--target`. Nothing is
+ *    written.
  * 3. Each selected target is processed in `GUIDANCE_TARGETS` order. A
  *    refused target writes nothing and does not stop the others. A target
  *    either writes its whole change or nothing. Before the per-target steps
@@ -765,23 +796,34 @@ function selectTargets(
  *   line): `updated`. Every comment line of the original survives, in
  *   order.
  *
- * `mcp-json` (`.mcp.json`):
+ * `mcp-json` (`.mcp.json`), requested entry `wanted =
+ * mcpEntry(options.mcpCommand)` (the default `npx` entry without
+ * `--mcp-command`), rules of add-mcp-command design.md "Reinstall rules":
  * - absent: written as `JSON.stringify({ mcpServers: { agentboard:
- *   MCP_ENTRY } }, null, 2)` plus `\n`: `created`.
+ *   wanted } }, null, 2)` plus `\n`: `created`.
  * - invalid JSON, a top level that is not an object, or an `mcpServers`
  *   that is present and not an object: `refused` `malformed-file` (even
  *   with `force`).
- * - `mcpServers.agentboard` deep-equal to `MCP_ENTRY`: `unchanged`, not
- *   written.
  * - absent key (and `mcpServers` created as the last top-level key when
- *   missing): added as the last key of `mcpServers`; the file is rewritten
- *   as `JSON.stringify(<parsed object>, null, 2)` plus `\n`, keeping every
- *   other key, value and key order: `updated`. (A file already in that
- *   format therefore changes only by the added entry.)
- * - present and different: `refused` `entry-differs`, unless `force`
- *   (replaced in place, rewritten as above): `updated`.
+ *   missing): `wanted` added as the last key of `mcpServers`; the file is
+ *   rewritten as `JSON.stringify(<parsed object>, null, 2)` plus `\n`,
+ *   keeping every other key, value and key order: `updated`. (A file
+ *   already in that format therefore changes only by the added entry.)
+ * - present and a managed entry (`isManagedMcpEntry`):
+ *   - without `mcpCommand`: `unchanged`, not written, whichever managed
+ *     shape it is (a local command is never reverted to `npx`);
+ *   - with `mcpCommand`: `unchanged` (not written) when it is deep-equal
+ *     to `wanted`, else replaced in place by `wanted` and rewritten as
+ *     above, without needing `force`: `updated`. Deep-equal means the
+ *     local shape with exactly that command: the default `npx` entry is
+ *     replaced even by `--mcp-command npx` (which asks for `npx mcp`).
+ * - present and not a managed entry: `refused` `entry-differs` (with or
+ *   without `mcpCommand`), unless `force`, which replaces it in place by
+ *   `wanted` (rewritten as above): `updated`.
  *
- * @throws BoardError exit 1 `usage` (unknown target) or `no-targets`.
+ * @throws BoardError exit 1 `usage` (an `mcpCommand` that is empty or
+ * contains `\n`, checked first, then an unknown target) or `no-targets`
+ * (no `--target`, nothing detected and no `mcpCommand`).
  */
 export function installGuidance(options: InstallOptions): InstallResult {
   const root = workingTreeRoot(options.cwd, options.env ?? process.env);
@@ -807,6 +849,10 @@ export function installGuidance(options: InstallOptions): InstallResult {
  * The human output of `agents install`, plain ASCII, one line each, ending
  * with a newline:
  * 1. When `result.autoDetected`: `selected <target>: <reason>` per target.
+ *    Otherwise one such line for each target whose reason is `requested
+ *    with --mcp-command` (so `selected mcp-json: requested with
+ *    --mcp-command` whenever `--mcp-command` was given), and none for the
+ *    targets requested with `--target`.
  * 2. Per outcome: `<action> <target> <path>`, followed by ` (up to date)`
  *    for `unchanged`, and for `refused` by `: <message>` and then each
  *    `manual` line indented by four spaces.
@@ -841,7 +887,10 @@ export function renderInstall(result: InstallResult): string {
 
 /**
  * The `agents install` command (called by the registry): `installGuidance`
- * with `cwd`, `env`, `targets` and `force`; `json` is the `InstallResult`,
+ * with `cwd`, `env`, `targets`, `force` and `mcpCommand` (the
+ * `--mcp-command` value, undefined when the flag is absent; an empty string
+ * is passed through as given, so it is refused as `usage`); `json` is the
+ * `InstallResult`,
  * `text` is `renderInstall`. When any target was refused, `exitCode` is 1
  * and `warnings` holds one line per refused target, `refused <target>:
  * <message>`, so the other targets' outcomes are still printed in full.
@@ -853,8 +902,15 @@ export function installCommand(
   env: Env,
   targets: readonly string[],
   force: boolean,
+  mcpCommand?: string,
 ): CommandOutput {
-  const result = installGuidance({ cwd, env, targets, force });
+  const result = installGuidance({
+    cwd,
+    env,
+    targets,
+    force,
+    ...(mcpCommand === undefined ? {} : { mcpCommand }),
+  });
   const refused = result.targets.filter((t) => t.action === 'refused');
   const output: CommandOutput = { json: result, text: renderInstall(result) };
   if (refused.length === 0) {

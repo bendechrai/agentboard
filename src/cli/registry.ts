@@ -499,7 +499,8 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  * - `init` text ends with the line `INIT_SUGGESTION`
  *   (`src/guidance/install.ts`), after its `message` line, whether or not
  *   the board already existed; its `--json` document is unchanged.
- * - `agents install [--target <t>]... [--force]`: `installCommand` (see
+ * - `agents install [--target <t>]... [--mcp-command <executable>]
+ *   [--force]`: `installCommand` (see
  *   `src/guidance/install.ts`). Needs no board and no actor (`--as` is
  *   accepted and ignored); exits 1 with the full result when a target was
  *   refused.
@@ -1376,7 +1377,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'agents install',
     summary: "Install guidance that points this project's coding agents at the board",
     description:
-      "Writes short agent guidance into the root of the current working tree (git rev-parse --show-toplevel, or the current directory outside git): claude writes the Claude Code skill .claude/skills/agentboard/SKILL.md, agents-md a managed block in AGENTS.md, openspec agentboard: guidance entries for apply and archive in openspec/config.yaml, and mcp-json an agentboard server in .mcp.json. With no --target it selects claude, agents-md and openspec when .claude/, AGENTS.md or openspec/config.yaml exist, and says why; mcp-json is installed only when asked for. Only agentboard's own region of each file is changed. A file or entry agentboard does not own is refused unless --force is given, and the other targets are still installed. The installed text points agents to agentboard help agents. Needs no board and no actor; commit the files it writes.",
+      "Writes short agent guidance into the root of the current working tree (git rev-parse --show-toplevel, or the current directory outside git): claude writes the Claude Code skill .claude/skills/agentboard/SKILL.md, agents-md a managed block in AGENTS.md, openspec agentboard: guidance entries for apply and archive in openspec/config.yaml, and mcp-json an agentboard server in .mcp.json that runs npx -y @bendechrai/agentboard mcp, or, with --mcp-command <executable>, runs that executable with the single argument mcp (for a linked or local install; the value is written as given). With no --target it selects claude, agents-md and openspec when .claude/, AGENTS.md or openspec/config.yaml exist, and says why; mcp-json is installed only when asked for with --target mcp-json or --mcp-command, which selects it in addition to the other targets. An existing agentboard server of either shape is kept on reinstall, and --mcp-command replaces it with the given executable. Only agentboard's own region of each file is changed. A file or entry agentboard does not own is refused unless --force is given, and the other targets are still installed. The installed text points agents to agentboard help agents. Needs no board and no actor; commit the files it writes.",
     group: 'setup',
     examples: [
       {
@@ -1391,6 +1392,11 @@ export const COMMANDS: readonly CommandSpec[] = [
         command: 'agentboard agents install --target mcp-json',
         summary: 'Register the agentboard MCP server in .mcp.json',
       },
+      {
+        command: 'agentboard agents install --mcp-command agentboard',
+        summary:
+          'Install the detected targets and register an MCP server that runs a linked agentboard',
+      },
     ],
     exitCodes: [
       { code: 0, meaning: 'Every selected target was installed or was already up to date' },
@@ -1399,7 +1405,12 @@ export const COMMANDS: readonly CommandSpec[] = [
         meaning:
           'A target was refused (its file is named; see --force); the other targets were still processed',
       },
-      EXIT_USAGE,
+      {
+        code: 1,
+        reason: 'usage',
+        meaning:
+          'Invalid arguments: unknown command, flag or --target, a missing or malformed argument, or an --mcp-command that is empty or contains a newline (nothing is written)',
+      },
       {
         code: 1,
         reason: 'no-targets',
@@ -1414,13 +1425,24 @@ export const COMMANDS: readonly CommandSpec[] = [
         'Target to install: claude, agents-md, openspec or mcp-json (repeatable)',
         { repeatable: true },
       ),
+      flag(
+        'mcp-command',
+        'string',
+        'Executable the .mcp.json server runs with the argument mcp, instead of npx (selects mcp-json)',
+      ),
       flag('force', 'boolean', 'Overwrite a file or entry that agentboard does not own'),
     ],
     exclusive: [],
     writes: false,
     operation: 'installGuidance',
     run: (ctx, values) =>
-      installCommand(ctx.cwd, ctx.env, list(values, 'target'), bool(values, 'force')),
+      installCommand(
+        ctx.cwd,
+        ctx.env,
+        list(values, 'target'),
+        bool(values, 'force'),
+        str(values, 'mcp-command'),
+      ),
   },
   {
     name: 'agents check',

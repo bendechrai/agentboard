@@ -225,16 +225,46 @@ export interface McpServerEntry {
 }
 
 /**
- * The managed `mcpServers.agentboard` entry: `npx -y @bendechrai/agentboard
- * mcp`. It carries no `--as`: the entry is shared by every session and
- * every agent of the project, so it cannot know which agent is acting;
- * each tool call passes its own `as` argument (see rule 1), or an agent
- * that owns its own MCP configuration may add `--as <actor>` by hand
- * (which `agents install` then refuses to overwrite without `--force`).
- * It carries no version either (JSON has no comments, and an unknown key
- * could break MCP clients), so `agents check` compares it by value.
+ * The default managed `mcpServers.agentboard` entry: `npx -y
+ * @bendechrai/agentboard mcp`, written when `--mcp-command` is not given
+ * (see `mcpEntry` for the local shape). It carries no `--as`: the entry is
+ * shared by every session and every agent of the project, so it cannot know
+ * which agent is acting; each tool call passes its own `as` argument (see
+ * rule 1), or an agent that owns its own MCP configuration may add `--as
+ * <actor>` by hand (which makes the entry unrecognised, see
+ * `isManagedMcpEntry` in `./markers.ts`, so `agents install` then refuses
+ * to overwrite it without `--force`). It carries no version either (JSON
+ * has no comments, and an unknown key could break MCP clients), so `agents
+ * check` classifies it by value.
  */
 export const MCP_ENTRY: McpServerEntry = {
   command: 'npx',
   args: ['-y', '@bendechrai/agentboard', 'mcp'],
 };
+
+/**
+ * The arguments of a local managed entry, written by `agents install
+ * --mcp-command <executable>` (add-mcp-command; board-agent-guidance:
+ * "Managed MCP entry"): exactly `["mcp"]`, whatever the executable.
+ */
+export const MCP_LOCAL_ARGS: readonly string[] = ['mcp'];
+
+/**
+ * The `mcpServers.agentboard` entry `agents install` writes (add-mcp-command
+ * design.md: "The flag names an executable, not a command line"):
+ * - `command` undefined (no `--mcp-command`): a copy of `MCP_ENTRY` (`npx
+ *   -y @bendechrai/agentboard mcp`), deep-equal to it;
+ * - otherwise `{ command, args: ["mcp"] }` (`MCP_LOCAL_ARGS`), `command`
+ *   exactly as given: never trimmed, resolved against the PATH, made
+ *   absolute or checked for existence, because `.mcp.json` is read on other
+ *   machines too. A path containing spaces stays one string.
+ *
+ * Always a new object with a new `args` array (never `MCP_ENTRY` or
+ * `MCP_LOCAL_ARGS` themselves), with exactly the keys `command` then
+ * `args`, in that order. Pure. It does not validate `command`: an empty
+ * value or one containing a newline is refused by `installGuidance` before
+ * anything is written.
+ */
+export function mcpEntry(command?: string): McpServerEntry {
+  throw new Error(`not implemented: mcpEntry(${String(command)})`);
+}

@@ -362,3 +362,24 @@ export function parseMcpJson(text: string): Record<string, unknown> | null {
   }
   return isJsonObject(value) ? value : null;
 }
+
+/**
+ * True when `value` (an `mcpServers.agentboard` entry as parsed from
+ * `.mcp.json`) is a managed entry (board-agent-guidance: "Managed MCP
+ * entry"; add-mcp-command design.md: "Two managed shapes, both
+ * recognised"), that is, exactly one of:
+ * - the default entry, deep-equal to `MCP_ENTRY` (`jsonEqual`: key order
+ *   ignored, no other key);
+ * - an object with exactly the two keys `command` and `args` (in any
+ *   order), `command` a non-empty string (any string: a name, an absolute
+ *   path, a path with spaces; not otherwise checked) and `args` an array
+ *   holding exactly the one string `"mcp"` (`MCP_LOCAL_ARGS`).
+ * Anything else is unrecognised: an extra key (such as `env`), other or
+ * additional arguments (such as `["mcp", "--as", "x"]`), a missing `args`,
+ * an empty or non-string `command`, or a value that is not an object.
+ * `agents install` refuses an unrecognised entry as `entry-differs` unless
+ * `--force`, and `agents check` reports it `modified`. Pure.
+ */
+export function isManagedMcpEntry(value: unknown): boolean {
+  throw new Error(`not implemented: isManagedMcpEntry(${typeof value})`);
+}
