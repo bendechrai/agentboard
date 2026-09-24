@@ -174,8 +174,9 @@ processed.
 ### Requirement: Checking installed guidance
 `agentboard agents check` SHALL inspect every target that has an
 agentboard marker or managed entry in the current working tree and report
-each as `current`, `stale` (older guidance version or differing managed
-text) or `modified` (managed region edited by hand). It SHALL exit 0 when
+each as `current`, `stale` (installed with a different guidance version) or
+`modified` (the managed text differs from what its recorded version renders,
+or its version or markers cannot be read). It SHALL exit 0 when
 all found targets are current, and 1 otherwise, so it can run in a
 project's own checks. With `--json` it SHALL print an array of
 `{target, path, state, installedVersion, currentVersion}`.
