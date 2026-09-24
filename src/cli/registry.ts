@@ -422,7 +422,7 @@ function checklistRun(done: boolean): CommandSpec['run'] {
 /**
  * Every command of this version, in this order: `init`, `new`, `show`,
  * `list`, `claim`, `release`, `move`, `comment`, `handoff`, `link`,
- * `checklist tick`, `checklist untick`, `close`, `inbox`, `watch`, `rebuild`,
+ * `checklist tick`, `checklist untick`, `close`, `inbox`, `watch`, `serve`, `rebuild`,
  * `sync`, `import-change`, `close-merged`, `mcp` (the board-cli order), then
  * `agents install` and `agents check`, `version` and `help`
  * (add-agent-guidance).
@@ -451,6 +451,12 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   `BoardError(1, 'streaming-command')` saying that watch streams and runs
  *   only from the agentboard executable. Tracks a cursor, so it requires an
  *   actor.
+ * - `serve`: streams (`stream` imports `src/web/serve.ts` dynamically, so
+ *   no other command loads `node:http`, and runs `serveCommand`); its `run`
+ *   throws `BoardError(1, 'streaming-command')` saying that serve runs a
+ *   web server and runs only from the agentboard executable. Writes no
+ *   event and tracks no cursor, so it needs no actor. Calls no library
+ *   operation of `src/index.ts` (`operation` null).
  * - `rebuild`: `RebuildReport` from the store's `rebuild` on the board
  *   opened with `ctx.board({ catchUp: false })`, so the open folds nothing
  *   and reaps nothing: every event file, including one no command has
@@ -1161,6 +1167,59 @@ export const COMMANDS: readonly CommandSpec[] = [
       }),
   },
   {
+    name: 'serve',
+    summary: 'Serve a live, read-only view of the whole board in a local web browser',
+    description:
+      'Starts a read-only web server for the board on 127.0.0.1 only and prints the line serving <board dir> read-only at <url>, where the URL carries a new access token each run (with --json, one JSON line with url, port, token and writable instead). Open that URL in a browser to watch every ticket, the activity feed, ticket conversations and agent lanes change live; scripts can send the token as Authorization: Bearer <token> to the JSON API under /api/. Without --port the operating system picks a free port; --open also opens the URL in the default browser. Writes no event and needs no actor (--as is ignored). Runs until interrupted (SIGINT or SIGTERM), then exits 0.',
+    group: 'awareness',
+    examples: [
+      { command: 'agentboard serve', summary: 'Serve the board on a free local port' },
+      {
+        command: 'agentboard serve --port 4477 --open',
+        summary: 'Serve the board on port 4477 and open it in the default browser',
+      },
+      {
+        command: 'agentboard serve --json',
+        summary: 'Print the URL, port and token as one JSON line for a script',
+      },
+    ],
+    exitCodes: [
+      { code: 0, meaning: 'Stopped by SIGINT or SIGTERM' },
+      {
+        code: 1,
+        reason: 'usage',
+        meaning:
+          'Invalid arguments: unknown flag, or a --port that is not an integer from 0 to 65535',
+      },
+      {
+        code: 1,
+        reason: 'port-in-use',
+        meaning: 'The port given with --port is in use on 127.0.0.1; choose another or omit --port',
+      },
+      EXIT_NO_BOARD,
+      EXIT_INTEGRITY,
+    ],
+    positionals: [],
+    flags: [
+      flag('port', 'integer', 'Port to listen on, 0 to 65535 (default 0: a free port)'),
+      flag('open', 'boolean', 'Also open the URL in the default browser'),
+    ],
+    exclusive: [],
+    writes: false,
+    operation: null,
+    run: () => {
+      throw new BoardError(
+        1,
+        'streaming-command',
+        'agentboard serve runs a web server and runs only from the agentboard executable',
+      );
+    },
+    stream: async (ctx, values, io) => {
+      const { serveCommand } = await import('../web/serve.js');
+      return serveCommand(ctx, values, io);
+    },
+  },
+  {
     name: 'rebuild',
     summary: 'Refold the cache from the event log (--check: compare only, exit 1 on divergence)',
     description:
@@ -1344,7 +1403,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'mcp',
     summary: 'Serve the board as MCP tools over stdio',
     description:
-      'Serves the board as MCP tools over stdio, one tool per board command (not init, watch, rebuild, sync, mcp, version or help), for agents that prefer tools to the shell. Runs until the client disconnects or the process gets SIGINT or SIGTERM. --as sets the default actor for tool calls that pass no as of their own, before AGENTBOARD_ACTOR. Nothing but protocol messages is written to stdout. It exits 2 when no board is found from this directory.',
+      'Serves the board as MCP tools over stdio, one tool per board command (not init, watch, serve, rebuild, sync, mcp, version, help or the agents commands), for agents that prefer tools to the shell. Runs until the client disconnects or the process gets SIGINT or SIGTERM. --as sets the default actor for tool calls that pass no as of their own, before AGENTBOARD_ACTOR. Nothing but protocol messages is written to stdout. It exits 2 when no board is found from this directory.',
     group: 'setup',
     examples: [
       { command: 'agentboard mcp', summary: 'Serve the board over MCP on stdio' },

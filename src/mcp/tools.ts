@@ -40,6 +40,7 @@ export const TOOL_PREFIX = 'board_';
 export const EXCLUDED_COMMANDS: readonly string[] = [
   'init',
   'watch',
+  'serve',
   'rebuild',
   'sync',
   'mcp',

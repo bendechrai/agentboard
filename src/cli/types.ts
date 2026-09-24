@@ -171,7 +171,7 @@ export interface StreamIo {
  * The overview section a command is listed under (board-agent-guidance:
  * "Generated help"), in overview order:
  * - `lifecycle`: "Ticket lifecycle" (creating, finding and moving tickets);
- * - `awareness`: "Change awareness" (`inbox`, `watch`);
+ * - `awareness`: "Change awareness" (`inbox`, `watch`, `serve`);
  * - `planning`: "Planning integration" (`import-change`, `close-merged`);
  * - `maintenance`: "Maintenance" (`rebuild`, `sync`);
  * - `setup`: "Setup" (`init`, `mcp`, `version`, `help`).
@@ -281,8 +281,8 @@ export interface CommandSpec {
   readonly tracksCursor?: boolean;
   /**
    * Name of the library function (exported from `src/index.ts`) the command
-   * calls, e.g. `claimTicket`; null for `version`, `mcp` and `help`, which
-   * call none. Normally in `src/board/`; `rebuild` names the store's `rebuild`
+   * calls, e.g. `claimTicket`; null for `version`, `mcp`, `serve` and
+   * `help`, which call none. Normally in `src/board/`; `rebuild` names the store's `rebuild`
    * (its `--check` form calls the store's `checkCache`).
    */
   readonly operation: string | null;
@@ -292,7 +292,7 @@ export interface CommandSpec {
    */
   run(ctx: RunContext, values: ArgValues): CommandOutput;
   /**
-   * Present only for a streaming command (`watch`), which cannot answer
+   * Present only for a streaming command (`watch`, `serve`), which cannot answer
    * with one `CommandOutput`: runs until `io.signal` aborts, writing lines
    * to `io.stdout` as they come, and resolves when it has stopped; rejects
    * with a `BoardError` on failure. `runCliAsync` calls it instead of

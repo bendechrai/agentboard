@@ -74,6 +74,9 @@ describe('every command prints exactly one JSON document with --json', () => {
       // watch streams; through the synchronous runCli it refuses with one
       // error document (its NDJSON stream is tested in inbox.test.ts).
       watch: () => run(['watch', '--as', 'watcher', '--json'], root),
+      // serve runs a server; through the synchronous runCli it refuses
+      // with one error document (it is tested in src/web/__tests__).
+      serve: () => run(['serve', '--json'], root),
       rebuild: () => run(['rebuild', '--json'], root),
       sync: () => {
         git(join(root, '.board'), 'init', '-q');
@@ -105,7 +108,9 @@ describe('every command prints exactly one JSON document with --json', () => {
     const docs: Record<string, unknown> = {};
     for (const [name, step] of Object.entries(steps(root, state))) {
       const out = step();
-      expect(out.code, `${name}: ${out.stderr}`).toBe(name === 'mcp' || name === 'watch' ? 1 : 0);
+      expect(out.code, `${name}: ${out.stderr}`).toBe(
+        name === 'mcp' || name === 'watch' || name === 'serve' ? 1 : 0,
+      );
       docs[name] = oneJson(out);
     }
     expect(docs.init).toMatchObject({ created: true });

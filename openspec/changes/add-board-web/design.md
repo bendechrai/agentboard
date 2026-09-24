@@ -70,41 +70,75 @@ bookmark would still fail on the token. Binding `::1` as well was
 rejected: one address keeps the Host check and the printed URL simple;
 browsers reach `127.0.0.1` directly.
 
-### An access token on every request, carried by a per-port cookie
+### An access token on every API request, sent only as a bearer header
 At start-up the server draws 32 random bytes and encodes them base64url
-(43 characters). It prints `http://127.0.0.1:<port>/?token=<token>`. The
-token is accepted in exactly three forms:
+(43 characters). It prints `http://127.0.0.1:<port>/#token=<token>`. The
+token travels in the URL fragment, which a browser never sends to a
+server, never puts in a `Referer`, and which the page removes from the
+address bar at once.
 
-- `GET /?token=<token>`: the entry URL. A valid token is answered with
-  `303 See Other` to `/`, setting the cookie below, so the token leaves the
-  address bar and history at once. The query token is accepted on `/`
-  only, never on API or asset routes.
-- the cookie `agentboard-<port>=<token>` with `HttpOnly`,
-  `SameSite=Strict` and `Path=/` (no `Max-Age`: it is a session cookie).
-  The name includes the port because browsers do not isolate cookies by
-  port, so two servers on one machine would otherwise overwrite each
-  other's cookie.
-- `Authorization: Bearer <token>`, for scripts and tests.
+- The page and its static assets (`GET /`, `/app.js`, `/app.css` and the
+  other flat files of `dist/web/`) are served without a token. They are
+  the same bytes for every board and contain no board data, so there is
+  nothing to protect in them; the Host check, the method check and the
+  security headers still apply.
+- Every `/api/*` request, `/api/stream` included, requires
+  `Authorization: Bearer <token>`. This is the only accepted form: a
+  `token` query parameter and every cookie are ignored, and the server
+  sets no cookie.
+- The client reads `#token=<token>` from `location.hash`, stores it in
+  `sessionStorage` under `agentboard-token` (a token in the fragment
+  replaces a stored one), calls `history.replaceState` to drop the
+  fragment, and sends the header on every `fetch`, the stream included
+  (see the stream section). A reload of the tab keeps working from
+  `sessionStorage`. A tab with no token, or whose token gets a 401 (for
+  example after the server was restarted with a new token), discards the
+  stored token and shows a message telling the user to open the URL
+  printed by `agentboard serve`; it does not retry.
+
+`sessionStorage` is isolated by origin, which includes the port, so a page
+served by another process on `127.0.0.1` cannot read it; only script of
+this origin can, and the Content-Security-Policy admits only this server's
+own script, which never renders board text as markup.
 
 Comparison is constant time (`crypto.timingSafeEqual` over equal-length
-buffers). The token is never logged, written to disk or returned by any
-API response. `Referrer-Policy: no-referrer` keeps it out of any referrer.
+buffers). The token is never logged, written to disk, set in a cookie or
+returned by any response. `Referrer-Policy: no-referrer` is kept as well.
 
 Why a token at all when the server is on loopback: any web page the user
 has open can make requests to `127.0.0.1`, and any local user or process
 can connect to it. The token is what the attacker does not have.
 
+Why no cookie (this replaces the earlier design, which set an `HttpOnly`,
+`SameSite=Strict` cookie `agentboard-<port>` from a `/?token=` entry URL
+answered with a 303): browsers do not isolate cookies by port (RFC 6265
+section 8.5), and SameSite treats every port of `127.0.0.1` as the same
+site. The cookie holding the token was therefore sent to every server
+listening on `127.0.0.1`, whatever its port, including another OS user's
+process, as soon as any page led the browser there (a plain navigation
+followed by a same-origin `fetch` on that server was enough, as the
+security review reproduced in Chromium). It also leaked into the logs and
+request dumps of every other local development server, could be
+overwritten or shadowed by another port (cookie tossing, a denial of
+service), and the `/?token=` entry URL stayed in browser history as a
+redirect source. A header the page sets itself goes only where the page
+sends it.
+
 Alternatives considered: no token, relying on the Host check (rejected:
-any local process can connect with a correct Host header); the token in
-the URL fragment exchanged by script for a cookie (rejected: more moving
-parts for the same result, since the 303 already removes the query);
-HTTP basic auth (rejected: browsers cache and prompt for it, and it cannot
-be scoped per port).
+any local process can connect with a correct Host header); the per-port
+cookie (rejected, above); the token in a query parameter on every request
+(rejected: it lands in history, logs and `Referer`); the fragment
+exchanged by script for a cookie (the cookie problem again); HTTP basic
+auth (rejected: browsers cache and prompt for it, and send it to the
+whole host); requiring the token for the static page too (it would need
+the query or a cookie again to load the page, for no protected data).
 
 ### Host header check and no cross-origin access
-Before the token is looked at, the `Host` header must be exactly
-`127.0.0.1:<port>` or `localhost:<port>`; anything else is `403` with
-reason `forbidden-host`. This defeats DNS rebinding, where an attacker's
+Before the token is looked at, the request must carry exactly one `Host`
+header, and its value must be exactly `127.0.0.1:<port>` or
+`localhost:<port>`; anything else, a missing header or a repeated one
+(Node keeps only the first in `req.headers.host`, so the check uses
+`req.headersDistinct.host`), is `403` with reason `forbidden-host`. This defeats DNS rebinding, where an attacker's
 domain is re-pointed at `127.0.0.1` so the browser treats the local server
 as same-origin with the attacker's page (the Host header then names the
 attacker's domain).
@@ -120,21 +154,36 @@ preflight ever succeeds. Every response carries:
   `X-Frame-Options: DENY`
 - `Cache-Control: no-store` on API and stream responses.
 
-Order of checks for every request: Host, then token, then method, then
-route. A request that fails a check gets an `ErrorDocument` (the same
-`{error: {exitCode, reason, message, hint}}` the CLI prints with `--json`)
-for API paths and a short plain text page for the page itself.
+Order of checks for every request: Host, then (on `/api/*` only) token,
+then method, then route. A request that fails a check gets an
+`ErrorDocument` (the same `{error: {exitCode, reason, message, hint}}` the
+CLI prints with `--json`) for API paths and a short plain text page
+otherwise.
 
-### Server-Sent Events for the live stream
+Static files are named flat (no separator, no percent sign, no leading
+dot), opened once with `O_NONBLOCK` and `O_NOFOLLOW`, and served only when
+`fstat` of the open descriptor says it is a regular file, so a FIFO or
+device placed in `dist/web/` cannot block the event loop and nothing can
+be swapped between the check and the read.
+
+### Server-Sent Events for the live stream, read with `fetch`
 The browser needs one-way, ordered, resumable delivery. SSE gives exactly
-that over plain HTTP with automatic reconnection and a `Last-Event-ID`
-header on reconnect, and `EventSource` sends the same-origin cookie, so
-the token needs no extra transport.
+that over plain HTTP, with an id per event, a `retry` hint and resume by
+`Last-Event-ID`. `EventSource` cannot set request headers, and the token
+travels only in the `Authorization` header, so the client reads the
+stream with `fetch` and a small SSE parser (lines, `event`, `id`, `data`,
+`retry` and comments; a few dozen lines, unit tested). When the stream
+ends or fails it reconnects after the `retry` interval with the last id
+it received in a `Last-Event-ID` header, and a 401 stops it and shows the
+no-token message. The server side is plain SSE and unchanged by the
+choice of client.
 
-Alternatives considered: WebSocket (bidirectional, which nothing here
-needs; needs an upgrade handler and its own framing, or a dependency;
-cookies still work but Origin must be checked by hand); long polling
-(reinvents the reconnection and ordering SSE provides).
+Alternatives considered: `EventSource` (cannot send the header, so it
+would need a cookie or a query token, both rejected above); WebSocket
+(bidirectional, which nothing here needs; needs an upgrade handler and
+its own framing, or a dependency, and the browser API cannot set an
+`Authorization` header either); long polling (reinvents the reconnection
+and ordering SSE provides).
 
 ### The board feed: append or resync
 `watch` follows one actor's cursor; the web needs every effective event.
@@ -205,7 +254,24 @@ read.
 The server runs one feed and forwards each message to every open stream.
 A new or resuming stream computes its first message in the same
 synchronous turn in which it subscribes, so no message can fall between
-the two. At most 64 streams are open at once; the 65th gets `503` with
+the two.
+
+The joiner's position id is compared with the board, not with what the
+shared feed has delivered. `/api/board` runs its own catch-up, so the id
+of a fresh snapshot can be ahead of the feed for up to one tick (25 ms
+after an `fs.watch` notification, up to 2 seconds on the polling
+fallback). Resuming against the feed's delivered set in that window gave
+the joiner a spurious `resync` with the feed's older id, and then, when
+the feed ticked, an `append` of an event the snapshot already held, which
+`applyFeedMessage` would add twice (found by the security review: 13 of
+25 page loads during a burst of agent writes). So a join first brings the
+feed up to date in the same turn: one catch-up and examination, exactly
+as a tick, delivering any resulting message to the streams already open,
+and only then computes the joiner's first message from the new state.
+Examination is synchronous, so it cannot interleave with a ticker tick,
+and the ticker's next tick then finds nothing new. A stream started with
+the id of any snapshot taken before it therefore gets an append of exactly
+the events after that id, or nothing. At most 64 streams are open at once; the 65th gets `503` with
 reason `too-many-streams`. A stream sends `retry: 2000` first and a
 comment line every 15 seconds, so dead connections are noticed and
 proxies do not time out.
@@ -273,9 +339,10 @@ Alternatives considered:
   step we already have, and loses type checking of the markup.
 
 ### Client model
-On load the client fetches `/api/session`, `/api/board` and every page of
-`/api/events`, builds its model with the view-model, and opens
-`/api/stream?since=<id>`. Appends go through the view-model reducer; a
+On load the client takes the token from the fragment or `sessionStorage`
+(see the access token section), fetches `/api/session`, `/api/board` and
+every page of `/api/events` with the bearer header, builds its model with
+the view-model, and opens `/api/stream?since=<id>` with `fetch`. Appends go through the view-model reducer; a
 resync (or a `problem` followed by recovery) reloads the snapshot. A
 10 second timer re-renders relative times. Filters live in the URL hash
 query, so a filtered view can be reloaded.
@@ -288,17 +355,22 @@ query, so a filtered view can be reloaded.
   processes and late events copied in (the fixtures `watch` already uses),
   including the claim race refolded after a late earlier claim.
 - Server and API: vitest tests that start the server on port 0 in process
-  and use `fetch`: every security check (Host, token forms, cookie flow,
-  method, headers, no CORS headers), every route, and the stream (append
-  within 3 seconds of a CLI write in a child process, resync on a late
-  file, resume by `Last-Event-ID`).
+  and use `fetch` or raw sockets: every security check (one Host header,
+  the bearer token as the only form, query tokens and cookies ignored, no
+  `Set-Cookie`, the page and assets without a token, method, headers, no
+  CORS headers), every route, and the stream (append within 3 seconds of
+  a CLI write in a child process, resync on a late file, resume by
+  `Last-Event-ID`, and a join from a fresh snapshot with the feed's timers
+  faked so it has not ticked).
 - Components: `@testing-library/preact` in a `happy-dom` environment
-  selected per file (`// @vitest-environment happy-dom`), with a fake
-  `EventSource` and stubbed `fetch`.
+  selected per file (`// @vitest-environment happy-dom`), with stubbed
+  `fetch` (streamed responses for the stream); the token hand-over from
+  the fragment to `sessionStorage` and the no-token message are tested
+  there too.
 - Smoke: using the built package (`dist/cli.js`, as the concurrency tests
-  already do), start `serve --port 0 --json`, follow the token URL, load the
-  served HTML and bundle in a `happy-dom` window whose `fetch` reaches the
-  live server, and check that a ticket created by the CLI appears on the
+  already do), start `serve --port 0 --json`, load the served HTML and
+  bundle in a `happy-dom` window at the start-up URL (token in the
+  fragment) whose `fetch` reaches the live server, and check that a ticket created by the CLI appears on the
   board within 3 seconds. A browser-driving tool such as Playwright was
   rejected for `make check`: it downloads browsers and does not run in the
   pinned Docker toolchain without extra setup.
@@ -356,6 +428,25 @@ Names are indicative; the test author's stubs are authoritative.
   web pages and other users' processes, not against your own account.
   `--open` passes the URL to the system opener, which is visible in the
   process list for the moment it runs.
+- [The start-up URL is in browser history] -> the page drops the fragment
+  with `history.replaceState`, but a browser may still record the URL it
+  first loaded, fragment included, in its history database. That is
+  readable only by the user's own account, and the token changes every
+  run.
+- [A new tab has no token] -> `sessionStorage` is per tab: a reload keeps
+  the token, a tab opened by hand does not and shows the message pointing
+  to the start-up URL. Accepted as the price of keeping the token out of
+  cookies.
+- [The token is readable by script of the origin] -> it lives in
+  `sessionStorage`, not in an `HttpOnly` cookie, so an XSS in the page
+  could read it. The CSP admits only the server's own script, and board
+  text is never rendered as markup (board-web), so there is no injection
+  point; an injection would have the page's full access either way.
+- [A large-board join held in memory] -> a join's first `append` is
+  written in full even when it is larger than the 4 MiB per-client
+  buffer, so up to 64 authenticated clients that never read can hold about
+  64 times the board size in memory until they are disconnected or close.
+  Acceptable: only token holders can open streams.
 - [Wall clocks differ between machines] -> "last seen" and relative times
   use event walls; a wall in the future shows as "just now", never as a
   negative age.

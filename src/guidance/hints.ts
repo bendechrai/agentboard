@@ -81,6 +81,7 @@ export const HINT_REASONS: readonly string[] = [
   'decision-path-missing',
   'detached-head',
   'duplicate-create',
+  'forbidden-host',
   'gh-missing',
   'git-missing',
   'id-too-short',
@@ -89,6 +90,7 @@ export const HINT_REASONS: readonly string[] = [
   'malformed-event',
   'malformed-task-ref',
   'malformed-tasks',
+  'method-not-allowed',
   'missing-actor',
   'missing-status',
   'needs-task-link',
@@ -97,7 +99,9 @@ export const HINT_REASONS: readonly string[] = [
   'no-disposition',
   'no-targets',
   'not-assignee',
+  'not-found',
   'path-outside-tree',
+  'port-in-use',
   'schema-mismatch',
   'secret-like',
   'streaming-command',
@@ -105,6 +109,8 @@ export const HINT_REASONS: readonly string[] = [
   'sync-failed',
   'sync-in-progress',
   'tasks-not-found',
+  'too-many-streams',
+  'unauthorized',
   'unknown-cursor',
   'unknown-ticket',
   'unpromoted-decision',
@@ -115,6 +121,9 @@ export const HINT_REASONS: readonly string[] = [
 /**
  * The exit code class of each reason in `HINT_REASONS` (a reason belongs to
  * exactly one class: for example `usage` and `missing-actor` are 1,
+ * and so are the web server's refusals (`unauthorized`, `forbidden-host`,
+ * `not-found`, `method-not-allowed`, `too-many-streams`) and
+ * `port-in-use`;
  * `board-not-found` 2, `sync-conflict` 3, `already-assigned` 4, `busy` 5).
  */
 export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
@@ -128,6 +137,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'decision-path-missing': 1,
   'detached-head': 3,
   'duplicate-create': 4,
+  'forbidden-host': 1,
   'gh-missing': 1,
   'git-missing': 1,
   'id-too-short': 1,
@@ -136,6 +146,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'malformed-event': 1,
   'malformed-task-ref': 1,
   'malformed-tasks': 1,
+  'method-not-allowed': 1,
   'missing-actor': 1,
   'missing-status': 1,
   'needs-task-link': 4,
@@ -144,7 +155,9 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'no-disposition': 1,
   'no-targets': 1,
   'not-assignee': 4,
+  'not-found': 1,
   'path-outside-tree': 1,
+  'port-in-use': 1,
   'schema-mismatch': 5,
   'secret-like': 1,
   'streaming-command': 1,
@@ -152,6 +165,8 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'sync-failed': 3,
   'sync-in-progress': 3,
   'tasks-not-found': 1,
+  'too-many-streams': 1,
+  unauthorized: 1,
   'unknown-cursor': 1,
   'unknown-ticket': 4,
   'unpromoted-decision': 1,
@@ -268,7 +283,26 @@ export function hintStep(
  *   promote them and step `close` with I, `decision-recorded-in` `<path>`,
  *   A; or retract with a comment beginning `RETRACTED:` (step `comment`
  *   with I, `text` `RETRACTED: <why>`, A).
- * - `unknown-cursor`: step `inbox` with `as` A (and `peek`).
+ * - `unknown-cursor`: step `inbox` with `as` A (and `peek`); when the
+ *   command is `serve` (the events API, `/api/events?after=<hash>`), says
+ *   that `after` must be the hash of an event listed by `/api/events` and
+ *   that leaving it out pages from the first event (the words `after` and
+ *   `/api/events` appear), then step `help serve`.
+ * - `port-in-use`: another process listens on that port; step `serve`
+ *   with `port` `0` (a free port chosen by the system), so `--port`
+ *   appears.
+ * - The web server's refusals (add-board-web group 3), whose command is
+ *   always `serve` and which each end with step `help serve`:
+ *   `unauthorized`: open the URL `agentboard serve` printed at start-up
+ *   (the token changes at every start) or send `Authorization: Bearer
+ *   <token>` (that text appears); `forbidden-host`: use the host
+ *   `127.0.0.1` or `localhost` with the port, exactly as printed (both
+ *   names appear); `not-found`: names the API routes `/api/session`,
+ *   `/api/board`, `/api/tickets/<ticket>`, `/api/events`, `/api/actors` and
+ *   `/api/stream`; `method-not-allowed`: the server is read-only and
+ *   answers only `GET` (the word `GET` appears); `too-many-streams`: close
+ *   other board tabs or clients, at most 64 streams are open at once (the
+ *   number `64` appears), then reconnect.
  * - `unsupported-source`: only the `openspec` adapter ships; step `new`
  *   with `title` `<title>`, `task` `<source>:<ref>#<item>`, A.
  * - `tasks-not-found`, `malformed-tasks`: fix the tasks file named in the
@@ -443,6 +477,11 @@ const streamingHint: HintTemplate = (h) => {
   return `run it from the agentboard executable in a shell: ${hintStep('cli', command.name, args)}`;
 };
 
+/** Step `help serve`. */
+function serveHelp(h: HintParts): string {
+  return h.step('help', [['topic', 'serve']]);
+}
+
 /** The template of `usage`. */
 const usageHint: HintTemplate = (h) => {
   if (h.context.surface === 'cli') {
@@ -512,13 +551,15 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
       ['as', h.actor],
     ])}`,
   'unknown-cursor': (h) =>
-    `${h.context.surface === 'mcp' ? 'the since argument' : '--since'} needs the full hash of an event on this board; ${h.step(
-      'inbox',
-      [
-        ['as', h.actor],
-        ['peek', true],
-      ],
-    )} lists the events without acknowledging them`,
+    h.command?.name === 'serve'
+      ? `after must be the hash of an event listed by /api/events; leave it out to page from the first event; see ${serveHelp(h)}`
+      : `${h.context.surface === 'mcp' ? 'the since argument' : '--since'} needs the full hash of an event on this board; ${h.step(
+          'inbox',
+          [
+            ['as', h.actor],
+            ['peek', true],
+          ],
+        )} lists the events without acknowledging them`,
   'unsupported-source': (h) =>
     `only the openspec source can be imported; create a ticket for other planned work with ${h.step(
       'new',
@@ -541,6 +582,18 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     'in the board repository, set an upstream for the branch or name one remote origin',
   ),
   'streaming-command': streamingHint,
+  'port-in-use': (h) =>
+    `another process listens on that port; let the system choose a free one with ${h.step('serve', [['port', '0']])}, or pass another --port`,
+  unauthorized: (h) =>
+    `open the URL that agentboard serve printed at start-up (the token changes at every start), or send Authorization: Bearer <token>; see ${serveHelp(h)}`,
+  'forbidden-host': (h) =>
+    `use the address exactly as printed at start-up, with the host 127.0.0.1 or localhost and the port; see ${serveHelp(h)}`,
+  'not-found': (h) =>
+    `the API routes are /api/session, /api/board, /api/tickets/<ticket>, /api/events, /api/actors and /api/stream; see ${serveHelp(h)}`,
+  'method-not-allowed': (h) =>
+    `the board server is read-only and answers only GET requests; see ${serveHelp(h)}`,
+  'too-many-streams': (h) =>
+    `at most 64 streams are open at once; close other board tabs or clients, then reconnect; see ${serveHelp(h)}`,
   'no-targets': (h) =>
     `choose what to install with ${h.step('agents install', [['target', '<target>']])}, where <target> is claude, agents-md, openspec or mcp-json`,
   // Exit 2.

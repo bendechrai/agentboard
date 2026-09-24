@@ -15,7 +15,7 @@ The CLI SHALL provide: `init`; `new <title> [--description] [--label]...
 `close <id> --as <actor> (--decision-recorded-in <path> | --no-decision)`;
 `inbox --as <actor> [--since <cursor>] [--peek]`; `watch --as <actor>`;
 `rebuild [--check]`; `sync`; `import-change <name>`; `close-merged`;
-`serve [--port <n>] [--open]`; `mcp`; and `version`. Every command SHALL
+`serve [--port <port>] [--open]`; `mcp`; and `version`. Every command SHALL
 accept `--json`. An argument beginning with `--` is
 always parsed as a flag; `--` on its own ends the flags, so free text that
 begins with `-` (for example a comment) is given after it. Ticket ids MAY be

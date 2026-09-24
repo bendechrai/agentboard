@@ -358,7 +358,14 @@ describe('callTool', () => {
 
   it('refuses the excluded commands as unknown tools', () => {
     const h = serve();
-    for (const name of ['board_init', 'board_watch', 'board_rebuild', 'board_sync', 'board_mcp']) {
+    for (const name of [
+      'board_init',
+      'board_watch',
+      'board_serve',
+      'board_rebuild',
+      'board_sync',
+      'board_mcp',
+    ]) {
       expect(failed(h.server.callTool(name, {})), name).toMatchObject({
         exitCode: 1,
         reason: 'usage',
