@@ -58,9 +58,9 @@ describe('tool names', () => {
     expect(TOOL_PREFIX).toBe('board_');
   });
 
-  it('excludes exactly init, watch, rebuild, sync, mcp and version', () => {
+  it('excludes exactly init, watch, rebuild, sync, mcp, version and help', () => {
     expect([...EXCLUDED_COMMANDS].sort()).toEqual(
-      ['init', 'mcp', 'rebuild', 'sync', 'version', 'watch'].sort(),
+      ['help', 'init', 'mcp', 'rebuild', 'sync', 'version', 'watch'].sort(),
     );
   });
 
