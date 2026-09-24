@@ -9,13 +9,9 @@
 
 import { createHash } from 'node:crypto';
 
-/** A JSON value as it appears in an event. Numbers are always safe integers. */
-export type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
+import type { JsonValue } from './json.js';
 
-/** A JSON object. Keys are unique by construction. */
-export interface JsonObject {
-  [key: string]: JsonValue;
-}
+export type { JsonObject, JsonValue } from './json.js';
 
 /**
  * Why a value could not be encoded or a byte sequence could not be decoded.

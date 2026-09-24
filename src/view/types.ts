@@ -13,7 +13,7 @@
  * view data with these functions.
  */
 
-import type { JsonValue } from '../events/canonical.js';
+import type { JsonValue } from '../events/json.js';
 import type { RejectionReason, Ticket } from '../events/fold.js';
 import type { Hlc } from '../events/hlc.js';
 import type { BoardEvent, UnknownKindEvent } from '../events/schema.js';

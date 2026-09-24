@@ -7,7 +7,7 @@
  * (or any other `unknown`) and never throws.
  */
 
-import type { JsonValue } from './canonical.js';
+import type { JsonValue } from './json.js';
 import type { Hlc } from './hlc.js';
 import { isUlid } from './ulid.js';
 
