@@ -73,3 +73,32 @@ export function recordedPosition(db: DatabaseSync, hash: string): RecordedPositi
     ? null
     : { hash, ts: decodeHlc(String(row.position)), effective: row.folded === 1 };
 }
+
+/**
+ * The effective events (`folded` 1) whose hash is not in `known`, in no
+ * particular order. Only those rows have their position decoded.
+ */
+export function effectiveExcept(
+  db: DatabaseSync,
+  known: ReadonlySet<string>,
+): { hash: string; ts: Hlc }[] {
+  const out: { hash: string; ts: Hlc }[] = [];
+  for (const row of db
+    .prepare('SELECT hash, position FROM folded WHERE folded = 1 AND position IS NOT NULL')
+    .all()) {
+    const hash = String(row.hash);
+    if (!known.has(hash)) {
+      out.push({ hash, ts: decodeHlc(String(row.position)) });
+    }
+  }
+  return out;
+}
+
+/**
+ * `PRAGMA data_version` of the connection: changes whenever another
+ * connection commits to the database (never for this connection's own
+ * commits).
+ */
+export function dataVersion(db: DatabaseSync): number {
+  return Number(db.prepare('PRAGMA data_version').get()?.data_version);
+}

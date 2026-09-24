@@ -146,11 +146,46 @@ export function writeCursor(db: DatabaseSync, cursor: Cursor): void {
     p?.ts.actor ?? null,
     p?.hash ?? null,
   );
-  db.prepare('DELETE FROM cursor_seen WHERE actor = ?').run(cursor.actor);
-  const insert = db.prepare('INSERT INTO cursor_seen (actor, hash, wall) VALUES (?, ?, ?)');
+  const stored = new Map<string, number>(
+    db
+      .prepare('SELECT hash, wall FROM cursor_seen WHERE actor = ?')
+      .all(cursor.actor)
+      .map((row) => [String(row.hash), Number(row.wall)]),
+  );
+  const wanted = new Set<string>();
+  const upsert = db.prepare(
+    `INSERT INTO cursor_seen (actor, hash, wall) VALUES (?, ?, ?)
+     ON CONFLICT (actor, hash) DO UPDATE SET wall = excluded.wall`,
+  );
   for (const s of cursor.seen) {
-    insert.run(cursor.actor, s.hash, s.wall);
+    wanted.add(s.hash);
+    // A row already stored with the same wall is left untouched.
+    if (stored.get(s.hash) !== s.wall) {
+      upsert.run(cursor.actor, s.hash, s.wall);
+    }
   }
+  const remove = db.prepare('DELETE FROM cursor_seen WHERE actor = ? AND hash = ?');
+  for (const hash of stored.keys()) {
+    if (!wanted.has(hash)) {
+      remove.run(cursor.actor, hash);
+    }
+  }
+}
+
+/** Hash sets of seen sets, built once per `Cursor.seen` array. */
+const seenSets = new WeakMap<readonly SeenHash[], ReadonlySet<string>>();
+
+/**
+ * The hashes of `seen` as a set, cached per array. Rebuilt when the array's
+ * length no longer matches (an array appended to after the first lookup).
+ */
+function seenSet(seen: readonly SeenHash[]): ReadonlySet<string> {
+  let set = seenSets.get(seen);
+  if (set?.size !== seen.length) {
+    set = new Set(seen.map((s) => s.hash));
+    seenSets.set(seen, set);
+  }
+  return set;
 }
 
 /**
@@ -177,7 +212,7 @@ export function writeCursor(db: DatabaseSync, cursor: Cursor): void {
  * Pure.
  */
 export function isPending(cursor: Cursor, event: CursorPosition): boolean {
-  if (cursor.seen.some((s) => s.hash === event.hash)) {
+  if (seenSet(cursor.seen).has(event.hash)) {
     return false;
   }
   const position = cursor.position;
@@ -345,7 +380,10 @@ function rowPosition(row: Record<string, SQLOutputValue>): CursorPosition | null
  */
 function positionBefore(db: DatabaseSync, event: CursorPosition): CursorPosition | null {
   let best: CursorPosition | null = null;
-  for (const recorded of recordedPositions(db, { maxWall: event.ts.wall })) {
+  for (const recorded of recordedPositions(db, {
+    maxWall: event.ts.wall,
+    effectiveOnly: true,
+  })) {
     const candidate = { hash: recorded.hash, ts: recorded.ts };
     if (
       comparePositions(candidate, event) < 0 &&

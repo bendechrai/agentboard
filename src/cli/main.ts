@@ -217,7 +217,12 @@ export async function runCliAsync(io: AsyncCliIo): Promise<ExitCode> {
   try {
     const ctx = context(io, parsed, opened);
     const signal = io.stopSignal();
-    await command.stream(ctx, values, { stdout: io.stdout, json: parsed.json, signal });
+    await command.stream(ctx, values, {
+      stdout: io.stdout,
+      stderr: io.stderr,
+      json: parsed.json,
+      signal,
+    });
     return 0;
   } catch (error) {
     return fail(io, parsed, error);

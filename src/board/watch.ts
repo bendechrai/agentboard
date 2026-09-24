@@ -6,9 +6,14 @@
 import { watch, type FSWatcher } from 'node:fs';
 
 import type { Board } from '../store/board.js';
-import type { ReadOutcome } from '../store/eventfile.js';
+import { catchUp } from '../store/cache.js';
+import { isPending, readCursor } from '../store/cursors.js';
+import { inSnapshot } from '../store/engine.js';
 import { BoardError } from '../store/errors.js';
-import { readInbox, type InboxEntry } from './inbox.js';
+import { readEventFile, type ReadOutcome } from '../store/eventfile.js';
+import { dataVersion, effectiveExcept } from '../store/folded.js';
+import type { InboxEntry } from './inbox.js';
+import { toEntries } from './pending.js';
 
 /** Interval of the polling fallback, in milliseconds. */
 export const WATCH_POLL_MS = 2000;
@@ -60,19 +65,26 @@ export interface WatchOptions {
  * every entry pending for the actor's stored cursor (as
  * `readInbox(board, actor, { peek: true })` lists them), in fold order.
  *
- * Later ticks do bounded work. The watch keeps a bookmark of its own: the
- * greatest fold position it has examined, plus the hashes it has passed on,
- * pruned by the seen-set rule (`SEEN_WINDOW_MS` before the bookmark's
- * position, as `advanceCursor` prunes). A later tick runs catch-up, then
- * examines only the events that are newly folded or newly effective since
- * the previous tick: those after the bookmark's position, plus any event
- * that became effective behind it (recorded for the first time as applied,
- * or turned from rejected into applied by a refold), wherever it sorts. Of
- * those, it passes on, in fold order, the ones still pending for the
- * actor's stored cursor (`isPending`) that it has not passed on before. A
- * tick with nothing newly folded or newly effective reads no event file at
- * all (see `WatchOptions.readEventFile`), and a tick reads at most one file
- * per entry it examines. No entry is passed on twice.
+ * Later ticks do bounded work. The watch remembers every effective event
+ * it has examined (passed on or not), and the connection's
+ * `PRAGMA data_version` as of its last examination. A later tick runs
+ * catch-up; when that catch-up folded nothing and no other connection has
+ * committed since (`data_version` unchanged), the tick ends there, reading
+ * no event file and no `folded` row. Otherwise it lists the effective
+ * events it has not examined yet (from `folded`, without reading files):
+ * exactly the events newly folded as applied or newly turned effective,
+ * whether they sort after everything examined so far or behind it (a late
+ * arrival, or a rejected event made effective by one). Of those, it passes
+ * on, in fold order, the ones pending for the actor's stored cursor
+ * (`isPending`), reading one event file per entry passed on (see
+ * `WatchOptions.readEventFile`), and marks them all examined. No event is
+ * examined twice, so no entry is passed on twice.
+ *
+ * The examined set is not pruned. Pruning it by the seen-set window would
+ * make an old examined event look new at the next listing and pass it on
+ * a second time, so it grows with the effective events of the board over
+ * the life of the watch: one 64-character hash per event (about 1 MB per
+ * 10,000 events).
  *
  * The stored cursor is never written (watch is a stream, not an
  * acknowledgement; the actor runs `inbox` to acknowledge), and entries that
@@ -109,7 +121,39 @@ export function watchInbox(board: Board, actor: string, options: WatchOptions): 
     );
   }
   const { signal, onEntries } = options;
-  const passed = new Set<string>();
+  const read = options.readEventFile ?? readEventFile;
+  const { db } = board;
+  // Every effective event examined so far, and `data_version` at the time.
+  const examined = new Set<string>();
+  let version: number | null = null;
+
+  /** One tick's examination; the watch state changes only if it succeeds. */
+  const examine = (): void => {
+    const report = catchUp(board);
+    const current = dataVersion(db);
+    if (
+      version !== null &&
+      current === version &&
+      report.applied.length === 0 &&
+      !report.refolded
+    ) {
+      return;
+    }
+    const { fresh, entries } = inSnapshot(db, () => {
+      const cursor = readCursor(db, actor);
+      const unseen = effectiveExcept(db, examined);
+      const due = unseen.filter((p) => isPending(cursor, p));
+      return { fresh: unseen, entries: toEntries(board, due, read) };
+    });
+    version = current;
+    for (const p of fresh) {
+      examined.add(p.hash);
+    }
+    if (entries.length > 0) {
+      onEntries(entries);
+    }
+  };
+
   return new Promise<void>((resolve, reject) => {
     let watcher: FSWatcher | null = null;
     let poll: NodeJS.Timeout | null = null;
@@ -136,16 +180,12 @@ export function watchInbox(board: Board, actor: string, options: WatchOptions): 
     // the timers and the watcher call it, and `stop` removes all of them.
     const tick = (): void => {
       try {
-        const fresh = readInbox(board, actor, { peek: true }).entries.filter(
-          (entry) => !passed.has(entry.hash),
-        );
-        for (const entry of fresh) {
-          passed.add(entry.hash);
-        }
-        if (fresh.length > 0) {
-          onEntries(fresh);
-        }
+        examine();
       } catch (error) {
+        if (error instanceof BoardError && error.exitCode === 5 && error.reason === 'busy') {
+          options.onWarning?.(error.message);
+          return;
+        }
         stop();
         reject(error as Error);
       }

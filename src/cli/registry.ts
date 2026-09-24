@@ -727,6 +727,9 @@ export const COMMANDS: readonly CommandSpec[] = [
     stream: (ctx, _values, io) =>
       watchInbox(ctx.board(), actorOf(ctx), {
         signal: io.signal,
+        onWarning: (line) => {
+          io.stderr?.(`agentboard: ${line}\n`);
+        },
         onEntries: (entries) => {
           io.stdout(
             entries
