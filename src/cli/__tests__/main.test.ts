@@ -69,6 +69,7 @@ describe('every command prints exactly one JSON document with --json', () => {
         run(['move', id(), 'blocked', ...AS], root);
         return run(['close', id(), '--no-decision', ...AS, '--json'], root);
       },
+      rebuild: () => run(['rebuild', '--json'], root),
       sync: () => {
         git(join(root, '.board'), 'init', '-q');
         return run(['sync', '--json'], root);
@@ -106,6 +107,7 @@ describe('every command prints exactly one JSON document with --json', () => {
     });
     expect(docs['checklist untick']).toMatchObject({ ticket: { id: id() }, reminder: null });
     expect(docs.close).toMatchObject({ ticket: { closed: true } });
+    expect(docs.rebuild).toMatchObject({ folded: 11, rejected: 0 });
     expect(docs.sync).toMatchObject({ remote: null, pushed: false, warnings: [] });
     expect(docs.mcp).toMatchObject({ error: { exitCode: 1, reason: 'not-implemented' } });
     expect(docs.version).toEqual({ version });

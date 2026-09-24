@@ -81,8 +81,39 @@ export interface RunContext {
    * opened (`openBoard`) on first call; later calls return the same handle.
    * The caller of `run` closes it. Throws `BoardError(2,
    * 'board-not-found')` when there is no board.
+   *
+   * `options` apply to the first call only (later calls return the handle
+   * already opened, whatever they pass). With `catchUp: false` the board is
+   * opened with `openBoard(dir, { catchUp: false })`: no event file is
+   * folded and no temporary file is reaped, so the live cache is exactly as
+   * the previous command left it (`rebuild --check` needs this). The open
+   * report is then null, so nothing is printed about reaped or corrupt
+   * files. `rebuild` and `rebuild --check` open this way (board-cache:
+   * they SHALL NOT catch up before they run). Omitted, or `catchUp: true`,
+   * is the default open with catch-up.
    */
-  board(): Board;
+  board(options?: BoardOpenOptions): Board;
+  /**
+   * The absolute board directory found by discovery (`findBoard` with `cwd`
+   * and `env`), without opening the board or touching the cache, so a
+   * command can inspect the directory first (`rebuild --check` checks
+   * whether the cache file exists without creating it). Throws
+   * `BoardError(2, 'board-not-found')` when there is no board.
+   */
+  boardDir(): string;
+}
+
+/** Options of `RunContext.board`. */
+export interface BoardOpenOptions {
+  /** False to open without catch-up (see `RunContext.board`). Default true. */
+  readonly catchUp?: boolean;
+  /**
+   * Passed to `openBoard` as `prepare` (default true): false opens the
+   * cache for inspection only, never creating, migrating or writing it,
+   * and implies no catch-up (see `OpenBoardOptions.prepare`). Applies to
+   * the first call only, like `catchUp`.
+   */
+  readonly prepare?: boolean;
 }
 
 /** What a command produced. */
@@ -99,11 +130,18 @@ export interface CommandOutput {
    */
   readonly text: string;
   /**
-   * Warnings of a successful command (for example `sync`'s host tracking
-   * warning), plain ASCII, without the `agentboard: ` prefix. `runCli`
-   * prints each to stderr as `agentboard: <warning>` and a newline, with or
-   * without `--json`; they never reach stdout and never change the exit
-   * code. Absent or empty when there is nothing to warn about.
+   * The exit code of a command that ran to completion but whose result is a
+   * failure the caller must see, while still printing its full output (the
+   * `json` document or `text`) on stdout. Only `rebuild --check` uses it,
+   * with 1 when the cache diverges from a fresh rebuild (board-cache:
+   * "Rebuild"). Absent means 0. Refusals are still thrown as `BoardError`,
+   * never reported here.
+   */
+  readonly exitCode?: 1;
+  /**
+   * Diagnostics for stderr, one ASCII line each without a trailing newline;
+   * `runCli` prints each as `agentboard: <line>` plus a newline, before the
+   * stdout output, in `--json` mode too. Absent or empty prints nothing.
    */
   readonly warnings?: readonly string[];
 }
@@ -132,9 +170,10 @@ export interface CommandSpec {
    */
   readonly writes: boolean;
   /**
-   * Name of the library function in `src/board/` (exported from
-   * `src/index.ts`) the command calls, e.g. `claimTicket`; null for
-   * `version` and `mcp`, which call none.
+   * Name of the library function (exported from `src/index.ts`) the command
+   * calls, e.g. `claimTicket`; null for `version` and `mcp`, which call
+   * none. Normally in `src/board/`; `rebuild` names the store's `rebuild`
+   * (its `--check` form calls the store's `checkCache`).
    */
   readonly operation: string | null;
   /**
