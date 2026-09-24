@@ -266,6 +266,51 @@ describe('late-arriving events', () => {
   });
 });
 
+describe('events made effective behind the cursor', () => {
+  /** A board acknowledged by orch up to a comment at wall 10 hours, plus an orphan comment. */
+  function withOrphan(orphanWall: number): {
+    board: ReturnType<typeof openTracked>;
+    eventsDir: string;
+    orphan: string;
+  } {
+    const { dir, eventsDir } = seededDir([
+      ev(P.create(T1), 'orch', 1000),
+      ev(P.comment(T1, 'at 10h'), 'impl', 10 * HOUR),
+      // T2 has no create yet: rejected as unknown-ticket.
+      ev(P.comment(T2, 'orphan'), 'remote', orphanWall),
+    ]);
+    const board = openTracked(dir);
+    const first = readInbox(board, 'orch');
+    expect(first.entries).toHaveLength(2);
+    return {
+      board,
+      eventsDir,
+      orphan: putEvent(eventsDir, ev(P.comment(T2, 'orphan'), 'remote', orphanWall)),
+    };
+  }
+
+  it('delivers an old rejected comment (outside the window) once its late create arrives', () => {
+    const { board, eventsDir, orphan } = withOrphan(3 * HOUR);
+    const created = putEvent(eventsDir, ev(P.create(T2), 'remote', 2 * HOUR));
+    expect(hashes(readInbox(board, 'orch').entries)).toEqual([created, orphan]);
+    expect(readInbox(board, 'orch').entries).toEqual([]);
+  });
+
+  it('delivers it too when rebuild is what folds the late create', () => {
+    const { board, eventsDir, orphan } = withOrphan(3 * HOUR);
+    const created = putEvent(eventsDir, ev(P.create(T2), 'remote', 2 * HOUR));
+    rebuild(board);
+    expect(hashes(readInbox(board, 'orch').entries)).toEqual([created, orphan]);
+  });
+
+  it('delivers a rejected comment inside the window once its late create arrives', () => {
+    const { board, eventsDir, orphan } = withOrphan(9 * HOUR + 30 * 60_000);
+    const created = putEvent(eventsDir, ev(P.create(T2), 'remote', 9 * HOUR + 10 * 60_000));
+    expect(hashes(readInbox(board, 'orch').entries)).toEqual([created, orphan]);
+    expect(readInbox(board, 'orch').entries).toEqual([]);
+  });
+});
+
 describe('cursor persistence', () => {
   it('survives closing and reopening the board (another process)', () => {
     const { board, root } = setup();

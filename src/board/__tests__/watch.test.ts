@@ -148,21 +148,25 @@ describe('watchInbox', () => {
     const { board } = setup();
     create(board);
     const controller = new AbortController();
-    let first = true;
+    let calls = 0;
     const done = watchInbox(board, 'orch', {
       signal: controller.signal,
       pollMs: 20,
       fsWatch: false,
       onEntries: () => {
-        if (first) {
-          first = false;
-          // The next tick reads through a closed connection and throws.
-          board.close();
-        }
+        calls += 1;
+        // The next tick reads through a closed connection and throws.
+        board.close();
       },
     });
     try {
-      await expect(done).rejects.toThrow();
+      // It rejects on its own, without the signal, with the tick's error.
+      await expect(done).rejects.toThrow(/not open/i);
+      // The first tick ran and passed the pending entry on before the failure.
+      expect(calls).toBe(1);
+      // Cleanup: the timer is cleared, so nothing runs any more.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(calls).toBe(1);
     } finally {
       controller.abort();
     }

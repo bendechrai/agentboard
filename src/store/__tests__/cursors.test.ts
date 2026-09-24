@@ -23,7 +23,7 @@ import {
   type CursorPosition,
 } from '../cursors.js';
 import { checkCache, rebuild } from '../rebuild.js';
-import { P, T1, ev, putEvent, tempBoard } from './helpers.js';
+import { P, T1, T2, ev, putEvent, tempBoard } from './helpers.js';
 
 const open: Board[] = [];
 
@@ -461,6 +461,43 @@ describe('late events found by folding', () => {
     const hash = putEvent(events, e);
     const again = openB(dir);
     expect(isPending(readCursor(again.db, 'orch'), { hash, ts: e.ts })).toBe(true);
+  });
+
+  it('rebuild also reports an old rejected event that a late event made effective', () => {
+    const { board, events, top } = acknowledged();
+    // A comment on a ticket whose create has not arrived: rejected, never delivered.
+    const orphan = ev(P.comment(T2, 'orphan'), 'remote', 3 * HOUR);
+    const orphanHash = putEvent(events, orphan);
+    rebuild(board);
+    expect(isPending(readCursor(board.db, 'orch'), { hash: orphanHash, ts: orphan.ts })).toBe(
+      false,
+    );
+    // Its ticket's create arrives late, older than the window: the comment becomes effective.
+    const created = ev(P.create(T2), 'remote', 2 * HOUR);
+    const createdHash = putEvent(events, created);
+    const report = rebuild(board);
+    expect(report.late.map((l) => [l.actor, l.hash])).toEqual([
+      ['orch', createdHash],
+      ['orch', orphanHash],
+    ]);
+    expect(report.late[1]?.cursor).toEqual(top);
+    const c = readCursor(board.db, 'orch');
+    expect(isPending(c, { hash: createdHash, ts: created.ts })).toBe(true);
+    expect(isPending(c, { hash: orphanHash, ts: orphan.ts })).toBe(true);
+  });
+
+  it('resetLateCursors resets for an already recorded event that became effective', () => {
+    const { board, events, top } = acknowledged();
+    const old = ev(P.comment(T1, 'old'), 'remote', 3 * HOUR);
+    const hash = putEvent(events, old);
+    rebuild(board);
+    // Recorded now; the cursor was written before, so reset it explicitly as a refold would.
+    locked(board, () => {
+      writeCursor(board.db, cursor(top, [top]));
+    });
+    const late = locked(board, () => resetLateCursors(board.db, [{ hash, ts: old.ts }]));
+    expect(late.map((l) => l.hash)).toEqual([hash]);
+    expect(isPending(readCursor(board.db, 'orch'), { hash, ts: old.ts })).toBe(true);
   });
 
   it('rebuild --check never reports late events or touches cursors', () => {

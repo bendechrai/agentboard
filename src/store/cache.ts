@@ -307,11 +307,13 @@ export interface CatchUpOptions {
  * new changes no rows.
  *
  * Late events (task group 5): after the derived rows are up to date, the
- * well-formed events this call newly recorded are passed to
+ * well-formed events this call newly recorded, plus (after a refold) every
+ * event already recorded whose `folded` flag went from 0 to 1, are passed to
  * `resetLateCursors` (`src/store/cursors.ts`) in the same transaction, so an
- * event that arrives behind an actor's cursor and outside its seen-set
- * window moves that cursor back and is delivered by the next `inbox`. The
- * report does not list them; `rebuild` does.
+ * event that becomes effective behind an actor's cursor and outside its
+ * seen-set window (late itself, or made effective by a late event) moves
+ * that cursor back and is delivered by the next `inbox`. The report does
+ * not list them; `rebuild` does.
  */
 export function catchUp(board: Board, options?: CatchUpOptions): CatchUpReport {
   const now = options?.now ?? Date.now();

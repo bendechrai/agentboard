@@ -43,9 +43,11 @@ export interface RebuildReport {
   /** By file name. */
   corruptFiles: CorruptFile[];
   /**
-   * Events this rebuild recorded for the first time (their hash was not in
-   * the live `folded` table before it) that arrived behind an actor's
-   * cursor and outside its seen-set window, one per (actor, event), as
+   * Events that this rebuild recorded for the first time (their hash was
+   * not in the live `folded` table before it) or turned from not applied
+   * into applied (their `folded` flag was 0 before it and is 1 after), and
+   * that lie behind an actor's cursor and outside its seen-set window, one
+   * per (actor, event), as
    * returned by `resetLateCursors`, which `rebuild` calls in its
    * transaction after the refold. Each such cursor has been moved back so
    * the event is delivered by the next `inbox`. Always empty for the report

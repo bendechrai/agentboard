@@ -13,8 +13,9 @@
  * within `SEEN_WINDOW_MS` before the position's wall. A synced event with
  * an earlier timestamp than the position is still delivered, because its
  * hash is not in the seen set. An event that arrives even later (its wall
- * is older than the window) is caught when it is folded: whatever records
- * it in `folded` (catch-up in any command, or `rebuild`) calls
+ * is older than the window), or an old event that a refold turns from
+ * rejected into effective, is caught when it is folded: whatever changes
+ * `folded` (catch-up in any command, or `rebuild`) calls
  * `resetLateCursors`, which moves the affected cursors back so the event is
  * delivered, and `rebuild` reports it.
  *
@@ -164,12 +165,20 @@ export function advanceCursor(cursor: Cursor, delivered: readonly CursorPosition
 }
 
 /**
- * Moves back every cursor that an arriving event slipped behind unseen.
- * Called, under the write lock, by whatever records events in `folded` for
- * the first time (catch-up and `rebuild`), after the derived rows are up to
- * date, with the well-formed events it newly recorded (applied, rejected
- * or unknown kind; in any order). The command transaction's own event
- * never needs it, since it sorts after every folded event.
+ * Moves back every cursor that an event slipped behind unseen.
+ * Called, under the write lock, by whatever changes `folded` (catch-up and
+ * `rebuild`), after the derived rows are up to date, with `arrived`: every
+ * well-formed event it recorded for the first time (applied, rejected or
+ * unknown kind), plus every event already recorded whose `folded` flag went
+ * from 0 to 1 in a refold (a previously rejected event made effective by a
+ * late event, for example a comment rejected as `unknown-ticket` until its
+ * ticket's late `ticket.create` arrived); in any order. The command
+ * transaction's own event never needs it, since it sorts after every folded
+ * event.
+ *
+ * Board-concurrency ("Inbox never misses an event"): whenever an event
+ * becomes effective at a position behind an actor's cursor and outside its
+ * seen window, that cursor is moved back so the event is delivered.
  *
  * For each stored cursor with a position `P`, the events of `arrived` that
  * sort before `P` with `ts.wall < P.ts.wall - SEEN_WINDOW_MS` are late for
