@@ -66,11 +66,21 @@ export interface WatchOptions {
  * `readInbox(board, actor, { peek: true })` lists them), in fold order.
  *
  * Later ticks do bounded work. The watch remembers every effective event
- * it has examined (passed on or not), and the connection's
- * `PRAGMA data_version` as of its last examination. A later tick runs
- * catch-up; when that catch-up folded nothing and no other connection has
- * committed since (`data_version` unchanged), the tick ends there, reading
- * no event file and no `folded` row. Otherwise it lists the effective
+ * it has examined (passed on or not), and, as of its last examination, a
+ * change marker made of two parts: the connection's `PRAGMA data_version`
+ * (which moves when another connection commits) and the connection's own
+ * change counter, SQLite's `total_changes()` (which moves when anything,
+ * including another caller sharing this `Board` in the same process,
+ * commits a change on this connection; `data_version` never moves for a
+ * connection's own commits). A later tick runs catch-up; when that
+ * catch-up folded nothing and neither part of the marker has changed, the
+ * tick ends there, reading no event file and no `folded` row. A catch-up
+ * that finds nothing new changes no rows, so it does not move the marker.
+ * An event written, or a late event folded, through the watch's own
+ * `Board` (for example `commentTicket(board, ...)` or `readInbox(board,
+ * ...)` catching up, between two ticks) is therefore passed on at the next
+ * tick, like one committed by another process. Otherwise it lists the
+ * effective
  * events it has not examined yet (from `folded`, without reading files):
  * exactly the events newly folded as applied or newly turned effective,
  * whether they sort after everything examined so far or behind it (a late
