@@ -629,8 +629,10 @@ prints a URL to open in a browser. The page shows the whole board and keeps
 itself up to date as agents write, including events that arrive late
 through `sync`, with no reload:
 
-- **Board**: one column per status, one card per ticket (title, assignee,
-  task reference, labels, checklist progress and open decisions), cards
+- **Board**: one column per status, one card per ticket (title, short id
+  with the full id as its tooltip, assignee, task reference or an "ad hoc"
+  badge, labels, checklist progress, open decisions, a "from <status>"
+  badge on a blocked ticket and a "closed" badge on a closed one), cards
   that just changed highlighted.
   Filter by change and by assignee; closed tickets are hidden unless you
   ask for them.
@@ -708,25 +710,39 @@ arbitrary web sites open. What it does:
   `forbidden-host`. This stops DNS rebinding, where a web site points its
   own domain at `127.0.0.1` to talk to local servers.
 - **No cross-origin access.** No response carries any
-  `Access-Control-Allow-*` header, and every method but `GET` is refused
-  (405 `method-not-allowed`, so CORS preflights never succeed).
+  `Access-Control-Allow-*` header, and every method but `GET` is refused,
+  so CORS preflights never succeed. On `/api/*` the token is checked
+  before the method, so a preflight or any other non-`GET` request without
+  a token is 401 `unauthorized` (405 with a valid token); on the page and
+  its assets a non-`GET` request is 405 `method-not-allowed`.
 - **Security headers on every response**, errors included: a strict
   `Content-Security-Policy` (only the server's own script, style and
   connections; no framing), `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`,
-  `Cross-Origin-Opener-Policy: same-origin` and
-  `Cross-Origin-Resource-Policy: same-origin`, plus `Cache-Control:
-  no-store` on API and stream responses.
+  `Cross-Origin-Opener-Policy: same-origin` (the tab that opened the
+  start-up URL keeps a window handle, but it is severed: it reports
+  `closed` and cannot navigate or script the page) and
+  `Cross-Origin-Resource-Policy: same-origin` (no other origin can embed a
+  response), plus `Cache-Control: no-store` on API and stream responses.
 - **Read-only.** There is no write route, and board text (titles,
   comments, actor names) is always shown as text, never as HTML.
 
 What it does not protect against:
 
-- **Your own account.** Anyone who can read your terminal, your shell
-  scrollback or your process list can see the token. `--open` passes the
-  URL to the system opener, which shows it in the process list for a
-  moment. The token protects against web pages and other users' processes,
-  not against you.
+- **Other users of the machine, if you use `--open`.** `--open` passes
+  the URL, token included, on a command line. On macOS, and on Linux
+  unless `/proc` is mounted with `hidepid`, every local user can read every
+  process's command line with `ps`. On macOS, `open` hands the URL to the
+  browser by Apple Event, so only the short-lived `open` process shows it.
+  On Linux, `xdg-open` starts the browser with the URL as an argument; if
+  no browser was running, that browser process can keep the URL in its
+  command line for as long as it runs. In that case the token does not
+  keep other users' processes out. On a shared machine, copy the printed
+  URL into the browser by hand instead of using `--open`.
+- **Your own account.** Anyone who can read your terminal or your shell
+  scrollback can see the token. The token protects against web pages and,
+  when you do not use `--open` on a shared machine, other users'
+  processes; it does not protect against you.
 - **Browser history.** The page drops the fragment at once, but a browser
   may still have recorded the first URL, token included, in its history.
   Only your account can read that, and the token is dead once the server
@@ -756,7 +772,7 @@ the CLI prints with `--json`, with a hint):
 | ----- | ------ |
 | `/api/session` | `{version, boardDir, writable, actor}` (`writable` false, `actor` null) |
 | `/api/board` | `{tickets, meta, id}`: every ticket, open and closed, the board meta and the feed position id |
-| `/api/tickets/<id>` | `{ticket, events}` for a full id or a unique prefix of at least 6 characters; 404 `unknown-ticket` |
+| `/api/tickets/<id>` | `{ticket, events}` for a full id or a unique prefix of at least 6 characters; 400 `id-too-short` or `ambiguous-id`, 404 `unknown-ticket` |
 | `/api/events?after=<hash>&limit=<n>` | `{events, next}`: well-formed events in fold order with their outcome, `limit` 1000 by default and at most 5000; pass `next` as `after` for the next page (null on the last) |
 | `/api/actors` | the agent lanes |
 | `/api/stream?since=<id>` | Server-Sent Events: `append` and `resync` events with position ids, a `problem` event on a tick failure; resumes from `Last-Event-ID` or `since` |

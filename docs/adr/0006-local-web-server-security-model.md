@@ -78,8 +78,9 @@ source.
   the server's own script, style and connections, `frame-ancestors
   'none'`), `X-Content-Type-Options: nosniff`, `Referrer-Policy:
   no-referrer`, `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy:
-  same-origin` (the tab that opened the start-up URL keeps no window
-  handle to the page) and `Cross-Origin-Resource-Policy: same-origin` (no
+  same-origin` (the tab that opened the start-up URL keeps a window
+  handle, but it is severed: it reports `closed` and cannot navigate or
+  script the page) and `Cross-Origin-Resource-Policy: same-origin` (no
   other origin can embed a response), plus `Cache-Control: no-store` on
   API and stream responses.
 - Order of checks: Host, then (on `/api/*` only) the token, then the
@@ -109,13 +110,26 @@ reading, framing or scripting the page.
 - The token is readable by script of the page's origin. The CSP admits
   only the server's own script and board text is never rendered as markup,
   so there is no injection point.
-- Residual risks, stated in the README: anyone who can read the user's
-  terminal or process list sees the token (`--open` passes the URL to the
-  system opener); a browser may keep the first URL, fragment included, in
-  its history database; up to 64 authenticated streams that never read can
-  each hold about a board's worth of memory until they disconnect.
-- The write actions of `add-board-web-actions` build on this model and
-  add their own CSRF protection.
+- Residual risks, stated in the README:
+  - Other users: `--open` passes the URL, token included, on a command
+    line. On macOS, and on Linux unless `/proc` uses `hidepid`, every
+    local user can read command lines with `ps`. On macOS `open` hands the
+    URL over by Apple Event, so only the short-lived `open` process shows
+    it; on Linux `xdg-open` starts the browser with the URL as an
+    argument, where it can stay for the browser's lifetime if `--open`
+    started it. With `--open` on a shared machine the token therefore does
+    not keep other users out; the README advises copying the printed URL
+    by hand there.
+  - The user's own account: anyone who can read the terminal sees the
+    token, and a browser may keep the first URL, fragment included, in its
+    history database.
+  - Up to 64 authenticated streams that never read can each hold about a
+    board's worth of memory until they disconnect.
+- The write actions of `add-board-web-actions` build on this model without
+  a separate CSRF token: the bearer header, which a page on another origin
+  cannot send, is itself the CSRF defence, backed by a JSON content-type
+  check, a same-origin `Origin` check when the header is present and a
+  body size limit (see that change's design.md).
 
 ## Alternatives considered
 
