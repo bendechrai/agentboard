@@ -2,6 +2,16 @@
  * CLI entry point for agentboard: runs `runCli` with the real process and
  * sets the exit code (without `process.exit`, so stdout is flushed).
  *
+ * `mcp` (task group 9): when `parseArgs(argv)` succeeds and names the
+ * `mcp` command, the entry point does not call `runCli`; it imports
+ * `src/mcp/server.ts` (dynamically, so no other command loads the MCP
+ * SDK) and sets the exit code to the awaited `serveMcp({ cwd, env, stdin:
+ * process.stdin, stdout: process.stdout, stderr, signal })`, where
+ * `signal` is aborted by SIGINT or SIGTERM (handlers installed only for
+ * `mcp`). Every other argv, including one that fails to parse, goes to
+ * `runCli` unchanged. The warning filter below applies to `mcp` too, and
+ * nothing but protocol messages is written to stdout.
+ *
  * Contract: a successful command writes nothing to stderr. Node prints an
  * `ExperimentalWarning` when `node:sqlite` is loaded; the entry point
  * drops exactly that warning (a warning whose name is `ExperimentalWarning`

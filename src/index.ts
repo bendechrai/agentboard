@@ -37,3 +37,5 @@ export * from './cli/parse.js';
 export * from './cli/render.js';
 export * from './cli/main.js';
 export * from './cli/warnings.js';
+export * from './mcp/tools.js';
+export * from './mcp/server.js';
