@@ -311,9 +311,14 @@ export function overviewDocument(source: HelpSource): CommandHelpDocument[] {
  *   unknownCommandMessage(topic, source.commands))`, so `help clam`
  *   suggests `claim` and points to `agentboard help`.
  *
- * - exactly `['agents']` (no command is named `agents`): the agent guide,
+ * - exactly `['agents']`: the agent guide,
  *   `agentsHelpOutput(source.version, role)` from `src/guidance/guide.ts`,
- *   which also handles an unknown role.
+ *   which also handles an unknown role. This is checked before any
+ *   command lookup, so it holds even when the registry has commands whose
+ *   first word is `agents` (add-agent-guidance task group 3 adds
+ *   `agents install` and `agents check`): `help agents` is always the
+ *   guide, while `help agents install` is that command's help like any
+ *   other two-word command. No command may be named `agents` alone.
  *
  * `role` is the `--role` value of the `help` command. Given with any topic
  * other than exactly `['agents']` (including no topic), it throws

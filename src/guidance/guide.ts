@@ -27,6 +27,10 @@
  *   With any other topic, or none, it is `BoardError(1, 'usage')` saying
  *   that `--role` applies only to `agentboard help agents`. `help` stays
  *   excluded from MCP.
+ * - The topic is exactly the one word `agents`: `help agents` is the guide
+ *   even when registry commands start with `agents` (`agents install`,
+ *   `agents check`, task group 3), whose help stays reachable as
+ *   `help agents install` (see `helpOutput`).
  * - The 150-line cap applies to every output: `help agents` and
  *   `help agents --role <role>` for each role (guide plus checklist), so
  *   the guide itself must leave room for the longest checklist.

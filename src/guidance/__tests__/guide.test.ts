@@ -17,10 +17,12 @@ import { describe, expect, it } from 'vitest';
 import { expectBoardError } from '../../board/__tests__/helpers.js';
 import { cliEnv, oneJson, run, spawnCli } from '../../cli/__tests__/cli-helpers.js';
 import { parseArgs } from '../../cli/parse.js';
-import { COMMANDS } from '../../cli/registry.js';
+import { COMMANDS, HELP_SOURCE, findCommand } from '../../cli/registry.js';
+import type { CommandSpec } from '../../cli/types.js';
 import { STATUSES } from '../../events/schema.js';
 import { EXCLUDED_COMMANDS, toolDefinitions } from '../../mcp/tools.js';
 import { tempDir } from '../../store/__tests__/helpers.js';
+import { helpOutput, renderCommandHelp, type HelpSource } from '../help.js';
 import { VERSION } from '../../version.js';
 import {
   GUIDE_MAX_LINES,
@@ -498,6 +500,45 @@ describe('agentsHelpOutput and isRole', () => {
     expect(
       expectBoardError(() => agentsHelpOutput(VERSION, 'tester'), 1, 'usage').message,
     ).toContain('tester');
+  });
+});
+
+describe('help agents beside commands whose first word is agents', () => {
+  /** Fake `agents install` and `agents check` commands (task group 3 adds the real ones). */
+  function withAgentsCommands(): { source: HelpSource; fakes: CommandSpec[] } {
+    const base = findCommand('version');
+    if (base === undefined) {
+      throw new Error('no version command');
+    }
+    const fakes = ['agents install', 'agents check'].map((name): CommandSpec => ({
+      ...base,
+      name,
+      summary: `${name} (fake, for this test)`,
+      examples: [{ command: 'agentboard version', summary: 'placeholder' }],
+    }));
+    return { source: { ...HELP_SOURCE, commands: [...COMMANDS, ...fakes] }, fakes };
+  }
+
+  it('help agents is still the guide, with or without --role', () => {
+    const { source } = withAgentsCommands();
+    expect(helpOutput(source, ['agents']).text).toBe(renderGuide(VERSION));
+    expect(helpOutput(source, ['agents'], 'implementer').text).toBe(
+      renderGuide(VERSION) + renderRoleChecklist('implementer'),
+    );
+    expect(helpOutput(source, ['agents'], 'implementer').json).toMatchObject({
+      topic: 'agents',
+      role: 'implementer',
+    });
+    expectBoardError(() => helpOutput(source, ['agents'], 'tester'), 1, 'usage');
+  });
+
+  it("help agents install and help agents check are those commands' help, and refuse --role", () => {
+    const { source, fakes } = withAgentsCommands();
+    for (const fake of fakes) {
+      const words = fake.name.split(' ');
+      expect(helpOutput(source, words).text, fake.name).toBe(renderCommandHelp(source, fake));
+      expectBoardError(() => helpOutput(source, words, 'implementer'), 1, 'usage');
+    }
   });
 });
 
