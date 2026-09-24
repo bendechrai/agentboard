@@ -76,11 +76,25 @@ import type { Readable, Writable } from 'node:stream';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ErrorCode,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  McpError,
+  ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 
 import { LazyBoard, commandActor, errorDocument, exitCodeFor, runContext } from '../cli/main.js';
 import { ACTOR_ENV } from '../cli/parse.js';
 import type { Env } from '../cli/types.js';
+import {
+  GUIDE_RESOURCE_URI,
+  ROLES,
+  agentsHelpOutput,
+  renderGuideSummary,
+  type Role,
+} from '../guidance/guide.js';
 import type { HintContext } from '../guidance/hints.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
 import { findBoard } from '../store/locate.js';
@@ -239,7 +253,7 @@ export function createMcpServer(options: McpServerOptions): BoardMcpServer {
   const boardDir = findBoard({ cwd: options.cwd, env: options.env }).dir;
   const mcp = new McpServer(
     { name: SERVER_NAME, version: VERSION },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {}, resources: {} }, instructions: renderGuideSummary(VERSION) },
   );
   const callTool = (name: string, args: unknown): ToolCallResult =>
     runTool(options, boardDir, name, args);
@@ -261,6 +275,24 @@ export function createMcpServer(options: McpServerOptions): BoardMcpServer {
   mcp.server.setRequestHandler(CallToolRequestSchema, (request) => ({
     ...callTool(request.params.name, request.params.arguments),
   }));
+  mcp.server.setRequestHandler(ListResourcesRequestSchema, () => ({
+    resources: GUIDE_RESOURCES.map(({ uri, name, title, description }) => ({
+      uri,
+      name,
+      title,
+      description,
+      mimeType: 'text/plain',
+    })),
+  }));
+  mcp.server.setRequestHandler(ReadResourceRequestSchema, (request) => {
+    const { uri } = request.params;
+    const resource = GUIDE_RESOURCES.find((r) => r.uri === uri);
+    if (resource === undefined) {
+      throw new McpError(ErrorCode.InvalidParams, `Resource ${uri} not found`);
+    }
+    const { text } = agentsHelpOutput(VERSION, resource.role ?? undefined);
+    return { contents: [{ uri, mimeType: 'text/plain', text }] };
+  });
   let closed = false;
   return {
     boardDir,
@@ -274,6 +306,34 @@ export function createMcpServer(options: McpServerOptions): BoardMcpServer {
     },
   };
 }
+
+/** A guide resource served over MCP (see `BoardMcpServer.connect`). */
+interface GuideResource {
+  readonly uri: string;
+  readonly name: string;
+  readonly title: string;
+  readonly description: string;
+  /** The `--role` of `help agents` whose output it serves, or null for none. */
+  readonly role: Role | null;
+}
+
+/** Every guide resource, in `resources/list` order. */
+const GUIDE_RESOURCES: readonly GuideResource[] = [
+  {
+    uri: GUIDE_RESOURCE_URI,
+    name: 'guide',
+    title: 'Agent guide',
+    description: 'The full agent guide, as printed by agentboard help agents',
+    role: null,
+  },
+  ...ROLES.map((role) => ({
+    uri: `${GUIDE_RESOURCE_URI}/${role}`,
+    name: `guide-${role}`,
+    title: `Agent guide: ${role}`,
+    description: `The agent guide and the ${role} checklist, as printed by agentboard help agents --role ${role}`,
+    role,
+  })),
+];
 
 /** Steps 1 to 6 of `BoardMcpServer.callTool`. Never throws. */
 function runTool(

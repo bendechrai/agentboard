@@ -305,7 +305,7 @@ export const GUIDE_SUMMARY_MAX_CHARS = 2000;
  * Pure.
  */
 export function renderGuideSummary(version: string): string {
-  throw new Error(`not implemented: renderGuideSummary(${version})`);
+  return text([`Agent guide summary for agentboard ${version}`, ...SUMMARY_BODY]);
 }
 
 /** `lines` joined into text that ends with one newline. */
@@ -444,6 +444,42 @@ const GUIDE_BODY: readonly string[] = [
   'Every refusal also prints a line starting with hint: on stderr (the hint',
   'field over MCP) naming what to run next. For the arguments of a command:',
   '  agentboard help <command>',
+];
+
+/**
+ * The guide summary after its version line (see `renderGuideSummary`).
+ * Its only command line is also a command line of the guide; prose lines
+ * must never begin with the word agentboard, and the last line must end
+ * with `GUIDE_RESOURCE_URI` and a period.
+ */
+const SUMMARY_BODY: readonly string[] = [
+  '',
+  'This board is shared by every agent (and human) working on one project.',
+  'Each command is a tool named board_ plus the command, taking the same',
+  'arguments without the leading --. Rules you must never break:',
+  '',
+  '- Actor: pass the as argument on every call. Without it, a call uses the',
+  "  server's own actor, set when it was started as",
+  '  agentboard mcp --as <actor>',
+  '  and then AGENTBOARD_ACTOR. The actor is never guessed.',
+  '- Work: call board_inbox before starting work, and ask the board',
+  '  (board_list, board_show) for its state; never rely on memory.',
+  '- Claim: call board_claim before any work on a ticket. The reason',
+  '  already-assigned means another actor holds it: do not work on it.',
+  '- Never stop silently: when done, board_handoff with a note; when stuck,',
+  '  board_move the ticket to blocked and board_comment saying why.',
+  '- Decisions: record each in a comment beginning DECISION: and promote it',
+  '  to a spec delta or an ADR in the repository before board_close.',
+  '- Completion: the board is not the record of completion. Tick the task',
+  '  lines in tasks.md in the implementing pull request.',
+  '- Secrets: the board is not a secret store; text that looks like a',
+  '  secret is refused.',
+  '- Errors: a failed call returns exitCode, reason, message and hint; the',
+  '  hint names what to do next.',
+  '',
+  `Each role's checklist is the resource ${GUIDE_RESOURCE_URI}/<role>, for`,
+  'orchestrator, test-author, implementer or reviewer. Read the full guide',
+  `before your first call: ${GUIDE_RESOURCE_URI}.`,
 ];
 
 /** The steps of each role's checklist (after its heading). */
