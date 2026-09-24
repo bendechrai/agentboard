@@ -5,7 +5,10 @@ import { boardColumns, ticketCard } from '../columns.js';
 import { conversation } from '../conversation.js';
 import { describeEvent } from '../describe.js';
 import { feedEntries } from '../feed.js';
+import { handoffGraph } from '../graph.js';
+import { DEFAULT_THRESHOLDS, healthReport, parseDuration } from '../health.js';
 import { agentLanes } from '../lanes.js';
+import { replayCheckpoints, replayState } from '../replay.js';
 import { relativeTime } from '../time.js';
 import { E, OTHER, T1, T2, T3, TASK, model, ticketOf } from './helpers.js';
 
@@ -78,6 +81,44 @@ describe('view-model functions are deterministic and leave their inputs unchange
     for (const ms of [-5, 0, 10_000, 299_999, 86_400_000]) {
       twice(relativeTime, ms);
     }
+  });
+
+  it('healthReport', () => {
+    twice(healthReport, { model: m, now: NOW, thresholds: DEFAULT_THRESHOLDS });
+    twice(healthReport, {
+      model: m,
+      now: NOW + 100_000_000,
+      thresholds: { staleAfter: 1, blockedAfter: 1 },
+      late: [
+        {
+          hash: inputs[4]?.hash ?? '',
+          kind: 'ticket.claim',
+          ticket: T1,
+          type: 'late',
+          observedAt: NOW,
+        },
+      ],
+      check: { ranAt: NOW, matches: true, differingRows: 0 },
+    });
+  });
+
+  it('parseDuration', () => {
+    for (const text of ['2h', '99999d', '0h', '2hours']) {
+      twice(parseDuration, text);
+    }
+  });
+
+  it('replayState and replayCheckpoints', () => {
+    twice(replayCheckpoints, m.events);
+    for (let index = 0; index < m.events.length; index += 1) {
+      twice(replayState, m.events, index);
+      twice(replayState, m.events, index, []);
+    }
+  });
+
+  it('handoffGraph', () => {
+    twice(handoffGraph, m.events);
+    twice(handoffGraph, m.events, { change: 'openspec:add-board-web', since: 0 });
   });
 
   it('openDecisions', () => {
