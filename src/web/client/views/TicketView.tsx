@@ -1,7 +1,7 @@
 /**
  * The ticket detail (board-web: "Board views"; board-view-model:
  * "Conversation view"; add-board-web task 4.4). The ticket and its events
- * come from `loadTicketDetail(deps, id)` (the feed carries only effective
+ * come from `loadTicketDetail(conn, id)` (the feed carries only effective
  * events, so rejected ones are read from the API), requested when the view
  * opens and again whenever `model.id` changes. The conversation is
  * `conversation({ events: detail.events }, detail.ticket.id)`.
@@ -38,14 +38,15 @@
 import type { JSX } from 'preact';
 
 import type { BoardModel } from '../../../view/types.js';
-import type { ClientDeps } from '../api.js';
+import type { Connection } from '../api.js';
 
 export interface TicketViewProps {
   /** The id or prefix from the route. */
   id: string;
   /** The current model; a change of `model.id` reloads the detail. */
   model: BoardModel;
-  deps: ClientDeps;
+  /** The connection the app's client uses. */
+  conn: Connection;
   now: number;
 }
 

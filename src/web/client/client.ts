@@ -7,8 +7,8 @@
  * Decisions recorded here (test author, add-board-web group 4):
  * - A reload (after a `resync`, or on the first feed message after a
  *   `problem`) closes the current stream first and opens a new one with
- *   `since` the reloaded model's id, so no append written on the old
- *   stream can be applied on top of a newer snapshot.
+ *   `since` the reloaded model's id, so no append read on the old stream
+ *   can be applied on top of a newer snapshot.
  * - The `problem` banner stays until a reload succeeds: the first feed
  *   message (`append` or `resync`) after a `problem` reloads the snapshot
  *   instead of being applied, and a successful reload clears it.
@@ -16,11 +16,17 @@
  *   failure's `ErrorDocument` (or, without one, a document with exit code
  *   1, reason null and the error's message), and opens a stream with
  *   `since` the kept model's id, so the next feed message retries.
- * - Stream data that is not valid JSON is ignored.
+ * - A 401 from any request or from the stream means the token is not
+ *   accepted (for example the server was restarted and drew a new one):
+ *   the client stops (stream closed, timer cancelled) and its phase is
+ *   `unauthorized`, which the app shows as the message to open the URL
+ *   printed by `agentboard serve`.
+ * - Stream data that is not valid JSON is ignored, as are event types
+ *   other than `append`, `resync` and `problem`.
  */
 
 import type { BoardModel } from '../../view/types.js';
-import type { ApiError, ClientDeps, ErrorDocument, Session } from './api.js';
+import type { ApiError, Connection, ErrorDocument, Session } from './api.js';
 
 /** How often the client refreshes `now`, re-rendering relative times: 10 seconds. */
 export const REFRESH_MS = 10_000;
@@ -29,9 +35,11 @@ export const REFRESH_MS = 10_000;
 export interface ClientState {
   /**
    * `loading` until the first snapshot is loaded, then `ready`; `failed`
-   * when the first load failed (nothing is retried; `error` says why).
+   * when the first load failed other than by 401 (nothing is retried;
+   * `error` says why); `unauthorized` after a 401 from any request or the
+   * stream.
    */
-  phase: 'loading' | 'ready' | 'failed';
+  phase: 'loading' | 'ready' | 'failed' | 'unauthorized';
   /** `/api/session`, once loaded. */
   session: Session | null;
   /** The board model, once loaded; kept current by the stream. */
@@ -45,15 +53,15 @@ export interface ClientState {
   problem: ErrorDocument | null;
   /** Why the first load failed (`phase` `failed`); null otherwise. */
   error: ApiError | null;
-  /** True between the stream's `open` and its next `error`. */
+  /** True while a stream connection is open (between `onOpen` and `onDisconnect`). */
   connected: boolean;
 }
 
 /** The client model: one per page. */
 export class BoardClient {
   /** Nothing is requested until `start`. */
-  constructor(deps: ClientDeps) {
-    void deps;
+  constructor(conn: Connection) {
+    void conn;
   }
 
   /** The current state; the initial state is `loading` with `now` = `deps.now()`. */
@@ -73,11 +81,11 @@ export class BoardClient {
   /**
    * Loads `/api/session` and the snapshot (`loadModel` with no late
    * hashes), then, when both succeed: state `ready` with the session, the
-   * model and `now`; opens `deps.EventSource(streamUrl(model.id))`; and
-   * schedules `deps.setInterval(refresh, REFRESH_MS)`, where refresh sets
-   * `now` to `deps.now()`. When a request fails: state `failed` with
-   * `error`, and no stream or timer. Resolves once this is done; never
-   * rejects. Calling it again does nothing.
+   * model and `now`; opens the stream (`openStream(conn, model.id, ...)`);
+   * and schedules `deps.setInterval(refresh, REFRESH_MS)`, where refresh
+   * sets `now` to `deps.now()`. When a request fails: state `unauthorized`
+   * for a 401, else `failed` with `error`; no stream or timer. Resolves
+   * once this is done; never rejects. Calling it again does nothing.
    *
    * Stream events, each `data` parsed as JSON:
    * - `append` (an `AppendMessage`): when `problem` is null, the model
@@ -87,13 +95,12 @@ export class BoardClient {
    *   message's late hashes (`applyFeedMessage(...).late`) as `late`.
    * - `problem` (an `ErrorDocument`): `problem` is set; the stream stays
    *   open and the model is kept.
-   * - `open` and `error`: `connected` true and false (the browser's
-   *   `EventSource` reconnects by itself, resuming with `Last-Event-ID`).
-   * A reload closes the stream, loads `loadModel(deps, late)` (late empty
+   * `onOpen` and `onDisconnect` set `connected`; `onUnauthorized` stops
+   * the client with phase `unauthorized`.
+   * A reload closes the stream, loads `loadModel(conn, late)` (late empty
    * after a problem), sets the model, clears `problem`, refreshes `now`
-   * and opens a new stream with `since` the new model's id; see the module
-   * comment for a failed reload. Messages arriving on a closed stream are
-   * ignored.
+   * and opens a new stream at the new model's id; see the module comment
+   * for a failed reload and for a 401.
    */
   start(): Promise<void> {
     throw new Error('not implemented');

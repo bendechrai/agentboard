@@ -1,19 +1,16 @@
 /**
- * The web client's side of the JSON API and the event stream of
- * `agentboard serve` (board-web: "JSON API", "Live event stream";
- * `src/web/api.ts` and `src/web/stream.ts` hold the server's contract;
- * add-board-web task 4.2).
+ * The web client's side of the JSON API of `agentboard serve` (board-web:
+ * "Access token", "JSON API"; `src/web/api.ts` holds the server's contract;
+ * add-board-web task 4.2). The stream is read by `stream.ts`.
  *
- * The client talks only to its own origin, by absolute paths (`/api/...`),
- * and is authenticated by the session cookie the server set when the entry
- * URL was opened. It never reads, stores, sends or embeds the access
- * token: no request carries an `Authorization` header or a `token`
- * parameter, and `fetch` is called with no `credentials` override (the
- * default, `same-origin`, sends the cookie). `EventSource` sends the cookie
- * on its own.
+ * The client talks only to its own origin, by absolute paths (`/api/...`).
+ * Every API request carries `Authorization: Bearer <token>`, the token
+ * taken from the URL fragment by `takeToken` (`token.ts`). No cookie is
+ * used, the token is never put in a URL, and it is never written anywhere
+ * but `sessionStorage`. The page and its assets are served without a token.
  *
  * Every IO goes through `ClientDeps`, so tests pass a stubbed `fetch`, a
- * fake `EventSource`, a clock and timers.
+ * clock and timers.
  *
  * Decisions recorded here (test author, add-board-web group 4):
  * - `/api/board` and the pages of `/api/events` are separate requests, so
@@ -29,8 +26,8 @@
  *   the client project imports no module that needs Node.
  */
 
-import type { JsonValue } from '../../events/json.js';
 import type { Ticket } from '../../events/fold.js';
+import type { JsonValue } from '../../events/json.js';
 import type { BoardModel, EventView } from '../../view/types.js';
 
 /** The error document of every API refusal and of a stream `problem` (as `src/cli/main.ts`). */
@@ -93,56 +90,64 @@ export class ApiError extends Error {
   }
 }
 
-/** The part of `EventSource` the client uses. */
-export interface EventSourceLike {
-  /**
-   * Registers a listener for the named SSE events (`append`, `resync`,
-   * `problem`, whose `data` is JSON text) and for `open` and `error`.
-   */
-  addEventListener(type: string, listener: (event: MessageEvent<string>) => void): void;
-  /** Closes the stream; no event is delivered after it. */
-  close(): void;
-}
-
 /** Everything the client does IO or reads time through. */
 export interface ClientDeps {
   /** Same-origin `fetch`. */
   readonly fetch: (input: string, init?: RequestInit) => Promise<Response>;
-  /** Opens an event stream on a same-origin path. */
-  readonly EventSource: new (url: string) => EventSourceLike;
   /** The current time in milliseconds since the Unix epoch. */
   readonly now: () => number;
   /** Schedules `callback` every `ms` milliseconds; returns a handle for `clearInterval`. */
   readonly setInterval: (callback: () => void, ms: number) => unknown;
   /** Cancels a handle returned by `setInterval`. */
   readonly clearInterval: (handle: unknown) => void;
+  /** Schedules `callback` once after `ms` milliseconds; returns a handle for `clearTimeout`. */
+  readonly setTimeout: (callback: () => void, ms: number) => unknown;
+  /** Cancels a handle returned by `setTimeout`. */
+  readonly clearTimeout: (handle: unknown) => void;
+}
+
+/** What every API request needs: the dependencies and the access token. */
+export interface Connection {
+  readonly deps: ClientDeps;
+  /** The access token, sent as `Authorization: Bearer <token>`. */
+  readonly token: string;
 }
 
 /**
  * The browser's own dependencies, read from `globalThis` when called:
- * `fetch` (bound to `globalThis`), `EventSource`, `Date.now`,
- * `setInterval` and `clearInterval`.
+ * `fetch` (called on `globalThis`), `Date.now`, `setInterval`,
+ * `clearInterval`, `setTimeout` and `clearTimeout`.
  */
 export function defaultDeps(): ClientDeps {
   throw new Error('not implemented');
 }
 
 /**
- * `GET path` (an absolute same-origin path such as `/api/board`) with the
- * header `Accept: application/json`, resolving to the parsed JSON body of
- * a 2xx response. Rejects with an `ApiError`: the status and the
- * `ErrorDocument` for any other status (document null when the body is not
- * one), status 0 when `fetch` itself rejects.
+ * The headers of an API request: `Accept: application/json` and
+ * `Authorization: Bearer <token>`.
  */
-export function getJson(deps: ClientDeps, path: string): Promise<unknown> {
-  void deps;
+export function apiHeaders(token: string): Record<string, string> {
+  void token;
+  throw new Error('not implemented');
+}
+
+/**
+ * `GET path` (an absolute same-origin path such as `/api/board`) with
+ * `apiHeaders(conn.token)` and no other request option, resolving to the
+ * parsed JSON body of a 2xx response. Rejects with an `ApiError`: the
+ * status and the `ErrorDocument` for any other status (document null when
+ * the body is not one; 401 for a missing or wrong token), status 0 when
+ * `fetch` itself rejects.
+ */
+export function getJson(conn: Connection, path: string): Promise<unknown> {
+  void conn;
   void path;
   throw new Error('not implemented');
 }
 
 /** `GET /api/session`. Rejects as `getJson`. */
-export function loadSession(deps: ClientDeps): Promise<Session> {
-  void deps;
+export function loadSession(conn: Connection): Promise<Session> {
+  void conn;
   throw new Error('not implemented');
 }
 
@@ -157,8 +162,8 @@ export function loadSession(deps: ClientDeps): Promise<Session> {
  * `none`), `id` the board's id, and `late` the given list. Rejects as
  * `getJson` on the first failed request.
  */
-export function loadModel(deps: ClientDeps, late: readonly string[]): Promise<BoardModel> {
-  void deps;
+export function loadModel(conn: Connection, late: readonly string[]): Promise<BoardModel> {
+  void conn;
   void late;
   throw new Error('not implemented');
 }
@@ -170,14 +175,8 @@ export function loadModel(deps: ClientDeps, late: readonly string[]): Promise<Bo
  * board-view-model: "Applying feed messages"). Rejects as `getJson` (for
  * example 404 with reason `unknown-ticket`).
  */
-export function loadTicketDetail(deps: ClientDeps, id: string): Promise<TicketDetail> {
-  void deps;
-  void id;
-  throw new Error('not implemented');
-}
-
-/** The stream path for a position id: `/api/stream?since=<encodeURIComponent(id)>`. */
-export function streamUrl(id: string): string {
+export function loadTicketDetail(conn: Connection, id: string): Promise<TicketDetail> {
+  void conn;
   void id;
   throw new Error('not implemented');
 }
