@@ -30,9 +30,11 @@ const MAX_LINKS = 40;
 /**
  * `path` with every symlink resolved: `realpathSync` when it exists; for a
  * dangling symlink, the resolution of its target; otherwise the resolution
- * of its nearest existing ancestor with the rest of the path appended.
+ * of its nearest existing ancestor with the rest of the path appended. Null
+ * when resolution meets a symlink cycle (`ELOOP`, or more than `MAX_LINKS`
+ * links followed).
  */
-function resolvePath(path: string, links = 0): string {
+function resolvePath(path: string, links = 0): string | null {
   try {
     return realpathSync(path);
   } catch {
@@ -44,13 +46,19 @@ function resolvePath(path: string, links = 0): string {
   } catch (error) {
     const parent = dirname(path);
     const code = errorCode(error);
+    if (code === 'ELOOP') {
+      return null;
+    }
     if ((code === 'ENOENT' || code === 'ENOTDIR') && parent !== path) {
-      return join(resolvePath(parent, links), basename(path));
+      const resolvedParent = resolvePath(parent, links);
+      return resolvedParent === null ? null : join(resolvedParent, basename(path));
     }
     return path;
   }
-  if (stat.isSymbolicLink() && links < MAX_LINKS) {
-    return resolvePath(resolve(dirname(path), readlinkSync(path)), links + 1);
+  if (stat.isSymbolicLink()) {
+    return links < MAX_LINKS
+      ? resolvePath(resolve(dirname(path), readlinkSync(path)), links + 1)
+      : null;
   }
   return path;
 }
@@ -75,11 +83,18 @@ function resolvePath(path: string, links = 0): string {
 export type TargetPath =
   | { readonly kind: 'ok'; readonly path: string }
   | { readonly kind: 'outside-tree'; readonly resolved: string }
-  | { readonly kind: 'not-a-file'; readonly code: 'EISDIR' | 'ENOTDIR'; readonly what: string };
+  | {
+      readonly kind: 'not-a-file';
+      readonly code: 'EISDIR' | 'ENOTDIR' | 'ELOOP';
+      readonly what: string;
+    };
 
 /** Resolves `<root>/<rel>` and checks it (see `TargetPath`). Reads only. */
 export function targetPath(root: string, rel: string): TargetPath {
   const resolved = resolvePath(join(root, rel));
+  if (resolved === null) {
+    return { kind: 'not-a-file', code: 'ELOOP', what: 'is caught in a symlink cycle' };
+  }
   if (resolved !== root && !resolved.startsWith(`${root}${sep}`)) {
     return { kind: 'outside-tree', resolved };
   }
@@ -97,6 +112,9 @@ export function targetPath(root: string, rel: string): TargetPath {
     const code = errorCode(error);
     if (code === 'ENOTDIR') {
       return { kind: 'not-a-file', code, what: 'has a parent that is not a directory' };
+    }
+    if (code === 'ELOOP') {
+      return { kind: 'not-a-file', code, what: 'is caught in a symlink cycle' };
     }
     if (code !== 'ENOENT') {
       // Not reachable (for example EACCES): the read or write reports it.

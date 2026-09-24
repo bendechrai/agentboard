@@ -654,7 +654,7 @@ function installTarget(
     if (code !== null && PERMISSION_CODES.includes(code)) {
       return refuse('unwritable', `cannot read or write ${rel} (${code}); nothing was written`);
     }
-    if (code === 'EISDIR' || code === 'ENOTDIR' || code === 'EEXIST') {
+    if (code === 'EISDIR' || code === 'ENOTDIR' || code === 'EEXIST' || code === 'ELOOP') {
       return refuse(
         'not-a-file',
         `${rel} cannot be written as a file (${code}); nothing was written`,
