@@ -110,16 +110,15 @@ export interface CommandSpec {
   /** Positional arguments in order. */
   readonly positionals: readonly ArgSpec[];
   /**
-   * The command's own flags. The global `--json` (`GLOBAL_FLAGS`) is
-   * accepted by every command and not repeated here. Writing commands
-   * list `as` (`ACTOR_FLAG`).
+   * The command's own flags. The global flags `--json` and `--as`
+   * (`GLOBAL_FLAGS`) are accepted by every command and not repeated here.
    */
   readonly flags: readonly ArgSpec[];
   /** Mutually exclusive flag sets; empty when none. */
   readonly exclusive: readonly ExclusiveGroup[];
   /**
-   * True when the command writes an event: it takes `--as` and requires an
-   * actor (`--as` or `AGENTBOARD_ACTOR`).
+   * True when the command writes an event, so it requires an actor
+   * (`--as` or `AGENTBOARD_ACTOR`). Every command accepts `--as`.
    */
   readonly writes: boolean;
   /**

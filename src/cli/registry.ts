@@ -23,12 +23,12 @@ export const JSON_FLAG: ArgSpec = {
   summary: 'Print exactly one JSON document on stdout',
 };
 
-/** Flags accepted by every command, in addition to its own. */
-export const GLOBAL_FLAGS: readonly ArgSpec[] = [JSON_FLAG];
-
 /**
- * `--as <actor>`, listed by every writing command. Not required by the
- * parser: `AGENTBOARD_ACTOR` is the fallback (`resolveActor`).
+ * `--as <actor>`, accepted by every command (board-cli: "Every command
+ * SHALL accept `--as`"). Writing commands require an actor: `--as` or, as
+ * the fallback, `AGENTBOARD_ACTOR` (`resolveActor`). Commands that neither
+ * write nor track a per-actor cursor ignore it, so `show T1 --as impl`
+ * behaves exactly like `show T1`. Not required by the parser.
  */
 export const ACTOR_FLAG: ArgSpec = {
   name: 'as',
@@ -37,6 +37,9 @@ export const ACTOR_FLAG: ArgSpec = {
   repeatable: false,
   summary: 'Actor recorded on the event (falls back to AGENTBOARD_ACTOR)',
 };
+
+/** Flags accepted by every command, in addition to its own: `--json` and `--as`. */
+export const GLOBAL_FLAGS: readonly ArgSpec[] = [JSON_FLAG, ACTOR_FLAG];
 
 /** `--allow-secret-like`, on the commands that refuse secret-looking text. */
 export const ALLOW_SECRET_FLAG: ArgSpec = {
@@ -161,8 +164,9 @@ const stubRun: CommandSpec['run'] = (ctx, values) => {
  * (the two are exclusive); `list --task` goes through `parseTaskFilter`; a status
  * argument must be one of `STATUSES` or it is `BoardError(1, 'usage')`
  * listing them; `link --pr` is a number when it is all digits (a positive
- * safe integer), otherwise the string; `close --decision-recorded-in` is
- * checked relative to `ctx.cwd`.
+ * safe integer), otherwise the string; `close --decision-recorded-in` and
+ * `link --decision` pass `ctx.cwd` and `ctx.env` so the path is resolved
+ * and recorded by `treePath`.
  */
 export const COMMANDS: readonly CommandSpec[] = [
   {
@@ -185,7 +189,6 @@ export const COMMANDS: readonly CommandSpec[] = [
       ...TASK_FLAGS,
       flag('adhoc', 'string', 'Reason the ticket has no task reference'),
       flag('checklist', 'string', 'Checklist line (repeatable)', { repeatable: true }),
-      ACTOR_FLAG,
       ALLOW_SECRET_FLAG,
     ],
     exclusive: [NEW_TASK_GROUP],
@@ -224,7 +227,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'claim',
     summary: 'Assign an unassigned ticket to yourself',
     positionals: [ID],
-    flags: [ACTOR_FLAG],
+    flags: [],
     exclusive: [],
     writes: true,
     operation: 'claimTicket',
@@ -234,7 +237,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'release',
     summary: 'Give up a ticket you hold',
     positionals: [ID],
-    flags: [ACTOR_FLAG],
+    flags: [],
     exclusive: [],
     writes: true,
     operation: 'releaseTicket',
@@ -244,7 +247,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'move',
     summary: 'Move a ticket to another status (a blocked ticket returns to its origin)',
     positionals: [ID, positional('status', 'string', 'Target status', false)],
-    flags: [ACTOR_FLAG],
+    flags: [],
     exclusive: [],
     writes: true,
     operation: 'moveTicket',
@@ -254,7 +257,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'comment',
     summary: 'Add a comment to a ticket',
     positionals: [ID, positional('text', 'string', 'Comment text')],
-    flags: [ACTOR_FLAG, ALLOW_SECRET_FLAG],
+    flags: [ALLOW_SECRET_FLAG],
     exclusive: [],
     writes: true,
     operation: 'commentTicket',
@@ -270,7 +273,6 @@ export const COMMANDS: readonly CommandSpec[] = [
         required: true,
       }),
       flag('note', 'string', 'Hand-off note, recorded as a comment', { required: true }),
-      ACTOR_FLAG,
       ALLOW_SECRET_FLAG,
     ],
     exclusive: [],
@@ -286,7 +288,6 @@ export const COMMANDS: readonly CommandSpec[] = [
       ...TASK_FLAGS,
       flag('pr', 'string', 'Pull request URL or number'),
       flag('decision', 'string', 'Path of a decision record'),
-      ACTOR_FLAG,
     ],
     exclusive: [LINK_GROUP],
     writes: true,
@@ -297,7 +298,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'checklist tick',
     summary: 'Mark a checklist line done (0-based index)',
     positionals: [ID, positional('index', 'integer', 'Checklist line index, from 0')],
-    flags: [ACTOR_FLAG],
+    flags: [],
     exclusive: [],
     writes: true,
     operation: 'setChecklistItem',
@@ -307,7 +308,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'checklist untick',
     summary: 'Mark a checklist line not done (0-based index)',
     positionals: [ID, positional('index', 'integer', 'Checklist line index, from 0')],
-    flags: [ACTOR_FLAG],
+    flags: [],
     exclusive: [],
     writes: true,
     operation: 'setChecklistItem',
@@ -320,7 +321,6 @@ export const COMMANDS: readonly CommandSpec[] = [
     flags: [
       flag('decision-recorded-in', 'string', 'Spec delta, ADR or tasks file recording decisions'),
       flag('no-decision', 'boolean', 'The ticket made no decision that needs recording'),
-      ACTOR_FLAG,
     ],
     exclusive: [CLOSE_GROUP],
     writes: true,

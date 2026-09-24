@@ -14,7 +14,17 @@ import {
   openDecisions,
   type CloseInput,
 } from '../actions.js';
-import { eventCount, expectBoardError, setup, ticketIn } from './helpers.js';
+import {
+  cleanEnv,
+  eventCount,
+  expectBoardError,
+  gitRepo,
+  makeBoardDir,
+  openTracked,
+  setup,
+  tempDir,
+  ticketIn,
+} from './helpers.js';
 
 /** A host project root containing `docs/adr/0002-x.md`. */
 function withAdr(root: string): string {
@@ -80,11 +90,16 @@ describe('closeTicket: dispositions', () => {
     expect(out.hash).not.toBeNull();
   });
 
-  it('closes a blocked ticket with a decision path that exists, storing the path as given', () => {
+  it('closes a blocked ticket with a decision path that exists, recording it root-relative', () => {
     const { board, root } = setup();
     const path = withAdr(root);
     const t = ticketIn(board, 'blocked');
-    const out = closeTicket(board, 'orch', { id: t.id, decisionRecordedIn: path, cwd: root });
+    const out = closeTicket(board, 'orch', {
+      id: t.id,
+      decisionRecordedIn: path,
+      cwd: root,
+      env: cleanEnv(),
+    });
     expect(out.ticket).toMatchObject({
       closed: true,
       disposition: { decision: path },
@@ -92,7 +107,7 @@ describe('closeTicket: dispositions', () => {
     });
   });
 
-  it('resolves the decision path against cwd', () => {
+  it('outside git, resolves against cwd and records relative to cwd', () => {
     const { board, root } = setup();
     withAdr(root);
     const t = ticketIn(board, 'merged');
@@ -100,6 +115,7 @@ describe('closeTicket: dispositions', () => {
       id: t.id,
       decisionRecordedIn: 'adr/0002-x.md',
       cwd: join(root, 'docs'),
+      env: cleanEnv(),
     });
     expect(out.ticket.disposition).toEqual({ decision: 'adr/0002-x.md' });
   });
@@ -110,7 +126,12 @@ describe('closeTicket: dispositions', () => {
     const before = eventCount(board);
     const err = expectBoardError(
       () =>
-        closeTicket(board, 'orch', { id: t.id, decisionRecordedIn: 'docs/adr/0099.md', cwd: root }),
+        closeTicket(board, 'orch', {
+          id: t.id,
+          decisionRecordedIn: 'docs/adr/0099.md',
+          cwd: root,
+          env: cleanEnv(),
+        }),
       1,
       'decision-path-missing',
     );
@@ -142,6 +163,58 @@ describe('closeTicket: dispositions', () => {
       4,
       'invalid-transition',
     );
+  });
+});
+
+describe('closeTicket: decision paths inside the working tree', () => {
+  /** A git repository hosting the board, with docs/adr/0002-x.md and a merged ticket. */
+  function inRepo(): { root: string; board: ReturnType<typeof openTracked>; id: string } {
+    const root = gitRepo(join(tempDir(), 'proj'));
+    const board = openTracked(makeBoardDir(root));
+    withAdr(root);
+    mkdirSync(join(root, 'src', 'deep'), { recursive: true });
+    return { root, board, id: ticketIn(board, 'merged').id };
+  }
+
+  it('run from a subdirectory, records the path relative to the repository root', () => {
+    const { root, board, id } = inRepo();
+    const out = closeTicket(board, 'orch', {
+      id,
+      decisionRecordedIn: '../../docs/adr/0002-x.md',
+      cwd: join(root, 'src', 'deep'),
+      env: cleanEnv(),
+    });
+    expect(out.ticket.disposition).toEqual({ decision: 'docs/adr/0002-x.md' });
+  });
+
+  it('records an absolute path inside the tree relative to the root', () => {
+    const { root, board, id } = inRepo();
+    const out = closeTicket(board, 'orch', {
+      id,
+      decisionRecordedIn: join(root, 'docs', 'adr', '0002-x.md'),
+      cwd: join(root, 'src'),
+      env: cleanEnv(),
+    });
+    expect(out.ticket.disposition).toEqual({ decision: 'docs/adr/0002-x.md' });
+  });
+
+  it('refuses ../outside with exit 1 even when the file exists, writing nothing', () => {
+    const { root, board, id } = inRepo();
+    writeFileSync(join(root, '..', 'outside.md'), '# outside\n');
+    const before = eventCount(board);
+    const err = expectBoardError(
+      () =>
+        closeTicket(board, 'orch', {
+          id,
+          decisionRecordedIn: '../outside.md',
+          cwd: root,
+          env: cleanEnv(),
+        }),
+      1,
+      'path-outside-tree',
+    );
+    expect(err.message).toContain('../outside.md');
+    expect(eventCount(board)).toBe(before);
   });
 });
 
@@ -185,7 +258,7 @@ describe('closeTicket: decisions are promoted, not buried', () => {
     const path = withAdr(root);
     const t = ticketIn(board, 'merged');
     commentTicket(board, 'impl', { id: t.id, text: 'DECISION: x' });
-    const input: CloseInput = { id: t.id, decisionRecordedIn: path, cwd: root };
+    const input: CloseInput = { id: t.id, decisionRecordedIn: path, cwd: root, env: cleanEnv() };
     expect(closeTicket(board, 'orch', input).ticket.closed).toBe(true);
   });
 

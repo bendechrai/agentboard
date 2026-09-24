@@ -20,6 +20,7 @@ export * from './board/types.js';
 export * from './board/secrets.js';
 export * from './board/init.js';
 export * from './board/resolve.js';
+export * from './board/paths.js';
 export * from './board/reminder.js';
 export * from './board/tickets.js';
 export * from './board/actions.js';

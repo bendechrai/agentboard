@@ -523,6 +523,77 @@ describe('secret refusal through the CLI', () => {
   });
 });
 
+describe('--as on commands that do not write', () => {
+  it('is accepted and ignored: same output as without it', () => {
+    const { root } = project();
+    const id = newTicket(root);
+    for (const argv of [
+      ['show', id],
+      ['list'],
+      ['show', id, '--json'],
+      ['list', '--json'],
+      ['version'],
+    ]) {
+      const plain = run(argv, root);
+      const withActor = run([...argv, '--as', 'impl'], root);
+      expect(plain.code, argv.join(' ')).toBe(0);
+      expect(withActor, argv.join(' ')).toEqual(plain);
+    }
+  });
+});
+
+describe('decision paths are recorded relative to the working tree root', () => {
+  /** A git repository with a board and docs/adr/0002-x.md; returns the root and a blocked ticket. */
+  function repo(): { root: string; id: string } {
+    const root = gitRepo(join(tempDir(), 'proj'));
+    expect(run(['init'], root).code).toBe(0);
+    mkdirSync(join(root, 'docs', 'adr'), { recursive: true });
+    writeFileSync(join(root, 'docs', 'adr', '0002-x.md'), '# x\n');
+    const id = newTicket(root);
+    run(['move', id, 'blocked', ...AS], root);
+    return { root, id };
+  }
+
+  it('close run from a subdirectory records the root-relative path', () => {
+    const { root, id } = repo();
+    const out = run(
+      ['close', id, '--decision-recorded-in', 'adr/0002-x.md', ...AS, '--json'],
+      join(root, 'docs'),
+    );
+    expect(out.code, out.stderr).toBe(0);
+    expect(oneJson(out)).toMatchObject({
+      ticket: { disposition: { decision: 'docs/adr/0002-x.md' } },
+    });
+  });
+
+  it('close with a path outside the working tree exits 1 and writes nothing', () => {
+    const { root, id } = repo();
+    writeFileSync(join(root, '..', 'outside.md'), '# outside\n');
+    const before = count(join(root, '.board'));
+    const out = run(
+      ['close', id, '--decision-recorded-in', '../outside.md', ...AS, '--json'],
+      root,
+    );
+    expect(out.code).toBe(1);
+    expect(errorOf(out).reason).toBe('path-outside-tree');
+    expect(out.stderr).toContain('../outside.md');
+    expect(count(join(root, '.board'))).toBe(before);
+  });
+
+  it('link --decision records the root-relative path without requiring the file', () => {
+    const { root, id } = repo();
+    mkdirSync(join(root, 'src'));
+    const ok = run(
+      ['link', id, '--decision', '../docs/adr/0100-new.md', ...AS, '--json'],
+      join(root, 'src'),
+    );
+    expect(ok.code, ok.stderr).toBe(0);
+    expect(oneJson(ok)).toMatchObject({
+      ticket: { links: [{ type: 'decision', path: 'docs/adr/0100-new.md' }] },
+    });
+  });
+});
+
 describe('other commands', () => {
   it('mcp exits 1 with the not-implemented message', () => {
     const out = run(['mcp'], tempDir());

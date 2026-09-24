@@ -36,7 +36,9 @@ export interface ParsedCommand {
  *   every later argument is positional. Every other argument (including
  *   `-` and `-1`) is positional. Flags may appear before, between or after
  *   positionals.
- * - `--json` (`GLOBAL_FLAGS`) is accepted by every command.
+ * - `--json` and `--as` (`GLOBAL_FLAGS`) are accepted by every command.
+ *   `--json` sets `json` and is not in `values`; `--as` is in `values` as
+ *   `as` when given, for every command (only writing commands use it).
  * - Unknown flag, a non-repeatable flag given twice, more positionals than
  *   the command declares, or a missing required positional or flag: usage
  *   error naming the argument.

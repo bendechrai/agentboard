@@ -1,3 +1,6 @@
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import { STATUSES, type Status } from '../../events/schema.js';
@@ -15,11 +18,16 @@ import { SECRET_PATTERN_NAMES } from '../secrets.js';
 import {
   SAMPLES,
   TASK,
+  cleanEnv,
   create,
   eventCount,
   expectBoardError,
+  gitRepo,
   heldTicket,
+  makeBoardDir,
+  openTracked,
   setup,
+  tempDir,
   ticketIn,
 } from './helpers.js';
 
@@ -385,16 +393,53 @@ describe('linkTicket', () => {
   });
 
   it('appends pr and decision links in order', () => {
-    const { board } = setup();
+    const { board, root } = setup();
     const t = create(board);
     linkTicket(board, 'o', { id: t.id, target: { pr: 12 } });
     linkTicket(board, 'o', { id: t.id, target: { pr: 'https://example.invalid/pr/3' } });
-    const out = linkTicket(board, 'o', { id: t.id, target: { decision: 'docs/adr/0009-x.md' } });
+    const out = linkTicket(board, 'o', {
+      id: t.id,
+      target: { decision: 'docs/adr/0009-x.md' },
+      cwd: root,
+      env: cleanEnv(),
+    });
     expect(out.ticket.links.map((l) => (l.type === 'pr' ? l.pr : l.path))).toEqual([
       12,
       'https://example.invalid/pr/3',
       'docs/adr/0009-x.md',
     ]);
+  });
+
+  it('records a decision path relative to the git root without requiring the file', () => {
+    const root = gitRepo(join(tempDir(), 'proj'));
+    const board = openTracked(makeBoardDir(root));
+    mkdirSync(join(root, 'src'));
+    const t = create(board);
+    const out = linkTicket(board, 'o', {
+      id: t.id,
+      target: { decision: '../docs/adr/0100-new.md' },
+      cwd: join(root, 'src'),
+      env: cleanEnv(),
+    });
+    expect(out.ticket.links).toMatchObject([{ type: 'decision', path: 'docs/adr/0100-new.md' }]);
+  });
+
+  it('refuses a decision path outside the working tree', () => {
+    const root = gitRepo(join(tempDir(), 'proj'));
+    const board = openTracked(makeBoardDir(root));
+    const t = create(board);
+    expectBoardError(
+      () =>
+        linkTicket(board, 'o', {
+          id: t.id,
+          target: { decision: '../elsewhere.md' },
+          cwd: root,
+          env: cleanEnv(),
+        }),
+      1,
+      'path-outside-tree',
+    );
+    expect(eventCount(board)).toBe(1);
   });
 
   it.each([[{ pr: '' }], [{ pr: 0 }], [{ pr: -3 }], [{ pr: 1.5 }], [{ decision: '' }]])(

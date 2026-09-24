@@ -61,9 +61,13 @@ describe('the command registry', () => {
     ]);
   });
 
-  it('gives writing commands --as and no other command', () => {
+  it('accepts --as on every command as a global flag, listed by no command', () => {
     for (const c of COMMANDS) {
-      expect(c.flags.includes(ACTOR_FLAG), c.name).toBe(c.writes);
+      expect(c.flags.includes(ACTOR_FLAG), c.name).toBe(false);
+      expect(
+        c.flags.some((f) => f.name === 'as'),
+        c.name,
+      ).toBe(false);
     }
     expect(ACTOR_FLAG).toMatchObject({ name: 'as', type: 'string', required: false });
   });
@@ -77,8 +81,8 @@ describe('the command registry', () => {
     expect(ALLOW_SECRET_FLAG).toMatchObject({ name: 'allow-secret-like', type: 'boolean' });
   });
 
-  it('accepts --json everywhere through the global flags', () => {
-    expect(GLOBAL_FLAGS).toEqual([JSON_FLAG]);
+  it('accepts --json and --as everywhere through the global flags', () => {
+    expect(GLOBAL_FLAGS).toEqual([JSON_FLAG, ACTOR_FLAG]);
     expect(JSON_FLAG).toMatchObject({ name: 'json', type: 'boolean', required: false });
   });
 
@@ -86,7 +90,7 @@ describe('the command registry', () => {
     for (const c of COMMANDS) {
       expect(c.summary, c.name).toMatch(ASCII);
       const names = [...c.positionals, ...c.flags].map((a) => a.name);
-      expect(new Set([...names, 'json']).size, c.name).toBe(names.length + 1);
+      expect(new Set([...names, 'json', 'as']).size, c.name).toBe(names.length + 2);
       for (const a of [...c.positionals, ...c.flags]) {
         expect(a.summary, `${c.name} ${a.name}`).toMatch(ASCII);
         expect(a.name).toMatch(/^[a-z][a-z-]*$/);
@@ -146,7 +150,6 @@ describe('the command registry', () => {
         ['group', 'string', false, false],
         ['adhoc', 'string', false, false],
         ['checklist', 'string', false, true],
-        ['as', 'string', false, false],
         ['allow-secret-like', 'boolean', false, false],
       ],
       exclusive: [[[['task'], ['change', 'group'], ['adhoc']], true]],
@@ -195,7 +198,6 @@ describe('the command registry', () => {
       flags: [
         ['decision-recorded-in', 'string', false, false],
         ['no-decision', 'boolean', false, false],
-        ['as', 'string', false, false],
       ],
       exclusive: [[[['decision-recorded-in'], ['no-decision']], true]],
     });
@@ -286,6 +288,17 @@ describe('parseArgs: flags and positionals', () => {
     });
   });
 
+  it('accepts --as on every command, including those that ignore it', () => {
+    expect(parseArgs(['list', '--as', 'a']).values).toEqual({ as: 'a' });
+    expect(parseArgs(['show', 'T1ABCD', '--as=impl', '--json'])).toMatchObject({
+      values: { id: 'T1ABCD', as: 'impl' },
+      json: true,
+    });
+    expect(parseArgs(['version', '--as', 'x']).values).toEqual({ as: 'x' });
+    const err = expectBoardError(() => parseArgs(['list', '--as', 'a', '--as', 'b']), 1, 'usage');
+    expect(err.message).toContain('--as');
+  });
+
   it('leaves absent arguments out of the values', () => {
     expect(parseArgs(['list']).values).toEqual({});
     expect(parseArgs(['move', 'T1ABCD']).values).toEqual({ id: 'T1ABCD' });
@@ -301,7 +314,6 @@ describe('parseArgs: flags and positionals', () => {
     ['a missing required flag', ['handoff', 'T1ABCD', '--to', 'r', '--status', 'review'], '--note'],
     ['a non-integer index', ['checklist', 'tick', 'T1ABCD', 'two'], 'index'],
     ['a fractional index', ['checklist', 'tick', 'T1ABCD', '1.5'], 'index'],
-    ['--as on a read command', ['list', '--as', 'a'], '--as'],
   ])('refuses %s with exit 1 usage naming it', (_label, argv, named) => {
     const err = expectBoardError(() => parseArgs(argv), 1, 'usage');
     expect(err.message).toContain(named);

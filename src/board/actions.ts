@@ -22,6 +22,7 @@
 
 import type { TaskRef, Status } from '../events/schema.js';
 import type { Board } from '../store/board.js';
+import type { TreePathOptions } from './paths.js';
 import type { TaskReminder } from './reminder.js';
 import { notImplemented } from './stub.js';
 import type { WriteOptions, WriteOutcome } from './types.js';
@@ -125,19 +126,23 @@ export function handoffTicket(
 /**
  * What `link` attaches: a task reference (replacing the ticket's task and
  * clearing its ad hoc reason), a PR (URL string or positive number) or a
- * decision record path (stored as given, not checked for existence).
+ * decision record path (passed through `treePath` and recorded
+ * root-relative; not checked for existence).
  */
 export type LinkTarget = { task: TaskRef } | { pr: string | number } | { decision: string };
 
 /**
  * `link`: writes `ticket.link` with the one target. An empty `pr` string,
  * a `pr` number that is not a positive safe integer, or an empty
- * `decision` is `BoardError(1, 'usage')`.
+ * `decision` is `BoardError(1, 'usage')`. A `decision` path is resolved
+ * with `treePath` (using `input.cwd` and `input.env`) and the event records
+ * its `recorded` form; a path outside the working tree is exit 1
+ * `path-outside-tree`; the path need not exist.
  */
 export function linkTicket(
   board: Board,
   actor: string,
-  input: { id: string; target: LinkTarget },
+  input: { id: string; target: LinkTarget } & TreePathOptions,
   options?: WriteOptions,
 ): WriteOutcome {
   throw notImplemented(board, actor, input, options);
@@ -171,7 +176,7 @@ export function setChecklistItem(
 
 /** How a ticket is closed: `--decision-recorded-in <path>` or `--no-decision`. */
 export type CloseInput =
-  | { id: string; decisionRecordedIn: string; cwd?: string | undefined }
+  | ({ id: string; decisionRecordedIn: string } & TreePathOptions)
   | { id: string; noDecision: true };
 
 /** The comment prefix that marks a decision (board-openspec-integration). */
@@ -198,10 +203,12 @@ export function openDecisions(
 /**
  * `close`: writes `ticket.close` with the disposition.
  *
- * - `decisionRecordedIn`: the path must exist, resolved against `cwd`
- *   (default `process.cwd()`); otherwise `BoardError(1,
- *   'decision-path-missing')` naming the path as given. The path is stored
- *   as given.
+ * - `decisionRecordedIn`: resolved with `treePath` (`cwd`, `env`); outside
+ *   the working tree is `BoardError(1, 'path-outside-tree')`; the
+ *   resolved file must exist, otherwise `BoardError(1,
+ *   'decision-path-missing')` naming the path as given. The event records
+ *   the root-relative `recorded` form (with `/` separators), so a close run
+ *   from a subdirectory records the same path as one run from the root.
  * - `noDecision`: refused with `BoardError(1, 'unpromoted-decision')` when
  *   `openDecisions(ticket.comments)` is not empty; the message quotes each
  *   such comment and states the rule (a decision made in a ticket must be
