@@ -240,7 +240,10 @@ The page, script and stylesheet SHALL be built at package build time into
 `dist/web/` and served from there; serving SHALL need no package beyond
 the runtime dependencies of agentboard, and the page SHALL request nothing
 from any origin other than the server. No built asset SHALL contain an
-`http://` or `https://` URL referring to another host. `GET /` SHALL serve
+`http://` or `https://` URL referring to another host, except the W3C XML
+namespace names that the rendering library carries as plain strings and
+never fetches (`http://www.w3.org/2000/svg`, `http://www.w3.org/1999/xhtml`
+and `http://www.w3.org/1998/Math/MathML`). `GET /` SHALL serve
 `index.html`, and `GET /<name>` the file `<name>` directly inside
 `dist/web/`, where `<name>` contains no `/`, `\` or `%` and does not begin
 with `.`. A file SHALL be opened without blocking and without following a
@@ -250,7 +253,7 @@ any other path, and a directory, FIFO, device or symbolic link, SHALL be
 
 #### Scenario: No external requests
 - **WHEN** the built assets in `dist/web/` are scanned
-- **THEN** they contain no `http://` or `https://` URL naming a host
+- **THEN** they contain no `http://` or `https://` URL naming a host other than the three W3C namespace names
 
 #### Scenario: A FIFO among the assets
 - **WHEN** `dist/web/` contains a FIFO named `pipe` with no writer and a client requests `GET /pipe`
