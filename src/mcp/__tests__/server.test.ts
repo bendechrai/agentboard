@@ -452,6 +452,76 @@ describe('serveMcp', () => {
     expect(listed.find((m) => m.id === 2)?.result?.tools).toHaveLength(toolDefinitions().length);
   });
 
+  /**
+   * Starts `serveMcp` on in-memory streams and completes an initialize
+   * exchange, so the stdio transport is listening on `stdin`.
+   */
+  async function initialized(): Promise<{
+    stdin: PassThrough;
+    out: { stream: PassThrough; text: () => string };
+    err: () => string;
+    serving: Promise<number>;
+  }> {
+    const { root } = project();
+    const stdin = new PassThrough();
+    const out = sink();
+    let err = '';
+    const serving = serveMcp({
+      cwd: root,
+      env: cliEnv(),
+      stdin,
+      stdout: out.stream,
+      stderr: (text) => {
+        err += text;
+      },
+    });
+    stdin.write(`${JSON.stringify(INIT)}\n`);
+    await until(() => out.text().includes('"id":1'));
+    return { stdin, out, err: () => err, serving };
+  }
+
+  /** Resolves with `promise`, or rejects when it takes longer than `ms`. */
+  function within<T>(promise: Promise<T>, ms: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`still serving after ${String(ms)} ms`));
+      }, ms);
+      promise.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error: unknown) => {
+          clearTimeout(timer);
+          reject(error as Error);
+        },
+      );
+    });
+  }
+
+  it('shuts down with exit 0 and one stderr line when stdin emits an error', async () => {
+    const { stdin, out, err, serving } = await initialized();
+    stdin.emit('error', new Error('boom'));
+    expect(await within(serving, 3000)).toBe(0);
+    expect(err()).toMatch(/^agentboard: [^\n]*stdin[^\n]*boom\n$/);
+    // The transport is detached from stdin: the server is closed.
+    expect(stdin.listenerCount('data')).toBe(0);
+    for (const line of out.text().trimEnd().split('\n')) {
+      expect(JSON.parse(line)).toMatchObject({ jsonrpc: '2.0' });
+    }
+  });
+
+  it('prints the diagnostic once when stdin is destroyed with an error', async () => {
+    const { stdin, out, err, serving } = await initialized();
+    stdin.destroy(new Error('boom'));
+    expect(await within(serving, 3000)).toBe(0);
+    expect(err()).toMatch(/^agentboard: [^\n]*stdin[^\n]*boom\n$/);
+    expect(stdin.listenerCount('data')).toBe(0);
+    for (const line of out.text().trimEnd().split('\n')) {
+      expect(JSON.parse(line)).toMatchObject({ jsonrpc: '2.0' });
+    }
+  });
+
   it('stops and exits 0 when the signal aborts', async () => {
     const { root } = project();
     const controller = new AbortController();

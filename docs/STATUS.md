@@ -8,45 +8,47 @@ full workflow, and docs/adr/ for design decisions.
 
 ## What exists
 
-- The project scaffold: TypeScript CLI skeleton (`src/cli.ts`, `src/index.ts`,
-  one placeholder test), ESLint/Prettier/tsup/vitest config, the root
-  Makefile (`make check`, `make hooks`, `make check-in-docker`), the
-  pre-push hook, and Docker dev toolchain files.
-- `docs/adr/0001-event-log-source-of-truth.md`, the accepted decision behind
-  the whole design: an append-only, content-addressed event log under
-  `.board/events/` is the source of truth; a SQLite cache is a disposable,
-  rebuildable read cache derived from it.
-- The `add-board-core` OpenSpec change (proposal, design, five spec deltas
-  under `openspec/changes/add-board-core/specs/`, and `tasks.md` with 9 task
-  groups) is proposed AND merged into `staging` (PR #1, squash-merged as
-  `b458f34`). Its specs are not yet in `openspec/specs/` (that only happens
-  when the change is archived after implementation), and `openspec/changes/archive/`
-  is currently empty.
-- `add-board-core` was amended (PR #5) so tickets carry a source-neutral
-  task reference (`openspec:<change>#<group>`) instead of OpenSpec-only
-  `change`/`group` fields, and the MCP server (group 9) is fully specified
-  and no longer optional.
+- The project scaffold: TypeScript CLI (`src/cli.ts`, library surface in
+  `src/index.ts`), ESLint/Prettier/tsup/vitest config, the root Makefile
+  (`make check`, `make hooks`, `make check-in-docker`, `make check-floor`),
+  the pre-push hook, and Docker dev toolchain files.
+- ADRs in `docs/adr/`: 0001 (the event log is the source of truth, SQLite
+  a disposable cache), 0002 (one transaction per command, event file
+  inside it), 0003 (inbox cursors as a position plus a seen set), 0004
+  (source-neutral task reference) and 0005 (sync commits only its own
+  paths, as a fixed identity).
+- The `add-board-core` OpenSpec change is complete and archived as
+  `openspec/changes/archive/2026-09-24-add-board-core/`; its requirements
+  are the main specs in `openspec/specs/` (board-cache, board-cli,
+  board-concurrency, board-events, board-openspec-integration). Its deltas
+  were clarified by ruling commits during the build
+  (`git log --oneline -- openspec/changes/add-board-core` on history before
+  the archive lists them). Every CLI command, the MCP server
+  (`agentboard mcp`), the concurrency and crash property tests, and the
+  documentation (README usage, ADRs 0002 to 0005, "Using agentboard in a
+  project" in CONTRIBUTING.md) are merged into `staging`.
 - The `add-agent-guidance` OpenSpec change (generated help, `help agents`,
   error hints, `agents install`/`agents check` for Claude Code skills,
   `AGENTS.md`, OpenSpec config and `.mcp.json`, and the guide over MCP) is
-  proposed. It depends on `add-board-core` groups 3 and 9 and is built
-  after that change.
-- No board functionality is implemented yet. `src/` contains no code under
-  `src/events/` or `src/store/`; task group 1 (events, canonical JSON and
-  fold) has not been started.
+  proposed; its task group 1 is in progress. It depends on
+  `add-board-core` groups 3 and 9, both merged.
 
 ## What to do next
 
-Start task group 1 (`openspec/changes/add-board-core/tasks.md`, section 1:
-"Events, canonical JSON and fold") using the three-role loop from
-CONTRIBUTING.md ("Three-agent workflow per task group"):
+1. Continue `add-agent-guidance` (group 1 is in progress), one task group
+   at a time, then archive it.
+2. A human reviews `staging` and promotes it to `main` (a merge-commit PR
+   from `staging`), then publishes the npm package.
+
+Each task group uses the three-role loop from CONTRIBUTING.md
+("Three-agent workflow per task group"):
 
 1. `git fetch origin` before cutting anything; branches are cut from
    `origin/staging`, never from a local `staging` ref.
-2. Cut one feature branch per task group (`<area>/<group-slug>`, e.g.
-   `events/canonical-fold`), then one worktree per agent:
-   `git worktree add -b events/canonical-fold ../agentboard-canonical-fold origin/staging`
-   for the first role, and `git worktree add ../agentboard-canonical-fold-impl events/canonical-fold`
+2. Cut one feature branch per task group (`<area>/<group-slug>`), then one
+   worktree per agent:
+   `git worktree add -b <area>/<group-slug> ../agentboard-<group-slug> origin/staging`
+   for the first role, and `git worktree add ../agentboard-<group-slug>-impl <area>/<group-slug>`
    for later roles.
 3. Run the three roles in order, each in its own worktree, on the same
    branch: test author (red tests + compile stubs only) -> implementer
@@ -56,9 +58,10 @@ CONTRIBUTING.md ("Three-agent workflow per task group"):
    the reviewer signs off; the reviewer states the `make check` result in
    the PR body (its report becomes the PR body).
 5. Only the reviewer opens the PR against `staging`, after APPROVE or
-   APPROVE WITH NITS and after both `make check` and `make check-in-docker`
-   pass, with auto-merge enabled (`gh pr merge --auto --squash`); no
-   approvals are required, so opening the PR is the merge decision.
+   APPROVE WITH NITS and after `make check`, `make check-in-docker` and
+   `make check-floor` pass, with auto-merge enabled
+   (`gh pr merge --auto --squash`); no approvals are required, so opening
+   the PR is the merge decision.
 6. Tick the completed tasks in `tasks.md` once the group has landed on
    `staging`.
 
@@ -68,9 +71,9 @@ A coordinating instance holds the task list and, for each task group,
 dispatches one agent per role in turn, each in its own worktree it creates
 for that agent. The orchestrator never edits code itself and never lets two
 agents share a worktree. Between dispatches it is the one that reads
-`inbox`/board state (once the board exists) or `tasks.md` (until then) to
-decide what is next. When a reviewer needs a second opinion, it reports
-back to the orchestrator rather than spawning its own sub-agent; the
+`inbox`/board state or `tasks.md` to decide what is next (see README.md,
+"The orchestrator inbox protocol"). When a reviewer needs a second
+opinion, it reports back to the orchestrator rather than spawning its own sub-agent; the
 orchestrator spawns a second reviewer, in its own worktree, and relays
 whichever ruling should govern (approve, or send back to implementer/test
 author with the blocking findings).
@@ -92,11 +95,9 @@ own implementation.
 
 ## Decisions that live only in history
 
-None found. Everything needed to start task group 1 that this document
-found was recorded in the repository (README.md, CLAUDE.md,
-CONTRIBUTING.md, docs/adr/, and the `add-board-core` change under
-`openspec/changes/`). Anything not fully specified is listed below as a
-GAP rather than assumed from outside knowledge.
+None known. Rulings made during groups 1 to 7 were recorded as spec delta
+changes in `add-board-core` (see its git log) and, where they are design
+decisions rather than requirements, as ADRs 0002 to 0005.
 
 ## Gaps found during a cold-start read
 

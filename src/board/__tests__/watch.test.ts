@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { openCache } from '../../store/cache.js';
 import { readCursor } from '../../store/cursors.js';
 import { readEventFile, type ReadOutcome } from '../../store/eventfile.js';
+import { recordedPosition } from '../../store/folded.js';
 import { P, T1, T2, ev } from '../../store/__tests__/helpers.js';
 import { commentTicket } from '../actions.js';
 import { readInbox, type InboxEntry } from '../inbox.js';
@@ -347,6 +348,120 @@ describe('watchInbox and a busy cache (round 2)', () => {
           locker.exec('ROLLBACK');
         }
         locker.close();
+        controller.abort();
+        await done;
+      }
+    },
+  );
+});
+
+describe('watchInbox and writes on its own connection (follow-up R2-N1)', () => {
+  // SQLite never bumps `PRAGMA data_version` for a connection's own commits,
+  // so these pin that the quiet-tick skip also notices a commit made on the
+  // watch's own `Board` by another caller in the same process.
+
+  it(
+    'passes on an event written on its own Board within a poll interval, then reads nothing',
+    { timeout: 10_000 },
+    async () => {
+      const { board } = setup();
+      const ticket = create(board);
+      const reader = countingReader();
+      const seen: InboxEntry[] = [];
+      const controller = new AbortController();
+      const done = watchInbox(board, 'orch', {
+        signal: controller.signal,
+        pollMs: 50,
+        fsWatch: false,
+        readEventFile: reader.read,
+        onEntries: (entries) => seen.push(...entries),
+      });
+      try {
+        await until(() => seen.length === 1, 2000, 'the initial entry');
+        // Quiet ticks first: nothing is read.
+        await pause(150);
+        expect(reader.count()).toBe(1);
+        // Written on the watch's own connection; no other connection commits.
+        const c = commentTicket(board, 'impl', { id: ticket.id, text: 'same handle' });
+        await until(() => seen.some((e) => e.hash === c.hash), 1000, 'the same-handle comment');
+        expect(reader.count()).toBe(2);
+        // Truly quiet ticks again: no event file read, nothing passed twice.
+        await pause(200);
+        expect(reader.count()).toBe(2);
+        expect(seen.map((e) => e.kind)).toEqual(['ticket.create', 'ticket.comment']);
+      } finally {
+        controller.abort();
+        await done;
+      }
+      expect(readCursor(board.db, 'orch').position).toBeNull();
+    },
+  );
+
+  it(
+    'passes on a late event another caller folded on its own Board (last position unchanged)',
+    { timeout: 10_000 },
+    async () => {
+      const dir = makeBoardDir(tempDir());
+      const eventsDir = join(dir, 'events');
+      putEvent(eventsDir, ev(P.create(T1), 'orch', 1000));
+      putEvent(eventsDir, ev(P.comment(T1, 'at 10h'), 'impl', 10 * HOUR));
+      const board = openTracked(dir);
+      const seen: InboxEntry[] = [];
+      const controller = new AbortController();
+      const done = watchInbox(board, 'orch', {
+        signal: controller.signal,
+        pollMs: 50,
+        fsWatch: false,
+        onEntries: (entries) => seen.push(...entries),
+      });
+      try {
+        await until(() => seen.length === 2, 2000, 'the pending entries');
+        // No tick can run between these two synchronous statements: the
+        // late file is folded by another caller of the same Board, so the
+        // watch's own catch-up later finds nothing new.
+        const late = putEvent(eventsDir, ev(P.comment(T1, 'at 2h'), 'remote', 2 * HOUR));
+        readInbox(board, 'bob', { peek: true });
+        expect(recordedPosition(board.db, late)?.effective).toBe(true);
+        await until(() => seen.some((e) => e.hash === late), 1000, 'the late comment');
+        await pause(150);
+        expect(seen).toHaveLength(3);
+      } finally {
+        controller.abort();
+        await done;
+      }
+    },
+  );
+
+  it(
+    'passes on a late event that swapped which claim is effective, folded on its own Board',
+    { timeout: 10_000 },
+    async () => {
+      const dir = makeBoardDir(tempDir());
+      const eventsDir = join(dir, 'events');
+      const created = putEvent(eventsDir, ev(P.create(T1), 'orch', 1000));
+      const claimed = putEvent(eventsDir, ev(P.claim(T1), 'impl', 10 * HOUR));
+      const board = openTracked(dir);
+      const seen: InboxEntry[] = [];
+      const controller = new AbortController();
+      const done = watchInbox(board, 'orch', {
+        signal: controller.signal,
+        pollMs: 50,
+        fsWatch: false,
+        onEntries: (entries) => seen.push(...entries),
+      });
+      try {
+        await until(() => seen.length === 2, 2000, 'the pending entries');
+        // An earlier claim arrives late and is folded on the same Board: it
+        // becomes effective and the 10h claim becomes rejected, so neither
+        // the number of effective events nor the last position changes.
+        const late = putEvent(eventsDir, ev(P.claim(T1), 'remote', 2 * HOUR));
+        readInbox(board, 'bob', { peek: true });
+        expect(recordedPosition(board.db, late)?.effective).toBe(true);
+        expect(recordedPosition(board.db, claimed)?.effective).toBe(false);
+        await until(() => seen.some((e) => e.hash === late), 1000, 'the late claim');
+        await pause(150);
+        expect(seen.map((e) => e.hash)).toEqual([created, claimed, late]);
+      } finally {
         controller.abort();
         await done;
       }
