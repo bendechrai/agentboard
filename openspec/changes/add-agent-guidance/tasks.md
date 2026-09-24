@@ -13,8 +13,8 @@ or above 90 percent.
 
 ## 2. Agent guide and hints
 
-- [ ] 2.1 Implement `help agents` and `help agents --role <role>` from `src/guidance/guide.ts` and verify with tests that every `agentboard ` line parses against the registry, the output is ASCII, at most 150 lines, version-stamped, contains each required section, and an unknown role exits 1 listing the valid roles
-- [ ] 2.2 Add hint templates for every rejection reason and usage error, print them on stderr as `hint: ` lines, and verify with a test that enumerates every reason and fails on any without a hint, plus scenario tests for already-assigned, missing actor, needs-task-link and the decision rule
+- [x] 2.1 Implement `help agents` and `help agents --role <role>` from `src/guidance/guide.ts` and verify with tests that every `agentboard ` line parses against the registry, the output is ASCII, at most 150 lines, version-stamped, contains each required section, and an unknown role exits 1 listing the valid roles
+- [x] 2.2 Add hint templates for every rejection reason and usage error, print them on stderr as `hint: ` lines, and verify with a test that enumerates every reason and fails on any without a hint, plus scenario tests for already-assigned, missing actor, needs-task-link and the decision rule
 
 ## 3. Installing guidance
 

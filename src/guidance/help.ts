@@ -335,6 +335,13 @@ export function helpOutput(
   if (topic.length === 1 && topic[0] === AGENTS_TOPIC) {
     return agentsHelpOutput(source.version, role);
   }
+  if (role !== undefined) {
+    throw new BoardError(
+      1,
+      'usage',
+      `--role applies only to 'agentboard ${HELP_AGENTS}'; run 'agentboard ${HELP_AGENTS} --role <role>'`,
+    );
+  }
   if (topic.length === 0) {
     return { json: overviewDocument(source), text: renderOverview(source) };
   }
@@ -360,6 +367,9 @@ export function helpOutput(
 
 /** The help topic of the agent guide: `agentboard help agents`. */
 export const AGENTS_TOPIC = 'agents';
+
+/** The command line words of the agent guide. */
+const HELP_AGENTS = `help ${AGENTS_TOPIC}`;
 
 /** The column at which command help wraps the description. */
 const WRAP_COLUMNS = 78;

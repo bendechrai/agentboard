@@ -58,7 +58,9 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import { LazyBoard, commandActor, errorDocument, exitCodeFor, runContext } from '../cli/main.js';
+import { ACTOR_ENV } from '../cli/parse.js';
 import type { Env } from '../cli/types.js';
+import type { HintContext } from '../guidance/hints.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
 import { findBoard } from '../store/locate.js';
 import { VERSION } from '../version.js';
@@ -277,7 +279,7 @@ function runTool(
       structuredContent: isObject(json) ? json : { items: json },
     };
   } catch (error) {
-    const { error: content } = errorDocument(error);
+    const { error: content } = errorDocument(error, mcpHintContext(options, name, args));
     if (content.exitCode === 5) {
       options.stderr(`agentboard: ${content.message}\n`);
     }
@@ -292,10 +294,33 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** A non-empty string, else undefined. */
+function nonEmpty(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+/** The hint context of a failed call (see `ToolErrorContent.hint`). */
+function mcpHintContext(options: McpServerOptions, name: string, args: unknown): HintContext {
+  const given = isObject(args) ? args : {};
+  const id = nonEmpty(given.id);
+  const actor = nonEmpty(given.as) ?? nonEmpty(options.actor) ?? nonEmpty(options.env[ACTOR_ENV]);
+  return {
+    surface: 'mcp',
+    command: findTool(name)?.command.name ?? null,
+    ...(id === undefined ? {} : { id }),
+    ...(actor === undefined ? {} : { actor }),
+  };
+}
+
 /** The failed `ToolCallResult` for `content`. */
 function toolError(content: ToolErrorContent): ToolCallResult {
   return {
-    content: [{ type: 'text', text: content.message }],
+    content: [
+      {
+        type: 'text',
+        text: content.hint === null ? content.message : `${content.message}\nhint: ${content.hint}`,
+      },
+    ],
     structuredContent: { ...content },
     isError: true,
   };

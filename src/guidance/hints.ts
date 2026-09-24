@@ -27,7 +27,10 @@
  * is plain ASCII on one line.
  */
 
-import type { ExitCode } from '../store/errors.js';
+import { findCommand } from '../cli/registry.js';
+import type { CommandSpec } from '../cli/types.js';
+import { EXCLUDED_COMMANDS, toolName } from '../mcp/tools.js';
+import { BoardError, type ExitCode } from '../store/errors.js';
 
 /** Where a hint is shown: the shell CLI or an MCP tool error. */
 export type HintSurface = 'cli' | 'mcp';
@@ -67,14 +70,92 @@ export interface HintContext {
  * `ExclusiveGroup.reason` and `ExitCodeSpec.reason` in the registry. A
  * test derives that set from the source and compares.
  */
-export const HINT_REASONS: readonly string[] = [];
+export const HINT_REASONS: readonly string[] = [
+  'already-assigned',
+  'ambiguous-id',
+  'ambiguous-remote',
+  'board-not-a-repository',
+  'board-not-found',
+  'busy',
+  'checklist-index',
+  'decision-path-missing',
+  'detached-head',
+  'duplicate-create',
+  'gh-missing',
+  'git-missing',
+  'id-too-short',
+  'integrity',
+  'invalid-transition',
+  'malformed-event',
+  'malformed-task-ref',
+  'malformed-tasks',
+  'missing-actor',
+  'missing-status',
+  'needs-task-link',
+  'needs-task-or-adhoc',
+  'no-cache',
+  'no-disposition',
+  'not-assignee',
+  'path-outside-tree',
+  'schema-mismatch',
+  'secret-like',
+  'streaming-command',
+  'sync-conflict',
+  'sync-failed',
+  'sync-in-progress',
+  'tasks-not-found',
+  'unknown-cursor',
+  'unknown-ticket',
+  'unpromoted-decision',
+  'unsupported-source',
+  'usage',
+];
 
 /**
  * The exit code class of each reason in `HINT_REASONS` (a reason belongs to
  * exactly one class: for example `usage` and `missing-actor` are 1,
  * `board-not-found` 2, `sync-conflict` 3, `already-assigned` 4, `busy` 5).
  */
-export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {};
+export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
+  'already-assigned': 4,
+  'ambiguous-id': 1,
+  'ambiguous-remote': 1,
+  'board-not-a-repository': 2,
+  'board-not-found': 2,
+  busy: 5,
+  'checklist-index': 4,
+  'decision-path-missing': 1,
+  'detached-head': 3,
+  'duplicate-create': 4,
+  'gh-missing': 1,
+  'git-missing': 1,
+  'id-too-short': 1,
+  integrity: 5,
+  'invalid-transition': 4,
+  'malformed-event': 1,
+  'malformed-task-ref': 1,
+  'malformed-tasks': 1,
+  'missing-actor': 1,
+  'missing-status': 1,
+  'needs-task-link': 4,
+  'needs-task-or-adhoc': 1,
+  'no-cache': 5,
+  'no-disposition': 1,
+  'not-assignee': 4,
+  'path-outside-tree': 1,
+  'schema-mismatch': 5,
+  'secret-like': 1,
+  'streaming-command': 1,
+  'sync-conflict': 3,
+  'sync-failed': 3,
+  'sync-in-progress': 3,
+  'tasks-not-found': 1,
+  'unknown-cursor': 1,
+  'unknown-ticket': 4,
+  'unpromoted-decision': 1,
+  'unsupported-source': 1,
+  usage: 1,
+};
 
 /**
  * One suggested command inside a hint, rendered for `surface`:
@@ -104,10 +185,30 @@ export function hintStep(
   command: string,
   args: readonly (readonly [string, string | true])[],
 ): string {
-  void surface;
-  void command;
-  void args;
-  throw new Error('not implemented');
+  const spec = findCommand(command);
+  const tool = spec === undefined ? undefined : toolOf(spec);
+  if (surface === 'mcp' && spec !== undefined && tool !== undefined) {
+    const json: Record<string, string | number | true> = {};
+    for (const [key, value] of args) {
+      const integer = [...spec.positionals, ...spec.flags].some(
+        (arg) => arg.name === key && arg.type === 'integer',
+      );
+      json[key] = integer && value !== true ? Number(value) : value;
+    }
+    return `${tool} ${JSON.stringify(json)}`;
+  }
+  const positionals = new Set(spec?.positionals.map((arg) => arg.name));
+  const words = ['agentboard', command];
+  for (const [key, value] of args) {
+    if (positionals.has(key)) {
+      words.push(shellWord(value === true ? key : value));
+    } else if (value === true) {
+      words.push(`--${key}`);
+    } else {
+      words.push(`--${key}`, shellWord(value));
+    }
+  }
+  return `'${words.join(' ')}'`;
 }
 
 /**
@@ -207,9 +308,26 @@ export function hintStep(
  * Pure.
  */
 export function renderHint(reason: string | null, context: HintContext): string | null {
-  void reason;
-  void context;
-  throw new Error('not implemented');
+  const template = reason === null ? undefined : TEMPLATES[reason];
+  if (template === undefined) {
+    return null;
+  }
+  const command = context.command === null ? undefined : findCommand(context.command);
+  const known = (value: string | undefined, placeholder: string): string =>
+    value === undefined || value === '' ? placeholder : value;
+  const step = (name: string, args: readonly (readonly [string, string | true])[] = []): string =>
+    hintStep(context.surface, name, args);
+  return template({
+    context,
+    id: known(context.id, '<id>'),
+    actor: known(context.actor, '<actor>'),
+    command,
+    step,
+    help: () =>
+      command === undefined || command.name === 'help'
+        ? step('help')
+        : step('help', helpTopic(command.name)),
+  });
 }
 
 /**
@@ -217,7 +335,245 @@ export function renderHint(reason: string | null, context: HintContext): string 
  * `BoardError`, null for anything else. Pure.
  */
 export function hintFor(error: unknown, context: HintContext): string | null {
-  void error;
-  void context;
-  throw new Error('not implemented');
+  return error instanceof BoardError ? renderHint(error.reason, context) : null;
 }
+
+/** A shell word: double-quoted when it contains a space. */
+function shellWord(value: string): string {
+  return value.includes(' ') ? `"${value}"` : value;
+}
+
+/** The `help` arguments naming a command of one or two words. */
+function helpTopic(name: string): (readonly [string, string])[] {
+  const [topic = name, subtopic] = name.split(' ');
+  return subtopic === undefined
+    ? [['topic', topic]]
+    : [
+        ['topic', topic],
+        ['subtopic', subtopic],
+      ];
+}
+
+/** The tool name of `command` when it is an MCP tool, else undefined. */
+function toolOf(command: CommandSpec | undefined): string | undefined {
+  return command === undefined || EXCLUDED_COMMANDS.includes(command.name)
+    ? undefined
+    : toolName(command.name);
+}
+
+/** What one reason's hint is built from. */
+interface HintParts {
+  readonly context: HintContext;
+  /** The id, or `<id>`. */
+  readonly id: string;
+  /** The actor, or `<actor>`. */
+  readonly actor: string;
+  /** The context's command when it is a registry command, else undefined. */
+  readonly command: CommandSpec | undefined;
+  /** `hintStep(context.surface, command, args)`. */
+  step(command: string, args?: readonly (readonly [string, string | true])[]): string;
+  /** Step `help <command>`, or step `help` when the command is unknown or is `help`. */
+  help(): string;
+}
+
+/** Renders the hint of one reason. */
+type HintTemplate = (parts: HintParts) => string;
+
+/** What a human does in the board repository, then sync again. */
+function syncHint(what: string): HintTemplate {
+  return (h) => `${what}, then run ${h.step('sync')}`;
+}
+
+/** The fix for a tasks file problem, then the import again. */
+function tasksHint(what: string): HintTemplate {
+  return (h) =>
+    `${what}, then run ${h.step('import-change', [
+      ['name', '<change>'],
+      ['as', h.actor],
+    ])} again`;
+}
+
+/** Rebuilding the cache from the event log. */
+const rebuildHint: HintTemplate = (h) =>
+  `rebuild the cache from the events with ${h.step('rebuild')}`;
+
+/** The template of `secret-like`. */
+const secretLikeHint: HintTemplate = (h) => {
+  const text = 'remove the secret from the text (board events are synced and kept forever)';
+  if (h.command === undefined) {
+    return `${text}; only for a false positive in new, comment or handoff, pass --allow-secret-like; see ${h.help()}`;
+  }
+  if (!h.command.flags.some((flag) => flag.name === 'allow-secret-like')) {
+    return `remove the secret at its source, the tasks file, then run ${h.step('import-change', [
+      ['name', '<change>'],
+      ['as', h.actor],
+    ])} again`;
+  }
+  const flag =
+    h.context.surface === 'mcp'
+      ? 'set the allow-secret-like argument to true'
+      : 'pass --allow-secret-like';
+  return `${text}; only for a false positive, ${flag}; see ${h.help()}`;
+};
+
+/** The template of `path-outside-tree`. */
+const pathOutsideTreeHint: HintTemplate = (h) => {
+  const name = h.command?.name;
+  const flags =
+    name === 'close'
+      ? '--decision-recorded-in <path>'
+      : name === 'link'
+        ? '--decision <path>'
+        : '--decision-recorded-in <path> (close) or --decision <path> (link)';
+  return `the path must name a file inside the current working tree; pass it as ${flags}; see ${h.help()}`;
+};
+
+/** The template of `streaming-command`. */
+const streamingHint: HintTemplate = (h) => {
+  const { command } = h;
+  if (command === undefined) {
+    return `this command streams its output; run it from the agentboard executable in a shell; see ${h.help()}`;
+  }
+  const args: (readonly [string, string])[] =
+    command.writes || command.tracksCursor === true ? [['as', h.actor]] : [];
+  return `run it from the agentboard executable in a shell: ${hintStep('cli', command.name, args)}`;
+};
+
+/** The template of `usage`. */
+const usageHint: HintTemplate = (h) => {
+  if (h.context.surface === 'cli') {
+    return h.command === undefined || h.command.name === 'help'
+      ? `see the commands with ${h.help()}`
+      : `check the arguments with ${h.help()}`;
+  }
+  const tool = toolOf(h.command);
+  return tool === undefined
+    ? `call tools/list for the tool names and their input schemas, or run ${h.help()} in a shell`
+    : `check the input schema of ${tool} in tools/list, or run ${h.help()} in a shell`;
+};
+
+/** Every reason's template (the contract is on `renderHint`). */
+const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
+  // Exit 1.
+  usage: usageHint,
+  'missing-actor': (h) =>
+    h.context.surface === 'mcp'
+      ? `pass the as argument with your actor name, or start the server with ${h.step('mcp', [['as', '<actor>']])}`
+      : `pass --as <actor> or set AGENTBOARD_ACTOR (the actor is never guessed); see ${h.help()}`,
+  'malformed-event': (h) =>
+    `this is an agentboard bug; report it with the output of ${h.step('version')}`,
+  'id-too-short': (h) =>
+    `give at least 6 characters of the ticket id; ${h.step('list')} shows the ids`,
+  'ambiguous-id': (h) =>
+    `give a longer id prefix that matches one ticket; ${h.step('list')} shows the ids`,
+  'secret-like': secretLikeHint,
+  'malformed-task-ref': (h) =>
+    `write the task as <source>:<ref>#<item> (for example openspec:add-login#2), or for OpenSpec --change <name> --group <n>; see ${h.help()}`,
+  'missing-status': (h) =>
+    `name the status to move to: ${h.step('move', [
+      ['id', h.id],
+      ['status', '<status>'],
+      ['as', h.actor],
+    ])} (with no status, move only returns a blocked ticket to where it was)`,
+  'needs-task-or-adhoc': (h) =>
+    `name the planned task with --task <source>:<ref>#<item> or --change <name> --group <n>, or say why it is unplanned with --adhoc <reason>; see ${h.help()}`,
+  'no-disposition': (h) =>
+    `close needs a disposition: ${h.step('close', [
+      ['id', h.id],
+      ['decision-recorded-in', '<path>'],
+      ['as', h.actor],
+    ])} naming the spec delta or ADR, or ${h.step('close', [
+      ['id', h.id],
+      ['no-decision', true],
+      ['as', h.actor],
+    ])} when nothing was decided`,
+  'path-outside-tree': pathOutsideTreeHint,
+  'decision-path-missing': (h) =>
+    `write and commit the spec delta or ADR first, then run ${h.step('close', [
+      ['id', h.id],
+      ['decision-recorded-in', '<path>'],
+      ['as', h.actor],
+    ])}`,
+  'unpromoted-decision': (h) =>
+    `read the DECISION: comments with ${h.step('show', [['id', h.id]])}, promote them to a spec delta or ADR and run ${h.step(
+      'close',
+      [
+        ['id', h.id],
+        ['decision-recorded-in', '<path>'],
+        ['as', h.actor],
+      ],
+    )}, or if you wrote one, retract it with ${h.step('comment', [
+      ['id', h.id],
+      ['text', 'RETRACTED: <why>'],
+      ['as', h.actor],
+    ])}`,
+  'unknown-cursor': (h) =>
+    `${h.context.surface === 'mcp' ? 'the since argument' : '--since'} needs the full hash of an event on this board; ${h.step(
+      'inbox',
+      [
+        ['as', h.actor],
+        ['peek', true],
+      ],
+    )} lists the events without acknowledging them`,
+  'unsupported-source': (h) =>
+    `only the openspec source can be imported; create a ticket for other planned work with ${h.step(
+      'new',
+      [
+        ['title', '<title>'],
+        ['task', '<source>:<ref>#<item>'],
+        ['as', h.actor],
+      ],
+    )}`,
+  'tasks-not-found': tasksHint('check the change name and that its tasks file exists'),
+  'malformed-tasks': tasksHint('fix the tasks file named in the message'),
+  'git-missing': (h) =>
+    `install git and put it on the PATH, then run the command again; see ${h.help()}`,
+  'gh-missing': (h) =>
+    `install the GitHub CLI gh, put it on the PATH and run gh auth login, then run ${h.step(
+      'close-merged',
+      [['as', h.actor]],
+    )} again`,
+  'ambiguous-remote': syncHint(
+    'in the board repository, set an upstream for the branch or name one remote origin',
+  ),
+  'streaming-command': streamingHint,
+  // Exit 2.
+  'board-not-found': (h) =>
+    `create the board with ${h.step('init')} at the root of the main checkout, or set AGENTBOARD_DIR to an existing board`,
+  'board-not-a-repository': (h) =>
+    `the board directory must be the top level of its own git repository; see ${h.step('help', [['topic', 'sync']])}`,
+  // Exit 3.
+  'sync-in-progress': syncHint(
+    'a human finishes or aborts the rebase, merge or cherry-pick in progress in the board repository',
+  ),
+  'detached-head': syncHint('a human checks out a branch in the board repository'),
+  'sync-conflict': syncHint(
+    'a human resolves the conflict in the board repository, runs git add and git rebase --continue (or --abort)',
+  ),
+  'sync-failed': syncHint(
+    'a human fixes what the message names in the board repository (content staged by hand, the remote or the network)',
+  ),
+  // Exit 4.
+  'unknown-ticket': (h) => `no ticket matches that id; find it with ${h.step('list')}`,
+  'duplicate-create': (h) => `that ticket already exists; find it with ${h.step('list')}`,
+  'invalid-transition': (h) =>
+    `check the current status with ${h.step('show', [['id', h.id]])} and the permitted moves with ${h.step('help', [['topic', 'move']])}`,
+  'already-assigned': (h) =>
+    `another actor holds this ticket, so do not work on it: see who with ${h.step('show', [['id', h.id]])}, or find your own work with ${h.step('inbox', [['as', h.actor]])}`,
+  'not-assignee': (h) =>
+    `only the assignee can do this; see who holds the ticket with ${h.step('show', [['id', h.id]])}`,
+  'checklist-index': (h) =>
+    `checklist lines are numbered from 0; see them with ${h.step('show', [['id', h.id]])}`,
+  'needs-task-link': (h) =>
+    `an ad hoc ticket cannot enter implementing until it names a planned task: ${h.step('link', [
+      ['id', h.id],
+      ['task', '<source>:<ref>#<item>'],
+      ['as', h.actor],
+    ])}`,
+  // Exit 5.
+  integrity: (h) =>
+    `a human must inspect the file named in the message; compare the cache with the events using ${h.step('rebuild', [['check', true]])}`,
+  busy: () => 'another process held the board cache too long; run the command again',
+  'no-cache': rebuildHint,
+  'schema-mismatch': rebuildHint,
+};

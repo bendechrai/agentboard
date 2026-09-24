@@ -42,7 +42,9 @@
  * `src/board/openspec.ts` may name it (src/board/__tests__/sources.test.ts).
  */
 
+import { asciiText } from '../board/text.js';
 import type { CommandOutput } from '../cli/types.js';
+import { BoardError } from '../store/errors.js';
 
 /** The roles that have a checklist, in the order they are listed. */
 export const ROLES = ['orchestrator', 'test-author', 'implementer', 'reviewer'] as const;
@@ -153,8 +155,7 @@ export interface AgentsHelpDocument {
 
 /** True when `text` is one of `ROLES`. Pure. */
 export function isRole(text: string): text is Role {
-  void text;
-  throw new Error('not implemented');
+  return (ROLES as readonly string[]).includes(text);
 }
 
 /**
@@ -166,8 +167,7 @@ export function isRole(text: string): text is Role {
  * newline. Pure.
  */
 export function renderGuide(version: string): string {
-  void version;
-  throw new Error('not implemented');
+  return text([`Agent guide for agentboard ${version}`, ...GUIDE_BODY]);
 }
 
 /**
@@ -197,8 +197,7 @@ export function renderGuide(version: string): string {
  * Plain ASCII, no trailing spaces, ends with one newline. Pure.
  */
 export function renderRoleChecklist(role: Role): string {
-  void role;
-  throw new Error('not implemented');
+  return text(['', `Checklist: ${role}`, ...CHECKLISTS[role]]);
 }
 
 /**
@@ -215,7 +214,212 @@ export function renderRoleChecklist(role: Role): string {
  * Needs no board and no actor. Pure.
  */
 export function agentsHelpOutput(version: string, role: string | undefined): CommandOutput {
-  void version;
-  void role;
-  throw new Error('not implemented');
+  if (role === undefined) {
+    const guide = renderGuide(version);
+    const json: AgentsHelpDocument = { topic: 'agents', version, role: null, text: guide };
+    return { text: guide, json };
+  }
+  if (!isRole(role)) {
+    throw new BoardError(
+      1,
+      'usage',
+      `unknown role ${asciiText(role)}; the roles are ${ROLES.join(', ')}`,
+    );
+  }
+  const out = renderGuide(version) + renderRoleChecklist(role);
+  const json: AgentsHelpDocument = { topic: 'agents', version, role, text: out };
+  return { text: out, json };
 }
+
+/** `lines` joined into text that ends with one newline. */
+function text(lines: readonly string[]): string {
+  return `${lines.join('\n')}\n`;
+}
+
+/**
+ * The guide after its version line. Command lines are indented by two
+ * spaces and must parse (see the module comment); prose lines must never
+ * begin with the word agentboard.
+ */
+const GUIDE_BODY: readonly string[] = [
+  '',
+  'Read this before your first board command. In the commands below, <id>,',
+  '<actor>, <path> and the like stand for your own values. A ticket id may be',
+  'shortened to any unique prefix of at least 6 characters. Every command',
+  'accepts --json and then prints one JSON document on stdout. For the',
+  'checklist of your role, add --role with orchestrator, test-author,',
+  'implementer or reviewer.',
+  '',
+  'What the board is and is not',
+  'A local, offline ticket board shared by the agents (and humans) working on',
+  'one project, in every worktree of it. Each change is written as its own',
+  'append-only event file under .board/, and that event log is the source of',
+  'truth, so agents writing at the same time never overwrite each other. It is:',
+  '- not a secret store: text that looks like a secret is refused (exit 1),',
+  '  and events are synced and kept forever; pass --allow-secret-like only for',
+  '  a false positive;',
+  '- not the record of completion: the checkboxes in tasks.md, ticked in the',
+  '  pull request that does the work, are;',
+  '- not where decisions live: they belong in a spec delta or an ADR;',
+  '- not a source of scope: every ticket names the planned task it delivers.',
+  '',
+  'The actor rule',
+  'Every command that writes, and inbox and watch (which keep a cursor per',
+  'actor), needs an actor: --as <actor>, or else the AGENTBOARD_ACTOR',
+  'environment variable. With neither, the command exits 1. The actor is',
+  'never inferred from the OS user. Every command accepts --as, so pass it',
+  'on every call. Use one stable name per role instance, such as impl-1.',
+  '',
+  'Finding work',
+  'Ask the board every time; never rely on a remembered picture of it.',
+  '  agentboard inbox --as <actor>',
+  '  agentboard list --status todo',
+  '  agentboard list --assignee <actor>',
+  '  agentboard list --change <change>',
+  '  agentboard show <id>',
+  'inbox prints every event since your last inbox (your own included) and',
+  'acknowledges them, so the next call prints only newer ones: run it before',
+  'starting or dispatching work. --peek lists without acknowledging. list',
+  'prints open tickets, one per line; show prints one ticket in full, with',
+  'its checklist, links and comments.',
+  '',
+  'Claiming before you start',
+  'Claim a ticket before doing any work on it:',
+  '  agentboard claim <id> --as <actor>',
+  'Exit 4 with already-assigned means another actor holds it: do not work on',
+  'it. Claiming a ticket you already hold succeeds and writes nothing, so a',
+  'retried claim is safe, and when agents race for a ticket exactly one wins.',
+  'To give a ticket up, release it:',
+  '  agentboard release <id> --as <actor>',
+  '',
+  'Handing off and blocking',
+  'Never stop silently. When your part is done, hand off: reassign, move and',
+  'leave a note, all in one event:',
+  '  agentboard handoff <id> --to <next-actor> --status review --note "<what and where>" --as <actor>',
+  'When you are stuck, block the ticket and say why in a comment:',
+  '  agentboard move <id> blocked --as <actor>',
+  '  agentboard comment <id> "<why, and what would unblock it>" --as <actor>',
+  'When the blocker is gone, this returns the ticket to where it was:',
+  '  agentboard move <id> --as <actor>',
+  'Statuses: todo, tests (tests being written), implementing, review, merged',
+  '(the work has landed; terminal) and blocked. Permitted moves: todo to',
+  'tests, tests to implementing, implementing to review, review back to',
+  'implementing or tests or on to merged, and any status but merged to',
+  'blocked. Any other move exits 4 with invalid-transition. Comment text that',
+  'starts with -- goes after a lone --.',
+  '',
+  'Decisions and closing',
+  'When a discussion settles something, record it in a comment that begins',
+  'with DECISION:',
+  '  agentboard comment <id> "DECISION: <what was decided>" --as <actor>',
+  'Before the ticket closes, promote each decision to a spec delta or an ADR',
+  'in the repository. Only merged or blocked tickets close, and close needs',
+  'exactly one disposition, the file that records the decision or none:',
+  '  agentboard close <id> --decision-recorded-in <path> --as <actor>',
+  '  agentboard close <id> --no-decision --as <actor>',
+  'The path must name an existing file inside the working tree.',
+  '--no-decision is refused (exit 1) while the ticket has a DECISION: comment',
+  'that its author has not retracted with a later comment beginning',
+  'RETRACTED:.',
+  '',
+  'Tickets and planning tasks',
+  'Every ticket names the planned task it delivers as --task',
+  '<source>:<ref>#<item>; for OpenSpec, --change <name> --group <n> is short',
+  'for openspec:<name>#<n>. Work that is not planned says why with --adhoc:',
+  '  agentboard new "<title>" --change <change> --group <n> --as <actor>',
+  '  agentboard new "<title>" --adhoc "<reason>" --as <actor>',
+  'An ad hoc ticket cannot enter implementing (exit 4, needs-task-link) until',
+  'it is linked to a task:',
+  '  agentboard link <id> --task <source>:<ref>#<item> --as <actor>',
+  'The OpenSpec flow: after a change is proposed, import it, which creates one',
+  'ticket per task group; run it again whenever its tasks.md gains lines (no',
+  'duplicates are created):',
+  '  agentboard import-change <change> --as <actor>',
+  "Claim the group's ticket before applying the change:",
+  '  agentboard claim <id> --as <actor>',
+  'Tick the task lines in tasks.md in the implementing pull request;',
+  'checklist tick on the board only marks the ticket and reminds you to. Link',
+  'the pull request to the ticket (link <id> --pr <pr>). Once it has merged',
+  'and the ticket has moved to merged, close-merged closes it, with its',
+  'decision link (link <id> --decision <path>) as the disposition if it has',
+  'one; it asks GitHub through gh:',
+  '  agentboard close-merged --as <actor>',
+  '',
+  'Using the MCP tools',
+  "When the board's MCP server is connected, use its tools instead of the",
+  'shell. Each command is a tool named board_ plus the command, with spaces',
+  'and hyphens as underscores: board_claim, board_inbox, board_handoff,',
+  'board_checklist_tick. Tools take the same arguments without the leading',
+  '--, and the actor is the as argument; without it, a call uses the',
+  "server's own actor, set when it was started as",
+  '  agentboard mcp --as <actor>',
+  "and then the server's AGENTBOARD_ACTOR. A failed call returns exitCode,",
+  'reason, message and hint. init, watch, rebuild, sync, mcp, version and',
+  'help are not tools; run those in a shell.',
+  '',
+  'Exit codes and hints',
+  '  0  success',
+  '  1  usage error, missing actor, refused text or close disposition, or rebuild --check found a difference',
+  '  2  board not found or unreadable',
+  '  3  sync problem that needs a human',
+  '  4  rejected by board state: invalid-transition, already-assigned, not-assignee, unknown-ticket, needs-task-link, checklist-index',
+  '  5  event log or cache integrity problem, or the cache is busy',
+  'Every refusal also prints a line starting with hint: on stderr (the hint',
+  'field over MCP) naming what to run next. For the arguments of a command:',
+  '  agentboard help <command>',
+];
+
+/** The steps of each role's checklist (after its heading). */
+const CHECKLISTS: Readonly<Record<Role, readonly string[]>> = {
+  orchestrator: [
+    '1. Before dispatching anything, read and act on every entry of:',
+    '  agentboard inbox --as <actor>',
+    '2. When a change is proposed, or its tasks.md gains lines, import it:',
+    '  agentboard import-change <change> --as <actor>',
+    '3. Dispatch one agent per ticket and role (test author, implementer,',
+    '   reviewer), each with its own actor name; give it the ticket id and',
+    '   have it read the guide for its role:',
+    '  agentboard help agents --role <role>',
+    '4. Check state on the board, never from memory:',
+    '  agentboard list --change <change>',
+    '  agentboard show <id>',
+    '5. After a pull request merges, move its ticket to merged. Promote every',
+    '   DECISION: comment to a spec delta or ADR first, then close the ticket,',
+    '   with close-merged (for tickets with a pr link) or by hand:',
+    '  agentboard move <id> merged --as <actor>',
+    '  agentboard close-merged --as <actor>',
+    '  agentboard close <id> --decision-recorded-in <path> --as <actor>',
+  ],
+  'test-author': [
+    '1. Claim the ticket and move it to tests:',
+    '  agentboard claim <id> --as <actor>',
+    '  agentboard move <id> tests --as <actor>',
+    '2. Write failing tests from the spec, plus stubs for the API they use.',
+    '   Do not implement the behavior.',
+    '3. Hand off to the implementer, saying where the tests are:',
+    '  agentboard handoff <id> --to <implementer> --status implementing --note "<tests and stubs>" --as <actor>',
+  ],
+  implementer: [
+    '1. Claim the ticket, or accept the handoff you were given:',
+    '  agentboard claim <id> --as <actor>',
+    '2. Make the tests pass without editing them. Tick the task lines in',
+    '   tasks.md in the implementing pull request.',
+    '3. Record each decision you take as a comment:',
+    '  agentboard comment <id> "DECISION: <what was decided>" --as <actor>',
+    '4. When stuck, block the ticket with a comment saying why:',
+    '  agentboard move <id> blocked --as <actor>',
+    '  agentboard comment <id> "<why>" --as <actor>',
+    '5. When done, hand off to the reviewer:',
+    '  agentboard handoff <id> --to <reviewer> --status review --note "<what changed>" --as <actor>',
+  ],
+  reviewer: [
+    '1. Claim the ticket:',
+    '  agentboard claim <id> --as <actor>',
+    '2. Review the work against the spec and its scenarios.',
+    '3. To send it back, hand off with a note (use --status tests when the',
+    '   tests need changing):',
+    '  agentboard handoff <id> --to <implementer> --status implementing --note "<findings>" --as <actor>',
+    '4. To approve, link the pull request:',
+    '  agentboard link <id> --pr <pr> --as <actor>',
+  ],
+};

@@ -8,8 +8,9 @@
 import { openBoard, type Board } from '../store/board.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
 import { findBoard } from '../store/locate.js';
-import type { HintContext } from '../guidance/hints.js';
-import { parseArgs, resolveActor, type ParsedCommand } from './parse.js';
+import { hintFor, type HintContext } from '../guidance/hints.js';
+import { ACTOR_ENV, parseArgs, resolveActor, type ParsedCommand } from './parse.js';
+import { COMMANDS } from './registry.js';
 import type { BoardOpenOptions, CommandSpec, Env, RunContext } from './types.js';
 
 /** The process surroundings `runCli` uses; nothing else is read or written. */
@@ -76,14 +77,12 @@ export function exitCodeFor(error: unknown): Exclude<ExitCode, 0> {
  * Pure.
  */
 export function errorDocument(error: unknown, context?: HintContext): ErrorDocument {
-  // Stub (task group 2): the hint is computed by the implementation.
-  void context;
   return {
     error: {
       exitCode: exitCodeFor(error),
       reason: error instanceof BoardError ? error.reason : null,
       message: error instanceof Error ? error.message : String(error),
-      hint: null,
+      hint: hintFor(error, context ?? { surface: 'cli', command: null }),
     },
   };
 }
@@ -247,12 +246,80 @@ function context(io: CliIo, parsed: ParsedCommand, opened: LazyBoard): RunContex
 
 /** Step 5 of `runCli`: reports `error` and returns its exit code. */
 function fail(io: CliIo, parsed: ParsedCommand | null, error: unknown): Exclude<ExitCode, 0> {
-  const doc = errorDocument(error);
+  const doc = errorDocument(error, cliHintContext(io, parsed));
   io.stderr(`agentboard: ${doc.error.message}\n`);
+  if (doc.error.hint !== null) {
+    io.stderr(`hint: ${doc.error.hint}\n`);
+  }
   if (parsed?.json ?? io.argv.includes('--json')) {
     io.stdout(`${JSON.stringify(doc)}\n`);
   }
   return doc.error.exitCode;
+}
+
+/** A non-empty string, else undefined. */
+function nonEmpty(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+/** The hint context of a failed CLI run (step 5 of `runCli`). */
+function cliHintContext(io: CliIo, parsed: ParsedCommand | null): HintContext {
+  const fromEnv = nonEmpty(io.env[ACTOR_ENV]);
+  if (parsed !== null) {
+    const id = nonEmpty(parsed.values.id);
+    const actor = nonEmpty(parsed.values.as) ?? fromEnv;
+    return {
+      surface: 'cli',
+      command: parsed.command.name,
+      ...(id === undefined ? {} : { id }),
+      ...(actor === undefined ? {} : { actor }),
+    };
+  }
+  const actor = argvActor(io.argv) ?? fromEnv;
+  return {
+    surface: 'cli',
+    command: leadingCommand(io.argv),
+    ...(actor === undefined ? {} : { actor }),
+  };
+}
+
+/**
+ * The registry command the leading arguments select (the longest name
+ * whose words equal them, as `parseArgs` selects it), or null.
+ */
+function leadingCommand(argv: readonly string[]): string | null {
+  let best: string | null = null;
+  for (const command of COMMANDS) {
+    const words = command.name.split(' ');
+    if (
+      words.every((word, i) => argv[i] === word) &&
+      (best === null || words.length > best.split(' ').length)
+    ) {
+      best = command.name;
+    }
+  }
+  return best;
+}
+
+/**
+ * The actor of arguments that failed to parse: the argument after the
+ * first `--as`, or the value of the first `--as=<value>`, before any lone
+ * `--`; undefined when empty or absent.
+ */
+function argvActor(argv: readonly string[]): string | undefined {
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--') {
+      return undefined;
+    }
+    if (arg === '--as') {
+      return nonEmpty(argv[i + 1]);
+    }
+    if (arg?.startsWith('--as=') === true) {
+      return nonEmpty(arg.slice('--as='.length));
+    }
+  }
+  return undefined;
 }
 
 /**
