@@ -622,6 +622,183 @@ there are several remotes and none is the upstream or `origin`.
 Sync is for machines that take turns, not for several people editing at
 once.
 
+## Watching the board in a browser
+
+`agentboard serve` starts a small, read-only web server for the board and
+prints a URL to open in a browser. The page shows the whole board and keeps
+itself up to date as agents write, including events that arrive late
+through `sync`, with no reload:
+
+- **Board**: one column per status, one card per ticket (title, assignee,
+  task reference, labels, checklist progress and open decisions), cards
+  that just changed highlighted.
+  Filter by change and by assignee; closed tickets are hidden unless you
+  ask for them.
+- **Feed**: every applied event on the board as a one-line summary,
+  newest first, filterable by change, actor and event kind. Events that arrived late
+  through `sync` are marked.
+- **Ticket detail** (click a card or a feed entry): the ticket's fields,
+  checklist, links and close disposition, its conversation (comments and
+  hand-off notes, with `DECISION:` comments highlighted and retracted ones
+  flagged), and every event on it with its outcome, including rejected
+  ones with their reason (for example a claim that lost a race,
+  `already-assigned`).
+- **Lanes**: one lane per actor with the tickets they hold and when they
+  were last seen, refreshed at least every 10 seconds.
+
+The current view and its filters live in the URL hash (`#/board`,
+`#/feed`, `#/ticket/<id>`, `#/lanes`), so a reload keeps them.
+
+### Starting it
+
+Run it from anywhere inside the project, like any other command:
+
+```
+$ agentboard serve
+serving /home/me/project/.board read-only at http://127.0.0.1:54311/#token=hzU-J7pLcQxvMQCgXAsoeqFd9WSEPMU2vG6PHqUTWoM
+```
+
+Open that URL, the whole of it, in a browser. The server runs until you
+stop it with Ctrl-C (SIGINT) or SIGTERM, then exits 0.
+
+- `--port <n>` listens on port `n` (0 to 65535). Without it the operating
+  system picks a free port, which is fine: the token changes at every start,
+  so the URL changes anyway. A port that is already in use exits 1 with
+  reason `port-in-use`.
+- `--open` also asks the system to open the URL in your default browser.
+  If that fails you get a warning on stderr and the server keeps running.
+- `--json` prints one JSON line instead of the `serving` line, and nothing
+  else on stdout:
+
+  ```
+  {"url":"http://127.0.0.1:54311/#token=hzU-...","port":54311,"token":"hzU-...","writable":false}
+  ```
+
+`serve` writes no event and needs no actor (`--as` is accepted and
+ignored). It never moves an inbox cursor; the only change it makes to the
+board is the cache catch-up every read command does. It is not exposed as
+an MCP tool.
+
+### Security model
+
+The server is meant for your own machine, with a browser that also has
+arbitrary web sites open. What it does:
+
+- **Loopback only.** It listens on `127.0.0.1` and nothing else, so no
+  other machine can reach it.
+- **A new token every run.** At start-up it draws 32 random bytes (43
+  characters of base64url). Every request under `/api/`, the live stream
+  included, needs exactly one `Authorization: Bearer <token>` header;
+  anything else is 401 `unauthorized`. A request with two `Authorization`
+  headers is refused too. A `?token=` query parameter and cookies are
+  ignored. Tokens are compared in constant time and are never logged,
+  written to disk or sent back in any response.
+- **The token travels in the URL fragment.** The start-up URL ends in
+  `#token=<token>`. Browsers never send the fragment to a server or put it
+  in a `Referer`. The page moves the token into the tab's `sessionStorage`
+  (key `agentboard-token`), removes the fragment from the address bar, and
+  sends the token as the bearer header on every API and stream request.
+  The page itself and its script and stylesheet need no token: they are the
+  same files for every board and contain no board data.
+- **No cookies.** The server never sets one. Browsers share cookies
+  between every port of `127.0.0.1`, so a cookie would have been sent to
+  any other local server as well (see ADR 0006).
+- **Host check.** Every request must carry exactly one `Host` header that
+  is exactly `127.0.0.1:<port>` or `localhost:<port>`; anything else is 403
+  `forbidden-host`. This stops DNS rebinding, where a web site points its
+  own domain at `127.0.0.1` to talk to local servers.
+- **No cross-origin access.** No response carries any
+  `Access-Control-Allow-*` header, and every method but `GET` is refused
+  (405 `method-not-allowed`, so CORS preflights never succeed).
+- **Security headers on every response**, errors included: a strict
+  `Content-Security-Policy` (only the server's own script, style and
+  connections; no framing), `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`,
+  `Cross-Origin-Opener-Policy: same-origin` and
+  `Cross-Origin-Resource-Policy: same-origin`, plus `Cache-Control:
+  no-store` on API and stream responses.
+- **Read-only.** There is no write route, and board text (titles,
+  comments, actor names) is always shown as text, never as HTML.
+
+What it does not protect against:
+
+- **Your own account.** Anyone who can read your terminal, your shell
+  scrollback or your process list can see the token. `--open` passes the
+  URL to the system opener, which shows it in the process list for a
+  moment. The token protects against web pages and other users' processes,
+  not against you.
+- **Browser history.** The page drops the fragment at once, but a browser
+  may still have recorded the first URL, token included, in its history.
+  Only your account can read that, and the token is dead once the server
+  stops.
+- **Script in the page.** The token sits in `sessionStorage`, where script
+  of the page's own origin could read it. The Content-Security-Policy
+  admits only the server's own script and board text is never rendered as
+  markup, so there is no known way to inject any.
+- **Idle authenticated streams.** A client holding the token can open up
+  to 64 streams; one that never reads its first message can keep about the
+  size of the board in memory until it disconnects.
+- **Large boards.** The page loads every event at start-up; it is built
+  for boards of up to about 20,000 events.
+
+A new tab has no token: `sessionStorage` belongs to one tab. Reloading a
+tab keeps working, but a tab you open by hand, or a tab left open across a
+server restart (the token changes every run), shows "Open the URL printed
+by agentboard serve". Open the URL from the terminal again.
+
+### The JSON API
+
+Scripts can read the same data the page does. Every route is `GET`, needs
+the bearer header and answers JSON (errors are the same `ErrorDocument`
+the CLI prints with `--json`, with a hint):
+
+| Route | Answer |
+| ----- | ------ |
+| `/api/session` | `{version, boardDir, writable, actor}` (`writable` false, `actor` null) |
+| `/api/board` | `{tickets, meta, id}`: every ticket, open and closed, the board meta and the feed position id |
+| `/api/tickets/<id>` | `{ticket, events}` for a full id or a unique prefix of at least 6 characters; 404 `unknown-ticket` |
+| `/api/events?after=<hash>&limit=<n>` | `{events, next}`: well-formed events in fold order with their outcome, `limit` 1000 by default and at most 5000; pass `next` as `after` for the next page (null on the last) |
+| `/api/actors` | the agent lanes |
+| `/api/stream?since=<id>` | Server-Sent Events: `append` and `resync` events with position ids, a `problem` event on a tick failure; resumes from `Last-Event-ID` or `since` |
+
+Start the server in one terminal with `agentboard serve --port 4477
+--json`, copy the `token` from its line, and in another terminal:
+
+```
+$ TOKEN=<token>
+$ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4477/api/session
+{"version":"0.0.1","boardDir":"/home/me/project/.board","writable":false,"actor":null}
+$ curl -s -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:4477/api/events?limit=100"
+$ curl -s -N -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4477/api/stream
+retry: 2000
+
+event: append
+id: fd5752a1...
+data: {"type":"append","id":"fd5752a1...","events":[...],"tickets":[...]}
+```
+
+### Troubleshooting
+
+- **The page says "Open the URL printed by agentboard serve".** The tab
+  has no token or a stale one (a new tab, or the server was restarted).
+  Open the full URL from the terminal, including `#token=...`.
+- **`port-in-use`.** Something else listens on that port. Omit `--port`,
+  or pass `--port 0`, and let the system choose.
+- **403 `forbidden-host`.** The request did not reach the server as
+  `127.0.0.1:<port>` or `localhost:<port>`, for example through a proxy,
+  another host name or `[::1]`. Use the printed URL as it is.
+- **401 `unauthorized` from curl.** Send exactly one `Authorization:
+  Bearer <token>` header with the token of the running server; a query
+  parameter or a cookie does not count.
+- **405 `method-not-allowed`.** The server answers only `GET` (curl's
+  `-I` sends `HEAD`).
+- **Nothing updates.** The page reconnects to the stream on its own and
+  shows a banner when the server reports a problem (for example a corrupt
+  event file); the server keeps running and recovers once it is fixed. If
+  the server was stopped, restart it and open the new URL.
+- **No board found.** Like any command, `serve` exits 2 outside a project
+  with a board; run it inside the project or set `AGENTBOARD_DIR`.
+
 ## Rebuild and checking the cache
 
 The cache is derived from the events and every command catches it up
@@ -675,7 +852,7 @@ argument and `agentboard mcp --as <actor>`.
 | Code | Meaning |
 | ---- | ------- |
 | 0 | success |
-| 1 | usage error (including an unknown command or flag), missing actor, refused text or close disposition, `rebuild --check` found a difference, an `agents install` target was refused or nothing was detected, or `agents check` found guidance that is not current |
+| 1 | usage error (including an unknown command or flag), missing actor, refused text or close disposition, `rebuild --check` found a difference, an `agents install` target was refused or nothing was detected, `agents check` found guidance that is not current, or `serve` could not use its port (`port-in-use`) |
 | 2 | board not found or unreadable |
 | 3 | sync problem that needs a human |
 | 4 | action rejected by board state: `invalid-transition`, `already-assigned`, `not-assignee`, `unknown-ticket`, `duplicate-create`, `needs-task-link`, `checklist-index` |
@@ -689,7 +866,7 @@ underscores: `board_new`, `board_show`, `board_list`, `board_claim`,
 `board_release`, `board_move`, `board_comment`, `board_handoff`,
 `board_link`, `board_checklist_tick`, `board_checklist_untick`,
 `board_close`, `board_inbox`, `board_import_change` and
-`board_close_merged`. `init`, `watch`, `rebuild`, `sync`, `mcp`,
+`board_close_merged`. `init`, `watch`, `serve`, `rebuild`, `sync`, `mcp`,
 `version`, `help`, `agents install` and `agents check` are not exposed:
 they are run by a human or an orchestrator in a shell (`agents install`
 and `agents check` write and read files in the caller's working tree,
