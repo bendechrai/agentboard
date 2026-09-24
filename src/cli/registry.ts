@@ -422,7 +422,7 @@ function checklistRun(done: boolean): CommandSpec['run'] {
 /**
  * Every command of this version, in this order: `init`, `new`, `show`,
  * `list`, `claim`, `release`, `move`, `comment`, `handoff`, `link`,
- * `checklist tick`, `checklist untick`, `close`, `inbox`, `watch`, `serve`, `rebuild`,
+ * `checklist tick`, `checklist untick`, `close`, `inbox`, `watch`, `serve`, `top`, `rebuild`,
  * `sync`, `import-change`, `close-merged`, `mcp` (the board-cli order), then
  * `agents install` and `agents check`, `version` and `help`
  * (add-agent-guidance).
@@ -457,6 +457,13 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   web server and runs only from the agentboard executable. Writes no
  *   event and tracks no cursor, so it needs no actor. Calls no library
  *   operation of `src/index.ts` (`operation` null).
+ * - `top`: streams (`stream` imports `src/tui/terminal.ts` dynamically, so
+ *   no other command loads the terminal driver, and runs `topCommand`);
+ *   `terminal` true, so it is the one command given `StreamIo.terminal`.
+ *   Its `run` throws `BoardError(1, 'streaming-command')` saying that top
+ *   drives the terminal and runs only from the agentboard executable.
+ *   Writes no event and tracks no cursor, so it needs no actor; no flags
+ *   of its own; `operation` null.
  * - `rebuild`: `RebuildReport` from the store's `rebuild` on the board
  *   opened with `ctx.board({ catchUp: false })`, so the open folds nothing
  *   and reaps nothing: every event file, including one no command has
@@ -1217,6 +1224,45 @@ export const COMMANDS: readonly CommandSpec[] = [
     stream: async (ctx, values, io) => {
       const { serveCommand } = await import('../web/serve.js');
       return serveCommand(ctx, values, io);
+    },
+  },
+  {
+    name: 'top',
+    summary: 'Show a live, read-only view of the whole board in this terminal',
+    description:
+      'Runs a full-screen, read-only view of the board in the current terminal: the board columns, the activity feed, the agent lanes and any ticket with its conversation, updated live as events arrive from any process. Keys: 1, 2 and 3 switch between the board, feed and lanes views (Tab cycles), the arrow keys or h, j, k and l move, Enter opens a ticket and Escape closes it, c shows closed tickets, ? shows the keys, and q or Ctrl-C quits. It needs an interactive terminal (standard input and output must be a terminal and TERM must not be dumb); otherwise it exits 1 with not-a-tty, and agentboard list or agentboard watch --as <actor> are the commands to use instead. With NO_COLOR set it uses no color. Writes no event and needs no actor (--as is ignored). Runs until quit or interrupted (SIGINT or SIGTERM), then restores the terminal and exits 0.',
+    group: 'awareness',
+    examples: [
+      { command: 'agentboard top', summary: 'Watch the whole board live in this terminal' },
+      {
+        command: 'agentboard top --json',
+        summary: 'Same screen; a failure is reported as a JSON error document on stdout',
+      },
+    ],
+    exitCodes: [
+      { code: 0, meaning: 'Quit with q or Ctrl-C, or stopped by SIGINT or SIGTERM' },
+      { code: 1, reason: 'usage', meaning: 'Invalid arguments: unknown flag or extra argument' },
+      {
+        code: 1,
+        reason: 'not-a-tty',
+        meaning:
+          'Standard input or output is not a terminal, or TERM is dumb; use agentboard list or agentboard watch instead',
+      },
+      EXIT_NO_BOARD,
+      EXIT_INTEGRITY,
+    ],
+    positionals: [],
+    flags: [],
+    exclusive: [],
+    writes: false,
+    terminal: true,
+    operation: null,
+    run: () => {
+      throw new Error('top run: not implemented');
+    },
+    stream: async (ctx, values, io) => {
+      const { topCommand } = await import('../tui/terminal.js');
+      return topCommand(ctx, values, io);
     },
   },
   {

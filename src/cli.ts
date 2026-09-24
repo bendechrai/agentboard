@@ -22,6 +22,15 @@
  * `watch` stopped by either signal therefore exits 0 once its stream has
  * closed, with every line it printed flushed.
  *
+ * add-board-tui task 2.2: `runCliAsync` also receives `terminal`, which
+ * imports `src/tui/terminal.ts` dynamically and returns
+ * `processTerminal()` over the real `process.stdin`, `process.stdout` and
+ * `process`. `runCliAsync` calls it only for `top`, so no other command
+ * loads the terminal driver or touches the terminal. `top` stopped by
+ * SIGINT or SIGTERM (the same `stopSignal`) restores the terminal and
+ * exits 0; its restore also runs on the process `exit` event, so an
+ * uncaught exception leaves the terminal usable.
+ *
  * Contract: a successful command writes nothing to stderr. Node prints an
  * `ExperimentalWarning` when `node:sqlite` is loaded; the entry point
  * drops exactly that warning (a warning whose name is `ExperimentalWarning`
