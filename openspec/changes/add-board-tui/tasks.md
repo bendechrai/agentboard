@@ -14,8 +14,8 @@ coverage at or above 90 percent.
 
 ## 1. Frames, keys and UI state (`tui/frame`)
 
-- [ ] 1.1 Implement `src/tui/keys.ts` (decoding raw input bytes into printable keys, Enter, Escape, Backspace, Tab, Ctrl-C, arrows, Page Up and Page Down, ignoring unknown sequences) and `src/tui/state.ts` (UI state and a pure `reduceKey`). Verify: table tests for every key's byte forms (including CSI and SS3 arrows and a sequence split across two reads), and for each "Keys" scenario, including selection clamping when a column empties
-- [ ] 1.2 Implement `src/tui/frame.ts` (`renderFrame` for the board, feed, lanes and detail views, the header and key lines, the 140-column feed pane, the too-small screen, `~` truncation, and the style map). Verify: plain-text golden files for each view at 80x24 and 140x40, the too-small screen and a detail with a decision, a retracted decision and a retraction; the property test of "Frame dimensions"; and a reviewer recomputing one golden frame with a throwaway script
+- [x] 1.1 Implement `src/tui/keys.ts` (decoding raw input bytes into printable keys, Enter, Escape, Backspace, Tab, Ctrl-C, arrows, Page Up and Page Down, ignoring unknown sequences) and `src/tui/state.ts` (UI state and a pure `reduceKey`). Verify: table tests for every key's byte forms (including CSI and SS3 arrows and a sequence split across two reads), and for each "Keys" scenario, including selection clamping when a column empties
+- [x] 1.2 Implement `src/tui/frame.ts` (`renderFrame` for the board, feed, lanes and detail views, the header and key lines, the 140-column feed pane, the too-small screen, `~` truncation, and the style map). Verify: plain-text golden files for each view at 80x24 and 140x40, the too-small screen and a detail with a decision, a retracted decision and a retraction; the property test of "Frame dimensions"; and a reviewer recomputing one golden frame with a throwaway script
 
 ## 2. The `top` command (`tui/top-command`)
 
