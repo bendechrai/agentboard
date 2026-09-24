@@ -30,18 +30,15 @@ full workflow, and docs/adr/ for design decisions.
 - The `add-agent-guidance` OpenSpec change (generated help, `help agents`,
   error hints, `agents install`/`agents check` for Claude Code skills,
   `AGENTS.md`, OpenSpec config and `.mcp.json`, and the guide over MCP) is
-  in progress. Groups 1 (generated help and suggestions), 2 (`help
-  agents` and error hints) and 4 (the guide over MCP) are merged into
-  `staging`. Group 3 (`agents install`, `agents check` and the `init`
-  suggestion) is in final review on `guidance/agents-install`. Group 5
-  (documentation: README.md, the "Using agentboard in a project" steps in
-  CONTRIBUTING.md) is on `docs/guidance`; it documents group 3 as built
-  on its branch, so it merges after group 3.
+  complete once this documentation (group 5, `docs/guidance`) merges:
+  groups 1 (generated help and suggestions), 2 (`help agents` and error
+  hints), 3 (`agents install`, `agents check` and the `init` suggestion)
+  and 4 (the guide over MCP) are merged into `staging`.
 
 ## What to do next
 
-1. Finish `add-agent-guidance`: merge group 3 (`guidance/agents-install`),
-   then group 5 (`docs/guidance`), then archive the change in its own PR.
+1. Archive `add-agent-guidance` in its own PR once this documentation
+   merges.
 2. Run `agentboard agents install` in this repository and commit the
    skill and OpenSpec guidance it writes (see CONTRIBUTING.md, "Using
    agentboard in a project").
