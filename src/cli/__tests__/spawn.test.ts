@@ -90,11 +90,14 @@ describe('the built CLI', () => {
     expect(oneJson(out)).toMatchObject({ error: { exitCode: 1, reason: 'secret-like' } });
   });
 
-  it('mcp exits 1 with the not-implemented message', () => {
-    const out = spawnCli(['mcp'], tempDir());
-    expect(out.code).toBe(1);
+  it('mcp serves: with no board it exits 2 before serving, stdout untouched', () => {
+    // The MCP protocol itself is tested in src/mcp/__tests__/spawn.test.ts.
+    const dir = tempDir();
+    const out = spawnCli(['mcp'], dir);
+    expect(out.code).toBe(2);
     expect(out.stdout).toBe('');
-    expect(out.stderr).toMatch(/mcp.*not implemented/);
+    expect(out.stderr).toContain(join(dir, '.board'));
+    expect(out.stderr).not.toMatch(/not implemented/);
   });
 
   it('init makes a board that is found from inside .board itself', () => {
