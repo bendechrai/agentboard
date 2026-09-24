@@ -21,7 +21,9 @@ The CLI SHALL provide: `init`; `new <title> [--description] [--label]...
 `close <id> --as <actor> (--decision-recorded-in <path> | --no-decision)`;
 `inbox --as <actor> [--since <cursor>] [--peek]`; `watch --as <actor>`;
 `rebuild [--check]`; `sync`; `import-change <name>`; `close-merged`;
-`mcp`; and `version`. Every command SHALL accept `--json`. Ticket ids MAY be
+`mcp`; and `version`. Every command SHALL accept `--json`. An argument beginning with `--` is
+always parsed as a flag; `--` on its own ends the flags, so free text that
+begins with `-` (for example a comment) is given after it. Ticket ids MAY be
 given as a unique prefix of at least 6 characters. `--change <name> --group
 <n>` SHALL be exactly equivalent to `--task openspec:<name>#<n>`, and
 `list --change <name>` to `list --task openspec:<name>`. Commands, their
@@ -131,7 +133,8 @@ given.
 - **THEN** the command exits 1 naming the path
 
 ### Requirement: Output conventions
-Human output SHALL be plain ASCII, one ticket per line in `list` (id prefix,
+Human output SHALL be plain ASCII, one ticket per line in `list` (the full 26-character id, so that ids
+created in the same millisecond stay distinct and can be pasted back,
 status, assignee or `-`, title), and a full record in `show` including the
 ordered comments and the event count. With `--json`, output SHALL be exactly
 one JSON document on stdout: an object for single-ticket commands, an array
