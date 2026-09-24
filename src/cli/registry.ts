@@ -6,9 +6,10 @@
  * (`parseArgs`) is driven by it, and task group 9 generates the MCP tools
  * from it.
  *
- * This group registers the ticket lifecycle commands plus `version` and the
- * `mcp` placeholder. `inbox`, `watch`, `rebuild`, `sync`, `import-change`
- * and `close-merged` are added by the task groups that implement them.
+ * Task group 3 registered the ticket lifecycle commands plus `version` and
+ * the `mcp` placeholder; task group 4 adds `rebuild`. `inbox`, `watch`,
+ * `sync`, `import-change` and `close-merged` are added by the task groups
+ * that implement them.
  */
 
 import {
@@ -257,7 +258,9 @@ function checklistRun(done: boolean): CommandSpec['run'] {
 /**
  * Every command of this version, in this order: `init`, `new`, `show`,
  * `list`, `claim`, `release`, `move`, `comment`, `handoff`, `link`,
- * `checklist tick`, `checklist untick`, `close`, `mcp`, `version`.
+ * `checklist tick`, `checklist untick`, `close`, `rebuild`, `mcp`,
+ * `version` (the board-cli order, in which `rebuild` follows `inbox` and
+ * `watch` and precedes `sync`).
  *
  * `run` of each command calls the named operation and returns its result
  * as the `--json` document, with this human rendering:
@@ -270,6 +273,18 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   `checklist tick|untick`); text: the `list` line of the resulting
  *   ticket, preceded by `already claimed by <actor>` for a claim that
  *   wrote nothing, and followed, for a tick, by the reminder `message`.
+ * - `rebuild`: `RebuildReport` from the store's `rebuild` on the board
+ *   opened with catch-up (the default); text: `renderRebuild`. Exit 0.
+ * - `rebuild --check`: `CheckResult` from the store's `checkCache` on the
+ *   board opened with `ctx.board({ catchUp: false })`, so no event file is
+ *   folded and no temporary file is reaped before the comparison and the
+ *   live cache is left exactly as it was (board-cache: "Check detects
+ *   divergence"); text: `renderCheck`. With no difference it exits 0. On
+ *   divergence the output carries `exitCode: 1` and one warning,
+ *   `the cache differs from the event log in <n> row(s); run agentboard rebuild to replace it`,
+ *   so stdout still receives the full report (the `CheckResult` document
+ *   with `--json`) and the process exits 1. `rebuild` writes no event, so it
+ *   needs no actor (`--as` is accepted and ignored).
  * - `version`: `{ version }`; text: the version.
  * - `mcp`: always `BoardError(1, 'not-implemented')`, with a message saying
  *   `agentboard mcp` is not implemented yet (it arrives with task group 9).
@@ -531,6 +546,24 @@ export const COMMANDS: readonly CommandSpec[] = [
             : { id, decisionRecordedIn: path, cwd: ctx.cwd, env: ctx.env },
         ),
       );
+    },
+  },
+  {
+    name: 'rebuild',
+    summary: 'Refold the cache from the event log (--check: compare only, exit 1 on divergence)',
+    positionals: [],
+    flags: [
+      flag(
+        'check',
+        'boolean',
+        'Compare a fresh rebuild with the cache without changing it; exit 1 on divergence',
+      ),
+    ],
+    exclusive: [],
+    writes: false,
+    operation: 'rebuild',
+    run: () => {
+      throw new Error('not implemented: rebuild');
     },
   },
   {

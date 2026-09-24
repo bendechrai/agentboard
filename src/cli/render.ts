@@ -7,6 +7,7 @@ import type { Ticket } from '../events/fold.js';
 import { formatTaskRef } from '../events/schema.js';
 import { asciiText } from '../board/text.js';
 import type { ShowResult } from '../board/tickets.js';
+import type { CheckResult, RebuildReport } from '../store/rebuild.js';
 
 /** Re-exported from `src/board/text.ts` (defined there for layering). */
 export { asciiText };
@@ -97,4 +98,54 @@ function closedText(t: Ticket): string {
   return 'decision' in t.disposition
     ? `yes (decision: ${asciiText(t.disposition.decision)})`
     : 'yes (no decision)';
+}
+
+/**
+ * The counts of a rebuild report, as used by `renderRebuild` and
+ * `renderCheck`, without a newline:
+ * `<folded> folded, <rejected> rejected, <malformed> malformed, <corrupt> corrupt, <unknown> unknown`.
+ * Example: `3 folded, 1 rejected, 0 malformed, 0 corrupt, 0 unknown`. Pure.
+ */
+export function renderCounts(report: RebuildReport): string {
+  void report;
+  throw new Error('not implemented: renderCounts');
+}
+
+/**
+ * Human output of `agentboard rebuild`: exactly one line,
+ * `rebuilt: <renderCounts(report)>` and a newline. Example:
+ * `rebuilt: 3 folded, 1 rejected, 0 malformed, 0 corrupt, 0 unknown`.
+ * Corrupt files are already reported on stderr by the open (see `runCli`);
+ * they are not repeated here. Pure.
+ */
+export function renderRebuild(report: RebuildReport): string {
+  void report;
+  throw new Error('not implemented: renderRebuild');
+}
+
+/**
+ * Human output of `agentboard rebuild --check`, ending with a newline.
+ *
+ * - No divergence (`result.ok`): one line,
+ *   `no divergence: <renderCounts(result.report)>`.
+ * - Divergence: a first line `divergence: <n> differing row(s)` (`<n>` the
+ *   number of differences), then one line per difference, in the order of
+ *   `result.differences`: two spaces, the table, the key and the state,
+ *   separated by single spaces, where the state is `changed` (the row is on
+ *   both sides and differs), `only-in-cache` (`rebuilt` is null) or
+ *   `only-in-rebuild` (`live` is null). The key of a `tickets` row is the
+ *   ticket id and that of a `comments` or `links` row is `<ticket>#<seq>`,
+ *   so every differing ticket is named. Example:
+ *
+ * ```
+ * divergence: 1 differing row(s)
+ *   tickets 01ARYZ6S41TSV4RRFFQ69G5FAV changed
+ * ```
+ *
+ * Keys pass through `asciiText`. Row contents are never printed (the
+ * `--json` document carries them). Pure.
+ */
+export function renderCheck(result: CheckResult): string {
+  void result;
+  throw new Error('not implemented: renderCheck');
 }
