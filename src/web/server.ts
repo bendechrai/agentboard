@@ -25,10 +25,14 @@
  * - Plain text pages (refusals outside `/api`) are `text/plain;
  *   charset=utf-8`, one or two short lines naming the reason, never the
  *   token.
- * - The stream buffer limit is checked on every write to a stream: when,
- *   after a write, the response's buffered data (`writableLength`) exceeds
- *   the limit, that client's connection is destroyed at once (it
- *   reconnects and resumes with `Last-Event-ID`).
+ * - The stream buffer limit is checked before every write to a stream
+ *   (a feed message, a problem or a keepalive): when the response already
+ *   holds more unwritten data (`writableLength`) than the limit, that
+ *   client's connection is destroyed instead of writing (it reconnects and
+ *   resumes with `Last-Event-ID`). So one message larger than the limit is
+ *   still delivered to a client that reads it, and a client that does not
+ *   read is disconnected at the next write, at the latest the next
+ *   keepalive.
  * - A tick failure is written to `stderr` as `agentboard: <message>` and
  *   a newline, once per distinct message for as long as the failure
  *   repeats, and sent to every open stream as a `problem` event
@@ -149,7 +153,10 @@ export interface RunningServer {
  *   integer from 0 to 65535.
  *
  * Requests. For every request, before anything else, `checkRequest`
- * (`src/web/security.ts`) with this port and token:
+ * (`src/web/security.ts`) with this port and token. A request without a
+ * `Host` header reaches that check too (it is 403 `forbidden-host`, not
+ * Node's own 400: the `node:http` server is created with
+ * `requireHostHeader: false`).
  * - `refuse`: the status, `securityHeaders(api)`, `Allow: GET` on a 405;
  *   the body is `errorDocument(error, API_HINT_CONTEXT)` as JSON on an API
  *   path, else a plain text page. For 401 the page tells the user to open

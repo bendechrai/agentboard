@@ -77,7 +77,7 @@ const PINNED: Readonly<Record<string, number>> = {
   'sync-in-progress': 3,
   'tasks-not-found': 1,
   'too-many-streams': 1,
-  'unauthorized': 1,
+  unauthorized: 1,
   'unknown-cursor': 1,
   'unknown-ticket': 4,
   'unpromoted-decision': 1,

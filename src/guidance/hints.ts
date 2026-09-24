@@ -166,7 +166,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'sync-in-progress': 3,
   'tasks-not-found': 1,
   'too-many-streams': 1,
-  'unauthorized': 1,
+  unauthorized: 1,
   'unknown-cursor': 1,
   'unknown-ticket': 4,
   'unpromoted-decision': 1,
@@ -554,12 +554,12 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     h.command?.name === 'serve'
       ? `after must be the hash of an event listed by /api/events; leave it out to page from the first event; see ${serveHelp(h)}`
       : `${h.context.surface === 'mcp' ? 'the since argument' : '--since'} needs the full hash of an event on this board; ${h.step(
-      'inbox',
-      [
-        ['as', h.actor],
-        ['peek', true],
-      ],
-    )} lists the events without acknowledging them`,
+          'inbox',
+          [
+            ['as', h.actor],
+            ['peek', true],
+          ],
+        )} lists the events without acknowledging them`,
   'unsupported-source': (h) =>
     `only the openspec source can be imported; create a ticket for other planned work with ${h.step(
       'new',
