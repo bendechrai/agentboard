@@ -3,9 +3,10 @@
  * (board-openspec-integration: "Completion truth stays in tasks", "Task
  * sources are adapters").
  *
- * Only the path and line computation for the `openspec` source lives here;
- * task 7.2 moves it behind the source adapter interface without changing
- * this function's results.
+ * Task 7.2: the path and line come from the ticket's source adapter
+ * (`sourceAdapter(task.source)`, `SourceAdapter.locate`), never from
+ * source-specific code in this module; the results are unchanged from
+ * group 3 for `openspec`.
  */
 
 import { readFileSync } from 'node:fs';
@@ -20,17 +21,19 @@ import type { Ticket } from '../events/fold.js';
  *
  * - `source`: the ticket's task source, or null for a ticket without a task
  *   reference (ad hoc).
- * - `path`: for the `openspec` source, `openspec/changes/<ref>/tasks.md`
- *   (POSIX separators, relative to the host project root); null for any
- *   other source and for ad hoc tickets.
+ * - `path`: for a source with an adapter, the adapter's tasks file path
+ *   (for `openspec`, `openspec/changes/<ref>/tasks.md`; POSIX separators,
+ *   relative to the host project root); null for a source without an
+ *   adapter and for ad hoc tickets.
  * - `line`: the 1-based line number in that file of the task line that
  *   corresponds to the ticked checklist index, or null when the file cannot
  *   be read or the line cannot be found.
- * - `message`: one ASCII line. For `openspec` it contains the path (followed
- *   by `:<line>` when the line is known) and says the task line must be
- *   ticked in `tasks.md` in the implementing PR, because the board never
- *   marks a task complete. For another source it says that no tasks-file
- *   reminder is available for source `<source>`. For an ad hoc ticket it
+ * - `message`: one ASCII line. For a source with an adapter it contains
+ *   the path (followed by `:<line>` when the line is known) and says the
+ *   task line must be ticked in the tasks file in the implementing PR,
+ *   because the board never marks a task complete. For a source without an
+ *   adapter it says that no tasks-file reminder is available for source
+ *   `<source>`. For an ad hoc ticket it
  *   says the ticket has no task reference, so there is no tasks file.
  */
 export interface TaskReminder {
@@ -45,13 +48,11 @@ export interface TaskReminder {
  * `ticket`, whose host project root is `hostRoot` (the parent directory of
  * the board directory).
  *
- * For `openspec`, the line is found in `<hostRoot>/<path>` as follows: the
- * group heading is the first line matching `^## <item>\. ` (for example
- * `## 3. CLI core commands` for item `3`); the group ends at the next line
- * starting with `## ` or at the end of the file; within it, task lines are
- * the lines matching `^- \[[ xX]\] `, and the reminder names the
- * `index`-th of them (0-based), the same order `import-change` uses to
- * build a ticket's checklist. Reads the file only; never writes.
+ * For a source with an adapter, `path` and `line` are
+ * `adapter.locate(hostRoot, task.ref, task.item, index)` (for `openspec`,
+ * see `parseOpenSpecTasks`: the `index`-th task line of the group, the
+ * same order `import-change` uses to build a ticket's checklist). Reads
+ * the file only; never writes.
  */
 export function taskReminder(hostRoot: string, ticket: Ticket, index: number): TaskReminder {
   const task = ticket.task;
