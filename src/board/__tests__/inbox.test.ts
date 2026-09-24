@@ -438,3 +438,42 @@ describe('--since', () => {
     expectBoardError(() => readInbox(board, 'orch', { since: malformed }), 1, 'unknown-cursor');
   });
 });
+
+describe('a reset never parks the cursor on a rejected event (review B1)', () => {
+  it('delivers a rejected event at the reset point once it becomes effective', () => {
+    const X = '01BX5ZZKBKACTAV9WEVGEMMVRZ';
+    const {
+      dir,
+      eventsDir,
+      hashes: h,
+    } = seededDir([ev(P.create(T1), 'x', 1000), ev(P.comment(T1, 'now 1'), 'bob', 10 * HOUR)]);
+    const board = openTracked(dir);
+    // alice acknowledges everything; her cursor is at wall 10h.
+    expect(hashes(readInbox(board, 'alice').entries)).toEqual(h);
+
+    // Sync 1: R (a comment on X, whose create has not arrived: rejected) at
+    // 7h, and L (an effective comment) one millisecond later. Both are late.
+    const R = putEvent(eventsDir, ev(P.comment(X, 'R before X exists'), 'carol', 7 * HOUR));
+    const L = putEvent(eventsDir, ev(P.comment(T1, 'L late'), 'carol', 7 * HOUR + 1));
+    readInbox(board, 'someone-else', { peek: true }); // any command's catch-up
+    // The reset lands on an effective event (T1's create), never on R.
+    expect(readCursor(board.db, 'alice').position?.hash).toBe(h[0]);
+
+    // Sync 2: X's create at R - 30 min makes R effective.
+    const C = putEvent(eventsDir, ev(P.create(X), 'dave', 7 * HOUR - 30 * 60_000));
+    readInbox(board, 'someone-else', { peek: true });
+
+    // A new event moves everyone well past R's window, then alice reads.
+    const newer = putEvent(eventsDir, ev(P.comment(T1, 'now 3'), 'bob', 12 * HOUR));
+    const delivered = new Set<string>();
+    for (let i = 0; i < 3; i += 1) {
+      for (const entry of readInbox(board, 'alice').entries) {
+        expect(delivered.has(entry.hash), 'delivered twice').toBe(false);
+        delivered.add(entry.hash);
+      }
+    }
+    for (const hash of [C, R, L, newer]) {
+      expect(delivered.has(hash), hash).toBe(true);
+    }
+  });
+});

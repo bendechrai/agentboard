@@ -6,6 +6,7 @@
 import { watch, type FSWatcher } from 'node:fs';
 
 import type { Board } from '../store/board.js';
+import type { ReadOutcome } from '../store/eventfile.js';
 import { BoardError } from '../store/errors.js';
 import { readInbox, type InboxEntry } from './inbox.js';
 
@@ -35,18 +36,48 @@ export interface WatchOptions {
    * fallback). Defaults to true.
    */
   readonly fsWatch?: boolean;
+  /**
+   * Reads one event file, with the contract of `readEventFile`
+   * (`src/store/eventfile.ts`), which is the default. Every event file the
+   * watch reads to build entries is read through this function (catch-up's
+   * own reading of newly written files is not), so tests can count the
+   * reads of a tick.
+   */
+  readonly readEventFile?: (eventsDir: string, name: string) => ReadOutcome;
+  /**
+   * Receives one plain ASCII line (without a newline) for each tick that
+   * failed with a transient `BoardError` of exit code 5 and reason `busy`;
+   * the watch then carries on at its next tick. Defaults to ignoring it.
+   * The CLI prints it to stderr as `agentboard: <line>`.
+   */
+  onWarning?(line: string): void;
 }
 
 /**
  * `watch --as <actor>`.
  *
- * A tick is: `readInbox(board, actor, { peek: true })` (which runs the same
- * catch-up as any command), then `onEntries` with the entries whose hash
- * this watch has not passed on yet, in fold order; those hashes are then
- * remembered for the life of the watch, so no entry is passed on twice.
- * The stored cursor is never advanced (watch is a stream, not an
+ * The first tick runs the same catch-up as any command and passes on
+ * every entry pending for the actor's stored cursor (as
+ * `readInbox(board, actor, { peek: true })` lists them), in fold order.
+ *
+ * Later ticks do bounded work. The watch keeps a bookmark of its own: the
+ * greatest fold position it has examined, plus the hashes it has passed on,
+ * pruned by the seen-set rule (`SEEN_WINDOW_MS` before the bookmark's
+ * position, as `advanceCursor` prunes). A later tick runs catch-up, then
+ * examines only the events that are newly folded or newly effective since
+ * the previous tick: those after the bookmark's position, plus any event
+ * that became effective behind it (recorded for the first time as applied,
+ * or turned from rejected into applied by a refold), wherever it sorts. Of
+ * those, it passes on, in fold order, the ones still pending for the
+ * actor's stored cursor (`isPending`) that it has not passed on before. A
+ * tick with nothing newly folded or newly effective reads no event file at
+ * all (see `WatchOptions.readEventFile`), and a tick reads at most one file
+ * per entry it examines. No entry is passed on twice.
+ *
+ * The stored cursor is never written (watch is a stream, not an
  * acknowledgement; the actor runs `inbox` to acknowledge), and entries that
- * a concurrent `inbox` acknowledges are simply no longer pending.
+ * a concurrent `inbox` acknowledges before the watch reaches them are
+ * simply no longer pending.
  *
  * Runs one tick at once, before waiting for anything (so the actor's
  * pending entries are printed first), even when `signal` is already
@@ -57,9 +88,12 @@ export interface WatchOptions {
  * An `error` from the `fs.watch` watcher closes it and polling continues.
  *
  * On abort: closes the watcher, clears the timer and resolves; nothing is
- * left that keeps the event loop alive. When a tick throws (for example
- * `BoardError(5, 'busy')`), the same cleanup happens and the promise
- * rejects with that error. Does not close `board`.
+ * left that keeps the event loop alive. When a tick throws
+ * `BoardError(5, 'busy')` (the cache stayed locked past the busy timeout
+ * and its retry), the watch calls `onWarning` with the error's message and
+ * carries on: the next tick picks up whatever that one missed. When a tick
+ * throws anything else, the same cleanup as on abort happens and the
+ * promise rejects with that error. Does not close `board`.
  *
  * @throws BoardError exit 1 `missing-actor` (as a rejection) when `actor`
  *   is empty, before the first tick.

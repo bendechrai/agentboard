@@ -153,6 +153,13 @@ export interface StreamIo {
   stdout(text: string): void;
   /** True when `--json` was given. */
   readonly json: boolean;
+  /**
+   * Receives stderr text (whole lines), for warnings while streaming such as
+   * a `watch` tick that found the cache busy. `runCliAsync` always provides
+   * it, as `io.stderr` of its `CliIo`; optional only so that other callers
+   * of `stream` may omit it (warnings are then dropped).
+   */
+  stderr?(text: string): void;
   /** Aborted when the stream must stop (SIGINT or SIGTERM for the CLI). */
   readonly signal: AbortSignal;
 }

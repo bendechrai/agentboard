@@ -8,11 +8,14 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { openCache } from '../../store/cache.js';
 import { readCursor } from '../../store/cursors.js';
+import { readEventFile, type ReadOutcome } from '../../store/eventfile.js';
+import { P, T1, T2, ev } from '../../store/__tests__/helpers.js';
 import { commentTicket } from '../actions.js';
 import { readInbox, type InboxEntry } from '../inbox.js';
 import { WATCH_POLL_MS, watchInbox } from '../watch.js';
-import { create, openTracked, setup } from './helpers.js';
+import { create, makeBoardDir, openTracked, putEvent, setup, tempDir } from './helpers.js';
 
 /** Resolves when `check` returns true, polling every 10 ms; rejects after `ms`. */
 async function until(check: () => boolean, ms: number, what: string): Promise<void> {
@@ -178,4 +181,175 @@ describe('watchInbox', () => {
       watchInbox(board, '', { signal: aborted(), onEntries: () => undefined }),
     ).rejects.toMatchObject({ exitCode: 1, reason: 'missing-actor' });
   });
+});
+
+const HOUR = 3_600_000;
+
+/** A `readEventFile` that counts its calls. */
+function countingReader(): {
+  read: (eventsDir: string, name: string) => ReadOutcome;
+  count: () => number;
+} {
+  let n = 0;
+  return {
+    read: (eventsDir, name) => {
+      n += 1;
+      return readEventFile(eventsDir, name);
+    },
+    count: () => n,
+  };
+}
+
+const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+describe('watchInbox bounds the work of each tick (round 2)', () => {
+  it(
+    'reads one file per pending entry at first, none on a tick with nothing new, one per new event',
+    { timeout: 10_000 },
+    async () => {
+      const { board, root } = setup();
+      const ticket = create(board);
+      commentTicket(board, 'impl', { id: ticket.id, text: 'a' });
+      commentTicket(board, 'impl', { id: ticket.id, text: 'b' });
+      const reader = countingReader();
+      const seen: InboxEntry[] = [];
+      const controller = new AbortController();
+      const done = watchInbox(board, 'orch', {
+        signal: controller.signal,
+        pollMs: 20,
+        fsWatch: false,
+        readEventFile: reader.read,
+        onEntries: (entries) => seen.push(...entries),
+      });
+      try {
+        await until(() => seen.length === 3, 2000, 'the pending entries');
+        expect(reader.count()).toBe(3);
+        // Many ticks with nothing new: no event file is read.
+        await pause(200);
+        expect(reader.count()).toBe(3);
+        const writer = openTracked(join(root, '.board'));
+        const c = commentTicket(writer, 'impl', { id: ticket.id, text: 'new' });
+        await until(() => seen.some((e) => e.hash === c.hash), 2000, 'the new comment');
+        await pause(200);
+        expect(reader.count()).toBe(4);
+        expect(seen).toHaveLength(4);
+      } finally {
+        controller.abort();
+        await done;
+      }
+      expect(readCursor(board.db, 'orch').position).toBeNull();
+    },
+  );
+
+  it(
+    'still passes on a late event older than the window behind its bookmark',
+    { timeout: 10_000 },
+    async () => {
+      const dir = makeBoardDir(tempDir());
+      const eventsDir = join(dir, 'events');
+      putEvent(eventsDir, ev(P.create(T1), 'orch', 1000));
+      putEvent(eventsDir, ev(P.comment(T1, 'at 10h'), 'impl', 10 * HOUR));
+      const board = openTracked(dir);
+      const seen: InboxEntry[] = [];
+      const controller = new AbortController();
+      const done = watchInbox(board, 'orch', {
+        signal: controller.signal,
+        pollMs: 20,
+        fsWatch: false,
+        onEntries: (entries) => seen.push(...entries),
+      });
+      try {
+        await until(() => seen.length === 2, 2000, 'the pending entries');
+        const late = putEvent(eventsDir, ev(P.comment(T1, 'at 2h'), 'remote', 2 * HOUR));
+        await until(() => seen.some((e) => e.hash === late), 2000, 'the late comment');
+        await pause(100);
+        expect(seen).toHaveLength(3);
+      } finally {
+        controller.abort();
+        await done;
+      }
+    },
+  );
+
+  it(
+    'passes on an old rejected event that a late event made effective',
+    { timeout: 10_000 },
+    async () => {
+      const dir = makeBoardDir(tempDir());
+      const eventsDir = join(dir, 'events');
+      putEvent(eventsDir, ev(P.create(T1), 'orch', 1000));
+      putEvent(eventsDir, ev(P.comment(T1, 'at 10h'), 'impl', 10 * HOUR));
+      // Rejected as unknown-ticket until T2's create arrives.
+      const orphan = putEvent(eventsDir, ev(P.comment(T2, 'orphan'), 'remote', 3 * HOUR));
+      const board = openTracked(dir);
+      const seen: InboxEntry[] = [];
+      const controller = new AbortController();
+      const done = watchInbox(board, 'orch', {
+        signal: controller.signal,
+        pollMs: 20,
+        fsWatch: false,
+        onEntries: (entries) => seen.push(...entries),
+      });
+      try {
+        await until(() => seen.length === 2, 2000, 'the pending entries');
+        const created = putEvent(eventsDir, ev(P.create(T2), 'remote', 2 * HOUR));
+        await until(() => seen.length === 4, 2000, 'the create and the orphan');
+        expect(seen.slice(2).map((e) => e.hash)).toEqual([created, orphan]);
+      } finally {
+        controller.abort();
+        await done;
+      }
+    },
+  );
+});
+
+describe('watchInbox and a busy cache (round 2)', () => {
+  it(
+    'warns and carries on after a tick that finds the cache busy',
+    { timeout: 20_000 },
+    async () => {
+      const { board, root } = setup();
+      const ticket = create(board);
+      // Keep the busy wait short for this test.
+      board.db.exec('PRAGMA busy_timeout = 50');
+      const seen: InboxEntry[] = [];
+      const warnings: string[] = [];
+      const controller = new AbortController();
+      let settled = false;
+      const done = watchInbox(board, 'orch', {
+        signal: controller.signal,
+        pollMs: 30,
+        fsWatch: false,
+        onEntries: (entries) => seen.push(...entries),
+        onWarning: (line) => warnings.push(line),
+      }).finally(() => {
+        settled = true;
+      });
+      const locker = openCache(join(root, '.board', 'cache.sqlite'));
+      try {
+        await until(() => seen.length === 1, 2000, 'the pending entry');
+        // Another process holds the write lock while a new event file appears,
+        // so the watch's catch-up cannot fold it.
+        locker.exec('BEGIN IMMEDIATE');
+        const late = putEvent(
+          join(root, '.board', 'events'),
+          ev(P.comment(ticket.id, 'while locked'), 'remote', Date.now()),
+        );
+        await until(() => warnings.length > 0, 5000, 'a busy warning');
+        expect(warnings[0]).toMatch(/locked/);
+        expect(warnings[0]).not.toContain('\n');
+        expect(settled).toBe(false);
+        locker.exec('COMMIT');
+        await until(() => seen.some((e) => e.hash === late), 5000, 'the event after the lock');
+        expect(settled).toBe(false);
+      } finally {
+        if (locker.isTransaction) {
+          locker.exec('ROLLBACK');
+        }
+        locker.close();
+        controller.abort();
+        await done;
+      }
+    },
+  );
 });

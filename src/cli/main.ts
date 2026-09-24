@@ -186,7 +186,7 @@ function fail(io: CliIo, parsed: ParsedCommand | null, error: unknown): Exclude<
  * For a streaming command (`watch`): steps 1 and 2 of `runCli` (parse,
  * resolve the actor; failures exit 1 before any board lookup), then
  * `io.stopSignal()`, then `command.stream(ctx, values, { stdout:
- * io.stdout, json, signal })` with the same lazily opened board as `runCli`
+ * io.stdout, stderr: io.stderr, json, signal })` with the same lazily opened board as `runCli`
  * (stale temporary and corrupt file diagnostics on stderr likewise). When
  * the stream resolves (the signal aborted), the board is closed and the
  * result is 0: SIGINT and SIGTERM are the normal way to stop `watch`. When

@@ -74,7 +74,10 @@ export interface Cursor {
   position: CursorPosition | null;
   /**
    * Delivered events within the window, sorted by hash, no duplicates.
-   * Empty when `position` is null.
+   * Empty for a cursor that never delivered anything. A reset
+   * (`resetLateCursors`) keeps the seen set unchanged, including a reset to
+   * a null position, so `position` null with a non-empty `seen` is a valid,
+   * stored state.
    */
   seen: SeenHash[];
 }
@@ -120,9 +123,13 @@ export function readCursor(db: DatabaseSync, actor: string): Cursor {
 
 /**
  * Stores `cursor`: upserts the actor's `cursors` row from `cursor.position`
- * (all four columns null when it is null) and replaces the actor's
- * `cursor_seen` rows with `cursor.seen`. The caller holds the write
- * transaction. Never touches another actor's rows or any derived table.
+ * (all four columns null when it is null) and makes the actor's
+ * `cursor_seen` rows equal to `cursor.seen`. The update is incremental:
+ * rows whose hash is in both the stored and the new seen set are left
+ * untouched (same row, same rowid), hashes no longer in the set are
+ * deleted and new ones inserted, so an advance costs the size of the
+ * change, not of the whole set. The caller holds the write transaction.
+ * Never touches another actor's rows or any derived table.
  */
 export function writeCursor(db: DatabaseSync, cursor: Cursor): void {
   const p = cursor.position;
@@ -153,13 +160,19 @@ export function writeCursor(db: DatabaseSync, cursor: Cursor): void {
  * - false when `event.hash` is in `cursor.seen`;
  * - otherwise true when `cursor.position` is null;
  * - otherwise false when `event` is the position itself (equal hash and
- *   timestamp): it was delivered, even if a reset has since left it out
- *   of the seen set;
+ *   timestamp): a position is always an effective event that was
+ *   delivered (an advance only moves it onto a delivered event, and a
+ *   reset only onto an effective one, which the delivery invariant says
+ *   was delivered), even if it has since left the seen set;
  * - otherwise true when `event` sorts after `cursor.position`;
  * - otherwise (at or before the position) true exactly when
  *   `event.ts.wall >= cursor.position.ts.wall - SEEN_WINDOW_MS`: a late
  *   event inside the window that the actor has not seen. Older events are
  *   never due here; `resetLateCursors` handles them when they are folded.
+ *
+ * Membership in the seen set is a constant-time lookup (a `Set` of the
+ * hashes, built once per cursor, not a scan of `cursor.seen` per call), so
+ * listing the pending events of a board is linear in the events examined.
  *
  * Pure.
  */
@@ -235,10 +248,15 @@ export function advanceCursor(cursor: Cursor, delivered: readonly CursorPosition
  * For each stored cursor with a position `P`, the events of `arrived` that
  * sort before `P` with `ts.wall < P.ts.wall - SEEN_WINDOW_MS` are late for
  * that actor (later-arriving events inside the window are left to
- * `isPending`). When there is at least one, the cursor's position is set to
- * the greatest well-formed event recorded in `folded` (a row with a
- * non-null position) that sorts strictly before the earliest late event, or
- * to null when there is none; its seen set is kept unchanged. The late
+ * `isPending`). Exactly at the boundary, `ts.wall === P.ts.wall -
+ * SEEN_WINDOW_MS`, an event is inside the window and not late; one
+ * millisecond older is late. When there is at least one, the cursor's
+ * position is set to the greatest EFFECTIVE event (a `folded` row with
+ * `folded` 1) that sorts strictly before the earliest late event, or to
+ * null when there is none; its seen set is kept unchanged. Never onto a
+ * rejected, unknown-kind or malformed event: such an event was never
+ * delivered, and if it later became effective, `isPending` (which treats
+ * the position as delivered) would skip it for good. The late
  * event is therefore due again, and so is anything between the new and the
  * old position that is not in the seen set (redelivery, never a skip).
  *
@@ -320,8 +338,10 @@ function rowPosition(row: Record<string, SQLOutputValue>): CursorPosition | null
 }
 
 /**
- * The greatest well-formed event recorded in `folded` that sorts strictly
- * before `event`, or null when there is none.
+ * The greatest effective event (`folded` 1) recorded in `folded` that sorts
+ * strictly before `event`, or null when there is none. Rejected,
+ * unknown-kind and malformed events are never returned (see
+ * `resetLateCursors`).
  */
 function positionBefore(db: DatabaseSync, event: CursorPosition): CursorPosition | null {
   let best: CursorPosition | null = null;

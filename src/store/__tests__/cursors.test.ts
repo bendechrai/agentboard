@@ -509,3 +509,104 @@ describe('late events found by folding', () => {
     expect(readCursor(board.db, 'orch')).toEqual(before);
   });
 });
+
+describe('round 2: reset targets, the lateness boundary and incremental seen writes', () => {
+  /** create@1000, a comment at `wall`, the top comment at 10h; cursor for orch on top. */
+  function withEventAt(wall: number): {
+    board: Board;
+    create: CursorPosition;
+    middle: CursorPosition;
+    top: CursorPosition;
+  } {
+    const dir = tempBoard();
+    const events = join(dir, 'events');
+    const e1 = ev(P.create(T1), 'orch', 1000);
+    const e2 = ev(P.comment(T1, 'middle'), 'impl', wall);
+    const e3 = ev(P.comment(T1, 'top'), 'impl', 10 * HOUR);
+    const create = { hash: putEvent(events, e1), ts: e1.ts };
+    const middle = { hash: putEvent(events, e2), ts: e2.ts };
+    const top = { hash: putEvent(events, e3), ts: e3.ts };
+    const board = openB(dir);
+    locked(board, () => {
+      writeCursor(board.db, cursor(top, [top]));
+    });
+    return { board, create, middle, top };
+  }
+
+  it('does not treat an event exactly at position.wall - SEEN_WINDOW_MS as late', () => {
+    const { board, middle, top } = withEventAt(10 * HOUR - SEEN_WINDOW_MS);
+    expect(locked(board, () => resetLateCursors(board.db, [middle]))).toEqual([]);
+    expect(readCursor(board.db, 'orch').position).toEqual(top);
+  });
+
+  it('treats an event one millisecond older than the window floor as late', () => {
+    const { board, create, middle, top } = withEventAt(10 * HOUR - SEEN_WINDOW_MS - 1);
+    expect(locked(board, () => resetLateCursors(board.db, [middle]))).toEqual([
+      { actor: 'orch', hash: middle.hash, ts: middle.ts, cursor: top },
+    ]);
+    expect(readCursor(board.db, 'orch').position).toEqual(create);
+  });
+
+  it('moves a cursor back only onto an effective event, never onto a rejected one', () => {
+    const dir = tempBoard();
+    const events = join(dir, 'events');
+    const e1 = ev(P.create(T1), 'orch', 1000);
+    // R: a comment on a ticket with no create yet, rejected as unknown-ticket.
+    const eR = ev(P.comment(T2, 'orphan'), 'carol', 7 * HOUR);
+    // L: an effective comment one millisecond after R.
+    const eL = ev(P.comment(T1, 'late'), 'carol', 7 * HOUR + 1);
+    const e3 = ev(P.comment(T1, 'top'), 'impl', 10 * HOUR);
+    const create = { hash: putEvent(events, e1), ts: e1.ts };
+    putEvent(events, eR);
+    const late = { hash: putEvent(events, eL), ts: eL.ts };
+    const top = { hash: putEvent(events, e3), ts: e3.ts };
+    const board = openB(dir);
+    locked(board, () => {
+      writeCursor(board.db, cursor(top, [top]));
+    });
+    locked(board, () => resetLateCursors(board.db, [late]));
+    expect(readCursor(board.db, 'orch').position).toEqual(create);
+  });
+
+  it('keeps the seen set when it resets to no position', () => {
+    const { board, create, top } = withEventAt(5 * HOUR);
+    locked(board, () => resetLateCursors(board.db, [create]));
+    const c = readCursor(board.db, 'orch');
+    expect(c.position).toBeNull();
+    expect(c.seen).toEqual([{ hash: top.hash, wall: top.ts.wall }]);
+  });
+
+  it('updates cursor_seen incrementally: rows kept by an advance keep their rowid', () => {
+    const board = openB(tempBoard());
+    const a = pos(1000, 'a');
+    const b = pos(1001, 'b');
+    const c = pos(1002, 'c');
+    const rowids = (): Record<string, number> => {
+      const out: Record<string, number> = {};
+      for (const row of board.db
+        .prepare("SELECT rowid AS id, hash FROM cursor_seen WHERE actor = 'orch'")
+        .all()) {
+        out[String(row.hash)[0] ?? ''] = Number(row.id);
+      }
+      return out;
+    };
+    locked(board, () => {
+      writeCursor(board.db, cursor(b, [a, b]));
+      // Another actor's rows, so fresh rows could never reuse a freed rowid by accident.
+      writeCursor(board.db, {
+        actor: 'zed',
+        position: pos(5, 'z'),
+        seen: [{ hash: 'z'.repeat(64), wall: 5 }],
+      });
+    });
+    const before = rowids();
+    locked(board, () => {
+      writeCursor(board.db, cursor(c, [b, c]));
+    });
+    const after = rowids();
+    expect(Object.keys(after).sort()).toEqual(['b', 'c']);
+    expect(after.b).toBe(before.b);
+    expect(readCursor(board.db, 'orch')).toEqual(cursor(c, [b, c]));
+    expect(readCursor(board.db, 'zed').seen).toEqual([{ hash: 'z'.repeat(64), wall: 5 }]);
+  });
+});

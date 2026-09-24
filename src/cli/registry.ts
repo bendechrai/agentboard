@@ -372,7 +372,8 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   one `renderInboxLine` per entry, nothing when there is none. Tracks a
  *   cursor, so it requires an actor.
  * - `watch`: streams (`stream` calls `watchInbox` with the stop signal and
- *   prints each entry as one line, see `runCliAsync`); its `run` throws
+ *   prints each entry as one line, see `runCliAsync`; each `onWarning` line
+ *   goes to `io.stderr` as `agentboard: <line>` and a newline); its `run` throws
  *   `BoardError(1, 'streaming-command')` saying that watch streams and runs
  *   only from the agentboard executable. Tracks a cursor, so it requires an
  *   actor.
