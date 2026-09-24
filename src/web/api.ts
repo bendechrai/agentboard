@@ -18,8 +18,14 @@
  */
 
 import type { EventCache } from '../board/feed.js';
+import { resolveTicketId } from '../board/resolve.js';
+import { loadSnapshot } from '../board/snapshot.js';
+import { errorDocument } from '../cli/main.js';
 import type { HintContext } from '../guidance/hints.js';
 import type { Board } from '../store/board.js';
+import { BoardError } from '../store/errors.js';
+import { VERSION } from '../version.js';
+import { agentLanes } from '../view/lanes.js';
 
 /** Default `limit` of `/api/events`. */
 export const EVENTS_PAGE_DEFAULT = 1000;
@@ -58,8 +64,24 @@ export interface ApiResult {
  * Pure.
  */
 export function httpStatus(error: unknown): number {
-  void error;
-  throw new Error('not implemented');
+  if (!(error instanceof BoardError)) {
+    return 500;
+  }
+  switch (error.reason) {
+    case 'unauthorized':
+      return 401;
+    case 'forbidden-host':
+      return 403;
+    case 'not-found':
+    case 'unknown-ticket':
+      return 404;
+    case 'method-not-allowed':
+      return 405;
+    case 'too-many-streams':
+      return 503;
+    default:
+      return error.exitCode === 1 ? 400 : 500;
+  }
 }
 
 /**
@@ -103,8 +125,99 @@ export function httpStatus(error: unknown): number {
  *   `BoardError(1, 'not-found')` (404).
  */
 export function apiResponse(ctx: ApiContext, path: string, query: URLSearchParams): ApiResult {
-  void ctx;
-  void path;
-  void query;
-  throw new Error('not implemented');
+  try {
+    return { status: 200, body: route(ctx, path, query) };
+  } catch (error) {
+    return { status: httpStatus(error), body: errorDocument(error, API_HINT_CONTEXT) };
+  }
+}
+
+/** The prefix of the ticket detail route. */
+const TICKETS_PREFIX = '/api/tickets/';
+
+/** The body of a successful API response; throws on any failure. */
+function route(ctx: ApiContext, path: string, query: URLSearchParams): unknown {
+  const { board, cache } = ctx;
+  switch (path) {
+    case '/api/session':
+      return { version: VERSION, boardDir: board.dir, writable: false, actor: null };
+    case '/api/board': {
+      const snapshot = loadSnapshot(board, { cache });
+      const tickets = Object.values(snapshot.tickets).sort((a, b) =>
+        a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+      );
+      return { tickets, meta: snapshot.meta, id: snapshot.id };
+    }
+    case '/api/events':
+      return eventsPage(ctx, query);
+    case '/api/actors':
+      return agentLanes(loadSnapshot(board, { cache }), ctx.now());
+    default:
+      break;
+  }
+  if (path.startsWith(TICKETS_PREFIX)) {
+    const segment = path.slice(TICKETS_PREFIX.length);
+    if (segment !== '' && !segment.includes('/')) {
+      return ticketDetail(ctx, decodeSegment(segment));
+    }
+  }
+  throw new BoardError(
+    1,
+    'not-found',
+    'no such API route; the routes are /api/session, /api/board, /api/tickets/<id>, /api/events, /api/actors and /api/stream',
+  );
+}
+
+/** The percent-decoded ticket id segment; malformed percent-encoding is a usage error. */
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    throw new BoardError(1, 'usage', 'the ticket id in the path is not valid percent-encoding');
+  }
+}
+
+/** `/api/tickets/<id>`: the ticket and its events, from one snapshot. */
+function ticketDetail(ctx: ApiContext, text: string): unknown {
+  const snapshot = loadSnapshot(ctx.board, { cache: ctx.cache });
+  const id = resolveTicketId({ tickets: snapshot.tickets, meta: snapshot.meta }, text);
+  const ticket = snapshot.tickets[id];
+  return { ticket, events: snapshot.events.filter((e) => e.ticket === id) };
+}
+
+/** A `limit` value: digits only, from 1 to `EVENTS_PAGE_MAX`. */
+const LIMIT = /^[0-9]+$/;
+
+/** `/api/events`: one page of the well-formed events in fold order. */
+function eventsPage(ctx: ApiContext, query: URLSearchParams): unknown {
+  const rawLimit = query.get('limit');
+  let limit = EVENTS_PAGE_DEFAULT;
+  if (rawLimit !== null) {
+    const value = LIMIT.test(rawLimit) ? Number(rawLimit) : Number.NaN;
+    if (!Number.isSafeInteger(value) || value < 1 || value > EVENTS_PAGE_MAX) {
+      throw new BoardError(
+        1,
+        'usage',
+        `limit must be an integer from 1 to ${String(EVENTS_PAGE_MAX)}`,
+      );
+    }
+    limit = value;
+  }
+  const after = query.get('after');
+  const { events } = loadSnapshot(ctx.board, { cache: ctx.cache });
+  let start = 0;
+  if (after !== null) {
+    const index = events.findIndex((e) => e.hash === after);
+    if (index < 0) {
+      throw new BoardError(
+        1,
+        'unknown-cursor',
+        'after is not the hash of a recorded well-formed event',
+      );
+    }
+    start = index + 1;
+  }
+  const page = events.slice(start, start + limit);
+  const more = start + limit < events.length;
+  return { events: page, next: more ? (page.at(-1)?.hash ?? null) : null };
 }

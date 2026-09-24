@@ -32,9 +32,10 @@
  * - `HEAD` is refused with 405 like every method but `GET`.
  */
 
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
 
-import type { BoardError } from '../store/errors.js';
+import { BoardError } from '../store/errors.js';
 
 /** Random bytes in a token. */
 export const TOKEN_BYTES = 32;
@@ -59,7 +60,7 @@ export const ALLOWED_METHOD = 'GET';
  * `[A-Za-z0-9_-]`. A new token at every call (every server start).
  */
 export function newToken(): string {
-  throw new Error('not implemented');
+  return randomBytes(TOKEN_BYTES).toString('base64url');
 }
 
 /**
@@ -71,9 +72,12 @@ export function newToken(): string {
  * throws. Pure.
  */
 export function tokensEqual(given: string, token: string): boolean {
-  void given;
-  void token;
-  throw new Error('not implemented');
+  const a = Buffer.from(given, 'utf8');
+  const b = Buffer.from(token, 'utf8');
+  if (a.length !== b.length) {
+    return false;
+  }
+  return timingSafeEqual(a, b);
 }
 
 /**
@@ -83,8 +87,7 @@ export function tokensEqual(given: string, token: string): boolean {
  * never overwrite each other's cookie. Pure.
  */
 export function cookieName(port: number): string {
-  void port;
-  throw new Error('not implemented');
+  return `agentboard-${String(port)}`;
 }
 
 /**
@@ -94,9 +97,7 @@ export function cookieName(port: number): string {
  * `Secure` (the server speaks plain HTTP on loopback). Pure.
  */
 export function sessionCookie(port: number, token: string): string {
-  void port;
-  void token;
-  throw new Error('not implemented');
+  return `${cookieName(port)}=${token}; HttpOnly; SameSite=Strict; Path=/`;
 }
 
 /**
@@ -108,9 +109,11 @@ export function sessionCookie(port: number, token: string): string {
  * is false. Pure.
  */
 export function hostAllowed(host: string | readonly string[] | undefined, port: number): boolean {
-  void host;
-  void port;
-  throw new Error('not implemented');
+  if (typeof host !== 'string') {
+    return false;
+  }
+  const suffix = `:${String(port)}`;
+  return host === `127.0.0.1${suffix}` || host === `localhost${suffix}`;
 }
 
 /**
@@ -120,8 +123,7 @@ export function hostAllowed(host: string | readonly string[] | undefined, port: 
  * every other path is the page or an asset. Pure.
  */
 export function isApiPath(path: string): boolean {
-  void path;
-  throw new Error('not implemented');
+  return path === '/api' || path.startsWith('/api/');
 }
 
 /**
@@ -135,8 +137,16 @@ export function isApiPath(path: string): boolean {
  * at every call.
  */
 export function securityHeaders(api: boolean): Record<string, string> {
-  void api;
-  throw new Error('not implemented');
+  const headers: Record<string, string> = {
+    'Content-Security-Policy': CONTENT_SECURITY_POLICY,
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+    'X-Frame-Options': 'DENY',
+  };
+  if (api) {
+    headers['Cache-Control'] = 'no-store';
+  }
+  return headers;
 }
 
 /** How the token was presented. */
@@ -177,9 +187,25 @@ export interface Guard {
  * Empty when none does. Pure.
  */
 export function presentedTokens(head: RequestHead, guard: Guard): TokenForm[] {
-  void head;
-  void guard;
-  throw new Error('not implemented');
+  const forms: TokenForm[] = [];
+  const { path, query } = splitTarget(head.url);
+  if (head.method === ALLOWED_METHOD && path === '/') {
+    const given = new URLSearchParams(query).get('token');
+    if (given !== null && tokensEqual(given, guard.token)) {
+      forms.push('query');
+    }
+  }
+  const cookie = cookieValue(head.headers.cookie, cookieName(guard.port));
+  if (cookie !== null && tokensEqual(cookie, guard.token)) {
+    forms.push('cookie');
+  }
+  const authorization = head.headers.authorization;
+  if (typeof authorization === 'string' && authorization.startsWith(BEARER_PREFIX)) {
+    if (tokensEqual(authorization.slice(BEARER_PREFIX.length), guard.token)) {
+      forms.push('bearer');
+    }
+  }
+  return forms;
 }
 
 /** The outcome of `checkRequest`. */
@@ -227,7 +253,80 @@ export type Verdict =
  * `api` is `isApiPath` of the path. Pure.
  */
 export function checkRequest(head: RequestHead, guard: Guard): Verdict {
-  void head;
-  void guard;
-  throw new Error('not implemented');
+  const { path, query } = splitTarget(head.url);
+  const api = isApiPath(path);
+  if (!hostAllowed(head.headers.host, guard.port)) {
+    return {
+      kind: 'refuse',
+      status: 403,
+      error: new BoardError(
+        1,
+        'forbidden-host',
+        `the Host header must be 127.0.0.1:${String(guard.port)} or localhost:${String(guard.port)}`,
+      ),
+      api,
+    };
+  }
+  const forms = presentedTokens(head, guard);
+  if (forms.length === 0) {
+    return {
+      kind: 'refuse',
+      status: 401,
+      error: new BoardError(
+        1,
+        'unauthorized',
+        'no valid access token: open the URL printed by agentboard serve at start-up',
+      ),
+      api,
+    };
+  }
+  if (head.method !== ALLOWED_METHOD) {
+    return {
+      kind: 'refuse',
+      status: 405,
+      error: new BoardError(
+        1,
+        'method-not-allowed',
+        'the agentboard web server is read-only and answers only GET',
+      ),
+      api,
+    };
+  }
+  if (forms.includes('query')) {
+    return { kind: 'enter', setCookie: sessionCookie(guard.port, guard.token) };
+  }
+  return { kind: 'route', path, query: new URLSearchParams(query), api };
+}
+
+/** The scheme and space of a bearer `Authorization` header. */
+const BEARER_PREFIX = 'Bearer ';
+
+/**
+ * The path (everything before the first `?`) and the query (everything
+ * after it, empty when there is none) of a request target. The path is not
+ * decoded or normalised.
+ */
+function splitTarget(url: string): { path: string; query: string } {
+  const mark = url.indexOf('?');
+  return mark < 0
+    ? { path: url, query: '' }
+    : { path: url.slice(0, mark), query: url.slice(mark + 1) };
+}
+
+/**
+ * The value of the first cookie named `name` in a `Cookie` header
+ * (`name=value` pairs separated by `;` and optional spaces), or null.
+ */
+function cookieValue(header: string | undefined, name: string): string | null {
+  if (header === undefined) {
+    return null;
+  }
+  for (const pair of header.split(';')) {
+    const trimmed = pair.trim();
+    const eq = trimmed.indexOf('=');
+    if (eq > 0 && trimmed.slice(0, eq) === name) {
+      return trimmed.slice(eq + 1);
+    }
+  }
+  return null;
 }

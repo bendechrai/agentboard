@@ -9,8 +9,11 @@
  * a dynamic import, so no other command loads `node:http`.
  */
 
+import { spawn } from 'node:child_process';
+
 import type { ArgValues, RunContext, StreamIo } from '../cli/types.js';
-import type { ServerOptions } from './server.js';
+import { BoardError } from '../store/errors.js';
+import { startServer, type ServerOptions } from './server.js';
 
 /** Starts a child process; the subset of `node:child_process` `spawn` that `openInBrowser` uses. */
 export type Spawner = (
@@ -41,10 +44,39 @@ export interface OpenOptions {
  * (`error`, for example ENOENT) or exits otherwise (a non-zero code or a
  * signal).
  */
-export function openInBrowser(url: string, options?: OpenOptions): Promise<void> {
-  void url;
-  void options;
-  throw new Error('not implemented');
+export function openInBrowser(url: string, options: OpenOptions = {}): Promise<void> {
+  const platform = options.platform ?? process.platform;
+  const spawner: Spawner =
+    options.spawn ?? ((command, args) => spawn(command, args, { stdio: 'ignore' }));
+  const [command, args]: [string, readonly string[]] =
+    platform === 'darwin'
+      ? ['open', [url]]
+      : platform === 'win32'
+        ? ['cmd', ['/c', 'start', '""', url]]
+        : ['xdg-open', [url]];
+  return new Promise<void>((resolve, reject) => {
+    try {
+      const child = spawner(command, args);
+      child.once('error', (error: Error) => {
+        reject(error);
+      });
+      child.once('exit', (code: number | null, signal: string | null) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(
+            new Error(
+              code === null
+                ? `${command} was stopped by ${String(signal)}`
+                : `${command} exited with code ${String(code)}`,
+            ),
+          );
+        }
+      });
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
 }
 
 /** Test seams of `serveCommand`. */
@@ -82,15 +114,55 @@ export interface ServeDeps {
  * `--as` is accepted and ignored (serve writes nothing and tracks no
  * cursor, so it needs no actor). Writes no event and no cursor.
  */
-export function serveCommand(
+export async function serveCommand(
   ctx: RunContext,
   values: ArgValues,
   io: StreamIo,
-  deps?: ServeDeps,
+  deps: ServeDeps = {},
 ): Promise<void> {
-  void ctx;
-  void values;
-  void io;
-  void deps;
-  throw new Error('not implemented');
+  const given = values.port;
+  let port = 0;
+  if (given !== undefined) {
+    if (typeof given !== 'number' || !Number.isInteger(given) || given < 0 || given > 65535) {
+      throw new BoardError(1, 'usage', '--port must be an integer from 0 to 65535');
+    }
+    port = given;
+  }
+  const board = ctx.board();
+  const stderr = (text: string): void => {
+    io.stderr?.(text);
+  };
+  const server = await startServer(board, { stderr, ...deps.server, port });
+  try {
+    io.stdout(
+      io.json
+        ? `${JSON.stringify({ url: server.url, port: server.port, token: server.token, writable: false })}\n`
+        : `serving ${board.dir} read-only at ${server.url}\n`,
+    );
+    if (values.open === true) {
+      const open = deps.open ?? ((url: string) => openInBrowser(url));
+      open(server.url).catch((error: unknown) => {
+        // The URL (and so the token) is never written to stderr, whatever the opener says.
+        const message = (error instanceof Error ? error.message : String(error))
+          .split(server.token)
+          .join('<token>');
+        stderr(`agentboard: could not open a browser: ${message}\n`);
+      });
+    }
+    await new Promise<void>((resolve) => {
+      if (io.signal.aborted) {
+        resolve();
+        return;
+      }
+      io.signal.addEventListener(
+        'abort',
+        () => {
+          resolve();
+        },
+        { once: true },
+      );
+    });
+  } finally {
+    await server.close();
+  }
 }

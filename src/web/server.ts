@@ -39,9 +39,40 @@
  *   (`sseProblem(errorDocument(error, API_HINT_CONTEXT))`).
  */
 
-import type { EventCache } from '../board/feed.js';
+import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
+import {
+  createServer,
+  type IncomingMessage,
+  type OutgoingHttpHeaders,
+  type ServerResponse,
+} from 'node:http';
+import type { Socket } from 'node:net';
+import { dirname, extname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+  createEventCache,
+  joinBoardFeed,
+  watchBoard,
+  type EventCache,
+  type WatchBoardOptions,
+} from '../board/feed.js';
 import type { TickerTimers, WatchDir } from '../board/ticker.js';
+import { errorDocument } from '../cli/main.js';
 import type { Board } from '../store/board.js';
+import { BoardError } from '../store/errors.js';
+import type { FeedMessage } from '../view/types.js';
+import { API_HINT_CONTEXT, apiResponse, httpStatus } from './api.js';
+import { checkRequest, newToken, securityHeaders, type Guard } from './security.js';
+import {
+  KEEPALIVE_MS,
+  MAX_STREAMS,
+  STREAM_BUFFER_BYTES,
+  sseKeepalive,
+  sseMessage,
+  sseProblem,
+  sseRetry,
+} from './stream.js';
 
 /** The only address the server listens on. */
 export const LOOPBACK = '127.0.0.1';
@@ -55,7 +86,18 @@ export const ASSET_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
  * saying that the web assets are not built, naming `dist/web` and
  * `npm run build`, and that the JSON API under `/api/` is available.
  */
-export const PLACEHOLDER_PAGE = '';
+export const PLACEHOLDER_PAGE = [
+  '<!doctype html>',
+  '<html lang="en">',
+  '<head><meta charset="utf-8"><title>agentboard</title></head>',
+  '<body>',
+  '<h1>agentboard</h1>',
+  '<p>The web assets are not built: dist/web is missing. Run npm run build in the agentboard package, then restart agentboard serve.</p>',
+  '<p>The read-only JSON API under /api/ is available.</p>',
+  '</body>',
+  '</html>',
+  '',
+].join('\n');
 
 /**
  * The content type of an asset by the extension of its name: `.html`
@@ -66,8 +108,7 @@ export const PLACEHOLDER_PAGE = '';
  * anything else `application/octet-stream`. Pure.
  */
 export function contentTypeOf(name: string): string {
-  void name;
-  throw new Error('not implemented');
+  return CONTENT_TYPES[extname(name).toLowerCase()] ?? 'application/octet-stream';
 }
 
 /**
@@ -77,8 +118,7 @@ export function contentTypeOf(name: string): string {
  * `dist/`) that is `dist/web`. Pure.
  */
 export function defaultAssetsDir(moduleUrl?: string): string {
-  void moduleUrl;
-  throw new Error('not implemented');
+  return join(dirname(fileURLToPath(moduleUrl ?? import.meta.url)), 'web');
 }
 
 /** Timing of the server's board feed (tests); see `WatchBoardOptions`. */
@@ -202,8 +242,409 @@ export interface RunningServer {
  * `streamBufferBytes` is disconnected. A stream ends when the client
  * disconnects or the server closes.
  */
-export function startServer(board: Board, options?: ServerOptions): Promise<RunningServer> {
-  void board;
-  void options;
-  throw new Error('not implemented');
+export async function startServer(
+  board: Board,
+  options: ServerOptions = {},
+): Promise<RunningServer> {
+  const requested = options.port ?? 0;
+  if (!Number.isInteger(requested) || requested < 0 || requested > 65535) {
+    throw new BoardError(1, 'usage', 'the port must be an integer from 0 to 65535');
+  }
+  const token = options.token ?? newToken();
+  const assetsDir = options.assetsDir ?? defaultAssetsDir();
+  const now = options.now ?? Date.now;
+  const cache = options.cache ?? createEventCache();
+  const stderr = options.stderr ?? ((): void => undefined);
+  const keepaliveMs = options.keepaliveMs ?? KEEPALIVE_MS;
+  const maxStreams = options.maxStreams ?? MAX_STREAMS;
+  const bufferLimit = options.streamBufferBytes ?? STREAM_BUFFER_BYTES;
+
+  // Set once listening; no request is handled before that.
+  let guard: Guard = { port: requested, token };
+  const clients = new Set<StreamClient>();
+  const controller = new AbortController();
+
+  /** Writes `text` to a stream, or disconnects a client that is too far behind. */
+  const send = (client: StreamClient, text: string): void => {
+    if (client.res.destroyed) {
+      return;
+    }
+    if (client.res.writableLength > bufferLimit) {
+      drop(client);
+      return;
+    }
+    client.res.write(text);
+  };
+  const drop = (client: StreamClient): void => {
+    clients.delete(client);
+    client.res.destroy();
+  };
+
+  // Diagnostics: each distinct line once, for as long as it repeats.
+  let lastProblem: string | null = null;
+  let lastWarning: string | null = null;
+
+  const feedOptions: WatchBoardOptions = {
+    signal: controller.signal,
+    cache,
+    onMessage: (message: FeedMessage) => {
+      lastProblem = null;
+      lastWarning = null;
+      const frame = sseMessage(message);
+      const waiting: StreamClient[] = [];
+      for (const client of clients) {
+        if (client.waiting) {
+          waiting.push(client);
+        } else {
+          send(client, frame);
+        }
+      }
+      // Streams opened before the feed's first message join after it.
+      for (const client of waiting) {
+        joinWaiting(client);
+      }
+    },
+    onWarning: (line: string) => {
+      if (line !== lastWarning) {
+        lastWarning = line;
+        stderr(`agentboard: ${line}\n`);
+      }
+    },
+    onProblem: (error: unknown) => {
+      const doc = errorDocument(error, API_HINT_CONTEXT);
+      if (doc.error.message !== lastProblem) {
+        lastProblem = doc.error.message;
+        stderr(`agentboard: ${doc.error.message}\n`);
+      }
+      const frame = sseProblem(doc);
+      for (const client of clients) {
+        send(client, frame);
+      }
+    },
+    ...feedTuning(options.feed),
+  };
+
+  /** Sends a waiting stream its first message, inside the feed's `onMessage`. */
+  const joinWaiting = (client: StreamClient): void => {
+    let first: FeedMessage | null | undefined;
+    try {
+      first = joinBoardFeed(feedOptions, client.since);
+    } catch (error) {
+      send(client, sseProblem(errorDocument(error, API_HINT_CONTEXT)));
+      clients.delete(client);
+      client.res.end();
+      return;
+    }
+    if (first === undefined) {
+      return;
+    }
+    client.waiting = false;
+    if (first !== null) {
+      send(client, sseMessage(first));
+    }
+  };
+
+  /** `GET /api/stream`, authenticated. */
+  const openStream = (req: IncomingMessage, res: ServerResponse, query: URLSearchParams): void => {
+    if (clients.size >= maxStreams) {
+      sendJson(
+        res,
+        503,
+        errorDocument(
+          new BoardError(
+            1,
+            'too-many-streams',
+            `${String(maxStreams)} streams are already open on this server`,
+          ),
+          API_HINT_CONTEXT,
+        ),
+      );
+      return;
+    }
+    const header = req.headers['last-event-id'];
+    const since = typeof header === 'string' ? header : (query.get('since') ?? undefined);
+    let first: FeedMessage | null | undefined;
+    try {
+      // Synchronous with joining the fan-out below: no feed message falls between.
+      first = joinBoardFeed(feedOptions, since);
+    } catch (error) {
+      sendJson(res, httpStatus(error), errorDocument(error, API_HINT_CONTEXT));
+      return;
+    }
+    req.socket.setNoDelay(true);
+    req.socket.setTimeout(0);
+    res.writeHead(200, {
+      ...securityHeaders(true),
+      'Content-Type': 'text/event-stream; charset=utf-8',
+    });
+    const client: StreamClient = { res, waiting: first === undefined, since };
+    clients.add(client);
+    res.on('close', () => {
+      clients.delete(client);
+    });
+    res.write(sseRetry());
+    if (first !== undefined && first !== null) {
+      send(client, sseMessage(first));
+    }
+  };
+
+  const handle = (req: IncomingMessage, res: ServerResponse): void => {
+    // A body is never read; let it drain.
+    req.resume();
+    let api = true;
+    try {
+      const verdict = checkRequest(
+        { method: req.method ?? '', url: req.url ?? '', headers: req.headers },
+        guard,
+      );
+      api = verdict.kind === 'enter' ? false : verdict.api;
+      switch (verdict.kind) {
+        case 'refuse':
+          refuse(res, verdict.status, verdict.error, verdict.api);
+          return;
+        case 'enter':
+          res.writeHead(303, {
+            ...securityHeaders(false),
+            Location: '/',
+            'Set-Cookie': verdict.setCookie,
+            'Content-Length': '0',
+          });
+          res.end();
+          return;
+        case 'route':
+          if (verdict.path === '/api/stream') {
+            openStream(req, res, verdict.query);
+          } else if (verdict.api) {
+            const result = apiResponse({ board, cache, now }, verdict.path, verdict.query);
+            sendJson(res, result.status, result.body);
+          } else {
+            servePage(res, assetsDir, verdict.path);
+          }
+          return;
+      }
+    } catch (error) {
+      // Unexpected: answer 500 without detail beyond the error document.
+      if (!res.headersSent) {
+        if (api) {
+          sendJson(res, 500, errorDocument(error, API_HINT_CONTEXT));
+        } else {
+          sendText(res, 500, 'agentboard: internal error\n');
+        }
+      } else {
+        res.destroy();
+      }
+    }
+  };
+
+  const server = createServer({ requireHostHeader: false }, handle);
+  // Malformed requests: answer 400 with the security headers, never Node's bare page.
+  server.on('clientError', (_error: Error, socket: Socket) => {
+    if (socket.writable) {
+      const lines = Object.entries({
+        ...securityHeaders(false),
+        'Content-Length': '0',
+        Connection: 'close',
+      }).map(([name, value]) => `${name}: ${value}\r\n`);
+      socket.end(`HTTP/1.1 400 Bad Request\r\n${lines.join('')}\r\n`);
+    } else {
+      socket.destroy();
+    }
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: NodeJS.ErrnoException): void => {
+      if (error.code === 'EADDRINUSE') {
+        reject(
+          new BoardError(
+            1,
+            'port-in-use',
+            `port ${String(requested)} is already in use on ${LOOPBACK}`,
+          ),
+        );
+      } else {
+        reject(error);
+      }
+    };
+    server.once('error', onError);
+    server.listen({ port: requested, host: LOOPBACK, exclusive: true }, () => {
+      server.off('error', onError);
+      resolve();
+    });
+  });
+
+  const bound = server.address();
+  if (bound === null || typeof bound === 'string') {
+    server.close();
+    throw new Error('the server has no TCP address');
+  }
+  const port = bound.port;
+  guard = { port, token };
+
+  const feedDone = watchBoard(board, feedOptions).catch(() => undefined);
+  const keepalive = setInterval(() => {
+    const frame = sseKeepalive();
+    for (const client of clients) {
+      send(client, frame);
+    }
+  }, keepaliveMs);
+
+  let closing: Promise<void> | null = null;
+  return {
+    url: `http://${LOOPBACK}:${String(port)}/?token=${token}`,
+    port,
+    token,
+    address: bound.address,
+    streamCount: () => clients.size,
+    close(): Promise<void> {
+      closing ??= (async () => {
+        controller.abort();
+        clearInterval(keepalive);
+        for (const client of clients) {
+          client.res.end();
+        }
+        clients.clear();
+        const closed = new Promise<void>((resolve) => {
+          server.close(() => {
+            resolve();
+          });
+        });
+        server.closeAllConnections();
+        await closed;
+        await feedDone;
+      })();
+      return closing;
+    },
+  };
+}
+
+/** An open `/api/stream` response. */
+interface StreamClient {
+  readonly res: ServerResponse;
+  /** True until the stream has its first message (the feed had not delivered yet). */
+  waiting: boolean;
+  /** The start position asked for. */
+  readonly since: string | undefined;
+}
+
+/** Content types by lower-case extension; see `contentTypeOf`. */
+const CONTENT_TYPES: Readonly<Record<string, string>> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.txt': 'text/plain; charset=utf-8',
+};
+
+/** The feed options of the server's tuning, without undefined values. */
+function feedTuning(tuning: FeedTuning | undefined): Partial<WatchBoardOptions> {
+  if (tuning === undefined) {
+    return {};
+  }
+  return {
+    ...(tuning.pollMs === undefined ? {} : { pollMs: tuning.pollMs }),
+    ...(tuning.fsWatch === undefined ? {} : { fsWatch: tuning.fsWatch }),
+    ...(tuning.timers === undefined ? {} : { timers: tuning.timers }),
+    ...(tuning.watchDir === undefined ? {} : { watchDir: tuning.watchDir }),
+  };
+}
+
+/** Sends `body` as JSON with the API headers. */
+function sendJson(
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+  extra: OutgoingHttpHeaders = {},
+): void {
+  const text = JSON.stringify(body);
+  res.writeHead(status, {
+    ...securityHeaders(true),
+    ...extra,
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': String(Buffer.byteLength(text)),
+  });
+  res.end(text);
+}
+
+/** Sends a plain text page with the page headers. */
+function sendText(
+  res: ServerResponse,
+  status: number,
+  text: string,
+  extra: OutgoingHttpHeaders = {},
+): void {
+  res.writeHead(status, {
+    ...securityHeaders(false),
+    ...extra,
+    'Content-Type': 'text/plain; charset=utf-8',
+    'Content-Length': String(Buffer.byteLength(text)),
+  });
+  res.end(text);
+}
+
+/** A refusal: an `ErrorDocument` on an API path, a plain text page otherwise. */
+function refuse(res: ServerResponse, status: number, error: BoardError, api: boolean): void {
+  const extra: OutgoingHttpHeaders = status === 405 ? { Allow: 'GET' } : {};
+  if (api) {
+    sendJson(res, status, errorDocument(error, API_HINT_CONTEXT), extra);
+  } else {
+    sendText(res, status, `agentboard: ${error.message}\n`, extra);
+  }
+}
+
+/** `/` and `/<name>` outside the API: the page, an asset, or 404. */
+function servePage(res: ServerResponse, assetsDir: string, path: string): void {
+  const name = path === '/' ? 'index.html' : path.slice(1);
+  const content = readAsset(assetsDir, name);
+  if (content !== null) {
+    res.writeHead(200, {
+      ...securityHeaders(false),
+      'Content-Type': contentTypeOf(name),
+      'Content-Length': String(content.length),
+    });
+    res.end(content);
+    return;
+  }
+  if (path === '/') {
+    res.writeHead(200, {
+      ...securityHeaders(false),
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Length': String(Buffer.byteLength(PLACEHOLDER_PAGE)),
+    });
+    res.end(PLACEHOLDER_PAGE);
+    return;
+  }
+  const error = new BoardError(1, 'not-found', 'no such page or asset on this server');
+  sendText(res, 404, `agentboard: ${error.message}\n`);
+}
+
+/**
+ * The bytes of the regular file `<dir>/<name>`, or null when `name` is not
+ * a plain asset name (`ASSET_NAME`: no separator, no percent sign, no
+ * leading dot) or the file is missing, not a regular file, a symbolic
+ * link, or unreadable. Opened once and checked on the open descriptor, so
+ * nothing can swap the file between the check and the read.
+ */
+function readAsset(dir: string, name: string): Buffer | null {
+  if (!ASSET_NAME.test(name)) {
+    return null;
+  }
+  let fd: number;
+  try {
+    // O_NOFOLLOW is absent on Windows; 0 there leaves the flags unchanged.
+    fd = openSync(join(dir, name), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch {
+    return null;
+  }
+  try {
+    return fstatSync(fd).isFile() ? readFileSync(fd) : null;
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
 }
