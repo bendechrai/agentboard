@@ -45,6 +45,7 @@ describe('the command registry', () => {
       'watch',
       'serve',
       'top',
+      'health',
       'rebuild',
       'sync',
       'import-change',

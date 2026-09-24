@@ -181,7 +181,9 @@ export function renderGuide(version: string): string {
  * - `orchestrator`: its first command line is `inbox` (before
  *   dispatching anything), acting on every entry; `agentboard import-change` for a new or grown
  *   change; dispatching one agent per ticket and role; `agentboard show`
- *   or `list` for state, never memory; `agentboard close-merged` and
+ *   or `list` for state, never memory; `agentboard health` when choosing
+ *   what to dispatch and before archiving a change (add-board-insights
+ *   task 2.2); `agentboard close-merged` and
  *   `agentboard close` with a decision disposition after merge, promoting
  *   `DECISION:` comments first (the text `DECISION:` appears).
  * - `test-author`: claim, move to `tests`, write failing tests and stubs,
@@ -498,7 +500,10 @@ const CHECKLISTS: Readonly<Record<Role, readonly string[]>> = {
     '4. Check state on the board, never from memory:',
     '  agentboard list --change <change>',
     '  agentboard show <id>',
-    '5. After a pull request merges, move its ticket to merged. Promote every',
+    '5. When choosing what to dispatch, and before archiving a change, look',
+    '   for stale claims, long-blocked tickets and unpromoted decisions:',
+    '  agentboard health',
+    '6. After a pull request merges, move its ticket to merged. Promote every',
     '   DECISION: comment to a spec delta or ADR first, then close the ticket,',
     '   with close-merged (for tickets with a pr link) or by hand:',
     '  agentboard move <id> merged --as <actor>',

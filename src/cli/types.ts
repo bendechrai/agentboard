@@ -180,7 +180,7 @@ export interface StreamIo {
  * The overview section a command is listed under (board-agent-guidance:
  * "Generated help"), in overview order:
  * - `lifecycle`: "Ticket lifecycle" (creating, finding and moving tickets);
- * - `awareness`: "Change awareness" (`inbox`, `watch`, `serve`, `top`);
+ * - `awareness`: "Change awareness" (`inbox`, `watch`, `serve`, `top`, `health`);
  * - `planning`: "Planning integration" (`import-change`, `close-merged`);
  * - `maintenance`: "Maintenance" (`rebuild`, `sync`);
  * - `setup`: "Setup" (`init`, `mcp`, `version`, `help`).

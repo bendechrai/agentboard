@@ -10,6 +10,9 @@ import type { InboxEntry } from '../board/inbox.js';
 import type { ShowResult } from '../board/tickets.js';
 import { CACHE_SCHEMA_VERSION } from '../store/cache.js';
 import type { CheckResult, RebuildReport } from '../store/rebuild.js';
+import type { Card } from '../view/columns.js';
+import type { HealthReport } from '../view/health.js';
+import { relativeTime } from '../view/time.js';
 
 /** Re-exported from `src/board/text.ts` (defined there for layering). */
 export { asciiText };
@@ -26,12 +29,20 @@ export { asciiText };
  * command. Pure.
  */
 export function renderListLine(ticket: Ticket): string {
-  const markers = (ticket.adhoc === null ? '' : '[adhoc] ') + (ticket.closed ? '[closed] ' : '');
+  return listLine({ ...ticket, adhoc: ticket.adhoc !== null });
+}
+
+/** The fields of a `list` line. */
+type ListFields = Pick<Card, 'id' | 'status' | 'assignee' | 'adhoc' | 'closed' | 'title'>;
+
+/** The `list` line of `fields` (see `renderListLine`). */
+function listLine(fields: ListFields): string {
+  const markers = (fields.adhoc ? '[adhoc] ' : '') + (fields.closed ? '[closed] ' : '');
   return [
-    ticket.id,
-    ticket.status,
-    ticket.assignee === null ? '-' : asciiText(ticket.assignee),
-    `${markers}${asciiText(ticket.title)}`,
+    fields.id,
+    fields.status,
+    fields.assignee === null ? '-' : asciiText(fields.assignee),
+    `${markers}${asciiText(fields.title)}`,
   ].join('  ');
 }
 
@@ -233,4 +244,141 @@ export function renderCheck(doc: CheckDocument): string {
     lines.push(`  ${difference.table} ${asciiText(difference.key)} ${state}`);
   }
   return `${lines.join('\n')}\n`;
+}
+
+/**
+ * Human output of `agentboard health` (board-insights: "Health command":
+ * each section with its count, then one line per ticket in the `list`
+ * format followed by the finding). Every line ends with a newline; user
+ * text (titles, assignees, actors, comment text, pr values) passes through
+ * `asciiText`. Lines, in this order:
+ *
+ * ```
+ * thresholds: stale after <S>, blocked after <B>
+ * stale claims: <n>
+ * <card>  last active <age> (<kind> by <actor>)
+ * stuck in blocked: <n>
+ * <card>  blocked <age> from <status>; latest comment by <actor>: <text>
+ * unpromoted decisions: <n>
+ * <card>  <k> open decision(s), no decision link
+ * close-merged ready: <n>
+ * <card>  pr <prs>
+ * close-merged held by decision: <n>
+ * <card>  pr <prs>; <k> open decision(s), no decision link
+ * close-merged missing pr: <n>
+ * <card>  no pr link
+ * cache check: <check>
+ * ```
+ *
+ * where:
+ * - `<S>` and `<B>` are `report.thresholds.staleAfter` and `blockedAfter`
+ *   written with the largest unit that divides them exactly: `<n>d` for a
+ *   whole number of days, else `<n>h` for whole hours, else `<n>m` for
+ *   whole minutes, else `<n>ms` (so 7200000 is `2h`, 86400000 is `1d`,
+ *   5400000 is `90m`).
+ * - `<n>` is the number of entries of the section, and the section's
+ *   ticket lines follow its heading, in the report's order; a section with
+ *   no entry is just its heading with `0`.
+ * - `<card>` is the `list` line of the finding's `ticket` card, exactly as
+ *   `renderListLine` writes a ticket with the same id, status, assignee,
+ *   ad hoc marker, closed marker and title:
+ *   `<id>  <status>  <assignee or ->  <markers><title>`.
+ * - `<age>` is `relativeTime` (`src/view/time.ts`) of `idleMs` or
+ *   `blockedMs`, for example `3h ago`.
+ * - stale claim: `<kind>` and `<actor>` are `since.kind` and `since.actor`.
+ * - stuck in blocked: `<status>` is `blockedFrom`; when `latestComment` is
+ *   null the text after `; ` is `no comment` instead.
+ * - `<k> open decision(s)` is `1 open decision` or `<k> open decisions`
+ *   (`<k>` the length of `decisions`).
+ * - `<prs>` is the candidate's `prs`, each through `String` and
+ *   `asciiText`, joined with `, `.
+ * - `<check>` is `not run` when `report.check` is null, `matches (0
+ *   differing rows)` when it matches, and `differs (<d> differing rows)`
+ *   otherwise (`<d>` is `differingRows`; the word stays `rows` for 1).
+ *
+ * `report.late` is not printed (it is null for the CLI). Pure.
+ *
+ * Example:
+ *
+ * ```
+ * thresholds: stale after 2h, blocked after 1d
+ * stale claims: 1
+ * 01ARYZ6S41TSV4RRFFQ69G5FAV  implementing  impl  Parser  last active 3h ago (ticket.claim by impl)
+ * stuck in blocked: 0
+ * unpromoted decisions: 0
+ * close-merged ready: 0
+ * close-merged held by decision: 0
+ * close-merged missing pr: 0
+ * cache check: not run
+ * ```
+ */
+export function renderHealth(report: HealthReport): string {
+  const { thresholds, staleClaims, stuckBlocked, unpromotedDecisions, closeMerged } = report;
+  const lines = [
+    `thresholds: stale after ${durationText(thresholds.staleAfter)}, blocked after ${durationText(thresholds.blockedAfter)}`,
+  ];
+  const section = <T extends { ticket: Card }>(
+    heading: string,
+    entries: readonly T[],
+    finding: (entry: T) => string,
+  ): void => {
+    lines.push(`${heading}: ${String(entries.length)}`);
+    for (const entry of entries) {
+      lines.push(`${listLine(entry.ticket)}  ${finding(entry)}`);
+    }
+  };
+  section(
+    'stale claims',
+    staleClaims,
+    (s) =>
+      `last active ${relativeTime(s.idleMs)} (${asciiText(s.since.kind)} by ${asciiText(s.since.actor)})`,
+  );
+  section('stuck in blocked', stuckBlocked, (s) => {
+    const comment =
+      s.latestComment === null
+        ? 'no comment'
+        : `latest comment by ${asciiText(s.latestComment.actor)}: ${asciiText(s.latestComment.text)}`;
+    return `blocked ${relativeTime(s.blockedMs)} from ${s.blockedFrom}; ${comment}`;
+  });
+  section('unpromoted decisions', unpromotedDecisions, (u) => decisionsText(u.decisions.length));
+  section('close-merged ready', closeMerged.ready, (c) => prsText(c.prs));
+  section(
+    'close-merged held by decision',
+    closeMerged.heldByDecision,
+    (c) => `${prsText(c.prs)}; ${decisionsText(c.decisions.length)}`,
+  );
+  section('close-merged missing pr', closeMerged.missingPr, () => 'no pr link');
+  const check = report.check;
+  lines.push(
+    `cache check: ${
+      check === null
+        ? 'not run'
+        : `${check.matches ? 'matches' : 'differs'} (${String(check.differingRows)} differing rows)`
+    }`,
+  );
+  return `${lines.join('\n')}\n`;
+}
+
+/** A threshold in the largest unit that divides it exactly: d, h, m, else ms. */
+function durationText(ms: number): string {
+  for (const [unit, scale] of [
+    ['d', 86_400_000],
+    ['h', 3_600_000],
+    ['m', 60_000],
+  ] as const) {
+    if (ms % scale === 0) {
+      return `${String(ms / scale)}${unit}`;
+    }
+  }
+  return `${String(ms)}ms`;
+}
+
+/** `1 open decision` or `<k> open decisions`, then `, no decision link`. */
+function decisionsText(k: number): string {
+  return `${String(k)} open decision${k === 1 ? '' : 's'}, no decision link`;
+}
+
+/** `pr <p1>, <p2>, ...`. */
+function prsText(prs: readonly (string | number)[]): string {
+  return `pr ${prs.map((pr) => asciiText(String(pr))).join(', ')}`;
 }

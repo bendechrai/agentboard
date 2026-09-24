@@ -86,8 +86,9 @@ threshold inputs.
 ### The `health` command
 `agentboard health [--stale-after <d>] [--blocked-after <d>] [--check]
 [--json]` reads the cache for ticket state and the event files of the
-applied events of open tickets (the checks need the time of specific
-events, which the cache does not keep), in one read snapshot, and prints
+applied events (the checks need the time of specific events, which the
+cache does not keep; the cache also does not record an event's ticket, so
+closed tickets' files cannot be skipped unread), in one read snapshot, and prints
 the report. It writes nothing and needs no actor. It exits 0 whatever it
 finds: findings are data, and a failing exit would make the command
 unusable as an MCP tool call whose result an agent reads. Group
@@ -181,5 +182,8 @@ re-evaluated on every model change and every 10 seconds.
 - [Replay of a large board in the browser] -> checkpoints every 500 events
   bound a seek to at most 500 fold steps; memory is one state per
   checkpoint, acceptable at the target scale of 20,000 events.
-- [`health` reads event files] -> only those of open tickets, and the
-  content-addressed files are never re-read within a process.
+- [`health` reads every applied event file] -> once each per run, in the
+  same way `serve` loads a snapshot; acceptable at the target scale of
+  20,000 events for a one-shot command. Adding an event-to-ticket index
+  to the cache was considered and rejected as a schema change for a
+  speed-up nobody needs yet.
