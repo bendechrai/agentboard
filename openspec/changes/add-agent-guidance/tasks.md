@@ -24,7 +24,7 @@ or above 90 percent.
 
 ## 4. Guide over MCP
 
-- [ ] 4.1 Serve the guide summary as MCP `instructions` and the full guide as resource `agentboard://guide`, and verify with a test that spawns the server, checks the instructions length and the resource name in them, and compares the resource text to `help agents` stdout
+- [x] 4.1 Serve the guide summary as MCP `instructions` and the full guide as resource `agentboard://guide`, and verify with a test that spawns the server, checks the instructions length and the resource name in them, and compares the resource text to `help agents` stdout
 
 ## 5. Documentation
 
