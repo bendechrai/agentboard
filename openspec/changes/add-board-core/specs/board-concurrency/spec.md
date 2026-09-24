@@ -41,7 +41,7 @@ ever be visible under its final hash name.
 
 #### Scenario: Killed during temporary write
 - **WHEN** a child process is killed while writing the temporary file
-- **THEN** no file with a hash name was created, the ticket is unchanged, and the leftover temporary file is ignored by every command and reported and removed by the first command that runs once it is older than one minute
+- **THEN** no file with a hash name was created, the ticket is unchanged, and the leftover temporary file is ignored by every command and reported and removed by the first command other than `rebuild --check` that runs once it is older than one minute
 
 ### Requirement: Inbox never misses an event
 `inbox --as <actor>` SHALL return every effective event whose fold position

@@ -61,7 +61,7 @@ export function stmt(db: DatabaseSync, sql: string): StatementSync {
 }
 
 /** True for SQLITE_BUSY (and its extended codes) from `node:sqlite`. */
-function isBusy(error: unknown): boolean {
+export function isBusy(error: unknown): boolean {
   return (
     error instanceof Error &&
     'errcode' in error &&
@@ -90,6 +90,53 @@ export function beginImmediate(db: DatabaseSync): void {
           'the board cache stayed locked by another process; try again',
         );
       }
+    }
+  }
+}
+
+/** Longest single sleep between two attempts of `retryBusy`, in milliseconds. */
+const MAX_BUSY_SLEEP_MS = 25;
+
+/**
+ * Runs `fn`, running it again while it throws SQLITE_BUSY, until `deadline`
+ * (ms since the epoch) has passed; then throws `BoardError(5, 'busy')`.
+ * Any other error propagates at once. Between attempts the thread sleeps
+ * (`Atomics.wait`, never a spin) for a short, growing, jittered interval
+ * capped at `MAX_BUSY_SLEEP_MS` and at the time left, so racing processes
+ * spread out instead of retrying in lockstep.
+ *
+ * For statements SQLite may fail with SQLITE_BUSY without consulting the
+ * busy handler, notably `PRAGMA journal_mode = WAL` while another
+ * connection is creating or converting the same database file. `fn` must be
+ * safe to run again after a busy failure.
+ *
+ * `fn` is always run at least once, even when `deadline` has already
+ * passed; the deadline is only checked after a busy failure. The deadline
+ * bounds when a new attempt may start, not how long one attempt blocks: an
+ * attempt that waits in SQLite's busy handler (or in `beginImmediate`'s
+ * retry) can end up to that wait after the deadline. A `BoardError`
+ * (including `BoardError(5, 'busy')` from `beginImmediate`) is not
+ * SQLITE_BUSY and propagates at once.
+ */
+export function retryBusy<T>(fn: () => T, deadline: number): T {
+  const cell = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return fn();
+    } catch (error) {
+      if (!isBusy(error)) {
+        throw error;
+      }
+      const left = deadline - Date.now();
+      if (left <= 0) {
+        throw new BoardError(
+          5,
+          'busy',
+          'the board cache stayed locked by another process; try again',
+        );
+      }
+      const ceiling = Math.min(MAX_BUSY_SLEEP_MS, 2 ** Math.min(attempt, 5));
+      Atomics.wait(cell, 0, 0, Math.min(left, 1 + Math.random() * ceiling));
     }
   }
 }
