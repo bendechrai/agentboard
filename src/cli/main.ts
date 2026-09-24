@@ -108,6 +108,9 @@ export function runCli(io: CliIo): ExitCode {
       },
     };
     const output = command.run(ctx, values);
+    for (const warning of output.warnings ?? []) {
+      io.stderr(`agentboard: ${warning}\n`);
+    }
     io.stdout(parsed.json ? `${JSON.stringify(output.json)}\n` : output.text);
     return 0;
   } catch (error) {
