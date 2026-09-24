@@ -38,9 +38,8 @@ full workflow, and docs/adr/ for design decisions.
   --mcp-command <executable>` writes a local MCP command (for example
   `agentboard` after `npm link`) instead of the `npx` entry, which only
   works once the package is published, and both entry shapes are
-  recognised as managed. Group 1 (the flag and managed entries) is
-  implemented and in review on `guidance/mcp-command`; group 2 (README
-  documentation) is on `docs/mcp-command`, cut from it.
+  recognised as managed. Group 1 (the flag and managed entries) is merged
+  (#29); group 2 (README documentation) is on `docs/mcp-command`.
 - This repository uses its own guidance: `agentboard agents install`
   wrote `.claude/skills/agentboard/SKILL.md` and the `agentboard:` apply
   and archive guidance in `openspec/config.yaml`; `agentboard agents
@@ -48,8 +47,8 @@ full workflow, and docs/adr/ for design decisions.
 
 ## What to do next
 
-1. Land `add-mcp-command` group 1 (in review) and then group 2 (docs) on
-   `staging`, then archive the change.
+1. Land `add-mcp-command` group 2 (docs) on `staging`, then archive the
+   change.
 2. A human reviews `staging` and promotes it to `main` (a merge-commit PR
    from `staging`), then publishes the npm package.
 
