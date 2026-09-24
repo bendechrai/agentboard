@@ -51,13 +51,17 @@ interface Harness {
   stderr: () => string;
 }
 
-/** A server on a fresh board; `env` extends `cliEnv()` (no actor by default). */
-function serve(env: Record<string, string | undefined> = {}): Harness {
+/**
+ * A server on a fresh board; `env` extends `cliEnv()` (no actor by
+ * default); `actor` is the server's `--as`.
+ */
+function serve(env: Record<string, string | undefined> = {}, actor?: string): Harness {
   const { root, boardDir } = project();
   let err = '';
   const server = createMcpServer({
     cwd: root,
     env: cliEnv(env),
+    ...(actor === undefined ? {} : { actor }),
     stderr: (text) => {
       err += text;
     },
@@ -227,6 +231,43 @@ describe('callTool', () => {
     const id = (doc.ticket as { id: string }).id;
     expect(ok(h.server.callTool('board_claim', { id, as: 'given' }))).toMatchObject({
       ticket: { assignee: 'given' },
+    });
+  });
+
+  it("uses the server's --as when the call has no as", () => {
+    const h = serve({}, 'server-agent');
+    const doc = ok(h.server.callTool('board_new', { title: 'T', task: TASK }));
+    expect(doc).toMatchObject({ ticket: { createdBy: 'server-agent' } });
+    const id = (doc.ticket as { id: string }).id;
+    expect(ok(h.server.callTool('board_claim', { id }))).toMatchObject({
+      ticket: { assignee: 'server-agent' },
+    });
+  });
+
+  it("lets the call's as override the server's --as", () => {
+    const h = serve({}, 'server-agent');
+    const id = newId(h, 'call-agent');
+    expect(ok(h.server.callTool('board_show', { id }))).toMatchObject({
+      ticket: { createdBy: 'call-agent' },
+    });
+    expect(ok(h.server.callTool('board_claim', { id, as: 'call-agent' }))).toMatchObject({
+      ticket: { assignee: 'call-agent' },
+    });
+  });
+
+  it("puts the server's --as before AGENTBOARD_ACTOR, and an empty one is absent", () => {
+    const h = serve({ AGENTBOARD_ACTOR: 'env-agent' }, 'server-agent');
+    expect(ok(h.server.callTool('board_new', { title: 'T', task: TASK }))).toMatchObject({
+      ticket: { createdBy: 'server-agent' },
+    });
+    const empty = serve({ AGENTBOARD_ACTOR: 'env-agent' }, '');
+    expect(ok(empty.server.callTool('board_new', { title: 'T', task: TASK }))).toMatchObject({
+      ticket: { createdBy: 'env-agent' },
+    });
+    const none = serve({}, '');
+    expect(failed(none.server.callTool('board_new', { title: 'T', task: TASK }))).toMatchObject({
+      exitCode: 1,
+      reason: 'missing-actor',
     });
   });
 

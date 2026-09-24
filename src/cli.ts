@@ -6,7 +6,9 @@
  * `mcp` command, the entry point does not call `runCli`; it imports
  * `src/mcp/server.ts` (dynamically, so no other command loads the MCP
  * SDK) and sets the exit code to the awaited `serveMcp({ cwd, env, stdin:
- * process.stdin, stdout: process.stdout, stderr, signal })`, where
+ * process.stdin, stdout: process.stdout, stderr, signal, actor })`, where
+ * `actor` is the parsed `--as` value when given (`agentboard mcp --as
+ * impl` makes `impl` the server's default actor) and absent otherwise, and
  * `signal` is aborted by SIGINT or SIGTERM (handlers installed only for
  * `mcp`). Every other argv, including one that fails to parse, goes to
  * `runCli` unchanged. The warning filter below applies to `mcp` too, and

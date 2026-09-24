@@ -192,6 +192,29 @@ describe('agentboard mcp over stdio', () => {
   }, 30_000);
 });
 
+describe('agentboard mcp --as', () => {
+  it("records a claim without as for the server's --as, before AGENTBOARD_ACTOR", async () => {
+    const { root, eventsDir } = boardProject();
+    const id = await newTicket(root);
+    const mcp = await mcpChild(root, cliEnv({ AGENTBOARD_ACTOR: 'env-agent' }), ['--as', 'impl']);
+    const claimed = (await mcp.client.callTool({
+      name: 'board_claim',
+      arguments: { id },
+    })) as Structured;
+    expect(claimed.isError, JSON.stringify(claimed)).toBeFalsy();
+    expect(claimed.structuredContent).toMatchObject({ ticket: { assignee: 'impl' } });
+    expect(await cliShow(root, id)).toMatchObject({ ticket: { assignee: 'impl' }, events: 2 });
+    expect(eventNames(eventsDir)).toHaveLength(2);
+    const other = (await mcp.client.callTool({
+      name: 'board_comment',
+      arguments: { id, text: 'mine', as: 'reviewer' },
+    })) as Structured;
+    expect(other.structuredContent).toMatchObject({
+      ticket: { comments: [{ actor: 'reviewer', text: 'mine' }] },
+    });
+  }, 30_000);
+});
+
 describe('scenario: claim race between one MCP client and one CLI process', () => {
   it('has exactly one winner every round and rebuild --check reports no divergence', async () => {
     const { root, eventsDir } = boardProject();

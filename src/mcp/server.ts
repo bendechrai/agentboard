@@ -87,6 +87,13 @@ export interface McpServerOptions {
    * `AGENTBOARD_ACTOR` as the actor fallback when a call has no `as`.
    */
   env: Env;
+  /**
+   * The server's default actor: the `--as` of `agentboard mcp --as <actor>`
+   * (board-cli: "MCP server"). An empty string is the same as absent.
+   * Precedence for a tool that writes or tracks a per-actor cursor: the
+   * call's `as` argument, then this, then `AGENTBOARD_ACTOR` from `env`.
+   */
+  actor?: string;
   /** Receives diagnostic text (never stdout). */
   stderr(text: string): void;
 }
@@ -103,10 +110,13 @@ export interface BoardMcpServer {
    *    exit code 1, reason `usage`, naming the tool.
    * 2. `toolArguments(command, args)`.
    * 3. The actor, for a command that writes or tracks a per-actor cursor
-   *    (as `runCli` decides): `resolveActor(values.as, options.env)`, the
-   *    same function as the CLI, so the `missing-actor` error (exit 1)
-   *    names both `--as` and `AGENTBOARD_ACTOR`; for any other command
-   *    null. This happens before the board is opened.
+   *    (as `runCli` decides): `resolveActor(given, options.env)`, the
+   *    same function as the CLI, where `given` is the call's `as` when it
+   *    is a non-empty string, else `options.actor` (the server's `--as`),
+   *    so the order is call `as`, server `--as`, `AGENTBOARD_ACTOR`. With
+   *    none, the `missing-actor` error (exit 1) names both `--as` and
+   *    `AGENTBOARD_ACTOR`. For any other command the actor is null. This
+   *    happens before the board is opened.
    * 4. `command.run(ctx, values)` with a `RunContext` like the CLI's:
    *    `cwd` and `env` from the options, the actor, `boardDir()` returning
    *    `boardDir`, and `board(options)` opening `boardDir` with `openBoard`

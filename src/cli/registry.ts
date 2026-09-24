@@ -415,8 +415,9 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   reachable only through the in-process `runCli`, always throws
  *   `BoardError(1, 'streaming-command')` with the message
  *   `agentboard mcp serves MCP over stdio and runs only from the agentboard executable`.
- *   `--as` and `--json` are accepted and ignored (`--json` is implied for
- *   every tool, and each tool call carries its own `as`).
+ *   `--json` is accepted and ignored (it is implied for every tool);
+ *   `--as <actor>` sets the server's default actor, used by a tool call
+ *   that has no `as` of its own, before `AGENTBOARD_ACTOR`.
  *
  * Argument mapping: `--change`/`--group`/`--task` go through
  * `taskRefFromArgs`; `list --change <name>` is `list --task openspec:<name>`

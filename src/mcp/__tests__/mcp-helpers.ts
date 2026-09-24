@@ -46,8 +46,15 @@ afterAll(async () => {
   await Promise.all(open.splice(0).map((child) => child.close()));
 });
 
-/** Spawns `node dist/cli.js mcp` in `cwd` and connects an SDK client to it. */
-export async function mcpChild(cwd: string, env: RunEnv = cliEnv()): Promise<McpChild> {
+/**
+ * Spawns `node dist/cli.js mcp <extraArgs>` in `cwd` and connects an SDK
+ * client to it.
+ */
+export async function mcpChild(
+  cwd: string,
+  env: RunEnv = cliEnv(),
+  extraArgs: readonly string[] = [],
+): Promise<McpChild> {
   const childEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     if (value !== undefined) {
@@ -56,7 +63,7 @@ export async function mcpChild(cwd: string, env: RunEnv = cliEnv()): Promise<Mcp
   }
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [requireBuiltCli(), 'mcp'],
+    args: [requireBuiltCli(), 'mcp', ...extraArgs],
     cwd,
     env: childEnv,
     stderr: 'pipe',
