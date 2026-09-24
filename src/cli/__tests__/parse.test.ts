@@ -41,6 +41,8 @@ describe('the command registry', () => {
       'checklist tick',
       'checklist untick',
       'close',
+      'import-change',
+      'close-merged',
       'mcp',
       'version',
     ]);
@@ -58,6 +60,8 @@ describe('the command registry', () => {
       'checklist tick',
       'checklist untick',
       'close',
+      'import-change',
+      'close-merged',
     ]);
   });
 
@@ -194,6 +198,14 @@ describe('the command registry', () => {
         ['index', 'integer', true],
       ],
     });
+    expect(shape('import-change')).toEqual({
+      positionals: [['name', 'string', true]],
+      flags: [],
+      exclusive: [],
+    });
+    expect(shape('close-merged')).toEqual({ positionals: [], flags: [], exclusive: [] });
+    expect(command('import-change').operation).toBe('importChange');
+    expect(command('close-merged').operation).toBe('closeMerged');
     expect(shape('close')).toMatchObject({
       flags: [
         ['decision-recorded-in', 'string', false, false],

@@ -69,6 +69,13 @@ describe('every command prints exactly one JSON document with --json', () => {
         run(['move', id(), 'blocked', ...AS], root);
         return run(['close', id(), '--no-decision', ...AS, '--json'], root);
       },
+      'import-change': () => {
+        mkdirSync(join(root, 'openspec', 'changes', 'c'), { recursive: true });
+        writeFileSync(join(root, 'openspec', 'changes', 'c', 'tasks.md'), '## 1. G\n- [ ] 1.1 t\n');
+        return run(['import-change', 'c', ...AS, '--json'], root);
+      },
+      // No ticket is merged with a PR link (the linked one was closed from blocked), so gh never runs.
+      'close-merged': () => run(['close-merged', ...AS, '--json'], root),
       mcp: () => run(['mcp', '--json'], root),
       version: () => run(['version', '--json'], root),
     };
@@ -102,9 +109,11 @@ describe('every command prints exactly one JSON document with --json', () => {
     });
     expect(docs['checklist untick']).toMatchObject({ ticket: { id: id() }, reminder: null });
     expect(docs.close).toMatchObject({ ticket: { closed: true } });
+    expect(docs['import-change']).toMatchObject({ source: 'openspec', ref: 'c', events: 1 });
+    expect(docs['close-merged']).toEqual({ closed: [], unmerged: [], skipped: [] });
     expect(docs.mcp).toMatchObject({ error: { exitCode: 1, reason: 'not-implemented' } });
     expect(docs.version).toEqual({ version });
-    expect(count(boardDir)).toBe(11);
+    expect(count(boardDir)).toBe(12);
   });
 });
 
