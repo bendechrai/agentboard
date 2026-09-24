@@ -8,6 +8,7 @@
 import { openBoard, type Board } from '../store/board.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
 import { findBoard } from '../store/locate.js';
+import type { HintContext } from '../guidance/hints.js';
 import { parseArgs, resolveActor, type ParsedCommand } from './parse.js';
 import type { BoardOpenOptions, CommandSpec, Env, RunContext } from './types.js';
 
@@ -35,13 +36,27 @@ export interface AsyncCliIo extends CliIo {
   stopSignal(): AbortSignal;
 }
 
-/** The `--json` document printed on stdout when a command fails. */
+/**
+ * The `--json` document printed on stdout when a command fails, and (as
+ * `error`) the structured content of a failed MCP tool call.
+ *
+ * Decision (add-agent-guidance task group 2): the CLI's `--json` error
+ * document carries the `hint` too, so an agent reading JSON gets the same
+ * advice as one reading stderr, and the MCP error content stays exactly
+ * `errorDocument(...).error`.
+ */
 export interface ErrorDocument {
   error: {
     exitCode: Exclude<ExitCode, 0>;
     /** The `BoardError` reason, or null. */
     reason: string | null;
     message: string;
+    /**
+     * `hintFor(error, context)` (board-agent-guidance: "Error hints"): one
+     * ASCII line naming what to run next, or null when the error has no
+     * reason (an unexpected failure). Always present.
+     */
+    hint: string | null;
   };
 }
 
@@ -55,14 +70,20 @@ export function exitCodeFor(error: unknown): Exclude<ExitCode, 0> {
 
 /**
  * The `ErrorDocument` for a thrown value: `exitCodeFor(error)`, the
- * `BoardError` reason (null for other errors) and the error message. Pure.
+ * `BoardError` reason (null for other errors), the error message and
+ * `hintFor(error, context)`. `context` defaults to
+ * `{ surface: 'cli', command: null }` (placeholders for the id and actor).
+ * Pure.
  */
-export function errorDocument(error: unknown): ErrorDocument {
+export function errorDocument(error: unknown, context?: HintContext): ErrorDocument {
+  // Stub (task group 2): the hint is computed by the implementation.
+  void context;
   return {
     error: {
       exitCode: exitCodeFor(error),
       reason: error instanceof BoardError ? error.reason : null,
       message: error instanceof Error ? error.message : String(error),
+      hint: null,
     },
   };
 }
@@ -87,10 +108,20 @@ export function errorDocument(error: unknown): ErrorDocument {
  *    nothing else; without it, `output.text`. Returns `output.exitCode`
  *    when present (1 for a divergent `rebuild --check`), otherwise 0.
  * 5. Failure (anything thrown in steps 1 to 3): stderr receives
- *    `agentboard: <message>` and a newline; with `--json` (detected
- *    anywhere in `io.argv`, even when parsing failed), stdout also receives
- *    `JSON.stringify(errorDocument(error))` and a newline. Returns
- *    `exitCodeFor(error)`.
+ *    `agentboard: <message>` and a newline, then, when the error has a
+ *    hint, `hint: <hint>` and a newline (board-agent-guidance: "Error
+ *    hints"); with `--json` (detected anywhere in `io.argv`, even when
+ *    parsing failed), stdout also receives
+ *    `JSON.stringify(errorDocument(error, context))` and a newline, whose
+ *    `hint` is the same text. Returns `exitCodeFor(error)`.
+ *
+ *    The hint context: surface `cli`; `command` the parsed command's name,
+ *    or, when parsing failed, the name of the registry command the leading
+ *    arguments select (the longest match, as `parseArgs` selects it), else
+ *    null; `id` the parsed `id` value when there is one (undefined when
+ *    parsing failed); `actor` the parsed `--as` when non-empty, else
+ *    `AGENTBOARD_ACTOR` from `io.env` when non-empty, else undefined. The
+ *    same applies to a failing streaming command in `runCliAsync`.
  *
  * Steps 1 and 2 happen before any board lookup, so a usage error or a
  * missing actor exits 1 even where there is no board. Diagnostics never go

@@ -24,6 +24,7 @@ import type {
 import { asciiText } from '../board/text.js';
 import { COMMAND_GROUPS } from '../cli/types.js';
 import { BoardError } from '../store/errors.js';
+import { agentsHelpOutput } from './guide.js';
 import { unknownCommandMessage } from './suggest.js';
 
 /** The last line of the overview, exactly. */
@@ -310,11 +311,25 @@ export function overviewDocument(source: HelpSource): CommandHelpDocument[] {
  *   unknownCommandMessage(topic, source.commands))`, so `help clam`
  *   suggests `claim` and points to `agentboard help`.
  *
- * Topics that are not commands (`help agents`) are reserved for the agent
- * guide (task group 2 of add-agent-guidance). Pure; needs no board and no
- * actor.
+ * - exactly `['agents']` (no command is named `agents`): the agent guide,
+ *   `agentsHelpOutput(source.version, role)` from `src/guidance/guide.ts`,
+ *   which also handles an unknown role.
+ *
+ * `role` is the `--role` value of the `help` command. Given with any topic
+ * other than exactly `['agents']` (including no topic), it throws
+ * `BoardError(1, 'usage')` saying that `--role` applies only to
+ * `agentboard help agents`, before anything else is checked.
+ *
+ * Pure; needs no board and no actor.
  */
-export function helpOutput(source: HelpSource, topic: readonly string[]): CommandOutput {
+export function helpOutput(
+  source: HelpSource,
+  topic: readonly string[],
+  role?: string,
+): CommandOutput {
+  if (topic.length === 1 && topic[0] === AGENTS_TOPIC) {
+    return agentsHelpOutput(source.version, role);
+  }
   if (topic.length === 0) {
     return { json: overviewDocument(source), text: renderOverview(source) };
   }
@@ -337,6 +352,9 @@ export function helpOutput(source: HelpSource, topic: readonly string[]): Comman
   }
   return { json: commandHelpDocument(source, command), text: renderCommandHelp(source, command) };
 }
+
+/** The help topic of the agent guide: `agentboard help agents`. */
+export const AGENTS_TOPIC = 'agents';
 
 /** The column at which command help wraps the description. */
 const WRAP_COLUMNS = 78;

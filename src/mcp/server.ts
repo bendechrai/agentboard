@@ -45,9 +45,9 @@
  * `McpServer.registerTool`, which needs zod schemas. The server name is
  * `SERVER_NAME` and its version is `VERSION`.
  *
- * Not in this change (add-agent-guidance adds them later): a `hint` in
- * tool errors, server `instructions`, and the `agentboard://guide`
- * resource. Nothing here may preclude them.
+ * Tool errors carry a `hint` (add-agent-guidance task group 2). Not yet
+ * here (add-agent-guidance task group 4): server `instructions` and the
+ * `agentboard://guide` resource. Nothing here may preclude them.
  */
 
 import type { Readable, Writable } from 'node:stream';
@@ -78,6 +78,18 @@ export interface ToolErrorContent {
   /** The `BoardError` reason (for example `already-assigned`), or null. */
   reason: string | null;
   message: string;
+  /**
+   * The hint (board-agent-guidance: "Error hints"): `hintFor(error,
+   * context)` with surface `mcp`, `command` the tool's command (null for an
+   * unknown or excluded tool name), `id` the call's `id` argument when it
+   * is a string, and `actor` the call's `as`, else the server's `--as`,
+   * else the server's `AGENTBOARD_ACTOR` (undefined when none is set).
+   * Null only when `reason` is null. Always present. The exit code, reason
+   * and message are exactly the CLI's for the same failure; the hint may
+   * differ, because it is written for a tool caller (tool calls instead of
+   * command lines, the `as` argument instead of `--as`).
+   */
+  hint: string | null;
 }
 
 /** The result of one `tools/call`, as sent to the client. */
@@ -85,7 +97,10 @@ export interface ToolCallResult {
   /**
    * Exactly one text item. On success its text is
    * `JSON.stringify(output.json)` (the CLI's `--json` stdout without the
-   * trailing newline); on failure it is the error message.
+   * trailing newline); on failure it is the error message, followed, when
+   * the hint is not null, by a newline and `hint: <hint>` (decision, task
+   * group 2: many clients show a model only the text content, so the hint
+   * is in the text as well as in the structured content).
    */
   content: { type: 'text'; text: string }[];
   /**
@@ -150,11 +165,12 @@ export interface BoardMcpServer {
    *    `ToolCallResult`. An output carrying `exitCode` (only `rebuild
    *    --check`, which is not a tool) is a tool error with that exit code,
    *    reason null and the warnings joined with `; ` as the message.
-   * 6. Failure (anything thrown in steps 2 to 4): a tool error whose
-   *    structured content is `errorDocument(error).error`, so a
+   * 6. Failure (anything thrown in steps 1 to 4): a tool error whose
+   *    structured content is `errorDocument(error, context).error` with the
+   *    MCP hint context described on `ToolErrorContent.hint`, so a
    *    `BoardError` keeps its exit code and reason, and any other error is
-   *    exit code 5 with reason null. A failure with exit code 5 is also
-   *    printed to stderr as `agentboard: <message>`.
+   *    exit code 5 with reason null and hint null. A failure with exit code
+   *    5 is also printed to stderr as `agentboard: <message>`.
    */
   callTool(name: string, args: unknown): ToolCallResult;
   /**
@@ -248,7 +264,12 @@ function runTool(
       options.stderr(`agentboard: ${line}\n`);
     }
     if (output.exitCode !== undefined) {
-      return toolError({ exitCode: output.exitCode, reason: null, message: warnings.join('; ') });
+      return toolError({
+        exitCode: output.exitCode,
+        reason: null,
+        message: warnings.join('; '),
+        hint: null,
+      });
     }
     const json: unknown = output.json;
     return {
