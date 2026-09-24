@@ -263,13 +263,15 @@ export function closeMerged(
         ticket: closed,
       });
     } catch (error) {
-      if (!(error instanceof BoardError) || error.reason !== 'unpromoted-decision') {
+      // A refusal of this one ticket (exit 1 or 4) is listed and the run
+      // continues; board, integrity and unexpected errors end it.
+      if (!(error instanceof BoardError) || (error.exitCode !== 1 && error.exitCode !== 4)) {
         throw error;
       }
       result.skipped.push({
         id: ticket.id,
         pr,
-        reason: 'unpromoted-decision',
+        reason: error.reason ?? 'close-refused',
         message: error.message,
         ticket,
       });

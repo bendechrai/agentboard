@@ -200,6 +200,7 @@ export function importChange(
   refuseSecretLike(
     units.flatMap((unit) => [unit.title, ...unit.lines.map((line) => line.text)]),
     false,
+    false,
   );
   const tickets = units.map((unit) =>
     importUnit(board, actor, target, adapter.labels(target.ref, unit), unit, options),

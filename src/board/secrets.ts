@@ -83,7 +83,6 @@ export function refuseSecretLike(
   allowSecretLike: boolean,
   bypassFlag = true,
 ): void {
-  void bypassFlag;
   if (allowSecretLike) {
     return;
   }
@@ -100,7 +99,7 @@ export function refuseSecretLike(
   throw new BoardError(
     1,
     'secret-like',
-    `refused: the text matches the secret pattern(s) ${names}; the board is not a secret ` +
-      'store (pass --allow-secret-like if this is not a secret)',
+    `refused: the text matches the secret pattern(s) ${names}; the board is not a secret store` +
+      (bypassFlag ? ' (pass --allow-secret-like if this is not a secret)' : ''),
   );
 }
