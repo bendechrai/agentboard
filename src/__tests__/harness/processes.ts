@@ -324,17 +324,28 @@ export interface TogetherResult {
   readyAtGate: number;
 }
 
+/** Children blocked at one start gate (`startGated`). */
+export interface Gated {
+  /** One child per invocation, in the order given. */
+  procs: CliProcess[];
+  /** Number of children blocked at the gate (all of them). */
+  readyAtGate: number;
+  /** Opens the gate, so every child runs its command now; returns `Date.now()`. */
+  open(): number;
+}
+
 /**
- * Starts every invocation in `cwd` behind one start gate, waits until all
- * of them are blocked at the gate (so all are running at once), opens it,
- * and resolves when all have exited. Rejects if they are not all ready
- * within `readyTimeoutMs`.
+ * Starts every invocation in `cwd` behind one start gate and resolves once
+ * all of them are blocked at it (so all are running at once and past
+ * module loading), without opening it. Rejects, killing them, if they are
+ * not all ready within `readyTimeoutMs`. Lets a test start something else
+ * (an MCP call) at the moment the gate opens.
  */
-export async function runTogether(
+export async function startGated(
   invocations: readonly Invocation[],
   cwd: string,
   readyTimeoutMs = 20_000,
-): Promise<TogetherResult> {
+): Promise<Gated> {
   const gateDir = scratchDir();
   const nodeArgs = ['--import', pathToFileURL(gatePath()).href];
   const preload = cliChunks().join('\n');
@@ -358,11 +369,32 @@ export async function runTogether(
     }
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  const readyAtGate = readyCount();
-  const opened = Date.now();
-  writeFileSync(join(gateDir, 'go'), '');
-  const results = await Promise.all(procs.map((p) => p.exited));
-  return { results, elapsedMs: Date.now() - opened, readyAtGate };
+  return {
+    procs,
+    readyAtGate: readyCount(),
+    open: () => {
+      const opened = Date.now();
+      writeFileSync(join(gateDir, 'go'), '');
+      return opened;
+    },
+  };
+}
+
+/**
+ * Starts every invocation in `cwd` behind one start gate, waits until all
+ * of them are blocked at the gate (so all are running at once), opens it,
+ * and resolves when all have exited. Rejects if they are not all ready
+ * within `readyTimeoutMs`.
+ */
+export async function runTogether(
+  invocations: readonly Invocation[],
+  cwd: string,
+  readyTimeoutMs = 20_000,
+): Promise<TogetherResult> {
+  const gated = await startGated(invocations, cwd, readyTimeoutMs);
+  const opened = gated.open();
+  const results = await Promise.all(gated.procs.map((p) => p.exited));
+  return { results, elapsedMs: Date.now() - opened, readyAtGate: gated.readyAtGate };
 }
 
 /** The `AGENTBOARD_TEST_PAUSE` points (see `src/store/transaction.ts`). */

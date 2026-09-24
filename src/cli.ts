@@ -2,7 +2,19 @@
  * CLI entry point for agentboard: runs `runCli` with the real process and
  * sets the exit code (without `process.exit`, so stdout is flushed).
  *
- * Task group 5: the entry point runs `runCliAsync` (which behaves exactly
+ * `mcp` (task group 9): when `parseArgs(argv)` succeeds and names the
+ * `mcp` command, the entry point does not call `runCli`; it imports
+ * `src/mcp/server.ts` (dynamically, so no other command loads the MCP
+ * SDK) and sets the exit code to the awaited `serveMcp({ cwd, env, stdin:
+ * process.stdin, stdout: process.stdout, stderr, signal, actor })`, where
+ * `actor` is the parsed `--as` value when given (`agentboard mcp --as
+ * impl` makes `impl` the server's default actor) and absent otherwise, and
+ * `signal` is aborted by SIGINT or SIGTERM (handlers installed only for
+ * `mcp`). Every other argv, including one that fails to parse, goes to
+ * `runCliAsync` unchanged. The warning filter below applies to `mcp` too, and
+ * nothing but protocol messages is written to stdout.
+ *
+ * Task group 5: every other argv goes to `runCliAsync` (which behaves exactly
  * as `runCli` for every non-streaming command) and awaits it. Its
  * `stopSignal` installs SIGINT and SIGTERM handlers that abort one
  * `AbortController` and returns its signal; they are installed only then,
@@ -43,25 +55,60 @@ process.on('warning', (warning) => {
   );
 });
 
+const argv = process.argv.slice(2);
 const { runCliAsync } = await import('./cli/main.js');
+const { parseArgs } = await import('./cli/parse.js');
 
-process.exitCode = await runCliAsync({
-  argv: process.argv.slice(2),
-  cwd: process.cwd(),
-  env: process.env,
-  stdout: (text) => {
-    process.stdout.write(text);
-  },
-  stderr: (text) => {
-    process.stderr.write(text);
-  },
-  stopSignal: () => {
-    const controller = new AbortController();
-    const stop = (): void => {
-      controller.abort();
-    };
-    process.on('SIGINT', stop);
-    process.on('SIGTERM', stop);
-    return controller.signal;
-  },
-});
+/** One `AbortController` aborted by SIGINT or SIGTERM; handlers installed on call. */
+function stopSignal(): AbortSignal {
+  const controller = new AbortController();
+  const stop = (): void => {
+    controller.abort();
+  };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+  return controller.signal;
+}
+
+/** The parsed `mcp` command's `--as`, or null when argv is not `mcp`. */
+function mcpInvocation(): { actor: string | undefined } | null {
+  try {
+    const parsed = parseArgs(argv);
+    if (parsed.command.name !== 'mcp') {
+      return null;
+    }
+    const given = parsed.values.as;
+    return { actor: typeof given === 'string' ? given : undefined };
+  } catch {
+    return null;
+  }
+}
+
+const stderr = (text: string): void => {
+  process.stderr.write(text);
+};
+const mcp = mcpInvocation();
+
+if (mcp !== null) {
+  const { serveMcp } = await import('./mcp/server.js');
+  process.exitCode = await serveMcp({
+    cwd: process.cwd(),
+    env: process.env,
+    stdin: process.stdin,
+    stdout: process.stdout,
+    stderr,
+    signal: stopSignal(),
+    ...(mcp.actor === undefined ? {} : { actor: mcp.actor }),
+  });
+} else {
+  process.exitCode = await runCliAsync({
+    argv,
+    cwd: process.cwd(),
+    env: process.env,
+    stdout: (text) => {
+      process.stdout.write(text);
+    },
+    stderr,
+    stopSignal,
+  });
+}

@@ -423,8 +423,16 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   plus its `list` line plus ` (<reason>)`; then
  *   `close-merged: <c> closed, <u> unmerged, <s> skipped`.
  * - `version`: `{ version }`; text: the version.
- * - `mcp`: always `BoardError(1, 'not-implemented')`, with a message saying
- *   `agentboard mcp` is not implemented yet (it arrives with task group 9).
+ * - `mcp`: serves MCP over stdio (`serveMcp` in `src/mcp/server.ts`),
+ *   which needs the process's stdin and stdout and runs until the client
+ *   goes away, so it cannot answer with one `CommandOutput`. The
+ *   executable dispatches it before `runCli` (see `src/cli.ts`); its `run`,
+ *   reachable only through the in-process `runCli`, always throws
+ *   `BoardError(1, 'streaming-command')` with the message
+ *   `agentboard mcp serves MCP over stdio and runs only from the agentboard executable`.
+ *   `--json` is accepted and ignored (it is implied for every tool);
+ *   `--as <actor>` sets the server's default actor, used by a tool call
+ *   that has no `as` of its own, before `AGENTBOARD_ACTOR`.
  *
  * Argument mapping: `--change`/`--group`/`--task` go through
  * `taskRefFromArgs`; `list --change <name>` is `list --task openspec:<name>`
@@ -825,7 +833,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'mcp',
-    summary: 'Serve the board as MCP tools over stdio (not implemented yet)',
+    summary: 'Serve the board as MCP tools over stdio',
     positionals: [],
     flags: [],
     exclusive: [],
@@ -834,8 +842,8 @@ export const COMMANDS: readonly CommandSpec[] = [
     run: () => {
       throw new BoardError(
         1,
-        'not-implemented',
-        'agentboard mcp is not implemented yet; the MCP server arrives with task group 9',
+        'streaming-command',
+        'agentboard mcp serves MCP over stdio and runs only from the agentboard executable',
       );
     },
   },
