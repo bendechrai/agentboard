@@ -15,7 +15,7 @@ The CLI SHALL provide: `init`; `new <title> [--description] [--label]...
 `close <id> --as <actor> (--decision-recorded-in <path> | --no-decision)`;
 `inbox --as <actor> [--since <cursor>] [--peek]`; `watch --as <actor>`;
 `rebuild [--check]`; `sync`; `import-change <name>`; `close-merged`;
-`serve [--port <n>] [--open]`;
+`serve [--port <port>] [--open]`;
 `health [--stale-after <duration>] [--blocked-after <duration>] [--check]`;
 `mcp`; and `version`. Every command SHALL
 accept `--json`. An argument beginning with `--` is

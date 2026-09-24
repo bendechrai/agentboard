@@ -12,3 +12,6 @@ export * from './feed.js';
 export * from './conversation.js';
 export * from './lanes.js';
 export * from './apply.js';
+export * from './health.js';
+export * from './replay.js';
+export * from './graph.js';

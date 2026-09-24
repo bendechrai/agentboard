@@ -1,8 +1,10 @@
 # Tasks
 
 Depends on `add-board-web` (all groups): the view-model layer, the board
-feed, the server and the client. Archive after `add-board-web`; the
-`board-cli` delta text includes `add-board-web`'s additions. Every group
+feed, the server and the client. The `board-cli` delta text is the
+current main spec (with `add-board-web` archived) plus `health`; if
+`add-board-tui` is archived first, re-sync that MODIFIED text with the
+main spec (keeping `top`) before archiving this change. Every group
 is delivered by a test author, an implementer and a reviewer in turn (see
 CONTRIBUTING.md), on one branch per group named `<area>/<group-slug>` and
 cut from `origin/staging`; the test author's first commit defines the
@@ -12,8 +14,8 @@ percent.
 
 ## 1. Insight view-model (`view/insights`)
 
-- [ ] 1.1 Implement `src/view/health.ts`: `DEFAULT_THRESHOLDS`, `parseDuration` and `healthReport` with every check as board-insights defines it. Verify: table tests for every "Health report" scenario, the idle rule (a reviewer's comment does not reset the holder's idle time; the event that made them assignee does), a handoff with status `blocked` counting as the entry into `blocked`, closed tickets excluded from every section, negative ages clamped to 0, and `parseDuration` accepting `1m`, `99999d` and refusing `0h`, `100000m`, `2hours`, `h`, `-1h`
-- [ ] 1.2 Implement `src/view/replay.ts` (`replayState` with checkpoints every 500 events) and `src/view/graph.ts` (`handoffGraph` with change and `since` filters). Verify: tests for every "Replay" and "Hand-off graph" scenario, a property test over random event sequences that `replayState` at every index equals `fold` of the prefix and is the same reached directly or by stepping from a random position, and the layering test covering both modules
+- [x] 1.1 Implement `src/view/health.ts`: `DEFAULT_THRESHOLDS`, `parseDuration` and `healthReport` with every check as board-insights defines it. Verify: table tests for every "Health report" scenario, the idle rule (a reviewer's comment does not reset the holder's idle time; the event that made them assignee does), a handoff with status `blocked` counting as the entry into `blocked`, closed tickets excluded from every section, negative ages clamped to 0, and `parseDuration` accepting `1m`, `99999d` and refusing `0h`, `100000m`, `2hours`, `h`, `-1h`
+- [x] 1.2 Implement `src/view/replay.ts` (`replayState` with checkpoints every 500 events) and `src/view/graph.ts` (`handoffGraph` with change and `since` filters). Verify: tests for every "Replay" and "Hand-off graph" scenario, a property test over random event sequences that `replayState` at every index equals `fold` of the prefix and is the same reached directly or by stepping from a random position, and the layering test covering both modules
 
 ## 2. The `health` command (`board/health-command`)
 

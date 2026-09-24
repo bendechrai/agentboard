@@ -15,8 +15,10 @@ full workflow, and docs/adr/ for design decisions.
 - ADRs in `docs/adr/`: 0001 (the event log is the source of truth, SQLite
   a disposable cache), 0002 (one transaction per command, event file
   inside it), 0003 (inbox cursors as a position plus a seen set), 0004
-  (source-neutral task reference) and 0005 (sync commits only its own
-  paths, as a fixed identity).
+  (source-neutral task reference), 0005 (sync commits only its own
+  paths, as a fixed identity), 0006 (local web server security model) and
+  0007 (board feed with append, resync and digest resume; a shared
+  view-model).
 - The `add-board-core` OpenSpec change is complete and archived as
   `openspec/changes/archive/2026-09-24-add-board-core/`; its requirements
   are the main specs in `openspec/specs/` (board-cache, board-cli,
@@ -39,10 +41,19 @@ full workflow, and docs/adr/ for design decisions.
   `agents install --mcp-command <executable>` writes a local MCP command
   (for example `agentboard` after `npm link`) instead of the `npx` entry,
   and both entry shapes are managed.
-- Four proposed OpenSpec changes, not yet started, add observability (see
-  "What to do next" for their order): `add-board-web`,
-  `add-board-insights`, `add-board-tui` and `add-board-web-actions`, all
-  under `openspec/changes/`.
+- The `add-board-web` OpenSpec change is complete and archived as
+  `openspec/changes/archive/2026-09-24-add-board-web/`: `agentboard
+  serve`, a read-only local web app (loopback, per-run token handed over
+  in the URL fragment and sent as a bearer header, Host check, no CORS, no
+  cookies, COOP and CORP), the JSON API and SSE stream, the board-wide
+  change feed, the pure view-model layer, the Preact front end bundled
+  into `dist/web/`, an end-to-end smoke test, the README section "Watching
+  the board in a browser" and ADRs 0006 and 0007. Its requirements are the
+  main specs `board-web`, `board-feed` and `board-view-model`, plus
+  changes to `board-cli`.
+- Three more observability changes under `openspec/changes/` build on it:
+  `add-board-insights` and `add-board-tui` (in progress), then
+  `add-board-web-actions`.
 - This repository uses its own guidance: `agentboard agents install`
   wrote `.claude/skills/agentboard/SKILL.md` and the `agentboard:` apply
   and archive guidance in `openspec/config.yaml`; `agentboard agents
@@ -53,23 +64,18 @@ full workflow, and docs/adr/ for design decisions.
 1. A human reviews `staging` and promotes it to `main` (a merge-commit PR
    from `staging`) when ready. Publishing to npm is deferred: agentboard
    is used locally through `npm link`.
-2. Once a human has approved the proposals, build the observability
-   changes in this order (each change's `tasks.md` states its
-   dependencies; archive them in the same order, because each later
-   change's spec deltas are written against the earlier ones):
-   1. `add-board-web`: `agentboard serve`, a read-only local web app
-      (loopback, access token, Host check, no CORS), the board-wide
-      change feed (`board-feed`, shared with `watch`'s tick machinery) and
-      the pure view-model layer (`board-view-model`) that the later
-      changes reuse.
-   2. `add-board-insights`: health panel and `agentboard health` (also the
-      MCP tool `board_health`), replay, and the hand-off graph.
-   3. `add-board-tui`: `agentboard top`, a terminal client of the same
-      feed and view-model. Needs only groups 1 to 3 of `add-board-web`,
-      so it can be built in parallel with `add-board-insights`.
-   4. `add-board-web-actions`: write actions from the browser under
-      `agentboard serve --as <actor>`, with CSRF protection. Needs only
-      `add-board-web`.
+2. Finish the observability changes in progress, then the last one
+   (each change's `tasks.md` states its dependencies; archive them in
+   this order):
+   1. `add-board-insights`: health panel and `agentboard health` (also the
+      MCP tool `board_health`), replay, and the hand-off graph. In
+      progress.
+   2. `add-board-tui`: `agentboard top`, a terminal client of the same
+      feed and view-model. In progress, in parallel with
+      `add-board-insights`.
+   3. `add-board-web-actions`: write actions from the browser under
+      `agentboard serve --as <actor>`, with CSRF protection, on the
+      security model of ADR 0006. Next once the two above are done.
 
 Each task group uses the three-role loop from CONTRIBUTING.md
 ("Three-agent workflow per task group"):

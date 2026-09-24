@@ -34,8 +34,9 @@ pure view-model precisely so a second client costs little.
 
 ### Modified Capabilities
 - `board-cli`: "Command surface" gains `top`; "MCP server" excludes it;
-  "Exit codes" names `not-a-tty`. The text assumes `add-board-web` and
-  `add-board-insights` are archived first.
+  "Exit codes" names `not-a-tty`. The text is the main spec as archived
+  from `add-board-web`, plus `top`; it does not assume
+  `add-board-insights`.
 
 ## Non-Goals
 

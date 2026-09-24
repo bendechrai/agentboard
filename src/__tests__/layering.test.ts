@@ -213,8 +213,25 @@ describe('layering: browser-safe modules', () => {
         'view/conversation.ts',
         'view/lanes.ts',
         'view/time.ts',
+        'view/health.ts',
+        'view/replay.ts',
+        'view/graph.ts',
       ]),
     );
+  });
+
+  // add-board-insights tasks 1.1 and 1.2: the insight view-models are
+  // bundled into the web client, reuse the store's fold for replay and
+  // `openDecisions` for the health report, and stay free of Node-only
+  // imports.
+  it('the insight view-models reach no node: specifier', () => {
+    const entries = ['health.ts', 'replay.ts', 'graph.ts'].map((f) => join(SRC, 'view', f));
+    expect(walk(entries).offenders).toEqual([]);
+  });
+
+  it('replay.ts uses the store fold and health.ts uses openDecisions', () => {
+    expect(walk([join(SRC, 'view', 'replay.ts')]).reached).toContain('events/fold.ts');
+    expect(walk([join(SRC, 'view', 'health.ts')]).reached).toContain('events/decisions.ts');
   });
 
   it('no module reachable from any module under src/view imports a node: specifier', () => {

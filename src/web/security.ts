@@ -5,7 +5,8 @@
  * every API request, sent only as a bearer header", "Host header check and
  * no cross-origin access"; add-board-web task 3.1, reworked in round 2
  * after the security review: no cookie, no `?token=` entry URL, exactly
- * one Host header).
+ * one Host header; task 5.3 adds `Cross-Origin-Opener-Policy`,
+ * `Cross-Origin-Resource-Policy` and exactly one `Authorization` header).
  *
  * Every function here is a pure function of the request line and headers
  * (plus the server's port and token), except `newToken`, which draws
@@ -19,8 +20,12 @@
  *   `too-many-streams`) are `BoardError`s of exit class 1, like every
  *   other refusal of a request the caller got wrong; they carry the CLI
  *   hint of their reason (`src/guidance/hints.ts`) in the `ErrorDocument`.
- * - The token is accepted in exactly one form, `Authorization: Bearer
- *   <token>`, and only API paths (`isApiPath`, the stream included) need
+ * - The token is accepted in exactly one form, exactly one
+ *   `Authorization: Bearer <token>` header (a request carrying two or more
+ *   `Authorization` headers is refused 401 on an API path, even when the
+ *   first is valid, because `node:http` keeps only the first in
+ *   `req.headers` and a proxy or client could disagree about which one
+ *   counts), and only API paths (`isApiPath`, the stream included) need
  *   it. A `token` query parameter and every cookie are ignored on every
  *   path, and nothing here produces a cookie. The page and the static
  *   assets need no token (they hold no board data).
@@ -121,7 +126,10 @@ export function isApiPath(path: string): boolean {
  * cross-origin access and security headers"):
  * `Content-Security-Policy` (`CONTENT_SECURITY_POLICY`),
  * `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and
- * `X-Frame-Options: DENY`, plus `Cache-Control: no-store` when `api` is
+ * `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy: same-origin` and
+ * `Cross-Origin-Resource-Policy: same-origin` (so the tab that opened the
+ * start-up URL keeps no handle to the page, and no other origin can embed
+ * a response), plus `Cache-Control: no-store` when `api` is
  * true (every API and stream response, errors included). Keys are in this
  * exact case. Never an `Access-Control-Allow-*` header. Pure; a new object
  * at every call.
@@ -132,6 +140,8 @@ export function securityHeaders(api: boolean): Record<string, string> {
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
     'X-Frame-Options': 'DENY',
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Resource-Policy': 'same-origin',
   };
   if (api) {
     headers['Cache-Control'] = 'no-store';
@@ -156,9 +166,10 @@ export interface RequestHead {
   /**
    * Every value of every header, as `node:http` gives them in
    * `req.headersDistinct` (lower-case names, repeated headers kept). The
-   * Host check reads `headersDistinct.host`; when this field is absent the
-   * request counts as having no `Host` header (403). The server always
-   * passes it.
+   * Host check reads `headersDistinct.host` and the token check reads
+   * `headersDistinct.authorization`; when this field is absent the request
+   * counts as having no `Host` header (403) and no `Authorization` header
+   * (no token). The server always passes it.
    */
   readonly headersDistinct?: NodeJS.Dict<string[]>;
 }
@@ -172,13 +183,23 @@ export interface Guard {
 }
 
 /**
- * `['bearer']` when `head` has an `Authorization` header `Bearer <token>`
- * (the scheme `Bearer`, one space, the token) whose token equals
- * `guard.token` by `tokensEqual`; otherwise empty. A `token` query
- * parameter and every cookie are ignored, on every path and method. Pure.
+ * `['bearer']` when `head` has exactly one `Authorization` header (counted
+ * in `head.headersDistinct.authorization`, which must be an array of
+ * exactly one value) and that value is `Bearer <token>` (the scheme
+ * `Bearer`, one space, the token) whose token equals `guard.token` by
+ * `tokensEqual`; otherwise empty. Two or more `Authorization` headers give
+ * empty whatever their values (the first valid included), and so does an
+ * absent `headersDistinct` or an absent or empty
+ * `headersDistinct.authorization`; `head.headers.authorization` alone never
+ * counts. A `token` query parameter and every cookie are ignored, on every
+ * path and method. Pure.
  */
 export function presentedTokens(head: RequestHead, guard: Guard): TokenForm[] {
-  const authorization = head.headers.authorization;
+  const values = head.headersDistinct?.authorization;
+  if (values?.length !== 1) {
+    return [];
+  }
+  const authorization = values[0];
   if (
     typeof authorization === 'string' &&
     authorization.startsWith(BEARER_PREFIX) &&
@@ -225,8 +246,8 @@ export type Verdict =
  *    the first of repeated headers there), else refuse 403 with
  *    `BoardError(1, 'forbidden-host')`, on every path; no other header is
  *    looked at.
- * 2. On an API path only: `presentedTokens(head, guard)` non-empty (a
- *    valid bearer token), else refuse 401 with `BoardError(1,
+ * 2. On an API path only: `presentedTokens(head, guard)` non-empty (one
+ *    `Authorization` header, a valid bearer token), else refuse 401 with `BoardError(1,
  *    'unauthorized')` whose message tells the user to open the URL printed
  *    at start-up. The message never contains a token (not the server's,
  *    not the one presented). Other paths skip this step.

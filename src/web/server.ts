@@ -209,7 +209,10 @@ export interface RunningServer {
  * `req.headersDistinct`. A request without a `Host` header reaches that
  * check too (it is 403 `forbidden-host`, not Node's own 400: the
  * `node:http` server is created with `requireHostHeader: false`), and so
- * does one with two `Host` headers (403).
+ * does one with two `Host` headers (403). An API request with two or more
+ * `Authorization` headers is 401 `unauthorized` even when the first is
+ * valid (`req.headers` keeps only the first; the check counts them in
+ * `req.headersDistinct`).
  * - `refuse`: the status, `securityHeaders(api)`, `Allow: GET` on a 405;
  *   the body is `errorDocument(error, API_HINT_CONTEXT)` as JSON on an API
  *   path, else a plain text page. A 401 happens only on API paths.
@@ -218,7 +221,10 @@ export interface RunningServer {
  *   and every other API path `apiResponse` (`src/web/api.ts`) with
  *   `{ board, cache, now }`, sent as JSON with its status.
  * Every response, whatever its status, carries `securityHeaders(api)`
- * (so `Cache-Control: no-store` on API and stream responses) and never an
+ * (so `Cross-Origin-Opener-Policy: same-origin` and
+ * `Cross-Origin-Resource-Policy: same-origin` on every response, the 400
+ * of a malformed request included, and `Cache-Control: no-store` on API
+ * and stream responses) and never an
  * `Access-Control-Allow-*` header, and never a `Set-Cookie` header. No
  * response, body or header, ever contains the token. Nothing is logged per
  * request. A response body is written only after every read
