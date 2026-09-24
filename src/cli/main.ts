@@ -373,12 +373,14 @@ export async function runCliAsync(io: AsyncCliIo): Promise<ExitCode> {
   const opened = cliBoard(io);
   try {
     const ctx = context(io, parsed, opened);
+    const terminal = command.terminal === true ? await io.terminal?.() : undefined;
     const signal = io.stopSignal();
     await command.stream(ctx, values, {
       stdout: io.stdout,
       stderr: io.stderr,
       json: parsed.json,
       signal,
+      ...(terminal === undefined ? {} : { terminal }),
     });
     return 0;
   } catch (error) {

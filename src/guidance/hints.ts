@@ -599,9 +599,8 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     `the board server is read-only and answers only GET requests; see ${serveHelp(h)}`,
   'too-many-streams': (h) =>
     `at most 64 streams are open at once; close other board tabs or clients, then reconnect; see ${serveHelp(h)}`,
-  'not-a-tty': () => {
-    throw new Error('not-a-tty hint: not implemented');
-  },
+  'not-a-tty': (h) =>
+    `top needs an interactive terminal; for a snapshot of the board use ${h.step('list')}, and for a line stream ${h.step('watch', [['as', h.actor]])}`,
   'no-targets': (h) =>
     `choose what to install with ${h.step('agents install', [['target', '<target>']])}, where <target> is claude, agents-md, openspec or mcp-json`,
   // Exit 2.

@@ -1258,7 +1258,11 @@ export const COMMANDS: readonly CommandSpec[] = [
     terminal: true,
     operation: null,
     run: () => {
-      throw new Error('top run: not implemented');
+      throw new BoardError(
+        1,
+        'streaming-command',
+        'agentboard top drives the terminal and runs only from the agentboard executable',
+      );
     },
     stream: async (ctx, values, io) => {
       const { topCommand } = await import('../tui/terminal.js');
@@ -1449,7 +1453,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'mcp',
     summary: 'Serve the board as MCP tools over stdio',
     description:
-      'Serves the board as MCP tools over stdio, one tool per board command (not init, watch, serve, rebuild, sync, mcp, version, help or the agents commands), for agents that prefer tools to the shell. Runs until the client disconnects or the process gets SIGINT or SIGTERM. --as sets the default actor for tool calls that pass no as of their own, before AGENTBOARD_ACTOR. Nothing but protocol messages is written to stdout. It exits 2 when no board is found from this directory.',
+      'Serves the board as MCP tools over stdio, one tool per board command (not init, watch, serve, top, rebuild, sync, mcp, version, help or the agents commands), for agents that prefer tools to the shell. Runs until the client disconnects or the process gets SIGINT or SIGTERM. --as sets the default actor for tool calls that pass no as of their own, before AGENTBOARD_ACTOR. Nothing but protocol messages is written to stdout. It exits 2 when no board is found from this directory.',
     group: 'setup',
     examples: [
       { command: 'agentboard mcp', summary: 'Serve the board over MCP on stdio' },

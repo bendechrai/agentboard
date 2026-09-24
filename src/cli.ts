@@ -119,5 +119,9 @@ if (mcp !== null) {
     },
     stderr,
     stopSignal,
+    terminal: async () => {
+      const { processTerminal } = await import('./tui/terminal.js');
+      return processTerminal();
+    },
   });
 }

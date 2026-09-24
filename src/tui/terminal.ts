@@ -41,15 +41,25 @@
  * remain, so the selection still shows.
  */
 
+import { loadSnapshot as defaultLoadSnapshot, type BoardSnapshot } from '../board/snapshot.js';
 import type { Env } from '../board/text.js';
-import type { ArgValues, RunContext, StreamIo } from '../cli/types.js';
-import type { BoardSnapshot } from '../board/snapshot.js';
-import type { WatchBoardOptions } from '../board/feed.js';
+import { watchBoard, type WatchBoardOptions } from '../board/feed.js';
 import type { TickerTimers, WatchDir } from '../board/ticker.js';
+import type { ArgValues, RunContext, StreamIo } from '../cli/types.js';
 import type { Board } from '../store/board.js';
-import type { Frame, Size } from './frame.js';
-import type { UiState } from './state.js';
-import type { BoardModel } from '../view/types.js';
+import { BoardError } from '../store/errors.js';
+import { applyFeedMessage } from '../view/apply.js';
+import type { BoardModel, FeedMessage } from '../view/types.js';
+import {
+  renderFrame,
+  type Color,
+  type Frame,
+  type Size,
+  type Style,
+  type StyleRun,
+} from './frame.js';
+import { decodeKeys, flushKeys, type Key } from './keys.js';
+import { initialUi, reconcileUi, reduceKey, type UiState } from './state.js';
 
 /**
  * Everything `top` needs from its terminal. `processTerminal` builds one
@@ -151,9 +161,88 @@ export interface TerminalHost {
  *   `onExit`: `host.process` `exit`. Each remover removes exactly the
  *   listener it added.
  */
-export function processTerminal(host?: TerminalHost): TerminalIo {
-  void host;
-  throw new Error('processTerminal: not implemented');
+export function processTerminal(host: TerminalHost = realHost()): TerminalIo {
+  const { stdin, stdout } = host;
+  return {
+    stdinIsTTY: stdin.isTTY === true,
+    stdoutIsTTY: stdout.isTTY === true,
+    write: (text) => {
+      stdout.write(text);
+    },
+    size: () => {
+      const { columns, rows } = stdout;
+      return positiveInteger(columns) && positiveInteger(rows)
+        ? { columns, rows }
+        : { columns: DEFAULT_SIZE.columns, rows: DEFAULT_SIZE.rows };
+    },
+    setRawMode: (enabled) => {
+      stdin.setRawMode?.(enabled);
+    },
+    onData: (listener) => {
+      const handler = (chunk?: unknown): void => {
+        const bytes = asBytes(chunk);
+        if (bytes !== null) {
+          listener(bytes);
+        }
+      };
+      stdin.on('data', handler);
+      return () => {
+        stdin.off('data', handler);
+        stdin.pause();
+        stdin.unref?.();
+      };
+    },
+    onEnd: (listener) => {
+      const handler = (): void => {
+        listener();
+      };
+      stdin.on('end', handler);
+      return () => {
+        stdin.off('end', handler);
+      };
+    },
+    onResize: (listener) => {
+      const handler = (): void => {
+        listener();
+      };
+      stdout.on('resize', handler);
+      return () => {
+        stdout.off('resize', handler);
+      };
+    },
+    onExit: (listener) => {
+      const handler = (): void => {
+        listener();
+      };
+      host.process.on('exit', handler);
+      return () => {
+        host.process.off('exit', handler);
+      };
+    },
+  };
+}
+
+/** The size used when the output does not report one. */
+const DEFAULT_SIZE: Readonly<Size> = { columns: 80, rows: 24 };
+
+function positiveInteger(value: number | undefined): value is number {
+  return value !== undefined && Number.isInteger(value) && value > 0;
+}
+
+/** An input chunk as bytes: a string as its UTF-8 bytes; anything else is ignored. */
+function asBytes(chunk: unknown): Uint8Array | null {
+  if (chunk instanceof Uint8Array) {
+    return chunk;
+  }
+  if (typeof chunk === 'string') {
+    return new TextEncoder().encode(chunk);
+  }
+  return null;
+}
+
+/** The real process as a `TerminalHost`. */
+function realHost(): TerminalHost {
+  return { stdin: process.stdin, stdout: process.stdout, process };
 }
 
 /** Options of `runTop`. */
@@ -247,8 +336,389 @@ export interface TopOptions {
  * Does not close the board.
  */
 export function runTop(options: TopOptions): Promise<void> {
-  void options;
-  return Promise.reject(new Error('runTop: not implemented'));
+  if (options.signal.aborted) {
+    return Promise.resolve();
+  }
+  const load = options.loadSnapshot ?? defaultLoadSnapshot;
+  let model: BoardModel;
+  try {
+    model = { ...load(options.board), late: [] };
+  } catch (error) {
+    return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+  }
+  return new Promise<void>((resolve, reject) => {
+    new TopSession(options, model, load, resolve, reject).start();
+  });
+}
+
+/** The escape sequence introducer (ESC `[`). */
+const CSI = '\x1b[';
+const ENTER_ALT = `${CSI}?1049h`;
+const LEAVE_ALT = `${CSI}?1049l`;
+const HIDE_CURSOR = `${CSI}?25l`;
+const SHOW_CURSOR = `${CSI}?25h`;
+const RESET = `${CSI}0m`;
+
+/** The SGR color parameters, in the order of `Color` (30 to 37). */
+const COLOR_CODES: Readonly<Record<Color, number>> = {
+  black: 30,
+  red: 31,
+  green: 32,
+  yellow: 33,
+  blue: 34,
+  magenta: 35,
+  cyan: 36,
+  white: 37,
+};
+
+const DEFAULT_STYLE: Readonly<Style> = { bold: false, dim: false, inverse: false, color: null };
+
+function sameStyle(a: Style, b: Style): boolean {
+  return a.bold === b.bold && a.dim === b.dim && a.inverse === b.inverse && a.color === b.color;
+}
+
+function sameRuns(a: readonly StyleRun[], b: readonly StyleRun[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((run, i) => {
+      const other = b[i];
+      return (
+        other !== undefined &&
+        run.start === other.start &&
+        run.length === other.length &&
+        sameStyle(run.style, other.style)
+      );
+    })
+  );
+}
+
+/** The SGR sequence that sets exactly `style` (starting with a reset). */
+function sgr(style: Style, color: boolean): string {
+  const params = ['0'];
+  if (style.bold) {
+    params.push('1');
+  }
+  if (style.dim) {
+    params.push('2');
+  }
+  if (style.inverse) {
+    params.push('7');
+  }
+  if (color && style.color !== null) {
+    params.push(String(COLOR_CODES[style.color]));
+  }
+  return `${CSI}${params.join(';')}m`;
+}
+
+/**
+ * The output that draws row `index` of a frame in full: the cursor at its
+ * first column, each segment of cells with its style, then a reset. The
+ * first segment always sets its style, so nothing depends on the style
+ * the terminal was left in.
+ */
+function rowOutput(index: number, line: string, runs: readonly StyleRun[], color: boolean): string {
+  const segments: { text: string; style: Style }[] = [];
+  let at = 0;
+  for (const run of runs) {
+    if (run.start > at) {
+      segments.push({ text: line.slice(at, run.start), style: DEFAULT_STYLE });
+    }
+    segments.push({ text: line.slice(run.start, run.start + run.length), style: run.style });
+    at = run.start + run.length;
+  }
+  if (at < line.length) {
+    segments.push({ text: line.slice(at), style: DEFAULT_STYLE });
+  }
+  let out = `${CSI}${String(index + 1)};1H`;
+  let current: string | null = null;
+  for (const segment of segments) {
+    const set = sgr(segment.style, color);
+    if (set !== current) {
+      out += set;
+      current = set;
+    }
+    out += segment.text;
+  }
+  return `${out}${RESET}`;
+}
+
+/** One running board feed and its stopper. */
+interface RunningFeed {
+  readonly controller: AbortController;
+  /** Settles once the feed has stopped; never rejects. */
+  done: Promise<void>;
+}
+
+/** The state of one `runTop` call once its first snapshot is loaded. */
+class TopSession {
+  private ui: UiState;
+  private readonly color: boolean;
+  private readonly now: () => number;
+  private readonly render: NonNullable<TopOptions['render']>;
+  private readonly watch: NonNullable<TopOptions['watch']>;
+  private readonly redrawMs: number;
+  private readonly escapeMs: number;
+  /** The frame drawn last (null: nothing drawn yet, or a full redraw is due). */
+  private last: { frame: Frame; size: Size } | null = null;
+  private pending: Uint8Array = new Uint8Array(0);
+  private escapeTimer: ReturnType<typeof setTimeout> | null = null;
+  private redrawTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly removers: (() => void)[] = [];
+  private readonly feeds: RunningFeed[] = [];
+  private feed: RunningFeed | null = null;
+  private restored = false;
+  private stopped = false;
+
+  constructor(
+    private readonly options: TopOptions,
+    private model: BoardModel,
+    private readonly load: (board: Board) => BoardSnapshot,
+    private readonly resolve: () => void,
+    private readonly reject: (error: unknown) => void,
+  ) {
+    const env = options.env.NO_COLOR;
+    this.color = env === undefined || env === '';
+    this.now = options.now ?? Date.now;
+    this.render = options.render ?? renderFrame;
+    this.watch = options.watch ?? watchBoard;
+    this.redrawMs = options.redrawMs ?? REDRAW_MS;
+    this.escapeMs = options.escapeMs ?? ESCAPE_FLUSH_MS;
+    this.ui = reconcileUi(initialUi(options.boardDir ?? options.board.dir), model);
+  }
+
+  /** Steps 3 to 5 of `runTop`: every failure from here on restores first. */
+  start(): void {
+    const { terminal, signal } = this.options;
+    // Registered before any terminal change, so an exiting process restores.
+    this.removers.push(
+      terminal.onExit(() => {
+        this.stop(null);
+      }),
+    );
+    this.guard(() => {
+      terminal.write(`${ENTER_ALT}${HIDE_CURSOR}`);
+      terminal.setRawMode(true);
+      this.removers.push(
+        terminal.onData((chunk) => {
+          this.guard(() => {
+            this.input(chunk);
+          });
+        }),
+        terminal.onResize(() => {
+          this.guard(() => {
+            this.last = null;
+            this.draw();
+          });
+        }),
+        terminal.onEnd(() => {
+          this.stop(null);
+        }),
+      );
+      const onAbort = (): void => {
+        this.stop(null);
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      this.removers.push(() => {
+        signal.removeEventListener('abort', onAbort);
+      });
+      this.redrawTimer = setInterval(() => {
+        this.guard(() => {
+          this.draw();
+        });
+      }, this.redrawMs);
+      this.draw();
+      this.startFeed();
+    });
+  }
+
+  /** Runs `fn`; a failure restores the terminal and rejects with it. */
+  private guard(fn: () => void): void {
+    if (this.stopped) {
+      return;
+    }
+    try {
+      fn();
+    } catch (error) {
+      this.stop({ error });
+    }
+  }
+
+  /** Starts a board feed from the model's position id. */
+  private startFeed(): void {
+    const controller = new AbortController();
+    // Registered before the feed starts: its first tick runs synchronously.
+    const feed: RunningFeed = { controller, done: Promise.resolve() };
+    this.feed = feed;
+    this.feeds.push(feed);
+    const current = (): boolean => this.feed === feed;
+    const watchOptions: WatchBoardOptions = {
+      signal: controller.signal,
+      since: this.model.id,
+      onMessage: (message) => {
+        if (current()) {
+          this.guard(() => {
+            this.message(message);
+          });
+        }
+      },
+      onWarning: () => {
+        if (current()) {
+          this.guard(() => {
+            this.ui = { ...this.ui, notice: 'busy' };
+            this.draw();
+          });
+        }
+      },
+      ...this.options.feed,
+    };
+    feed.done = this.watch(this.options.board, watchOptions).catch((error: unknown) => {
+      // A failure of the feed running now stops top; a replaced feed's is moot.
+      if (current()) {
+        this.stop({ error });
+      }
+    });
+  }
+
+  /** One feed message: an append is applied, a resync reloads and restarts the feed. */
+  private message(message: FeedMessage): void {
+    if (this.ui.notice !== null) {
+      this.ui = { ...this.ui, notice: null };
+    }
+    const applied = applyFeedMessage(this.model, message);
+    if (!applied.reload) {
+      this.model = applied.model;
+      this.ui = reconcileUi(this.ui, this.model);
+      this.draw();
+      return;
+    }
+    this.model = { ...this.load(this.options.board), late: applied.late };
+    this.ui = reconcileUi(this.ui, this.model);
+    this.feed?.controller.abort();
+    this.draw();
+    this.startFeed();
+  }
+
+  /** One chunk of input. */
+  private input(chunk: Uint8Array): void {
+    if (this.escapeTimer !== null) {
+      clearTimeout(this.escapeTimer);
+      this.escapeTimer = null;
+    }
+    const decoded = decodeKeys(chunk, this.pending);
+    this.pending = decoded.pending;
+    if (!this.keys(decoded.keys)) {
+      return;
+    }
+    if (this.pending.length > 0) {
+      this.escapeTimer = setTimeout(() => {
+        this.escapeTimer = null;
+        this.guard(() => {
+          const keys = flushKeys(this.pending);
+          this.pending = new Uint8Array(0);
+          this.keys(keys);
+        });
+      }, this.escapeMs);
+    }
+  }
+
+  /** Applies `keys`, then draws once; false when top stopped (a quit key). */
+  private keys(keys: readonly Key[]): boolean {
+    for (const key of keys) {
+      this.ui = reduceKey(this.ui, key, this.model, this.options.terminal.size());
+      if (this.ui.quit) {
+        this.stop(null);
+        return false;
+      }
+    }
+    this.draw();
+    return true;
+  }
+
+  /** Draws the current frame: every row after a resize or at first, else the rows that changed. */
+  private draw(): void {
+    if (this.stopped) {
+      return;
+    }
+    const size = this.options.terminal.size();
+    const frame = this.render(this.model, this.ui, size, this.now());
+    const last = this.last;
+    const full =
+      last === null || last.size.columns !== size.columns || last.size.rows !== size.rows;
+    let out = '';
+    for (const [index, line] of frame.lines.entries()) {
+      const runs = frame.styles[index] ?? [];
+      if (
+        !full &&
+        line === last.frame.lines[index] &&
+        sameRuns(runs, last.frame.styles[index] ?? [])
+      ) {
+        continue;
+      }
+      out += rowOutput(index, line, runs, this.color);
+    }
+    this.last = { frame, size };
+    if (out !== '') {
+      this.options.terminal.write(out);
+    }
+  }
+
+  /** Restores the terminal, once. Synchronous (it runs on the process exit). */
+  private restore(): void {
+    if (this.restored) {
+      return;
+    }
+    this.restored = true;
+    const { terminal } = this.options;
+    try {
+      terminal.setRawMode(false);
+    } finally {
+      terminal.write(`${RESET}${SHOW_CURSOR}${LEAVE_ALT}`);
+    }
+  }
+
+  /**
+   * Stops, once: restores the terminal, removes every listener, clears the
+   * timers, stops every feed and, once they have stopped, resolves (or
+   * rejects with `failure.error`).
+   */
+  private stop(failure: { error: unknown } | null): void {
+    if (this.stopped) {
+      return;
+    }
+    this.stopped = true;
+    let outcome = failure;
+    try {
+      this.restore();
+    } catch (error) {
+      outcome ??= { error };
+    }
+    for (const remove of this.removers.splice(0)) {
+      remove();
+    }
+    if (this.escapeTimer !== null) {
+      clearTimeout(this.escapeTimer);
+      this.escapeTimer = null;
+    }
+    if (this.redrawTimer !== null) {
+      clearInterval(this.redrawTimer);
+      this.redrawTimer = null;
+    }
+    this.feed = null;
+    for (const feed of this.feeds) {
+      feed.controller.abort();
+    }
+    // After a microtask, so a feed stopped during its own synchronous first
+    // tick has its promise recorded.
+    void Promise.resolve()
+      .then(() => Promise.all(this.feeds.map((feed) => feed.done)))
+      .then(() => {
+        if (outcome === null) {
+          this.resolve();
+        } else {
+          this.reject(outcome.error);
+        }
+      });
+  }
 }
 
 /** Test seams of `topCommand`: everything of `TopOptions` it does not supply itself. */
@@ -277,9 +747,34 @@ export function topCommand(
   io: StreamIo,
   deps: TopDeps = {},
 ): Promise<void> {
-  void ctx;
   void values;
-  void io;
-  void deps;
-  return Promise.reject(new Error('topCommand: not implemented'));
+  const { terminal } = io;
+  if (
+    terminal === undefined ||
+    !terminal.stdinIsTTY ||
+    !terminal.stdoutIsTTY ||
+    ctx.env.TERM === 'dumb'
+  ) {
+    return Promise.reject(
+      new BoardError(
+        1,
+        'not-a-tty',
+        'agentboard top needs an interactive terminal: standard input and output must be a terminal, and TERM must not be dumb',
+      ),
+    );
+  }
+  let board: Board;
+  try {
+    board = ctx.board();
+  } catch (error) {
+    return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+  }
+  return runTop({
+    ...deps,
+    board,
+    terminal,
+    signal: io.signal,
+    env: ctx.env,
+    boardDir: board.dir,
+  });
 }
