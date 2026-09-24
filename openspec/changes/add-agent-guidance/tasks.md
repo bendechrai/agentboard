@@ -18,9 +18,9 @@ or above 90 percent.
 
 ## 3. Installing guidance
 
-- [ ] 3.1 Implement `agents install` targets `claude` and `agents-md` with markers, `GUIDANCE_VERSION`, working-tree root resolution, auto-detection and `--force`, and verify with tests for fresh install, idempotent reinstall (no byte changes), upgrade of a managed block with surrounding user text preserved, refusal of a foreign `SKILL.md`, a malformed marker pair, and auto-detection reporting
-- [ ] 3.2 Add the `yaml` package with `npm install` and implement the `openspec` target (apply and archive guidance entries prefixed `agentboard:`) and the `mcp-json` target, and verify with tests against a fixture copy of the OpenSpec-generated `config.yaml` that all comments survive in order, that reinstall is a no-op, that a non-list `guidance` value is refused with the manual lines printed, and that a differing `mcpServers.agentboard` entry is refused without `--force`
-- [ ] 3.3 Implement `agents check` with `current`, `stale` and `modified` states and `--json`, and the `init` suggestion line, and verify with tests for each state and exit code
+- [x] 3.1 Implement `agents install` targets `claude` and `agents-md` with markers, `GUIDANCE_VERSION`, working-tree root resolution, auto-detection and `--force`, and verify with tests for fresh install, idempotent reinstall (no byte changes), upgrade of a managed block with surrounding user text preserved, refusal of a foreign `SKILL.md`, a malformed marker pair, and auto-detection reporting
+- [x] 3.2 Add the `yaml` package with `npm install` and implement the `openspec` target (apply and archive guidance entries prefixed `agentboard:`) and the `mcp-json` target, and verify with tests against a fixture copy of the OpenSpec-generated `config.yaml` that all comments survive in order, that reinstall is a no-op, that a non-list `guidance` value is refused with the manual lines printed, and that a differing `mcpServers.agentboard` entry is refused without `--force`
+- [x] 3.3 Implement `agents check` with `current`, `stale` and `modified` states and `--json`, and the `init` suggestion line, and verify with tests for each state and exit code
 
 ## 4. Guide over MCP
 

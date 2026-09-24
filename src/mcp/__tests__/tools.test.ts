@@ -58,9 +58,22 @@ describe('tool names', () => {
     expect(TOOL_PREFIX).toBe('board_');
   });
 
-  it('excludes exactly init, watch, rebuild, sync, mcp, version and help', () => {
+  it('excludes exactly init, watch, rebuild, sync, mcp, version, help and the agents commands', () => {
+    // agents install and agents check write or read host project files in
+    // the caller's working tree and are run in a shell, like the other
+    // setup commands (add-agent-guidance group 3).
     expect([...EXCLUDED_COMMANDS].sort()).toEqual(
-      ['help', 'init', 'mcp', 'rebuild', 'sync', 'version', 'watch'].sort(),
+      [
+        'agents check',
+        'agents install',
+        'help',
+        'init',
+        'mcp',
+        'rebuild',
+        'sync',
+        'version',
+        'watch',
+      ].sort(),
     );
   });
 

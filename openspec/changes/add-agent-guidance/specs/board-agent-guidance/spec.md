@@ -36,9 +36,11 @@ as one JSON document.
 - **THEN** stdout is one JSON object whose flags include `to`, `status` and `note`, each marked required
 
 ### Requirement: Help is not an MCP tool
-The `help` command SHALL be excluded from the MCP server's tools, like the
-other setup commands; MCP clients receive the agent guide through the
-server's `instructions` and the `agentboard://guide` resource instead.
+The `help`, `agents install` and `agents check` commands SHALL be excluded
+from the MCP server's tools, like the other setup commands: MCP clients
+receive the agent guide through the server's `instructions` and the
+`agentboard://guide` resource instead, and installing guidance writes files
+into the host project, which a tool call from any agent must not do.
 
 #### Scenario: No board_help tool
 - **WHEN** an MCP client lists the tools of `agentboard mcp`
@@ -146,8 +148,11 @@ when it carries the `<!-- agentboard-guidance: v<N> -->` marker; the text
 between `<!-- agentboard:start v<N> -->` and `<!-- agentboard:end -->` in
 `AGENTS.md`; `guidance` list entries beginning with `agentboard:` in
 `openspec/config.yaml`; and the `mcpServers.agentboard` key in `.mcp.json`.
-Everything outside its region SHALL be preserved byte for byte, including
-YAML comments. A `SKILL.md` at the target path without the marker, a
+In `AGENTS.md` and `SKILL.md`, everything outside the owned region SHALL be
+preserved byte for byte. In `openspec/config.yaml` and `.mcp.json`, which
+are rewritten through a YAML or JSON serializer, every key, value, entry,
+comment and their order outside the owned entries SHALL be preserved, while
+insignificant formatting (indentation, quoting style) MAY be normalized. A `SKILL.md` at the target path without the marker, a
 malformed marker pair in `AGENTS.md`, a non-list value at a `guidance` key,
 or an existing `mcpServers.agentboard` entry that differs from the managed
 one SHALL cause that target to be refused with exit 1 and a message naming
@@ -169,8 +174,9 @@ processed.
 ### Requirement: Checking installed guidance
 `agentboard agents check` SHALL inspect every target that has an
 agentboard marker or managed entry in the current working tree and report
-each as `current`, `stale` (older guidance version or differing managed
-text) or `modified` (managed region edited by hand). It SHALL exit 0 when
+each as `current`, `stale` (installed with a different guidance version) or
+`modified` (the managed text differs from what its recorded version renders,
+or its version or markers cannot be read). It SHALL exit 0 when
 all found targets are current, and 1 otherwise, so it can run in a
 project's own checks. With `--json` it SHALL print an array of
 `{target, path, state, installedVersion, currentVersion}`.

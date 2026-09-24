@@ -44,5 +44,8 @@ export * from './guidance/help.js';
 export * from './guidance/guide.js';
 export * from './guidance/hints.js';
 export * from './guidance/suggest.js';
+export * from './guidance/installed-text.js';
+export * from './guidance/install.js';
+export * from './guidance/check.js';
 export * from './mcp/tools.js';
 export * from './mcp/server.js';

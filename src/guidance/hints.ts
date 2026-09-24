@@ -95,6 +95,7 @@ export const HINT_REASONS: readonly string[] = [
   'needs-task-or-adhoc',
   'no-cache',
   'no-disposition',
+  'no-targets',
   'not-assignee',
   'path-outside-tree',
   'schema-mismatch',
@@ -141,6 +142,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'needs-task-or-adhoc': 1,
   'no-cache': 5,
   'no-disposition': 1,
+  'no-targets': 1,
   'not-assignee': 4,
   'path-outside-tree': 1,
   'schema-mismatch': 5,
@@ -281,6 +283,8 @@ export function hintStep(
  *   board repository, then step `sync`.
  * - `streaming-command`: run the command from the agentboard executable
  *   (step `<command>` when the command is known).
+ * - `no-targets`: `agents install` detected nothing to install; names the
+ *   four targets and step `agents install` with `target` `<target>`.
  *
  * Exit 2: `board-not-found`: step `init`, and `AGENTBOARD_DIR`;
  * `board-not-a-repository`: step `help sync`.
@@ -537,6 +541,8 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     'in the board repository, set an upstream for the branch or name one remote origin',
   ),
   'streaming-command': streamingHint,
+  'no-targets': (h) =>
+    `choose what to install with ${h.step('agents install', [['target', '<target>']])}, where <target> is claude, agents-md, openspec or mcp-json`,
   // Exit 2.
   'board-not-found': (h) =>
     `create the board with ${h.step('init')} at the root of the main checkout, or set AGENTBOARD_DIR to an existing board`,

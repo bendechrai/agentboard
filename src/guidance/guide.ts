@@ -114,7 +114,8 @@ export const GUIDE_MAX_LINES = 150;
  *    line), defaulting to the server's actor (a command line
  *    `agentboard mcp --as <actor>`), then its `AGENTBOARD_ACTOR`; errors
  *    carry `exitCode`, `reason`, `message` and `hint`; `init`, `watch`,
- *    `rebuild`, `sync`, `mcp`, `version` and `help` are not tools. It names
+ *    `rebuild`, `sync`, `mcp`, `version`, `help`, `agents install` and
+ *    `agents check` are not tools. It names
  *    at least `board_claim`, `board_inbox`, `board_handoff` and
  *    `board_checklist_tick`.
  * 9. `Exit codes and hints`: one line per exit code 0 to 5, each written
@@ -431,8 +432,9 @@ const GUIDE_BODY: readonly string[] = [
   "server's own actor, set when it was started as",
   '  agentboard mcp --as <actor>',
   "and then the server's AGENTBOARD_ACTOR. A failed call returns exitCode,",
-  'reason, message and hint. init, watch, rebuild, sync, mcp, version and',
-  'help are not tools; run those in a shell.',
+  'reason, message and hint. init, watch, rebuild, sync, mcp, version,',
+  'help, agents install and agents check are not tools; run those in a',
+  'shell.',
   '',
   'Exit codes and hints',
   '  0  success',

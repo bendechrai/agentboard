@@ -487,7 +487,9 @@ describe('help agents beside commands whose first word is agents', () => {
       summary: `${name} (fake, for this test)`,
       examples: [{ command: 'agentboard version', summary: 'placeholder' }],
     }));
-    return { source: { ...HELP_SOURCE, commands: [...COMMANDS, ...fakes] }, fakes };
+    // Group 3 added the real commands; the fakes stand in for them here.
+    const others = COMMANDS.filter((c) => !c.name.startsWith('agents '));
+    return { source: { ...HELP_SOURCE, commands: [...others, ...fakes] }, fakes };
   }
 
   it('help agents is still the guide, with or without --role', () => {

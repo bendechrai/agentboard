@@ -42,6 +42,8 @@ import { CACHE_FILE, CACHE_SCHEMA_VERSION } from '../store/cache.js';
 import { BoardError } from '../store/errors.js';
 import { checkCache, rebuild } from '../store/rebuild.js';
 import { helpOutput, type HelpSource } from '../guidance/help.js';
+import { checkCommand } from '../guidance/check.js';
+import { INIT_SUGGESTION, installCommand } from '../guidance/install.js';
 import { VERSION } from '../version.js';
 import {
   asciiText,
@@ -421,8 +423,9 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  * Every command of this version, in this order: `init`, `new`, `show`,
  * `list`, `claim`, `release`, `move`, `comment`, `handoff`, `link`,
  * `checklist tick`, `checklist untick`, `close`, `inbox`, `watch`, `rebuild`,
- * `sync`, `import-change`, `close-merged`, `mcp`, `version` (the board-cli
- * order), then `help` (add-agent-guidance).
+ * `sync`, `import-change`, `close-merged`, `mcp` (the board-cli order), then
+ * `agents install` and `agents check`, `version` and `help`
+ * (add-agent-guidance).
  *
  * Every entry carries the help data of record (`description`, `group`,
  * `examples`, `exitCodes`; see `CommandSpec`), rendered by
@@ -493,6 +496,16 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   line plus ` (PR <pr> is <state>)`; for each skipped one `skipped `
  *   plus its `list` line plus ` (<reason>)`; then
  *   `close-merged: <c> closed, <u> unmerged, <s> skipped`.
+ * - `init` text ends with the line `INIT_SUGGESTION`
+ *   (`src/guidance/install.ts`), after its `message` line, whether or not
+ *   the board already existed; its `--json` document is unchanged.
+ * - `agents install [--target <t>]... [--force]`: `installCommand` (see
+ *   `src/guidance/install.ts`). Needs no board and no actor (`--as` is
+ *   accepted and ignored); exits 1 with the full result when a target was
+ *   refused.
+ * - `agents check`: `checkCommand` (see `src/guidance/check.ts`). Needs no
+ *   board and no actor; exits 1 with the full report when a target found
+ *   is not current.
  * - `version`: `{ version }`; text: the version.
  * - `mcp`: serves MCP over stdio (`serveMcp` in `src/mcp/server.ts`),
  *   which needs the process's stdin and stdout and runs until the client
@@ -541,7 +554,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     operation: 'initBoard',
     run: (ctx) => {
       const result = initBoard({ cwd: ctx.cwd, env: ctx.env });
-      return { json: result, text: `${result.message}\n` };
+      return { json: result, text: `${result.message}\n${INIT_SUGGESTION}\n` };
     },
   },
   {
@@ -1358,6 +1371,81 @@ export const COMMANDS: readonly CommandSpec[] = [
         'agentboard mcp serves MCP over stdio and runs only from the agentboard executable',
       );
     },
+  },
+  {
+    name: 'agents install',
+    summary: "Install guidance that points this project's coding agents at the board",
+    description:
+      "Writes short agent guidance into the root of the current working tree (git rev-parse --show-toplevel, or the current directory outside git): claude writes the Claude Code skill .claude/skills/agentboard/SKILL.md, agents-md a managed block in AGENTS.md, openspec agentboard: guidance entries for apply and archive in openspec/config.yaml, and mcp-json an agentboard server in .mcp.json. With no --target it selects claude, agents-md and openspec when .claude/, AGENTS.md or openspec/config.yaml exist, and says why; mcp-json is installed only when asked for. Only agentboard's own region of each file is changed. A file or entry agentboard does not own is refused unless --force is given, and the other targets are still installed. The installed text points agents to agentboard help agents. Needs no board and no actor; commit the files it writes.",
+    group: 'setup',
+    examples: [
+      {
+        command: 'agentboard agents install',
+        summary: 'Install guidance for the agent tools this project already uses',
+      },
+      {
+        command: 'agentboard agents install --target claude --target agents-md',
+        summary: 'Install the Claude Code skill and the AGENTS.md block',
+      },
+      {
+        command: 'agentboard agents install --target mcp-json',
+        summary: 'Register the agentboard MCP server in .mcp.json',
+      },
+    ],
+    exitCodes: [
+      { code: 0, meaning: 'Every selected target was installed or was already up to date' },
+      {
+        code: 1,
+        meaning:
+          'A target was refused (its file is named; see --force); the other targets were still processed',
+      },
+      EXIT_USAGE,
+      {
+        code: 1,
+        reason: 'no-targets',
+        meaning: 'No --target was given and no target was detected (the targets are listed)',
+      },
+    ],
+    positionals: [],
+    flags: [
+      flag(
+        'target',
+        'string',
+        'Target to install: claude, agents-md, openspec or mcp-json (repeatable)',
+        { repeatable: true },
+      ),
+      flag('force', 'boolean', 'Overwrite a file or entry that agentboard does not own'),
+    ],
+    exclusive: [],
+    writes: false,
+    operation: 'installGuidance',
+    run: (ctx, values) =>
+      installCommand(ctx.cwd, ctx.env, list(values, 'target'), bool(values, 'force')),
+  },
+  {
+    name: 'agents check',
+    summary: 'Report whether the installed agent guidance is current',
+    description:
+      "Inspects the agent guidance installed in the root of the current working tree (the Claude Code skill, the AGENTS.md block, the openspec/config.yaml entries and the .mcp.json server) and reports each target found as current, stale (installed by another guidance version) or modified (its managed text was edited by hand). Exits 1 unless every target found is current, so it can run in a project's own checks; agentboard agents install brings them up to date. Needs no board and no actor.",
+    group: 'setup',
+    examples: [
+      { command: 'agentboard agents check', summary: 'Check the installed agent guidance' },
+      {
+        command: 'agentboard agents check --json',
+        summary: 'The same, as a JSON array of target, path, state and versions',
+      },
+    ],
+    exitCodes: [
+      { code: 0, meaning: 'Every target found is current, or none was found' },
+      { code: 1, meaning: 'A target found is stale or modified (all are still reported)' },
+      EXIT_USAGE,
+    ],
+    positionals: [],
+    flags: [],
+    exclusive: [],
+    writes: false,
+    operation: 'checkGuidance',
+    run: (ctx) => checkCommand(ctx.cwd, ctx.env),
   },
   {
     name: 'version',
