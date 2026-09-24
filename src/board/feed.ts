@@ -197,6 +197,17 @@ export interface WatchBoardOptions {
    * through it (catch-up's own reading of newly written files is not).
    */
   readonly cache?: EventCache;
+  /**
+   * Lists the effective events recorded in `folded` (hash and `ts`, in any
+   * order), with the contract of `recordedPositions(db, { effectiveOnly:
+   * true })` (`src/store/folded.ts`), which is the default. Every read of
+   * `folded` rows the feed makes itself (catch-up's own reads excepted)
+   * goes through this function, called on `board.db` inside the tick's
+   * read snapshot, so tests can count them: a tick that ends at the quiet
+   * check (catch-up folded nothing and the change marker has not moved)
+   * does not call it.
+   */
+  readonly listEffective?: (db: Board['db']) => readonly { hash: string; ts: Hlc }[];
   /** Passed to the ticker (tests). */
   readonly timers?: TickerTimers;
   /** Passed to the ticker (tests). */
@@ -345,6 +356,9 @@ export function watchBoard(board: Board, options: WatchBoardOptions): Promise<vo
     return { type: 'resync', id: next.id, late: views(late), removed: removed.map((p) => p.hash) };
   };
 
+  const listEffective =
+    options.listEffective ?? ((d: Board['db']) => recordedPositions(d, { effectiveOnly: true }));
+
   const examine = (): void => {
     const report = catchUp(board);
     const current = changeMarker(db);
@@ -358,7 +372,7 @@ export function watchBoard(board: Board, options: WatchBoardOptions): Promise<vo
     }
     const prev = state;
     const { next, message } = inSnapshot(db, () => {
-      const all = recordedPositions(db, { effectiveOnly: true })
+      const all = listEffective(db)
         .map(({ hash, ts }) => ({ hash, ts }))
         .sort(comparePositions);
       const nextState = stateOf(all, prev);
