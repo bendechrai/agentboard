@@ -36,7 +36,9 @@ import {
   type OpenSpecOperation,
 } from './installed-text.js';
 import {
+  PERMISSION_CODES,
   agentsMarkers,
+  errorCode,
   hasSkillMarker,
   isAgentboardItem,
   isJsonObject,
@@ -46,6 +48,7 @@ import {
   parseMcpJson,
   readBytes,
   readText,
+  targetPath,
 } from './markers.js';
 
 /**
@@ -320,8 +323,7 @@ function write(path: string, content: string, encoding: BufferEncoding = 'utf8')
 }
 
 /** The `claude` target: the whole of `SKILL.md`. */
-function installSkill(root: string, version: number, force: boolean): Handled {
-  const path = join(root, SKILL_PATH);
+function installSkill(path: string, version: number, force: boolean): Handled {
   const wanted = renderSkill(version);
   const existing = readBytes(path);
   if (existing === null) {
@@ -354,8 +356,7 @@ function appendBlock(text: string, block: string): string {
 }
 
 /** The `agents-md` target: the managed block of `AGENTS.md`. */
-function installAgentsMd(root: string, version: number, force: boolean): Handled {
-  const path = join(root, AGENTS_MD_PATH);
+function installAgentsMd(path: string, version: number, force: boolean): Handled {
   const block = renderAgentsBlock(version);
   const existing = readBytes(path);
   if (existing === null) {
@@ -508,8 +509,7 @@ function replaceItems(seq: YAMLSeq, op: OpenSpecOperation, version: number): voi
 }
 
 /** The `openspec` target: the `agentboard:` guidance entries of `openspec/config.yaml`. */
-function installOpenSpec(root: string, version: number, force: boolean): Handled {
-  const path = join(root, OPENSPEC_CONFIG_PATH);
+function installOpenSpec(path: string, version: number, force: boolean): Handled {
   const text = readText(path);
   if (text === null) {
     return refuse(
@@ -562,8 +562,7 @@ function installOpenSpec(root: string, version: number, force: boolean): Handled
 }
 
 /** The `mcp-json` target: the `mcpServers.agentboard` key of `.mcp.json`. */
-function installMcpJson(root: string, force: boolean): Handled {
-  const path = join(root, MCP_JSON_PATH);
+function installMcpJson(path: string, force: boolean): Handled {
   const text = readText(path);
   const serialize = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`;
   const entry = { command: MCP_ENTRY.command, args: [...MCP_ENTRY.args] };
@@ -597,22 +596,62 @@ function installMcpJson(root: string, force: boolean): Handled {
   return done('updated', `wrote the agentboard MCP server into ${MCP_JSON_PATH}`);
 }
 
-/** Runs the handler of `target`. */
+/** Runs the handler of `target` on its resolved file `path`. */
+function runHandler(
+  target: GuidanceTarget,
+  path: string,
+  version: number,
+  force: boolean,
+): Handled {
+  switch (target) {
+    case 'claude':
+      return installSkill(path, version, force);
+    case 'agents-md':
+      return installAgentsMd(path, version, force);
+    case 'openspec':
+      return installOpenSpec(path, version, force);
+    case 'mcp-json':
+      return installMcpJson(path, force);
+  }
+}
+
+/**
+ * Installs `target` after checking its path (`outside-tree`, then
+ * `not-a-file`), turning a permission error on a read, mkdir or write into
+ * `unwritable` and a path that turns out not to hold a file into
+ * `not-a-file`. Other errors propagate.
+ */
 function installTarget(
   target: GuidanceTarget,
   root: string,
   version: number,
   force: boolean,
 ): Handled {
-  switch (target) {
-    case 'claude':
-      return installSkill(root, version, force);
-    case 'agents-md':
-      return installAgentsMd(root, version, force);
-    case 'openspec':
-      return installOpenSpec(root, version, force);
-    case 'mcp-json':
-      return installMcpJson(root, force);
+  const rel = TARGET_FILES[target];
+  const where = targetPath(root, rel);
+  if (where.kind === 'outside-tree') {
+    return refuse(
+      'outside-tree',
+      `${rel} resolves to ${where.resolved}, outside the working tree ${root}; agentboard only writes inside the working tree`,
+    );
+  }
+  if (where.kind === 'not-a-file') {
+    return refuse('not-a-file', `${rel} ${where.what} (${where.code}); nothing was written`);
+  }
+  try {
+    return runHandler(target, where.path, version, force);
+  } catch (error) {
+    const code = errorCode(error);
+    if (code !== null && PERMISSION_CODES.includes(code)) {
+      return refuse('unwritable', `cannot read or write ${rel} (${code}); nothing was written`);
+    }
+    if (code === 'EISDIR' || code === 'ENOTDIR' || code === 'EEXIST') {
+      return refuse(
+        'not-a-file',
+        `${rel} cannot be written as a file (${code}); nothing was written`,
+      );
+    }
+    throw error;
   }
 }
 

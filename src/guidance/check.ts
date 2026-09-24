@@ -16,26 +16,22 @@
  * managed region whose version cannot be read at all is `modified`.
  */
 
-import { join } from 'node:path';
-
 import type { CommandOutput, Env } from '../cli/types.js';
-import { TARGET_FILES, workingTreeRoot, type GuidanceTarget } from './install.js';
+import { GUIDANCE_TARGETS, TARGET_FILES, workingTreeRoot, type GuidanceTarget } from './install.js';
 import {
-  AGENTS_MD_PATH,
   GUIDANCE_VERSION,
   MCP_ENTRY,
-  MCP_JSON_PATH,
   MCP_SERVER_NAME,
-  OPENSPEC_CONFIG_PATH,
   OPENSPEC_GUIDANCE,
   OPENSPEC_OPERATIONS,
   OPENSPEC_PREFIX,
-  SKILL_PATH,
   renderAgentsBlock,
   renderSkill,
 } from './installed-text.js';
 import {
+  PERMISSION_CODES,
   agentsMarkers,
+  errorCode,
   hasSkillMarker,
   isJsonObject,
   jsonEqual,
@@ -46,6 +42,7 @@ import {
   readBytes,
   readText,
   skillVersion,
+  targetPath,
 } from './markers.js';
 
 /**
@@ -129,23 +126,66 @@ export interface CheckOptions {
  * Never throws for these (no exit 5).
  */
 export function checkGuidance(options: CheckOptions): GuidanceCheckEntry[] {
+  return inspect(options).entries;
+}
+
+/** A target that could not be read: its relative path and the error code. */
+interface Unreadable {
+  readonly path: string;
+  readonly code: string;
+}
+
+/** `checkGuidance`, plus the targets reported as modified because they could not be read. */
+function inspect(options: CheckOptions): {
+  entries: GuidanceCheckEntry[];
+  unreadable: Unreadable[];
+} {
   const root = workingTreeRoot(options.cwd, options.env ?? process.env);
   const v = options.version ?? GUIDANCE_VERSION;
-  const found = [
-    checkSkill(root, v),
-    checkAgentsMd(root, v),
-    checkOpenSpec(root, v),
-    checkMcpJson(root),
-  ];
-  return found
-    .filter((f): f is Found => f !== null)
-    .map((f) => ({
-      target: f.target,
-      path: TARGET_FILES[f.target],
-      state: f.state,
-      installedVersion: f.installedVersion,
-      currentVersion: v,
-    }));
+  const entries: GuidanceCheckEntry[] = [];
+  const unreadable: Unreadable[] = [];
+  for (const target of GUIDANCE_TARGETS) {
+    const rel = TARGET_FILES[target];
+    const where = targetPath(root, rel);
+    if (where.kind !== 'ok') {
+      continue;
+    }
+    let found: Found | null;
+    try {
+      found = checkTarget(target, where.path, v);
+    } catch (error) {
+      const code = errorCode(error);
+      if (code === null || !PERMISSION_CODES.includes(code)) {
+        throw error;
+      }
+      unreadable.push({ path: rel, code });
+      found = { target, state: 'modified', installedVersion: null };
+    }
+    if (found !== null) {
+      entries.push({
+        target,
+        path: rel,
+        state: found.state,
+        installedVersion: found.installedVersion,
+        currentVersion: v,
+      });
+    }
+  }
+  return { entries, unreadable };
+}
+
+/** Runs the check of `target` on its resolved file `path`. */
+function checkTarget(target: GuidanceTarget, path: string, v: number): Found | null {
+  switch (target) {
+    case 'claude':
+      return checkSkill(path, v);
+    case 'agents-md':
+      return checkAgentsMd(path, v);
+    case 'openspec':
+      return checkOpenSpec(path, v);
+    case 'mcp-json':
+      return checkMcpJson(path);
+  }
 }
 
 /** A target found by one of the checks below. */
@@ -174,8 +214,8 @@ function versionedState(
   return matches() ? 'current' : 'modified';
 }
 
-function checkSkill(root: string, v: number): Found | null {
-  const text = readBytes(join(root, SKILL_PATH));
+function checkSkill(path: string, v: number): Found | null {
+  const text = readBytes(path);
   if (text === null || !hasSkillMarker(text)) {
     return null;
   }
@@ -187,8 +227,8 @@ function checkSkill(root: string, v: number): Found | null {
   };
 }
 
-function checkAgentsMd(root: string, v: number): Found | null {
-  const text = readBytes(join(root, AGENTS_MD_PATH));
+function checkAgentsMd(path: string, v: number): Found | null {
+  const text = readBytes(path);
   if (text === null) {
     return null;
   }
@@ -211,8 +251,8 @@ function checkAgentsMd(root: string, v: number): Found | null {
   }
 }
 
-function checkOpenSpec(root: string, v: number): Found | null {
-  const text = readText(join(root, OPENSPEC_CONFIG_PATH));
+function checkOpenSpec(path: string, v: number): Found | null {
+  const text = readText(path);
   if (text === null) {
     return null;
   }
@@ -243,8 +283,8 @@ function checkOpenSpec(root: string, v: number): Found | null {
   };
 }
 
-function checkMcpJson(root: string): Found | null {
-  const text = readText(join(root, MCP_JSON_PATH));
+function checkMcpJson(path: string): Found | null {
+  const text = readText(path);
   const config = text === null ? null : parseMcpJson(text);
   const servers = config?.mcpServers;
   if (!isJsonObject(servers) || !Object.hasOwn(servers, MCP_SERVER_NAME)) {
@@ -286,7 +326,7 @@ export function renderGuidanceCheck(entries: readonly GuidanceCheckEntry[], root
  * nothing was found).
  */
 export function checkCommand(cwd: string, env: Env): CommandOutput {
-  const entries = checkGuidance({ cwd, env });
+  const { entries, unreadable } = inspect({ cwd, env });
   const output: CommandOutput = {
     json: entries,
     text: renderGuidanceCheck(entries, workingTreeRoot(cwd, env)),
@@ -299,6 +339,7 @@ export function checkCommand(cwd: string, env: Env): CommandOutput {
     ...output,
     exitCode: 1,
     warnings: [
+      ...unreadable.map((u) => `cannot read ${u.path} (${u.code}); reported as modified`),
       `${String(notCurrent)} of ${String(entries.length)} guidance target(s) are not current; run agentboard agents install to rewrite them`,
     ],
   };

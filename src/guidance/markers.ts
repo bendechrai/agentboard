@@ -5,11 +5,109 @@
  * guidance module: not re-exported from the package entry point.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 
 import { isMap, isScalar, isSeq, parseDocument, type Document } from 'yaml';
 
 import { BLOCK_END, OPENSPEC_OPERATIONS, OPENSPEC_PREFIX } from './installed-text.js';
+
+/** The `code` of a Node.js system error, or null. */
+export function errorCode(error: unknown): string | null {
+  if (typeof error === 'object' && error !== null && 'code' in error) {
+    const { code } = error;
+    return typeof code === 'string' ? code : null;
+  }
+  return null;
+}
+
+/** Error codes of a read or write the caller is not permitted to do. */
+export const PERMISSION_CODES: readonly string[] = ['EACCES', 'EPERM'];
+
+/** Symlinks followed before giving up (like the kernel's `ELOOP` limit). */
+const MAX_LINKS = 40;
+
+/**
+ * `path` with every symlink resolved: `realpathSync` when it exists; for a
+ * dangling symlink, the resolution of its target; otherwise the resolution
+ * of its nearest existing ancestor with the rest of the path appended.
+ */
+function resolvePath(path: string, links = 0): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    // Missing, dangling, or not reachable: resolved by hand below.
+  }
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch (error) {
+    const parent = dirname(path);
+    const code = errorCode(error);
+    if ((code === 'ENOENT' || code === 'ENOTDIR') && parent !== path) {
+      return join(resolvePath(parent, links), basename(path));
+    }
+    return path;
+  }
+  if (stat.isSymbolicLink() && links < MAX_LINKS) {
+    return resolvePath(resolve(dirname(path), readlinkSync(path)), links + 1);
+  }
+  return path;
+}
+
+/**
+ * Where a target's file is, checked against the working tree root:
+ * - `ok`: `path` is the file with symlinks resolved, inside the tree, and
+ *   is a regular file or does not exist yet (its nearest existing ancestor
+ *   being a directory);
+ * - `outside-tree`: `resolved` is not the root or inside it;
+ * - `not-a-file`: something that is not a regular file is at the path
+ *   (`EISDIR` for a directory), or an ancestor is not a directory
+ *   (`ENOTDIR`).
+ */
+export type TargetPath =
+  | { readonly kind: 'ok'; readonly path: string }
+  | { readonly kind: 'outside-tree'; readonly resolved: string }
+  | { readonly kind: 'not-a-file'; readonly code: 'EISDIR' | 'ENOTDIR'; readonly what: string };
+
+/** Resolves `<root>/<rel>` and checks it (see `TargetPath`). Reads only. */
+export function targetPath(root: string, rel: string): TargetPath {
+  const resolved = resolvePath(join(root, rel));
+  if (resolved !== root && !resolved.startsWith(`${root}${sep}`)) {
+    return { kind: 'outside-tree', resolved };
+  }
+  try {
+    const stat = statSync(resolved);
+    if (stat.isFile()) {
+      return { kind: 'ok', path: resolved };
+    }
+    return {
+      kind: 'not-a-file',
+      code: 'EISDIR',
+      what: stat.isDirectory() ? 'is a directory' : 'is not a regular file',
+    };
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === 'ENOTDIR') {
+      return { kind: 'not-a-file', code, what: 'has a parent that is not a directory' };
+    }
+    if (code !== 'ENOENT') {
+      // Not reachable (for example EACCES): the read or write reports it.
+      return { kind: 'ok', path: resolved };
+    }
+  }
+  for (let dir = dirname(resolved); dir !== dirname(dir); dir = dirname(dir)) {
+    try {
+      const isDir = statSync(dir).isDirectory();
+      return isDir
+        ? { kind: 'ok', path: resolved }
+        : { kind: 'not-a-file', code: 'ENOTDIR', what: 'has a parent that is not a directory' };
+    } catch {
+      // Keep looking for the nearest existing ancestor.
+    }
+  }
+  return { kind: 'ok', path: resolved };
+}
 
 /** Text a `SKILL.md` line contains when agentboard owns the file. */
 export const SKILL_MARKER_TEXT = '<!-- agentboard-guidance:';
