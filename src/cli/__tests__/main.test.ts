@@ -87,6 +87,7 @@ describe('every command prints exactly one JSON document with --json', () => {
       'close-merged': () => run(['close-merged', ...AS, '--json'], root),
       mcp: () => run(['mcp', '--json'], root),
       version: () => run(['version', '--json'], root),
+      help: () => run(['help', '--json'], root),
     };
   }
 
@@ -128,6 +129,9 @@ describe('every command prints exactly one JSON document with --json', () => {
     // mcp serves over stdio from the executable only (src/cli.ts dispatches it).
     expect(docs.mcp).toMatchObject({ error: { exitCode: 1, reason: 'streaming-command' } });
     expect(docs.version).toEqual({ version });
+    expect((docs.help as { name: string }[]).map((d) => d.name)).toEqual(
+      COMMANDS.map((c) => c.name),
+    );
     expect(count(boardDir)).toBe(12);
   });
 });

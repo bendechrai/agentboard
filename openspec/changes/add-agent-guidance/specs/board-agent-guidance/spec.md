@@ -35,10 +35,21 @@ as one JSON document.
 - **WHEN** `agentboard help handoff --json` runs
 - **THEN** stdout is one JSON object whose flags include `to`, `status` and `note`, each marked required
 
+### Requirement: Help is not an MCP tool
+The `help` command SHALL be excluded from the MCP server's tools, like the
+other setup commands; MCP clients receive the agent guide through the
+server's `instructions` and the `agentboard://guide` resource instead.
+
+#### Scenario: No board_help tool
+- **WHEN** an MCP client lists the tools of `agentboard mcp`
+- **THEN** no tool named `board_help` is listed
+
 ### Requirement: Unknown command suggestions
 An unknown command or unknown flag SHALL exit 1, name the unknown token,
 suggest up to three registry commands or flags within an edit distance of
-2, and point to `agentboard help`.
+2 (a two-word command is also suggested when its first word is within that
+distance), and point to `agentboard help`. `--help` and `-h` anywhere before
+a lone `--` SHALL request help for the command named before them.
 
 #### Scenario: Misspelled command
 - **WHEN** `agentboard clam 01J9K3 --as impl` runs

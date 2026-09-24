@@ -6,6 +6,7 @@
  */
 
 import type { Board } from '../store/board.js';
+import type { ExitCode } from '../store/errors.js';
 
 /** The environment a command runs with; defined in `src/board/text.ts` (layering). */
 import type { Env } from '../board/text.js';
@@ -164,6 +165,64 @@ export interface StreamIo {
   readonly signal: AbortSignal;
 }
 
+/**
+ * The overview section a command is listed under (board-agent-guidance:
+ * "Generated help"), in overview order:
+ * - `lifecycle`: "Ticket lifecycle" (creating, finding and moving tickets);
+ * - `awareness`: "Change awareness" (`inbox`, `watch`);
+ * - `planning`: "Planning integration" (`import-change`, `close-merged`);
+ * - `maintenance`: "Maintenance" (`rebuild`, `sync`);
+ * - `setup`: "Setup" (`init`, `mcp`, `version`, `help`).
+ */
+export type CommandGroup = 'lifecycle' | 'awareness' | 'planning' | 'maintenance' | 'setup';
+
+/** Every `CommandGroup`, in overview order. */
+export const COMMAND_GROUPS: readonly CommandGroup[] = [
+  'lifecycle',
+  'awareness',
+  'planning',
+  'maintenance',
+  'setup',
+];
+
+/**
+ * One example of a command, shown in its help (board-agent-guidance:
+ * "Generated help").
+ */
+export interface CommandExample {
+  /**
+   * A complete command line starting with `agentboard ` followed by the
+   * command's words, in plain ASCII, whose arguments are separated by
+   * single spaces and may be quoted with `"` or `'` (no escapes inside
+   * quotes). Split into words it SHALL parse with `parseArgs` to this very
+   * command (the drift guard in `src/guidance/__tests__/help.test.ts`), so
+   * renaming a flag breaks the build until the example is fixed. Placeholder
+   * ids are plausible ULID prefixes such as `01J9K3`.
+   */
+  readonly command: string;
+  /** One ASCII sentence saying what the example does. */
+  readonly summary: string;
+}
+
+/**
+ * One exit code a command can produce, shown in its help.
+ *
+ * A command lists every code it can produce, in ascending `code` order,
+ * starting with `0` (success). Several entries may share a code when they
+ * differ by `reason`; an entry without `reason` covers every failure of
+ * that code the command can produce (typically 5, integrity or a cache
+ * still busy). `reason`, when present, is exactly the `BoardError` reason
+ * token the CLI reports in its `--json` error document, so an agent can
+ * match on it.
+ */
+export interface ExitCodeSpec {
+  readonly code: ExitCode;
+  /** The `BoardError` reason; absent for 0 and for a class-wide entry. */
+  readonly reason?: string;
+  /** What the code means for this command; one ASCII line. */
+  readonly meaning: string;
+}
+
 /** One command of the registry. */
 export interface CommandSpec {
   /**
@@ -173,6 +232,29 @@ export interface CommandSpec {
   readonly name: string;
   /** One-line ASCII summary. */
   readonly summary: string;
+  /**
+   * A longer ASCII description for the command's help: one or more
+   * sentences on one logical paragraph (no newlines), saying what the
+   * command does, what it requires (a board, an actor) and anything an
+   * agent must know before running it. Help wraps it for display.
+   */
+  readonly description: string;
+  /** The overview section the command is listed under. */
+  readonly group: CommandGroup;
+  /** At least one example; every one parses to this command. */
+  readonly examples: readonly CommandExample[];
+  /** Every exit code the command can produce (see `ExitCodeSpec`). */
+  readonly exitCodes: readonly ExitCodeSpec[];
+  /**
+   * Help text for `--as` on a command that neither writes nor tracks a
+   * cursor but still uses the actor: one ASCII line replacing
+   * `Accepted and ignored by this command` on the `--as` line of its help
+   * (the line still reads `string, optional`). Only `mcp` has it, where
+   * `--as` is the server's default actor for tool calls. Absent on every
+   * command that writes or tracks a cursor, and on every command that
+   * ignores `--as`.
+   */
+  readonly actorHelp?: string;
   /** Positional arguments in order. */
   readonly positionals: readonly ArgSpec[];
   /**
@@ -197,8 +279,8 @@ export interface CommandSpec {
   readonly tracksCursor?: boolean;
   /**
    * Name of the library function (exported from `src/index.ts`) the command
-   * calls, e.g. `claimTicket`; null for `version` and `mcp`, which call
-   * none. Normally in `src/board/`; `rebuild` names the store's `rebuild`
+   * calls, e.g. `claimTicket`; null for `version`, `mcp` and `help`, which
+   * call none. Normally in `src/board/`; `rebuild` names the store's `rebuild`
    * (its `--check` form calls the store's `checkCache`).
    */
   readonly operation: string | null;

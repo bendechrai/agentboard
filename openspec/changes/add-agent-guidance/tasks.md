@@ -8,8 +8,8 @@ or above 90 percent.
 
 ## 1. Generated help
 
-- [ ] 1.1 Extend registry entries with `description`, `examples` and `exitCodes`, and implement the help renderer (`src/guidance/help.ts`) for the overview and per-command help, including `--json`, and verify with tests that every registry command renders synopsis, flags, exit codes and an example, that `--help` works with no board and no actor, and that the overview ends with the agents line
-- [ ] 1.2 Implement unknown command and flag suggestions (edit distance 2, at most three) and verify with tests for a misspelled command, a misspelled flag and a token with no close match
+- [x] 1.1 Extend registry entries with `description`, `examples` and `exitCodes`, and implement the help renderer (`src/guidance/help.ts`) for the overview and per-command help, including `--json`, and verify with tests that every registry command renders synopsis, flags, exit codes and an example, that `--help` works with no board and no actor, and that the overview ends with the agents line
+- [x] 1.2 Implement unknown command and flag suggestions (edit distance 2, at most three) and verify with tests for a misspelled command, a misspelled flag and a token with no close match
 
 ## 2. Agent guide and hints
 

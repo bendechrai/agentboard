@@ -538,3 +538,43 @@ describe('serveMcp', () => {
     expect(await serving).toBe(0);
   });
 });
+
+describe('help words in tool arguments (add-agent-guidance group 1 ruling)', () => {
+  it('writes a comment whose text is --help or -h, not a help request', () => {
+    const h = serve();
+    const id = newId(h);
+    for (const text of ['--help', '-h']) {
+      const doc = ok(h.server.callTool('board_comment', { id, text, as: 'orch' }));
+      expect(typeof doc.hash, text).toBe('string');
+    }
+    const shown = ok(h.server.callTool('board_show', { id })) as {
+      ticket: { comments: { text: string }[] };
+    };
+    expect(shown.ticket.comments.map((c) => c.text)).toEqual(['--help', '-h']);
+  });
+
+  it('takes --help and -h as flag values', () => {
+    const h = serve();
+    const created = ok(
+      h.server.callTool('board_new', {
+        title: '-h',
+        description: '--help',
+        task: TASK,
+        as: 'orch',
+      }),
+    ) as { ticket: { id: string; title: string; description: string } };
+    expect(created.ticket).toMatchObject({ title: '-h', description: '--help' });
+    const id = created.ticket.id;
+    const handed = ok(
+      h.server.callTool('board_handoff', {
+        id,
+        to: '-h',
+        status: 'todo',
+        note: '--help',
+        as: 'orch',
+      }),
+    ) as { ticket: { assignee: string; comments: { text: string }[] } };
+    expect(handed.ticket.assignee).toBe('-h');
+    expect(handed.ticket.comments.at(-1)?.text).toBe('--help');
+  });
+});

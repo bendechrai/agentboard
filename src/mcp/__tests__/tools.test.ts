@@ -58,9 +58,9 @@ describe('tool names', () => {
     expect(TOOL_PREFIX).toBe('board_');
   });
 
-  it('excludes exactly init, watch, rebuild, sync, mcp and version', () => {
+  it('excludes exactly init, watch, rebuild, sync, mcp, version and help', () => {
     expect([...EXCLUDED_COMMANDS].sort()).toEqual(
-      ['init', 'mcp', 'rebuild', 'sync', 'version', 'watch'].sort(),
+      ['help', 'init', 'mcp', 'rebuild', 'sync', 'version', 'watch'].sort(),
     );
   });
 
@@ -381,5 +381,29 @@ describe('toolArguments', () => {
       1,
       'usage',
     );
+  });
+});
+
+describe('toolArguments: help words are values (add-agent-guidance group 1 ruling)', () => {
+  it('keeps --help and -h as positional and flag values, never a help request', () => {
+    expect(toolArguments(command('comment'), { id: '01ABCDEF', text: '--help' })).toEqual({
+      id: '01ABCDEF',
+      text: '--help',
+    });
+    expect(toolArguments(command('comment'), { id: '01ABCDEF', text: '-h' })).toEqual({
+      id: '01ABCDEF',
+      text: '-h',
+    });
+    expect(
+      toolArguments(command('handoff'), {
+        id: '01ABCDEF',
+        to: '--help',
+        status: 'review',
+        note: '-h',
+      }),
+    ).toEqual({ id: '01ABCDEF', to: '--help', status: 'review', note: '-h' });
+    expect(
+      toolArguments(command('new'), { title: '-h', description: '--help', adhoc: 'x' }),
+    ).toEqual({ title: '-h', description: '--help', adhoc: 'x' });
   });
 });

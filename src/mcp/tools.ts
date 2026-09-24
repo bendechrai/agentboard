@@ -32,7 +32,8 @@ export const TOOL_PREFIX = 'board_';
 /**
  * The commands that are not exposed as tools (board-cli: "MCP server"):
  * setup, streaming or maintenance commands run by a human or an
- * orchestrator in a shell.
+ * orchestrator in a shell, and `help` (tools/list already describes every
+ * tool; board-agent-guidance ruling 0412c1c).
  */
 export const EXCLUDED_COMMANDS: readonly string[] = [
   'init',
@@ -41,6 +42,7 @@ export const EXCLUDED_COMMANDS: readonly string[] = [
   'sync',
   'mcp',
   'version',
+  'help',
 ];
 
 /** JSON Schema of one tool input property. */
