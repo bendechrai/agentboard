@@ -5,6 +5,11 @@
  * versions of each target, the command output with its exit code, and the
  * text rendering. Through the built CLI in
  * src/cli/__tests__/agents-cli.test.ts.
+ *
+ * The managed `.mcp.json` entry (add-mcp-command task 1.2;
+ * board-agent-guidance: "Managed MCP entry"): `isManagedMcpEntry` and how
+ * `agents check` classifies the npx entry, local entries and unrecognised
+ * ones.
  */
 
 import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -27,6 +32,7 @@ import {
   renderSkill,
   skillMarker,
 } from '../installed-text.js';
+import { isManagedMcpEntry } from '../markers.js';
 import {
   ENV,
   IS_ROOT,
@@ -403,4 +409,134 @@ describe('the containment boundary and symlink cycles (round 3)', () => {
       expect(out.json).toEqual([]);
     },
   );
+});
+
+describe('isManagedMcpEntry (add-mcp-command 1.2)', () => {
+  it.each([
+    ['the npx entry', { ...MCP_ENTRY, args: [...MCP_ENTRY.args] }],
+    ['the npx entry with its keys reversed', { args: [...MCP_ENTRY.args], command: 'npx' }],
+    ['a local command', { command: 'agentboard', args: ['mcp'] }],
+    ['a local command with its keys reversed', { args: ['mcp'], command: 'agentboard' }],
+    ['an absolute path', { command: '/opt/agentboard/bin/agentboard', args: ['mcp'] }],
+    ['a path with spaces', { command: '/Users/me/My Tools/agentboard', args: ['mcp'] }],
+    ['npx with only mcp', { command: 'npx', args: ['mcp'] }],
+    ['a single space as the command', { command: ' ', args: ['mcp'] }],
+  ])('recognises %s', (_label, value) => {
+    expect(isManagedMcpEntry(value)).toBe(true);
+  });
+
+  it.each([
+    ['an extra key', { command: 'agentboard', args: ['mcp'], env: { X: '1' } }],
+    ['other arguments', { command: 'agentboard', args: ['mcp', '--as', 'impl'] }],
+    ['arguments before mcp', { command: 'agentboard', args: ['--verbose', 'mcp'] }],
+    ['mcp twice', { command: 'agentboard', args: ['mcp', 'mcp'] }],
+    ['a differently cased argument', { command: 'agentboard', args: ['MCP'] }],
+    ['no arguments', { command: 'agentboard', args: [] }],
+    ['no args key', { command: 'agentboard' }],
+    ['args as a string', { command: 'agentboard', args: 'mcp' }],
+    ['a non-string argument', { command: 'agentboard', args: [1] }],
+    ['an empty command', { command: '', args: ['mcp'] }],
+    ['a non-string command', { command: 7, args: ['mcp'] }],
+    ['a null command', { command: null, args: ['mcp'] }],
+    ['no command key', { args: ['mcp'] }],
+    ['the npx entry with --as', { command: 'npx', args: [...MCP_ENTRY.args, '--as', 'me'] }],
+    ['the npx entry with an extra key', { ...MCP_ENTRY, env: {} }],
+    ['the npx entry without -y', { command: 'npx', args: ['@bendechrai/agentboard', 'mcp'] }],
+    ['an empty object', {}],
+    ['a string', 'agentboard mcp'],
+    ['null', null],
+    ['undefined', undefined],
+    ['a number', 1],
+    ['an array', ['agentboard', 'mcp']],
+  ])('does not recognise %s', (_label, value) => {
+    expect(isManagedMcpEntry(value)).toBe(false);
+  });
+});
+
+describe('mcp-json managed shapes (add-mcp-command 1.2)', () => {
+  function mcpWith(entry: unknown): string {
+    return `${JSON.stringify({ mcpServers: { agentboard: entry } }, null, 2)}\n`;
+  }
+
+  function mcpEntryOf(root: string): GuidanceCheckEntry[] {
+    return check(root).filter((e) => e.target === 'mcp-json');
+  }
+
+  it('reports the npx entry current', () => {
+    const root = plainProject();
+    writeRel(root, MCP, mcpWith(MCP_ENTRY));
+    expect(check(root)).toEqual([
+      { target: 'mcp-json', path: MCP, state: 'current', installedVersion: null, currentVersion: V },
+    ]);
+  });
+
+  it.each([
+    ['a command on the PATH', 'agentboard'],
+    ['an absolute path', '/opt/agentboard/bin/agentboard'],
+    ['a path with spaces', '/Users/me/My Tools/agent board/agentboard'],
+  ])('reports a local entry running %s current, with no installed version', (_label, command) => {
+    const root = plainProject();
+    writeRel(root, MCP, mcpWith({ command, args: ['mcp'] }));
+    expect(check(root)).toEqual([
+      { target: 'mcp-json', path: MCP, state: 'current', installedVersion: null, currentVersion: V },
+    ]);
+    const out = checkCommand(root, ENV);
+    expect(out.exitCode ?? 0).toBe(0);
+    expect(out.warnings ?? []).toEqual([]);
+    expect(out.text).toBe(`current mcp-json ${MCP} (installed unknown, current v${String(V)})\n`);
+  });
+
+  it('reports a local entry current also when a newer guidance version is running', () => {
+    const root = plainProject();
+    writeRel(root, MCP, mcpWith({ command: 'agentboard', args: ['mcp'] }));
+    expect(check(root, { version: V + 1 })).toEqual([
+      {
+        target: 'mcp-json',
+        path: MCP,
+        state: 'current',
+        installedVersion: null,
+        currentVersion: V + 1,
+      },
+    ]);
+  });
+
+  it('reports a local entry installed with --mcp-command current, next to the other targets', () => {
+    const root = plainProject();
+    writeRel(root, CONFIG, OPENSPEC_FIXTURE);
+    installGuidance({
+      cwd: root,
+      env: ENV,
+      targets: ['claude', 'agents-md', 'openspec'],
+      mcpCommand: 'agentboard',
+    });
+    expect(check(root).map((e) => [e.target, e.state])).toEqual([
+      ['claude', 'current'],
+      ['agents-md', 'current'],
+      ['openspec', 'current'],
+      ['mcp-json', 'current'],
+    ]);
+    expect(checkCommand(root, ENV).exitCode ?? 0).toBe(0);
+  });
+
+  it.each([
+    ['an extra key', { command: 'agentboard', args: ['mcp'], env: { X: '1' } }],
+    ['other arguments', { command: 'agentboard', args: ['mcp', '--as', 'impl'] }],
+    ['no arguments', { command: 'agentboard', args: [] }],
+    ['an empty command', { command: '', args: ['mcp'] }],
+    ['no args key', { command: 'agentboard' }],
+    ['the npx entry with --as', { command: 'npx', args: [...MCP_ENTRY.args, '--as', 'me'] }],
+    ['a string', 'agentboard mcp'],
+    ['null', null],
+  ])('reports an entry with %s modified and exits 1', (_label, entry) => {
+    const root = plainProject();
+    writeRel(root, MCP, mcpWith(entry));
+    expect(mcpEntryOf(root)).toEqual([
+      { target: 'mcp-json', path: MCP, state: 'modified', installedVersion: null, currentVersion: V },
+    ]);
+    const out = checkCommand(root, ENV);
+    expect(out.exitCode).toBe(1);
+    expect(out.warnings?.at(-1)).toBe(
+      '1 of 1 guidance target(s) are not current; run agentboard agents install to rewrite them',
+    );
+  });
 });
