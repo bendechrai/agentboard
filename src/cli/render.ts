@@ -112,11 +112,19 @@ export function renderCounts(report: RebuildReport): string {
 }
 
 /**
- * Human output of `agentboard rebuild`: exactly one line,
- * `rebuilt: <renderCounts(report)>` and a newline. Example:
- * `rebuilt: 3 folded, 1 rejected, 0 malformed, 0 corrupt, 0 unknown`.
- * Corrupt files are already reported on stderr by the open (see `runCli`);
- * they are not repeated here. Pure.
+ * Human output of `agentboard rebuild`: the line
+ * `rebuilt: <renderCounts(report)>`, then one line per corrupt file
+ * (`  corrupt <name>`, in `report.corruptFiles` order) and one per malformed
+ * file (`  malformed <hash>.json`, in `report.malformedFiles` order), each
+ * ending with a newline. `rebuild` opens the board without catch-up, so the
+ * open reports nothing and these files are reported here. Example:
+ *
+ * ```
+ * rebuilt: 3 folded, 1 rejected, 1 malformed, 0 corrupt, 0 unknown
+ *   malformed 5f0c...e1.json
+ * ```
+ *
+ * Names pass through `asciiText`. Pure.
  */
 export function renderRebuild(report: RebuildReport): string {
   void report;
@@ -124,13 +132,26 @@ export function renderRebuild(report: RebuildReport): string {
 }
 
 /**
+ * The `--json` document of `agentboard rebuild --check` (board-cache:
+ * "Rebuild").
+ *
+ * - The cache file exists: the store's `CheckResult` plus `noCache: false`.
+ * - No cache file exists (`<board>/cache.sqlite` is absent): `{ ok: false,
+ *   noCache: true, differences: [], report: null }`. Nothing is opened or
+ *   created and no event file is read.
+ */
+export type CheckDocument =
+  (CheckResult & { noCache: false }) | { ok: false; noCache: true; differences: []; report: null };
+
+/**
  * Human output of `agentboard rebuild --check`, ending with a newline.
  *
- * - No divergence (`result.ok`): one line,
- *   `no divergence: <renderCounts(result.report)>`.
+ * - No cache file (`doc.noCache`): one line, `no-cache: there is no cache file`.
+ * - No divergence (`doc.ok`): one line,
+ *   `no divergence: <renderCounts(doc.report)>`.
  * - Divergence: a first line `divergence: <n> differing row(s)` (`<n>` the
  *   number of differences), then one line per difference, in the order of
- *   `result.differences`: two spaces, the table, the key and the state,
+ *   `doc.differences`: two spaces, the table, the key and the state,
  *   separated by single spaces, where the state is `changed` (the row is on
  *   both sides and differs), `only-in-cache` (`rebuilt` is null) or
  *   `only-in-rebuild` (`live` is null). The key of a `tickets` row is the
@@ -145,7 +166,7 @@ export function renderRebuild(report: RebuildReport): string {
  * Keys pass through `asciiText`. Row contents are never printed (the
  * `--json` document carries them). Pure.
  */
-export function renderCheck(result: CheckResult): string {
-  void result;
+export function renderCheck(doc: CheckDocument): string {
+  void doc;
   throw new Error('not implemented: renderCheck');
 }

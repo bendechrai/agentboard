@@ -7,7 +7,7 @@
  * exactly as it was (no catch-up, no reaping, no row change).
  */
 
-import { utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -52,6 +52,7 @@ function handEdit(boardDir: string, sql: string, ...params: string[]): void {
 
 interface CheckDoc {
   ok: boolean;
+  noCache: boolean;
   differences: {
     table: string;
     key: string;
@@ -59,7 +60,7 @@ interface CheckDoc {
     live: Record<string, unknown> | null;
     rebuilt: Record<string, unknown> | null;
   }[];
-  report: { folded: number; rejected: number };
+  report: { folded: number; rejected: number } | null;
 }
 
 function checkDoc(out: Run): CheckDoc {
@@ -140,6 +141,45 @@ describe('agentboard rebuild', () => {
     expect(run(['rebuild', '--check'], root).code).toBe(0);
   });
 
+  it('does not catch up first: it folds and counts an unfolded event file itself', () => {
+    const { root, boardDir, b } = seeded();
+    putEvent(
+      join(boardDir, 'events'),
+      ev({ kind: 'ticket.comment', ticket: b, body: { text: 'late' } }, 'sync', 9_999_999_999_999),
+    );
+    // A stale temporary file: an open with catch-up would reap and report it.
+    const temp = join(boardDir, 'events', '.tmp-00112233445566778899aabbccddeeff');
+    writeFileSync(temp, '{"partial":');
+    const old = (Date.now() - 120_000) / 1000;
+    utimesSync(temp, old, old);
+
+    const out = run(['rebuild', '--json'], root);
+    expect(out.code).toBe(0);
+    expect(out.stderr).toBe('');
+    expect(oneJson(out)).toMatchObject({ folded: 5, rejected: 0 });
+    expect(existsSync(temp)).toBe(true);
+    expect(oneJson(run(['show', b, '--json'], root))).toMatchObject({
+      ticket: { comments: [{ text: 'late' }] },
+    });
+    expect(run(['rebuild', '--check'], root).code).toBe(0);
+  });
+
+  it('lists corrupt and malformed files after the counts line', () => {
+    const { root, boardDir } = seeded();
+    const eventsDir = join(boardDir, 'events');
+    const corrupt = `${'0'.repeat(64)}.json`;
+    writeFileSync(join(eventsDir, corrupt), 'not the content of this name');
+    const malformed = putEvent(eventsDir, { v: 1, kind: 'ticket.comment' });
+    const out = run(['rebuild'], root);
+    expect(out.code).toBe(0);
+    expect(out.stdout).toBe(
+      'rebuilt: 4 folded, 0 rejected, 1 malformed, 1 corrupt, 0 unknown\n' +
+        `  corrupt ${corrupt}\n` +
+        `  malformed ${malformed}.json\n`,
+    );
+    expect(out.stderr).toBe('');
+  });
+
   it('needs no actor and ignores --as', () => {
     const { root } = seeded();
     expect(run(['rebuild', '--as', 'someone'], root)).toEqual(run(['rebuild'], root));
@@ -170,7 +210,12 @@ describe('agentboard rebuild --check', () => {
     const out = run(['rebuild', '--check', '--json'], root);
     expect(out.code).toBe(0);
     expect(out.stderr).toBe('');
-    expect(checkDoc(out)).toMatchObject({ ok: true, differences: [], report: { folded: 4 } });
+    expect(checkDoc(out)).toMatchObject({
+      ok: true,
+      noCache: false,
+      differences: [],
+      report: { folded: 4 },
+    });
   });
 
   it('scenario: a hand-edited title is reported by ticket, exits 1, and the cache is unchanged', () => {
@@ -199,6 +244,7 @@ describe('agentboard rebuild --check', () => {
     expect(out.stderr).toMatch(/^agentboard: the cache differs from the event log in 1 row\(s\)/);
     const doc = checkDoc(out);
     expect(doc.ok).toBe(false);
+    expect(doc.noCache).toBe(false);
     expect(doc.differences).toHaveLength(1);
     expect(doc.differences[0]).toMatchObject({
       table: 'tickets',
@@ -253,6 +299,31 @@ describe('agentboard rebuild --check', () => {
     expect(oneJson(run(['show', b, '--json'], root))).toMatchObject({
       ticket: { comments: [{ text: 'orphan' }] },
     });
+    expect(run(['rebuild', '--check'], root).code).toBe(0);
+  });
+
+  it('exits 1 reporting no-cache when there is no cache file, and does not create one', () => {
+    const { root, boardDir } = seeded();
+    const cache = join(boardDir, 'cache.sqlite');
+    for (const name of ['cache.sqlite', 'cache.sqlite-wal', 'cache.sqlite-shm']) {
+      rmSync(join(boardDir, name), { force: true });
+    }
+    const out = run(['rebuild', '--check'], root);
+    expect(out).toEqual({
+      code: 1,
+      stdout: 'no-cache: there is no cache file\n',
+      stderr: `agentboard: there is no cache file at ${cache}; run agentboard rebuild to create it\n`,
+    });
+    expect(existsSync(cache)).toBe(false);
+
+    const json = run(['rebuild', '--check', '--json'], root);
+    expect(json.code).toBe(1);
+    expect(oneJson(json)).toEqual({ ok: false, noCache: true, differences: [], report: null });
+    expect(existsSync(cache)).toBe(false);
+
+    // rebuild creates it, after which the check is clean.
+    expect(run(['rebuild'], root).code).toBe(0);
+    expect(existsSync(cache)).toBe(true);
     expect(run(['rebuild', '--check'], root).code).toBe(0);
   });
 

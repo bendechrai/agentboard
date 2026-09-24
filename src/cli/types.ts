@@ -88,9 +88,19 @@ export interface RunContext {
    * folded and no temporary file is reaped, so the live cache is exactly as
    * the previous command left it (`rebuild --check` needs this). The open
    * report is then null, so nothing is printed about reaped or corrupt
-   * files. Omitted, or `catchUp: true`, is the default open with catch-up.
+   * files. `rebuild` and `rebuild --check` open this way (board-cache:
+   * they SHALL NOT catch up before they run). Omitted, or `catchUp: true`,
+   * is the default open with catch-up.
    */
   board(options?: BoardOpenOptions): Board;
+  /**
+   * The absolute board directory found by discovery (`findBoard` with `cwd`
+   * and `env`), without opening the board or touching the cache, so a
+   * command can inspect the directory first (`rebuild --check` checks
+   * whether the cache file exists without creating it). Throws
+   * `BoardError(2, 'board-not-found')` when there is no board.
+   */
+  boardDir(): string;
 }
 
 /** Options of `RunContext.board`. */

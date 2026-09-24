@@ -274,17 +274,26 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   ticket, preceded by `already claimed by <actor>` for a claim that
  *   wrote nothing, and followed, for a tick, by the reminder `message`.
  * - `rebuild`: `RebuildReport` from the store's `rebuild` on the board
- *   opened with catch-up (the default); text: `renderRebuild`. Exit 0.
- * - `rebuild --check`: `CheckResult` from the store's `checkCache` on the
- *   board opened with `ctx.board({ catchUp: false })`, so no event file is
- *   folded and no temporary file is reaped before the comparison and the
- *   live cache is left exactly as it was (board-cache: "Check detects
- *   divergence"); text: `renderCheck`. With no difference it exits 0. On
- *   divergence the output carries `exitCode: 1` and one warning,
+ *   opened with `ctx.board({ catchUp: false })`, so the open folds nothing
+ *   and reaps nothing: every event file, including one no command has
+ *   folded yet, is folded, counted and reported by the rebuild itself
+ *   (board-cache: "Rebuild"); text: `renderRebuild`. Exit 0.
+ * - `rebuild --check`: a `CheckDocument`. First, when
+ *   `<ctx.boardDir()>/cache.sqlite` does not exist, the document is the
+ *   `noCache` one, the output carries `exitCode: 1` and the warning
+ *   `there is no cache file at <path>; run agentboard rebuild to create it`,
+ *   and the board is never opened, so no cache file is created. Otherwise
+ *   the store's `checkCache` runs on the board opened with
+ *   `ctx.board({ catchUp: false })`, so no event file is folded and no
+ *   temporary file is reaped before the comparison and the live cache is
+ *   left exactly as it was (board-cache: "Check detects divergence"); the
+ *   document is its `CheckResult` with `noCache: false`; text:
+ *   `renderCheck`. With no difference it exits 0. On divergence the output
+ *   carries `exitCode: 1` and one warning,
  *   `the cache differs from the event log in <n> row(s); run agentboard rebuild to replace it`,
- *   so stdout still receives the full report (the `CheckResult` document
- *   with `--json`) and the process exits 1. `rebuild` writes no event, so it
- *   needs no actor (`--as` is accepted and ignored).
+ *   so stdout still receives the full report (the document with `--json`)
+ *   and the process exits 1. `rebuild` writes no event, so it needs no
+ *   actor (`--as` is accepted and ignored).
  * - `version`: `{ version }`; text: the version.
  * - `mcp`: always `BoardError(1, 'not-implemented')`, with a message saying
  *   `agentboard mcp` is not implemented yet (it arrives with task group 9).

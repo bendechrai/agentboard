@@ -62,7 +62,9 @@ export function errorDocument(error: unknown): ErrorDocument {
  * 2. For a writing command, `resolveActor(values.as, io.env)`.
  * 3. `command.run(ctx, values)` with a context whose `board()` finds and
  *    opens the board lazily (`findBoard` with `io.cwd` and `io.env`, then
- *    `openBoard`); the board is closed before returning. After opening, one
+ *    `openBoard`, passing `catchUp: false` when the first call asks for
+ *    it) and whose `boardDir()` runs discovery only; the board is closed
+ *    before returning. After opening, one
  *    stderr line `agentboard: removed stale temporary file <path>` is
  *    printed for each reaped temporary file and `agentboard: <message>` for
  *    each corrupt event file in the open report.
@@ -95,6 +97,9 @@ export function runCli(io: CliIo): ExitCode {
       cwd: io.cwd,
       env: io.env,
       actor,
+      boardDir(): string {
+        throw new Error('not implemented: RunContext.boardDir');
+      },
       board(): Board {
         if (board === null) {
           board = openBoard(findBoard({ cwd: io.cwd, env: io.env }).dir);
