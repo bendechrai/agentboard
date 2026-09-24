@@ -24,7 +24,11 @@
  * that marks itself ready and blocks until a `go` file appears; once all N
  * are ready the harness creates `go`. So every process is already started,
  * past Node's own start-up, when the race begins, and the spread is the
- * gate's 1 ms polling plus module loading, on macOS and Linux alike.
+ * gate's 1 ms polling, on macOS and Linux alike. Before marking itself
+ * ready the gate module also imports the built CLI's code chunks (listed
+ * in `AGENTBOARD_HARNESS_PRELOAD`, with process warnings muted while they
+ * load), so module loading happens before the gate and not inside the
+ * race.
  *
  * Crash injection: a child run with `AGENTBOARD_TEST_PAUSE` set prints
  * `agentboard: paused at <point> <path>` to stderr and blocks
@@ -48,7 +52,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { afterAll } from 'vitest';
@@ -254,10 +258,27 @@ export function runCliAsync(
 /** Environment variable naming the gate directory of a gated child. */
 export const GATE_ENV = 'AGENTBOARD_HARNESS_GATE';
 
+/** Environment variable listing, newline-separated, the module URLs a gated child preloads. */
+export const PRELOAD_ENV = 'AGENTBOARD_HARNESS_PRELOAD';
+
 const GATE_MODULE = `import { existsSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 const dir = process.env.${GATE_ENV};
 if (dir) {
+  // Load the CLI's code chunks before the gate (with process warnings
+  // muted while they load, so the node:sqlite warning is not printed), so
+  // that after the gate only the command itself runs.
+  const saved = process.listeners('warning');
+  process.removeAllListeners('warning');
+  for (const url of (process.env.${PRELOAD_ENV} ?? '').split('\\n')) {
+    if (url !== '') {
+      await import(url);
+    }
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+  for (const listener of saved) {
+    process.on('warning', listener);
+  }
   writeFileSync(join(dir, 'ready-' + String(process.pid)), '');
   const go = join(dir, 'go');
   const cell = new Int32Array(new SharedArrayBuffer(4));
@@ -266,6 +287,21 @@ if (dir) {
   }
 }
 `;
+
+/**
+ * URLs of the built CLI's code chunks: every `.js` file in `dist` other
+ * than the `cli.js` entry (which runs the command when imported) and the
+ * separate `index.js` library bundle. Importing a chunk only defines
+ * functions. When the build has no chunks the gate still works, with the
+ * module loading after the gate widening the start spread.
+ */
+function cliChunks(): string[] {
+  const dist = dirname(requireBuiltCli());
+  return readdirSync(dist)
+    .filter((name) => name.endsWith('.js') && name !== 'cli.js' && name !== 'index.js')
+    .sort()
+    .map((name) => pathToFileURL(join(dist, name)).href);
+}
 
 let gateModule: string | null = null;
 
@@ -301,9 +337,13 @@ export async function runTogether(
 ): Promise<TogetherResult> {
   const gateDir = scratchDir();
   const nodeArgs = ['--import', pathToFileURL(gatePath()).href];
+  const preload = cliChunks().join('\n');
   const procs = invocations.map((inv) =>
     startCli(
-      { argv: inv.argv, env: { ...(inv.env ?? cliEnv()), [GATE_ENV]: gateDir } },
+      {
+        argv: inv.argv,
+        env: { ...(inv.env ?? cliEnv()), [GATE_ENV]: gateDir, [PRELOAD_ENV]: preload },
+      },
       cwd,
       nodeArgs,
     ),
