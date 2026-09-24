@@ -280,6 +280,19 @@ describe('boardHealth', () => {
     expect(plain(boardHealth(f.board, { now: NOW }))).toEqual(want);
   });
 
+  it('reads every event file inside the read snapshot', () => {
+    const f = fixture();
+    const inTransaction: boolean[] = [];
+    const cache = createEventCache((eventsDir, name): ReadOutcome => {
+      inTransaction.push(f.board.db.isTransaction);
+      return readEventFile(eventsDir, name);
+    });
+    boardHealth(f.board, { now: NOW, cache });
+    expect(inTransaction.length).toBeGreaterThan(0);
+    expect(inTransaction.every((open) => open)).toBe(true);
+    expect(f.board.db.isTransaction).toBe(false);
+  });
+
   it('reads nothing again through the same cache', () => {
     const { board } = fixture();
     const { cache, reads } = countingCache();

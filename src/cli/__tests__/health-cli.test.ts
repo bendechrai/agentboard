@@ -267,6 +267,10 @@ describe('scenario: Check included on request', () => {
     handEdit(boardDir, "UPDATE tickets SET title = 'hacked' WHERE id = ?", READY);
     const out = run(['health', '--check', '--json'], root);
     ok(out);
+    expect(out.stderr).toBe('');
+    const human = run(['health', '--check'], root);
+    expect(human.code).toBe(0);
+    expect(human.stderr).toBe('');
     expect((oneJson(out) as HealthReport).check).toEqual({
       ranAt: NOW,
       matches: false,
