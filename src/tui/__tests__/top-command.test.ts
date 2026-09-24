@@ -265,7 +265,7 @@ describe('scenario: Top has help', () => {
   it('prints the synopsis, the exit codes including 1 not-a-tty and 2, and examples, with no board and no actor', () => {
     const out = run(['help', 'top'], tempDir(), cliEnv({ AGENTBOARD_ACTOR: undefined }));
     expect(out.code, out.stderr).toBe(0);
-    expect(out.stdout).toMatch(/^Usage: agentboard top\s*$/m);
+    expect(out.stdout).toMatch(/^Usage: agentboard top( \[--json\])?\s*$/m);
     expect(out.stdout).toMatch(/^\s+1 not-a-tty\s/m);
     expect(out.stdout).toMatch(/^\s+2 board-not-found\s/m);
     expect(out.stdout).toMatch(/^\s+0\s+Quit/m);
@@ -293,6 +293,7 @@ interface FakeHost extends TerminalHost {
     isTTY?: boolean;
     setRawMode?(mode: boolean): unknown;
     pause(): unknown;
+    unref(): unknown;
   };
   readonly stdout: EventEmitter & {
     isTTY?: boolean;
@@ -319,6 +320,9 @@ function fakeHost(
         }),
     pause: () => {
       calls.push('pause');
+    },
+    unref: () => {
+      calls.push('unref');
     },
   });
   const stdout = Object.assign(new EventEmitter(), {
@@ -384,7 +388,7 @@ describe('processTerminal', () => {
     expect(term.size()).toEqual({ columns: 90, rows: 30 });
   });
 
-  it('passes input chunks as bytes, and removing the listener pauses stdin', () => {
+  it('passes input chunks as bytes, and removing the listener pauses and unrefs stdin', () => {
     const host = fakeHost();
     const term = processTerminal(host);
     const chunks: number[][] = [];
@@ -395,7 +399,9 @@ describe('processTerminal', () => {
     expect(host.stdin.listenerCount('data')).toBe(1);
     remove();
     expect(host.stdin.listenerCount('data')).toBe(0);
+    // So the process can exit once top has stopped, however stdin is connected.
     expect(host.calls).toContain('pause');
+    expect(host.calls).toContain('unref');
   });
 
   it('listens to the end of input, resizes and the process exit, and removes exactly its own listener', () => {

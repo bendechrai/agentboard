@@ -82,7 +82,7 @@ describe('ScreenInterpreter', () => {
     ['line feed', '\n'],
     ['carriage return', '\r'],
     ['bell', '\x07'],
-    ['non-ASCII', 'é'],
+    ['non-ASCII', '\u00e9'],
   ])('reports %s as a protocol error', (_, bytes) => {
     const s = screen();
     s.feed(at(1, 1));

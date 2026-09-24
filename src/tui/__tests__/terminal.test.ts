@@ -24,6 +24,7 @@ import { tempBoard } from '../../store/__tests__/helpers.js';
 import { applyFeedMessage } from '../../view/apply.js';
 import type { AppendMessage, BoardModel, EventView, FeedMessage } from '../../view/types.js';
 import { model as foldModel } from '../../view/__tests__/helpers.js';
+import { boardColumns } from '../../view/columns.js';
 import { renderFrame, type Frame, type Size } from '../frame.js';
 import type { Key } from '../keys.js';
 import { initialUi, reconcileUi, reduceKey, type UiState } from '../state.js';
@@ -467,9 +468,14 @@ describe('scenario: No color', () => {
     const m = asModel(BEFORE);
     await until(() => run.feed.starts.length === 1, 2000, 'the feed');
     run.feed.busy();
-    // T1 is the first card of the implementing column (the third).
-    run.term.type('ll\r');
-    const ui = { ...uiAfter(m, [char('l'), char('l'), ENTER]), notice: 'busy' };
+    // Move to T1's card and open it.
+    const columns = boardColumns(m.tickets, NOW, { includeClosed: false });
+    const column = columns.findIndex((c) => c.cards.some((card) => card.id === T1));
+    const row = columns[column]?.cards.findIndex((card) => card.id === T1) ?? -1;
+    expect(column).toBeGreaterThanOrEqual(0);
+    const keys = [...'l'.repeat(column), ...'j'.repeat(row)];
+    run.term.type(`${keys.join('')}\r`);
+    const ui = { ...uiAfter(m, [...keys.map(char), ENTER]), notice: 'busy' };
     expect(ui.detail?.ticket).toBe(T1);
     const expected = frame(m, ui);
     expect(expected.styles.flat().some((r) => r.style.color !== null)).toBe(true);
@@ -557,12 +563,17 @@ describe('live updates', () => {
   it('redraws every redrawMs with the current time, and writes nothing when no row changed', async () => {
     const run = start({ redrawMs: 40 });
     const m = asModel(BEFORE);
-    await shows(run, frame(m, uiAfter(m)));
+    // The feed view starts every line with the relative time of its entry.
+    run.term.type('2');
+    const ui = uiAfter(m, [char('2')]);
+    await shows(run, frame(m, ui));
     run.term.screen.mark();
     await pause(150);
     expect(run.term.screen.bytesSinceMark).toBe(0);
     run.clock.now = NOW + 3 * 3_600_000;
-    await shows(run, frame(m, uiAfter(m), SIZE, run.clock.now));
+    const later = frame(m, ui, SIZE, run.clock.now);
+    expect(changedRows(frame(m, ui), later).length).toBeGreaterThan(0);
+    await shows(run, later);
     run.controller.abort();
     await run.done;
   });
