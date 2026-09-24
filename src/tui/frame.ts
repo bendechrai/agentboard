@@ -27,8 +27,15 @@
  *   other style those cells get.
  */
 
+import { asciiText } from '../board/text.js';
+import type { Ticket } from '../events/fold.js';
+import { formatTaskRef } from '../events/schema.js';
+import { SHORT_ID_LENGTH, boardColumns, type Card, type Column } from '../view/columns.js';
+import { conversation, type ConversationMessage } from '../view/conversation.js';
+import { feedEntries, type FeedEntry } from '../view/feed.js';
+import { agentLanes } from '../view/lanes.js';
+import { relativeTime } from '../view/time.js';
 import type { BoardModel } from '../view/types.js';
-import type { FeedEntry } from '../view/feed.js';
 import type { UiState } from './state.js';
 
 /** A terminal size in character cells. Both are non-negative integers. */
@@ -118,7 +125,11 @@ export const HELP_LINES: readonly string[] = [
  * `asciiText` and then wrapping) exactly once, so escaping never doubles.
  */
 export function fitText(text: string, width: number): string {
-  throw new Error(`not implemented: fitText(${text}, ${String(width)})`);
+  if (width <= 0) {
+    return '';
+  }
+  const ascii = asciiText(text);
+  return ascii.length > width ? `${ascii.slice(0, width - 1)}~` : ascii.padEnd(width);
 }
 
 /**
@@ -132,7 +143,138 @@ export function fitText(text: string, width: number): string {
  * `entry.summary`. For example `5m ago   impl 01ARYZ6S41 claimed`.
  */
 export function feedLine(entry: FeedEntry, now: number): string {
-  throw new Error(`not implemented: feedLine(${entry.hash}, ${String(now)})`);
+  const time = relativeTime(now - entry.ts.wall).padEnd(8);
+  const late = entry.late ? 'late ' : '';
+  const ticket = entry.ticket === null ? '-' : entry.ticket.slice(0, SHORT_ID_LENGTH);
+  return `${time} ${late}${entry.actor} ${ticket} ${entry.summary}`;
+}
+
+/** The ticket `id` of the model, or undefined (own keys only). */
+function findTicket(model: Pick<BoardModel, 'tickets'>, id: string): Ticket | undefined {
+  return Object.hasOwn(model.tickets, id) ? model.tickets[id] : undefined;
+}
+
+/** How a detail line is styled. */
+type DetailKind = 'ticket' | 'system' | 'plain';
+
+/** The markers of decision messages, with their trailing space. */
+type Marker = '[DECISION, retracted] ' | '[DECISION] ' | '[RETRACTED] ' | '';
+
+/** One logical detail line, before escaping and wrapping. */
+interface LogicalLine {
+  text: string;
+  kind: DetailKind;
+  marker: Marker;
+}
+
+/** One detail line after wrapping, with what styles it. */
+interface DetailLine {
+  text: string;
+  kind: DetailKind;
+  /** The marker of the message, on the first line of that message only. */
+  marker: Marker;
+}
+
+const plain = (text: string): LogicalLine => ({ text, kind: 'plain', marker: '' });
+
+function markerOf(message: ConversationMessage): Marker {
+  if (message.type === 'system') {
+    return '';
+  }
+  if (message.retracted) {
+    return '[DECISION, retracted] ';
+  }
+  if (message.decision) {
+    return '[DECISION] ';
+  }
+  return message.retraction ? '[RETRACTED] ' : '';
+}
+
+function messageLine(message: ConversationMessage): LogicalLine {
+  const marker = markerOf(message);
+  switch (message.type) {
+    case 'comment':
+      return { text: `${marker}${message.actor}: ${message.text}`, kind: 'plain', marker };
+    case 'handoff':
+      return {
+        text: `${marker}${message.actor} -> ${message.to} (${message.status}): ${message.text}`,
+        kind: 'plain',
+        marker,
+      };
+    case 'system':
+      return { text: `  ${message.actor} ${message.text}`, kind: 'system', marker };
+  }
+}
+
+function ticketLines(model: BoardModel, t: Ticket): LogicalLine[] {
+  const lines: LogicalLine[] = [
+    { text: `ticket ${t.id}`, kind: 'ticket', marker: '' },
+    plain(`title: ${t.title}`),
+    plain(
+      t.blockedFrom === null
+        ? `status: ${t.status}`
+        : `status: ${t.status} (from ${t.blockedFrom})`,
+    ),
+    plain(`assignee: ${t.assignee ?? '-'}`),
+  ];
+  if (t.task !== null) {
+    lines.push(plain(`task: ${formatTaskRef(t.task)}`));
+  } else {
+    lines.push(plain(t.adhoc === null ? 'task: -' : `task: adhoc: ${t.adhoc}`));
+  }
+  lines.push(plain(t.labels.length === 0 ? 'labels: -' : `labels: ${t.labels.join(', ')}`));
+  lines.push(plain(`description: ${t.description ?? '-'}`));
+  if (t.checklist.length === 0) {
+    lines.push(plain('checklist: -'));
+  } else {
+    const done = t.checklist.filter((item) => item.done).length;
+    lines.push(plain(`checklist: ${String(done)}/${String(t.checklist.length)}`));
+    for (const item of t.checklist) {
+      lines.push(plain(`  [${item.done ? 'x' : ' '}] ${item.text}`));
+    }
+  }
+  if (t.links.length === 0) {
+    lines.push(plain('links: -'));
+  } else {
+    lines.push(plain('links:'));
+    for (const link of t.links) {
+      lines.push(plain(link.type === 'pr' ? `  pr ${String(link.pr)}` : `  decision ${link.path}`));
+    }
+  }
+  if (!t.closed) {
+    lines.push(plain('disposition: open'));
+  } else if (t.disposition !== null && 'decision' in t.disposition) {
+    lines.push(plain(`disposition: closed, decision ${t.disposition.decision}`));
+  } else {
+    lines.push(plain('disposition: closed, no decision'));
+  }
+  lines.push(plain(''), plain('conversation:'));
+  for (const message of conversation(model, t.id)) {
+    lines.push(messageLine(message));
+  }
+  return lines;
+}
+
+/** The detail lines with their styling data (see `detailLines`). */
+function detailRows(model: BoardModel, ticketId: string, columns: number): DetailLine[] {
+  const width = Math.max(1, columns);
+  const ticket = findTicket(model, ticketId);
+  const logical =
+    ticket === undefined ? [plain(`ticket ${ticketId} not found`)] : ticketLines(model, ticket);
+  const out: DetailLine[] = [];
+  for (const line of logical) {
+    const text = asciiText(line.text);
+    let start = 0;
+    do {
+      out.push({
+        text: text.slice(start, start + width),
+        kind: line.kind,
+        marker: start === 0 ? line.marker : '',
+      });
+      start += width;
+    } while (start < text.length);
+  }
+  return out;
 }
 
 /**
@@ -171,9 +313,7 @@ export function feedLine(entry: FeedEntry, now: number): string {
  *    else empty.
  */
 export function detailLines(model: BoardModel, ticketId: string, columns: number): string[] {
-  throw new Error(
-    `not implemented: detailLines(${String(model.events.length)}, ${ticketId}, ${String(columns)})`,
-  );
+  return detailRows(model, ticketId, columns).map((line) => line.text);
 }
 
 /**
@@ -259,7 +399,345 @@ export function detailLines(model: BoardModel, ticketId: string, columns: number
  * C)`.
  */
 export function renderFrame(model: BoardModel, ui: UiState, size: Size, now: number): Frame {
-  throw new Error(
-    `not implemented: renderFrame(${String(model.events.length)}, ${ui.view}, ${String(size.columns)}x${String(size.rows)}, ${String(now)})`,
-  );
+  const { columns: c, rows: r } = size;
+  const canvas = new Canvas(c, r);
+  if (c < MIN_COLUMNS || r < MIN_ROWS) {
+    canvas.text(
+      0,
+      0,
+      fitText(
+        `terminal too small: need ${String(MIN_COLUMNS)}x${String(MIN_ROWS)}, have ${String(c)}x${String(r)}`,
+        c,
+      ),
+    );
+    return canvas.frame();
+  }
+  const columns = boardColumns(model.tickets, now, { includeClosed: ui.showClosed });
+  drawHeader(canvas, model, ui, columns, now);
+  drawKeyLine(canvas, ui);
+  const body: Body = { canvas, top: 1, height: r - 2 };
+  if (ui.help) {
+    HELP_LINES.forEach((line, i) => {
+      if (i < body.height) {
+        canvas.text(body.top + i, 0, fitText(line, c));
+      }
+    });
+  } else if (ui.detail !== null) {
+    drawDetail(body, model, ui.detail.ticket, ui.detail.scroll);
+  } else if (ui.view === 'board') {
+    drawBoard(body, model, ui, columns, now);
+  } else if (ui.view === 'feed') {
+    drawFeed(body, model, ui.feed.index, now);
+  } else {
+    drawLanes(body, model, ui.lanes.index, now);
+  }
+  return canvas.frame();
+}
+
+/** Style bits of a cell: bold, dim, inverse, then the color index (1 to 8) shifted by 3. */
+const BOLD = 1;
+const DIM = 2;
+const INVERSE = 4;
+const COLORS: readonly Color[] = [
+  'black',
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+  'white',
+];
+
+/** A style as a cell code: the attribute bits and, from bit 3, the color index plus 1. */
+function code(attributes: number, color: Color | null = null): number {
+  return attributes | ((color === null ? 0 : COLORS.indexOf(color) + 1) << 3);
+}
+
+function styleOf(cell: number): Style {
+  const color = COLORS[(cell >> 3) - 1];
+  return {
+    bold: (cell & BOLD) !== 0,
+    dim: (cell & DIM) !== 0,
+    inverse: (cell & INVERSE) !== 0,
+    color: color ?? null,
+  };
+}
+
+/** A frame being drawn: lines of spaces and a style code per cell. */
+class Canvas {
+  private readonly lines: string[][];
+  private readonly cells: number[][];
+
+  constructor(
+    readonly columns: number,
+    readonly rows: number,
+  ) {
+    this.lines = Array.from({ length: rows }, () => Array.from({ length: columns }, () => ' '));
+    this.cells = Array.from({ length: rows }, () => Array.from({ length: columns }, () => 0));
+  }
+
+  /** Writes `text` (already fitted, printable ASCII) on line `y` from column `x`, clipped. */
+  text(y: number, x: number, text: string): void {
+    const line = this.lines[y];
+    if (line === undefined) {
+      return;
+    }
+    for (let i = 0; i < text.length && x + i < this.columns; i += 1) {
+      line[x + i] = text[i] ?? ' ';
+    }
+  }
+
+  /** Adds style `cell` (attributes ORed, a color replacing) to cells [a, b) of line `y`, clipped. */
+  style(y: number, a: number, b: number, cell: number): void {
+    const line = this.cells[y];
+    if (line === undefined) {
+      return;
+    }
+    const end = Math.min(b, this.columns);
+    for (let x = Math.max(0, a); x < end; x += 1) {
+      const current = line[x] ?? 0;
+      const color = cell >> 3 === 0 ? current & ~7 : cell & ~7;
+      line[x] = (current & 7) | (cell & 7) | color;
+    }
+  }
+
+  frame(): Frame {
+    return {
+      lines: this.lines.map((line) => line.join('')),
+      styles: this.cells.map((line) => {
+        const runs: StyleRun[] = [];
+        let x = 0;
+        while (x < line.length) {
+          const cell = line[x] ?? 0;
+          let end = x + 1;
+          while (end < line.length && line[end] === cell) {
+            end += 1;
+          }
+          if (cell !== 0) {
+            runs.push({ start: x, length: end - x, style: styleOf(cell) });
+          }
+          x = end;
+        }
+        return runs;
+      }),
+    };
+  }
+}
+
+/** The body area of a frame: `height` lines from frame line `top`. */
+interface Body {
+  canvas: Canvas;
+  top: number;
+  height: number;
+}
+
+function drawHeader(
+  canvas: Canvas,
+  model: BoardModel,
+  ui: UiState,
+  columns: readonly Column[],
+  now: number,
+): void {
+  const counts = columns.map((col) => `${col.status}:${String(col.cards.length)}`).join(' ');
+  let since = 'no events';
+  for (let i = model.events.length - 1; i >= 0; i -= 1) {
+    const view = model.events[i];
+    if (view?.outcome === 'applied') {
+      since = `last event ${relativeTime(now - view.ts.wall)}`;
+      break;
+    }
+  }
+  canvas.text(0, 0, fitText(`agentboard top  ${counts}  ${since}  ${ui.boardDir}`, canvas.columns));
+  canvas.style(0, 0, canvas.columns, code(BOLD));
+}
+
+function drawKeyLine(canvas: Canvas, ui: UiState): void {
+  const mode = ui.help ? 'help' : ui.detail !== null ? 'detail' : ui.view;
+  const keys = KEY_LINES[mode];
+  const line = ui.notice === null ? keys : `${ui.notice}  ${keys}`;
+  const row = canvas.rows - 1;
+  canvas.text(row, 0, fitText(line, canvas.columns));
+  const notice = ui.notice === null ? 0 : Math.min(asciiText(ui.notice).length, canvas.columns);
+  canvas.style(row, 0, notice, code(BOLD, 'yellow'));
+  canvas.style(row, notice, canvas.columns, code(DIM));
+}
+
+function drawDetail(body: Body, model: BoardModel, ticketId: string, scroll: number): void {
+  const { canvas } = body;
+  const lines = detailRows(model, ticketId, canvas.columns);
+  const top = Math.min(scroll, Math.max(0, lines.length - body.height));
+  for (let i = 0; i < body.height; i += 1) {
+    const line = lines[top + i];
+    if (line === undefined) {
+      break;
+    }
+    const y = body.top + i;
+    canvas.text(y, 0, line.text);
+    if (line.kind === 'ticket') {
+      canvas.style(y, 0, canvas.columns, code(BOLD));
+    } else if (line.kind === 'system') {
+      canvas.style(y, 0, canvas.columns, code(DIM));
+    }
+    canvas.style(y, 0, line.marker.trimEnd().length, MARKER_STYLES[line.marker]);
+  }
+}
+
+/** The style of each decision marker. */
+const MARKER_STYLES: Readonly<Record<Marker, number>> = {
+  '': 0,
+  '[DECISION] ': code(BOLD, 'green'),
+  '[DECISION, retracted] ': code(DIM),
+  '[RETRACTED] ': code(BOLD, 'red'),
+};
+
+/** A board column heading of width `w` (the count always shows when it can). */
+function heading(column: Column, w: number): string {
+  const suffix = ` ${String(column.cards.length)}`;
+  const full = `${column.status}${suffix}`;
+  if (full.length <= w) {
+    return full.padEnd(w);
+  }
+  return w > suffix.length ? fitText(column.status, w - suffix.length) + suffix : fitText(full, w);
+}
+
+function drawBoard(
+  body: Body,
+  model: BoardModel,
+  ui: UiState,
+  columns: readonly Column[],
+  now: number,
+): void {
+  const { canvas } = body;
+  const pane = canvas.columns >= FEED_PANE_MIN_COLUMNS;
+  const width = pane ? canvas.columns - FEED_PANE_WIDTH : canvas.columns;
+  const w = Math.floor((width - 5) / 6);
+  const perColumn = Math.floor((body.height - 1) / 2);
+  columns.forEach((column, k) => {
+    const x = k * (w + 1);
+    canvas.text(body.top, x, heading(column, w));
+    canvas.style(body.top, x, x + w, code(BOLD));
+    if (k < 5) {
+      for (let i = 0; i < body.height; i += 1) {
+        canvas.text(body.top + i, x + w, '|');
+      }
+    }
+    const selected = k === ui.board.column;
+    const first = selected ? Math.max(0, ui.board.row - perColumn + 1) : 0;
+    for (let j = 0; j < perColumn; j += 1) {
+      const card = column.cards[first + j];
+      if (card === undefined) {
+        break;
+      }
+      const y = body.top + 1 + 2 * j;
+      canvas.text(y, x, fitText(card.title, w));
+      canvas.text(y + 1, x, fitText(card.assignee ?? '-', w));
+      const attributes = cardAttributes(card, selected && first + j === ui.board.row);
+      if (attributes !== 0) {
+        canvas.style(y, x, x + w, attributes);
+        canvas.style(y + 1, x, x + w, attributes);
+      }
+    }
+  });
+  if (pane) {
+    const paneWidth = FEED_PANE_WIDTH - 1;
+    const entries = feedEntries(model);
+    for (let i = 0; i < body.height; i += 1) {
+      canvas.text(body.top + i, width, '|');
+    }
+    canvas.text(body.top, width + 1, fitText('activity', paneWidth));
+    canvas.style(body.top, width + 1, width + 1 + 'activity'.length, code(BOLD));
+    for (let j = 1; j < body.height; j += 1) {
+      const entry = entries[j - 1];
+      if (entry === undefined) {
+        break;
+      }
+      canvas.text(body.top + j, width + 1, fitText(feedLine(entry, now), paneWidth));
+    }
+  }
+}
+
+function cardAttributes(card: Card, selected: boolean): number {
+  return (selected ? INVERSE : 0) | (card.changed ? BOLD : 0) | (card.closed ? DIM : 0);
+}
+
+/** Cells of the `late` marker in a feed line (after the 8-character time and a space). */
+const LATE_START = 9;
+const LATE_END = 13;
+
+function drawFeed(body: Body, model: BoardModel, index: number, now: number): void {
+  const { canvas } = body;
+  const entries = feedEntries(model);
+  if (entries.length === 0) {
+    canvas.text(body.top, 0, fitText('no events', canvas.columns));
+    return;
+  }
+  const top = Math.max(0, index - body.height + 1);
+  for (let i = 0; i < body.height; i += 1) {
+    const entry = entries[top + i];
+    if (entry === undefined) {
+      break;
+    }
+    const y = body.top + i;
+    canvas.text(y, 0, fitText(feedLine(entry, now), canvas.columns));
+    if (top + i === index) {
+      canvas.style(y, 0, canvas.columns, code(INVERSE));
+    }
+    if (entry.late) {
+      canvas.style(y, LATE_START, LATE_END, code(0, 'yellow'));
+    }
+  }
+}
+
+/** One line of the lanes view. */
+interface LaneLine {
+  text: string;
+  /** The lane index when this is a lane header, else null. */
+  header: number | null;
+}
+
+function drawLanes(body: Body, model: BoardModel, index: number, now: number): void {
+  const { canvas } = body;
+  const lanes = agentLanes(model, now);
+  if (lanes.length === 0) {
+    canvas.text(body.top, 0, fitText('no agents', canvas.columns));
+    return;
+  }
+  const list: LaneLine[] = [];
+  let start = 0;
+  let end = 0;
+  lanes.forEach((lane, k) => {
+    if (k === index) {
+      start = list.length;
+    }
+    const seen = lane.lastSeenMs === null ? 'never' : relativeTime(lane.lastSeenMs);
+    list.push({ text: `${lane.actor}  last seen ${seen}`, header: k });
+    if (lane.tickets.length === 0) {
+      list.push({ text: '  (no tickets)', header: null });
+    }
+    for (const card of lane.tickets) {
+      list.push({
+        text: `  ${card.shortId} ${card.status.padEnd(12)} ${card.title}`,
+        header: null,
+      });
+    }
+    if (k === index) {
+      end = list.length - 1;
+    }
+    if (k < lanes.length - 1) {
+      list.push({ text: '', header: null });
+    }
+  });
+  const top = end < body.height ? 0 : start;
+  for (let i = 0; i < body.height; i += 1) {
+    const line = list[top + i];
+    if (line === undefined) {
+      break;
+    }
+    const y = body.top + i;
+    canvas.text(y, 0, fitText(line.text, canvas.columns));
+    if (line.header !== null) {
+      canvas.style(y, 0, canvas.columns, code(line.header === index ? BOLD | INVERSE : BOLD));
+    }
+  }
 }
