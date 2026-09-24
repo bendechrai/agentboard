@@ -86,6 +86,8 @@ describe('every command prints exactly one JSON document with --json', () => {
       // No ticket is merged with a PR link (the linked one was closed from blocked), so gh never runs.
       'close-merged': () => run(['close-merged', ...AS, '--json'], root),
       mcp: () => run(['mcp', '--json'], root),
+      'agents install': () => run(['agents', 'install', '--target', 'agents-md', '--json'], root),
+      'agents check': () => run(['agents', 'check', '--json'], root),
       version: () => run(['version', '--json'], root),
       help: () => run(['help', '--json'], root),
     };
@@ -128,6 +130,14 @@ describe('every command prints exactly one JSON document with --json', () => {
     expect(docs['close-merged']).toEqual({ closed: [], unmerged: [], skipped: [] });
     // mcp serves over stdio from the executable only (src/cli.ts dispatches it).
     expect(docs.mcp).toMatchObject({ error: { exitCode: 1, reason: 'streaming-command' } });
+    expect(docs['agents install']).toMatchObject({
+      root,
+      targets: [{ target: 'agents-md', action: 'created' }],
+      refused: 0,
+    });
+    expect(docs['agents check']).toEqual([
+      expect.objectContaining({ target: 'agents-md', path: 'AGENTS.md', state: 'current' }),
+    ]);
     expect(docs.version).toEqual({ version });
     expect((docs.help as { name: string }[]).map((d) => d.name)).toEqual(
       COMMANDS.map((c) => c.name),
