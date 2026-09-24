@@ -19,6 +19,9 @@
  * - The columns are `boardColumns(model.tickets, now, { includeClosed:
  *   ui.showClosed })`; the feed entries are `feedEntries(model)`; the
  *   lanes are `agentLanes(model, now)`.
+ * - Selections are read by index only (`ui.board.column` and `row`,
+ *   `ui.feed.index`, `ui.lanes.index`); their identity fields are not
+ *   read here (`reconcileUi` keeps the indexes where the identities are).
  * - "Styled X over [a, b)" means the cells from column a (inclusive) to b
  *   (exclusive) of that line get attribute or color X, in addition to any
  *   other style those cells get.
@@ -219,24 +222,27 @@ export function detailLines(model: BoardModel, ticketId: string, columns: number
  *   padded to w when it fits; otherwise `fitText(s, w - suffix.length) +
  *   suffix` when w is longer than the suffix (the count always shows),
  *   else `fitText(s + suffix, w)`. Each heading cell styled bold.
- * - Body lines 1 to H - 1 hold the cards, K = H - 1 of them per column:
- *   column k shows its cards from index top_k, where top_k is
- *   `max(0, ui.board.row - K + 1)` for the selected column
- *   (`ui.board.column`) and 0 for the others. A card cell is
- *   `fitText('<shortId> <assignee or -> <title>', w)`; w spaces past the
- *   last card. The selected card (column `ui.board.column`, index
- *   `ui.board.row`) is styled inverse over its cell, a card whose
- *   `changed` is true bold over its cell, and a closed card dim over its
- *   cell.
+ * - Body lines 1 to H - 1 hold the cards. A card takes two lines: its
+ *   first line is `fitText(card.title, w)` and its second
+ *   `fitText(card.assignee ?? '-', w)` (the short id is not shown on
+ *   cards; the detail shows the full id). So P = `floor((H - 1) / 2)`
+ *   cards fit per column, card j shown on body lines 1 + 2j and 2 + 2j
+ *   (when H - 1 is odd, the last body line holds no card). Column k shows
+ *   its cards from index top_k, where top_k is `max(0, ui.board.row - P +
+ *   1)` for the selected column (`ui.board.column`) and 0 for the others;
+ *   w spaces past the last card. Over both lines of its cell, the
+ *   selected card (column `ui.board.column`, index `ui.board.row`) is
+ *   styled inverse, a card whose `changed` is true bold, and a closed card
+ *   dim.
  * - When C is at least `FEED_PANE_MIN_COLUMNS`, cell W of every body line
  *   is `|`, and the 39 cells after it hold the feed pane: body line 0 is
  *   `fitText('activity', 39)` with `activity` styled bold, and body line
  *   j (1 to H - 1) is `fitText(feedLine(entries[j - 1], now), 39)`, or
  *   39 spaces past the last entry.
  *
- * Feed view: with top = `max(0, ui.feed - H + 1)`, body line i is
+ * Feed view: with top = `max(0, ui.feed.index - H + 1)`, body line i is
  * `fitText(feedLine(entries[top + i], now), C)`, or C spaces past the last
- * entry. The selected entry (index `ui.feed`) is styled inverse over
+ * entry. The selected entry (index `ui.feed.index`) is styled inverse over
  * [0, C), and the `late` marker of a late entry (cells [9, 13)) yellow.
  * With no entry, body line 0 is `fitText('no events', C)`.
  *
@@ -246,7 +252,7 @@ export function detailLines(model: BoardModel, ticketId: string, columns: number
  * one line per held card, `  <shortId> <status padded with spaces to 12>
  * <title>`, or `  (no tickets)` when it holds none, and then one empty
  * line unless it is the last lane. With s and e the indexes of the
- * selected lane's (`ui.lanes`) header and of its last line, top is 0 when
+ * selected lane's (`ui.lanes.index`) header and of its last line, top is 0 when
  * e is below H and s otherwise; body line i is `fitText(list[top + i] ??
  * '', C)`. Every lane header line is styled bold over [0, C), the selected
  * one also inverse. With no lane, body line 0 is `fitText('no agents',

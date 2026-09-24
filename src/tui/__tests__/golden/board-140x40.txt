@@ -1,9 +1,9 @@
 agentboard top  todo:2 tests:1 implementing:1 review:1 blocked:1 merged:0  last event just now  /work/agentboard/.board                     
 todo 2         |tests 1        |implementing 1 |review 1       |blocked 1      |merged 0            |activity                               
-01C0000000 orc~|01ARZ3NDEK tes~|01ARYZ6S41 imp~|01D0000000 rev~|01E0000000 - W~|                    |just now impl 01D0000000 handed off to~
-01BX5ZZKBK - W~|               |               |               |               |                    |10m ago  late impl 01D0000000 commente~
-               |               |               |               |               |                    |19m ago  impl 01D0000000 moved to impl~
-               |               |               |               |               |                    |20m ago  impl 01D0000000 moved to tests
+Caf\u00E9 \u00~|Render the boa~|Decode raw key~|Review the fra~|Wait for the f~|                    |just now impl 01D0000000 handed off to~
+orch           |test-author    |impl           |rev            |-              |                    |10m ago  late impl 01D0000000 commente~
+Write the READ~|               |               |               |               |                    |19m ago  impl 01D0000000 moved to impl~
+-              |               |               |               |               |                    |20m ago  impl 01D0000000 moved to tests
                |               |               |               |               |                    |36m ago  orch 01F0000000 closed (decis~
                |               |               |               |               |                    |37m ago  orch 01F0000000 moved to merg~
                |               |               |               |               |                    |38m ago  orch 01F0000000 moved to revi~

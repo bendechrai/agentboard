@@ -32,10 +32,11 @@ import {
   feedLine,
   fitText,
   renderFrame,
+  type Frame,
 } from '../frame.js';
 import type { UiState } from '../state.js';
 import { DEFAULT, all, expectCanonical, style, styleAt, stylesOf } from './frame-helpers.js';
-import { NOW, T1, T2, T3, T4, T5, T6, T7, fixtureModel, START_UI } from './fixtures.js';
+import { NOW, T1, T3, T4, T5, T6, T7, fixtureModel, START_UI } from './fixtures.js';
 
 const GOLDEN = join(dirname(fileURLToPath(import.meta.url)), 'golden');
 
@@ -46,6 +47,14 @@ function golden(name: string): string[] {
   return text.slice(0, -1).split('\n');
 }
 
+/*
+ * Selections for frame tests. The frame highlights by index only, so the
+ * identities (which reconcileUi maintains) are left null here.
+ */
+const boardSel = (column: number, row: number): UiState['board'] => ({ column, row, ticket: null });
+const feedSel = (index: number): UiState['feed'] => ({ index, hash: null });
+const laneSel = (index: number): UiState['lanes'] => ({ index, actor: null });
+
 const M = fixtureModel();
 const START = START_UI;
 const SMALL = { columns: 80, rows: 24 };
@@ -53,9 +62,9 @@ const LARGE = { columns: 140, rows: 40 };
 
 /** The UI states of the golden frames. */
 const VIEWS: Record<string, UiState> = {
-  board: { ...START, board: { column: 2, row: 0 } },
-  feed: { ...START, view: 'feed', feed: 1 },
-  lanes: { ...START, view: 'lanes', lanes: 1 },
+  board: { ...START, board: boardSel(2, 0) },
+  feed: { ...START, view: 'feed', feed: feedSel(1) },
+  lanes: { ...START, view: 'lanes', lanes: laneSel(1) },
   detail: { ...START, detail: { ticket: T1, scroll: 0 } },
 };
 
@@ -104,13 +113,23 @@ describe('scenario "Board at 80 columns"', () => {
       'blocked 1   ',
       'merged 0    ',
     ]);
-    expect(cell(2, 0).startsWith(T4.slice(0, 10))).toBe(true);
-    expect(cell(3, 0).startsWith(T3.slice(0, 10))).toBe(true);
-    expect(cell(2, 1).startsWith(T2.slice(0, 10))).toBe(true);
-    expect(cell(2, 2).startsWith(T1.slice(0, 10))).toBe(true);
-    expect(cell(2, 3).startsWith(T5.slice(0, 10))).toBe(true);
-    expect(cell(2, 4).startsWith(T6.slice(0, 10))).toBe(true);
+    // Each card is two lines: the title (cut with ~), then the assignee or -.
+    expect([cell(2, 0), cell(3, 0), cell(4, 0), cell(5, 0)]).toEqual([
+      'Caf\\u00E9 \\~',
+      'orch        ',
+      'Write the R~',
+      '-           ',
+    ]);
+    expect([1, 2, 3, 4].map((k) => [cell(2, k), cell(3, k)])).toEqual([
+      ['Render the ~', 'test-author '],
+      ['Decode raw ~', 'impl        '],
+      ['Review the ~', 'rev         '],
+      ['Wait for th~', '-           '],
+    ]);
     expect(cell(2, 5)).toBe(' '.repeat(12));
+    expect(cell(4, 1)).toBe(' '.repeat(12));
+    // No short id on a card.
+    expect(frame.lines.slice(1, 23).join('\n')).not.toContain(T1.slice(0, 10));
     for (let line = 1; line <= 22; line += 1) {
       for (const k of [0, 1, 2, 3, 4]) {
         expect(frame.lines[line]?.[13 * k + 12]).toBe('|');
@@ -121,7 +140,8 @@ describe('scenario "Board at 80 columns"', () => {
   it('shows the closed card in merged when closed tickets are toggled on', () => {
     const frame = renderFrame(M, { ...START, showClosed: true }, SMALL, NOW);
     expect(frame.lines[1]?.slice(65, 77)).toBe('merged 1    ');
-    expect(frame.lines[2]?.slice(65, 77).startsWith(T7.slice(0, 10))).toBe(true);
+    expect(frame.lines[2]?.slice(65, 77)).toBe('Pick the TU~');
+    expect(frame.lines[3]?.slice(65, 77)).toBe('-           ');
     expect(frame.lines[0]).toContain('merged:1');
   });
 });
@@ -399,18 +419,17 @@ describe('board view layout', () => {
     );
   });
 
-  it('truncates cards with ~ and escapes non-ASCII titles', () => {
+  it('truncates card titles with ~ and escapes non-ASCII titles', () => {
     const frame = renderFrame(M, START, { columns: 200, rows: 20 }, NOW);
     // 200 columns: W = 160, w = 25.
-    expect(frame.lines[2]?.slice(0, 25)).toBe(
-      fitText(`${T4.slice(0, 10)} orch Caf\u00e9 \u00fcber keys`, 25),
-    );
-    expect(frame.lines[2]?.slice(0, 25)).toBe(`${T4.slice(0, 10)} orch Caf\\u00E~`);
-    expect(frame.lines[2]?.slice(26, 51)).toBe(`${T2.slice(0, 10)} test-author R~`);
+    expect(frame.lines[2]?.slice(0, 25)).toBe(fitText('Caf\u00e9 \u00fcber keys', 25));
+    expect(frame.lines[2]?.slice(0, 25)).toBe('Caf\\u00E9 \\u00FCber keys ');
+    expect(frame.lines[2]?.slice(26, 51)).toBe('Render the board frame w~');
+    expect(frame.lines[3]?.slice(26, 51)).toBe('test-author'.padEnd(25));
   });
 
   it('styles the selected card inverse, a changed card bold and a closed card dim', () => {
-    const ui = { ...START, showClosed: true, board: { column: 2, row: 0 } };
+    const ui = { ...START, showClosed: true, board: boardSel(2, 0) };
     const frame = renderFrame(M, ui, SMALL, NOW);
     // Headings bold.
     expect(stylesOf(frame, 1, 0, 12)).toEqual(all(12, style({ bold: true })));
@@ -425,7 +444,7 @@ describe('board view layout', () => {
     expect(stylesOf(frame, 2, 65, 77)).toEqual(all(12, style({ dim: true })));
     // Unchanged, unselected open card.
     expect(stylesOf(frame, 2, 0, 12)).toEqual(all(12, DEFAULT));
-    const both = renderFrame(M, { ...START, board: { column: 3, row: 0 } }, SMALL, NOW);
+    const both = renderFrame(M, { ...START, board: boardSel(3, 0) }, SMALL, NOW);
     expect(stylesOf(both, 2, 39, 51)).toEqual(all(12, style({ bold: true, inverse: true })));
     // Six seconds later T5 is no longer changed.
     const later = renderFrame(M, START, SMALL, NOW + 4000);
@@ -433,7 +452,7 @@ describe('board view layout', () => {
   });
 
   it('highlights nothing when the selected column is empty', () => {
-    const frame = renderFrame(M, { ...START, board: { column: 5, row: 0 } }, SMALL, NOW);
+    const frame = renderFrame(M, { ...START, board: boardSel(5, 0) }, SMALL, NOW);
     for (let y = 2; y < 23; y += 1) {
       expect(stylesOf(frame, y, 0, 80).some((s) => s.inverse)).toBe(false);
     }
@@ -441,24 +460,34 @@ describe('board view layout', () => {
 
   it('scrolls only the selected column so the selected card stays visible', () => {
     const inputs: FoldInput[] = [];
-    const ids: string[] = [];
     for (let i = 0; i < 30; i += 1) {
       const id = `01H${String(i).padStart(2, '0')}00000000000000000000`;
-      ids.push(id);
       inputs.push(E.create(id, { title: `t${String(i)}`, task: TASK }, { wall: 1000 - i }));
     }
     const m = model(inputs);
-    // 80x24: K = 21 card lines; cards are newest first, so ids in order.
-    const frame = renderFrame(m, { ...START, board: { column: 0, row: 25 } }, SMALL, NOW);
-    expect(frame.lines[2]?.slice(0, 10)).toBe(ids[5]?.slice(0, 10));
-    expect(frame.lines[22]?.slice(0, 10)).toBe(ids[25]?.slice(0, 10));
-    expect(styleAt(frame, 22, 0).inverse).toBe(true);
-    const top = renderFrame(m, { ...START, board: { column: 0, row: 20 } }, SMALL, NOW);
-    expect(top.lines[2]?.slice(0, 10)).toBe(ids[0]?.slice(0, 10));
-    expect(styleAt(top, 22, 0).inverse).toBe(true);
+    // 80x24: H = 22, P = floor(21 / 2) = 10 cards on body lines 1 to 20
+    // (frame lines 2 to 21); frame line 22 holds no card. Cards are newest
+    // first, so t0, t1, ...
+    const title = (f: Frame, y: number): string => (f.lines[y] ?? '').slice(0, 12).trimEnd();
+    const frame = renderFrame(m, { ...START, board: boardSel(0, 25) }, SMALL, NOW);
+    // top = 25 - 10 + 1 = 16.
+    expect(title(frame, 2)).toBe('t16');
+    expect(title(frame, 3)).toBe('-');
+    expect(title(frame, 20)).toBe('t25');
+    expect(title(frame, 22)).toBe('');
+    expect(stylesOf(frame, 20, 0, 12)).toEqual(all(12, style({ inverse: true })));
+    expect(stylesOf(frame, 21, 0, 12)).toEqual(all(12, style({ inverse: true })));
+    expect(styleAt(frame, 19, 0)).toEqual(DEFAULT);
+    const fits = renderFrame(m, { ...START, board: boardSel(0, 9) }, SMALL, NOW);
+    expect(title(fits, 2)).toBe('t0');
+    expect(title(fits, 20)).toBe('t9');
+    expect(styleAt(fits, 20, 0).inverse).toBe(true);
+    const next = renderFrame(m, { ...START, board: boardSel(0, 10) }, SMALL, NOW);
+    expect(title(next, 2)).toBe('t1');
     // Another column selected: the first column shows from its first card.
-    const other = renderFrame(m, { ...START, board: { column: 1, row: 25 } }, SMALL, NOW);
-    expect(other.lines[2]?.slice(0, 10)).toBe(ids[0]?.slice(0, 10));
+    const other = renderFrame(m, { ...START, board: boardSel(1, 25) }, SMALL, NOW);
+    expect(title(other, 2)).toBe('t0');
+    expect(title(other, 20)).toBe('t9');
   });
 });
 
@@ -477,7 +506,7 @@ describe('feed view layout', () => {
 
   it('scrolls so the selected entry is on the last body line', () => {
     const entries = feedEntries(M);
-    const frame = renderFrame(M, { ...START, view: 'feed', feed: 25 }, SMALL, NOW);
+    const frame = renderFrame(M, { ...START, view: 'feed', feed: feedSel(25) }, SMALL, NOW);
     // H = 22: top = 25 - 22 + 1 = 4.
     expect(frame.lines[1]).toBe(fitText(feedLine(entries[4] ?? fail(), NOW), 80));
     expect(frame.lines[22]).toBe(fitText(feedLine(entries[25] ?? fail(), NOW), 80));
@@ -534,9 +563,9 @@ describe('lanes view layout', () => {
     }
     const m = model(inputs);
     // Each lane: header, (no tickets), blank = 3 lines; lanes newest first.
-    const fits = renderFrame(m, { ...START, view: 'lanes', lanes: 6 }, SMALL, NOW);
+    const fits = renderFrame(m, { ...START, view: 'lanes', lanes: laneSel(6) }, SMALL, NOW);
     expect(fits.lines[1]?.trimEnd()).toBe('actor9  last seen 1m ago');
-    const scrolled = renderFrame(m, { ...START, view: 'lanes', lanes: 7 }, SMALL, NOW);
+    const scrolled = renderFrame(m, { ...START, view: 'lanes', lanes: laneSel(7) }, SMALL, NOW);
     expect(scrolled.lines[1]?.trimEnd()).toBe('actor2  last seen 1m ago');
     expect(styleAt(scrolled, 1, 0)).toEqual(style({ bold: true, inverse: true }));
   });
@@ -558,10 +587,10 @@ describe('lanes view layout', () => {
     const m = model(inputs);
     // 80x22: H = 20; lane 6 spans lines 18 and 19, so it still fits.
     const size = { columns: 80, rows: 22 };
-    const fits = renderFrame(m, { ...START, view: 'lanes', lanes: 6 }, size, NOW);
+    const fits = renderFrame(m, { ...START, view: 'lanes', lanes: laneSel(6) }, size, NOW);
     expect(fits.lines[1]?.trimEnd()).toBe('actor9  last seen 1m ago');
     expect(fits.lines[19]?.trimEnd()).toBe('actor3  last seen 1m ago');
-    const next = renderFrame(m, { ...START, view: 'lanes', lanes: 7 }, size, NOW);
+    const next = renderFrame(m, { ...START, view: 'lanes', lanes: laneSel(7) }, size, NOW);
     expect(next.lines[1]?.trimEnd()).toBe('actor2  last seen 1m ago');
   });
 
@@ -627,7 +656,7 @@ describe('style map', () => {
   it('is canonical: sorted, not overlapping, inside the line, maximal and never default', () => {
     const uis: UiState[] = [
       ...Object.values(VIEWS),
-      { ...START, showClosed: true, notice: 'busy', board: { column: 3, row: 0 } },
+      { ...START, showClosed: true, notice: 'busy', board: boardSel(3, 0) },
       { ...START, help: true },
     ];
     for (const ui of uis) {

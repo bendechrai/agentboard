@@ -133,9 +133,9 @@ export const BOARD_DIR = '/work/agentboard/.board';
 export const START_UI: UiState = {
   boardDir: BOARD_DIR,
   view: 'board',
-  board: { column: 0, row: 0 },
-  feed: 0,
-  lanes: 0,
+  board: { column: 0, row: 0, ticket: null },
+  feed: { index: 0, hash: null },
+  lanes: { index: 0, actor: null },
   detail: null,
   showClosed: false,
   help: false,

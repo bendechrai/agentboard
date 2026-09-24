@@ -11,7 +11,17 @@ import { E, OTHER, TASK, model } from '../../view/__tests__/helpers.js';
 import type { BoardModel } from '../../view/types.js';
 import { renderFrame, type Size } from '../frame.js';
 import type { Key } from '../keys.js';
-import { VIEWS, initialUi, reconcileUi, reduceKey, type UiState } from '../state.js';
+import {
+  VIEWS,
+  initialUi,
+  reconcileUi,
+  reduceKey,
+  type BoardSelection,
+  type FeedSelection,
+  type LaneSelection,
+  type UiState,
+} from '../state.js';
+import { feedEntries } from '../../view/feed.js';
 import { BOARD_DIR, NOW, T1, T2, T3, T4, T5, T6, T7, fixtureModel, START_UI } from './fixtures.js';
 
 const char = (c: string): Key => ({ name: 'char', char: c });
@@ -37,7 +47,24 @@ function press(ui: UiState, script: string, m: BoardModel, size: Size = SIZE): U
 }
 
 const M = fixtureModel();
-const START = START_UI;
+
+/** Fixture columns (closed hidden): todo [T4, T3], tests [T2], implementing [T1], review [T5], blocked [T6], merged []. */
+const FIXTURE_COLUMNS: readonly (readonly string[])[] = [[T4, T3], [T2], [T1], [T5], [T6], []];
+/** The board selection of fixture card (column, row), with its ticket id. */
+const at = (column: number, row: number): BoardSelection => ({
+  column,
+  row,
+  ticket: FIXTURE_COLUMNS[column]?.[row] ?? null,
+});
+/** Fixture feed entries, newest first (computed with the view-model, not the code under test). */
+const ENTRIES = feedEntries(M);
+const feedSel = (index: number): FeedSelection => ({ index, hash: ENTRIES[index]?.hash ?? null });
+/** Fixture lanes in order. */
+const LANES = ['impl', 'orch', 'test-author', 'rev'];
+const laneSel = (index: number): LaneSelection => ({ index, actor: LANES[index] ?? null });
+
+/** `initialUi(BOARD_DIR)` after `reconcileUi` with the fixture model. */
+const START: UiState = { ...START_UI, board: at(0, 0), feed: feedSel(0), lanes: laneSel(0) };
 
 /**
  * A board for the "Open and close a detail" scenario: two cards in todo,
@@ -70,9 +97,9 @@ describe('initialUi', () => {
     expect(initialUi('/some/dir')).toEqual({
       boardDir: '/some/dir',
       view: 'board',
-      board: { column: 0, row: 0 },
-      feed: 0,
-      lanes: 0,
+      board: { column: 0, row: 0, ticket: null },
+      feed: { index: 0, hash: null },
+      lanes: { index: 0, actor: null },
       detail: null,
       showClosed: false,
       help: false,
@@ -88,11 +115,11 @@ describe('reduceKey: scenario "Open and close a detail"', () => {
   it('l, l, j, Enter opens the second card of the third column; Escape closes it and keeps it selected', () => {
     const m = scenarioModel();
     const opened = press(START, 'llj<enter>', m);
-    expect(opened.board).toEqual({ column: 2, row: 1 });
+    expect(opened.board).toEqual({ column: 2, row: 1, ticket: T2 });
     expect(opened.detail).toEqual({ ticket: T2, scroll: 0 });
     const closed = press(opened, '<escape>', m);
     expect(closed.detail).toBeNull();
-    expect(closed.board).toEqual({ column: 2, row: 1 });
+    expect(closed.board).toEqual({ column: 2, row: 1, ticket: T2 });
     expect(closed.view).toBe('board');
   });
 
@@ -107,8 +134,8 @@ describe('reduceKey: scenario "Open and close a detail"', () => {
 describe('reduceKey: scenario "Unknown key"', () => {
   const states: [string, UiState][] = [
     ['board', START],
-    ['feed', { ...START, view: 'feed', feed: 3 }],
-    ['lanes', { ...START, view: 'lanes', lanes: 1 }],
+    ['feed', { ...START, view: 'feed', feed: feedSel(3) }],
+    ['lanes', { ...START, view: 'lanes', lanes: laneSel(1) }],
     ['detail', { ...START, detail: { ticket: T1, scroll: 1 } }],
     ['help', { ...START, help: true }],
   ];
@@ -197,9 +224,9 @@ describe('reduceKey: views', () => {
   it('keeps each view selection across view switches', () => {
     const ui = press(START, 'lj2jjj3j1', M);
     expect(ui.view).toBe('board');
-    expect(ui.board).toEqual({ column: 1, row: 0 });
-    expect(ui.feed).toBe(3);
-    expect(ui.lanes).toBe(1);
+    expect(ui.board).toEqual(at(1, 0));
+    expect(ui.feed).toEqual(feedSel(3));
+    expect(ui.lanes).toEqual(laneSel(1));
   });
 });
 
@@ -208,29 +235,26 @@ describe('reduceKey: board view', () => {
   // implementing [T1], review [T5], blocked [T6], merged [].
 
   it('h and left stop at the first column', () => {
-    expect(press(START, 'h', M).board).toEqual({ column: 0, row: 0 });
-    expect(press(START, '<left>', M).board).toEqual({ column: 0, row: 0 });
-    expect(press(START, 'llh', M).board).toEqual({ column: 1, row: 0 });
+    expect(press(START, 'h', M).board).toEqual(at(0, 0));
+    expect(press(START, '<left>', M).board).toEqual(at(0, 0));
+    expect(press(START, 'llh', M).board).toEqual(at(1, 0));
   });
 
   it('l and right stop at the last column', () => {
-    expect(press(START, 'lllllll', M).board).toEqual({ column: 5, row: 0 });
-    expect(press(START, '<right><right><right><right><right><right>', M).board).toEqual({
-      column: 5,
-      row: 0,
-    });
+    expect(press(START, 'lllllll', M).board).toEqual(at(5, 0));
+    expect(press(START, '<right><right><right><right><right><right>', M).board).toEqual(at(5, 0));
   });
 
   it('j and k move within the column and stop at its ends', () => {
-    expect(press(START, 'j', M).board).toEqual({ column: 0, row: 1 });
-    expect(press(START, '<down><down><down>', M).board).toEqual({ column: 0, row: 1 });
-    expect(press(START, 'jk', M).board).toEqual({ column: 0, row: 0 });
-    expect(press(START, '<up>', M).board).toEqual({ column: 0, row: 0 });
+    expect(press(START, 'j', M).board).toEqual(at(0, 1));
+    expect(press(START, '<down><down><down>', M).board).toEqual(at(0, 1));
+    expect(press(START, 'jk', M).board).toEqual(at(0, 0));
+    expect(press(START, '<up>', M).board).toEqual(at(0, 0));
   });
 
   it('clamps the row to the new column when moving sideways', () => {
-    expect(press(START, 'jl', M).board).toEqual({ column: 1, row: 0 });
-    expect(press(START, 'jlllll', M).board).toEqual({ column: 5, row: 0 });
+    expect(press(START, 'jl', M).board).toEqual(at(1, 0));
+    expect(press(START, 'jlllll', M).board).toEqual(at(5, 0));
   });
 
   it('Enter opens the selected card', () => {
@@ -251,7 +275,7 @@ describe('reduceKey: board view', () => {
     expect(press(shown, 'c', M).showClosed).toBe(false);
   });
 
-  it('c clamps the row when hiding closed tickets empties part of the column', () => {
+  it('c keeps the selected card selected when it stays listed, and clamps when it is hidden', () => {
     // blocked holds T6 (open) and T7 (closed, more recently updated).
     const m = model([
       E.create(T6, { title: 'open blocked', task: TASK }, { wall: 100 }),
@@ -260,12 +284,19 @@ describe('reduceKey: board view', () => {
       E.move(T7, 'blocked', { wall: 210 }),
       E.close(T7, { noDecision: true }, { wall: 220 }),
     ]);
-    const ui = { ...START, showClosed: true, board: { column: 4, row: 1 } };
-    expect(reduceKey(ui, char('c'), m, SIZE)).toEqual({
-      ...ui,
-      showClosed: false,
-      board: { column: 4, row: 0 },
-    });
+    // T6 selected at row 1 with closed shown: hiding T7 moves T6 to row 0.
+    const onOpen = { ...START, showClosed: true, board: { column: 4, row: 1, ticket: T6 } };
+    const hiddenOpen = reduceKey(onOpen, char('c'), m, SIZE);
+    expect(hiddenOpen.showClosed).toBe(false);
+    expect(hiddenOpen.board).toEqual({ column: 4, row: 0, ticket: T6 });
+    // T7 selected: hidden, so the row clamps and T6 becomes the selection.
+    const onClosed = { ...START, showClosed: true, board: { column: 4, row: 0, ticket: T7 } };
+    const hiddenClosed = reduceKey(onClosed, char('c'), m, SIZE);
+    expect(hiddenClosed.showClosed).toBe(false);
+    expect(hiddenClosed.board).toEqual({ column: 4, row: 0, ticket: T6 });
+    // Showing closed again: T6 is followed to row 1.
+    const hidden = { ...START, board: { column: 4, row: 0, ticket: T6 } };
+    expect(reduceKey(hidden, char('c'), m, SIZE).board).toEqual({ column: 4, row: 1, ticket: T6 });
   });
 
   it('c works with a detail open and keeps it open', () => {
@@ -338,8 +369,8 @@ describe('reduceKey: detail', () => {
   });
 
   it('the view selection is unchanged by scrolling', () => {
-    const ui = { ...START, board: { column: 0, row: 1 }, detail: { ticket: T3, scroll: 0 } };
-    expect(press(ui, 'jj<escape>', M).board).toEqual({ column: 0, row: 1 });
+    const ui = { ...START, board: at(0, 1), detail: { ticket: T3, scroll: 0 } };
+    expect(press(ui, 'jj<escape>', M).board).toEqual(at(0, 1));
   });
 });
 
@@ -349,17 +380,17 @@ describe('reduceKey: feed view', () => {
   const feed = { ...START, view: 'feed' as const };
 
   it('j, k and the arrows move by one, clamped', () => {
-    expect(press(feed, 'jjj', M).feed).toBe(3);
-    expect(press(feed, 'jjk', M).feed).toBe(1);
-    expect(press(feed, '<down><up><up>', M).feed).toBe(0);
-    expect(press({ ...feed, feed: 30 }, 'j', M).feed).toBe(30);
+    expect(press(feed, 'jjj', M).feed).toEqual(feedSel(3));
+    expect(press(feed, 'jjk', M).feed).toEqual(feedSel(1));
+    expect(press(feed, '<down><up><up>', M).feed).toEqual(feedSel(0));
+    expect(press({ ...feed, feed: feedSel(30) }, 'j', M).feed).toEqual(feedSel(30));
   });
 
   it('page down and page up move by the body height, clamped', () => {
-    expect(press(feed, '<pagedown>', M).feed).toBe(H);
-    expect(press(feed, '<pagedown><pagedown>', M).feed).toBe(30);
-    expect(press(feed, '<pagedown><pagedown><pageup>', M).feed).toBe(30 - H);
-    expect(press(feed, '<pageup>', M).feed).toBe(0);
+    expect(press(feed, '<pagedown>', M).feed).toEqual(feedSel(H));
+    expect(press(feed, '<pagedown><pagedown>', M).feed).toEqual(feedSel(30));
+    expect(press(feed, '<pagedown><pagedown><pageup>', M).feed).toEqual(feedSel(30 - H));
+    expect(press(feed, '<pageup>', M).feed).toEqual(feedSel(0));
   });
 
   it('Enter opens the ticket of the selected entry', () => {
@@ -368,14 +399,14 @@ describe('reduceKey: feed view', () => {
   });
 
   it('Enter on a board.meta entry is ignored', () => {
-    const last = { ...feed, feed: 30 };
+    const last = { ...feed, feed: feedSel(30) };
     expect(reduceKey(last, named('enter'), M, SIZE)).toBe(last);
   });
 
   it('Enter on an empty feed is ignored, and moving stays at 0', () => {
     const empty = model([]);
     expect(reduceKey(feed, named('enter'), empty, SIZE)).toBe(feed);
-    expect(press(feed, 'jj<pagedown>', empty).feed).toBe(0);
+    expect(press(feed, 'jj<pagedown>', empty).feed).toEqual({ index: 0, hash: null });
   });
 
   it('h and l are ignored', () => {
@@ -389,9 +420,9 @@ describe('reduceKey: lanes view', () => {
   const lanes = { ...START, view: 'lanes' as const };
 
   it('j, k and the arrows move by one, clamped', () => {
-    expect(press(lanes, 'j', M).lanes).toBe(1);
-    expect(press(lanes, 'jjjjjj', M).lanes).toBe(3);
-    expect(press(lanes, '<down>k<up>', M).lanes).toBe(0);
+    expect(press(lanes, 'j', M).lanes).toEqual(laneSel(1));
+    expect(press(lanes, 'jjjjjj', M).lanes).toEqual(laneSel(3));
+    expect(press(lanes, '<down>k<up>', M).lanes).toEqual(laneSel(0));
   });
 
   it('Enter opens the first held ticket of the selected lane', () => {
@@ -416,56 +447,157 @@ describe('reduceKey: lanes view', () => {
 });
 
 describe('reconcileUi: model changes', () => {
-  it('returns the same object when nothing needs clamping', () => {
-    const ui = { ...START, board: { column: 0, row: 1 }, feed: 30, lanes: 3 };
+  it('returns the same object when every selection is where its identity is', () => {
+    const ui = { ...START, board: at(0, 1), feed: feedSel(30), lanes: laneSel(3) };
     expect(reconcileUi(ui, M)).toBe(ui);
+    expect(reconcileUi(START, M)).toBe(START);
   });
 
-  it('clamps the board row when a column empties', () => {
-    // tests holds T1 and T2; T2 is selected, then both move on.
+  it('fills in the identities of the initial state', () => {
+    expect(reconcileUi(START_UI, M)).toEqual(START);
+    const empty = model([]);
+    expect(reconcileUi(START_UI, empty)).toBe(START_UI);
+  });
+
+  it('keeps the selected ticket selected when a live append reorders its column', () => {
+    // todo holds T2 (newest), then T1; T1 is selected at row 1.
+    const before: FoldInput[] = [
+      E.create(T1, { title: 'one', task: TASK }, { wall: 100 }),
+      E.create(T2, { title: 'two', task: TASK }, { wall: 110 }),
+    ];
+    const ui = { ...START_UI, board: { column: 0, row: 1, ticket: T1 } };
+    expect(reconcileUi(ui, model(before)).board).toEqual(ui.board);
+    // A comment on T1 makes it the most recently updated: it moves to row 0.
+    const after = model([...before, E.comment(T1, 'bump', { wall: 200 })]);
+    expect(reconcileUi(ui, after).board).toEqual({ column: 0, row: 0, ticket: T1 });
+  });
+
+  it('follows the selected ticket to another column', () => {
+    const before: FoldInput[] = [
+      E.create(T1, { title: 'one', task: TASK }, { wall: 100 }),
+      E.create(T2, { title: 'two', task: TASK }, { wall: 110 }),
+      E.create(T3, { title: 'three', task: TASK }, { wall: 120 }),
+      E.move(T3, 'tests', { wall: 130 }),
+    ];
+    const ui = { ...START_UI, board: { column: 0, row: 1, ticket: T1 } };
+    const moved = model([...before, E.move(T1, 'tests', { wall: 200 })]);
+    // tests now holds T1 (newest) then T3.
+    expect(reconcileUi(ui, moved).board).toEqual({ column: 1, row: 0, ticket: T1 });
+  });
+
+  it('clamps when the selected ticket leaves the listed cards, and when a column empties', () => {
+    // T2 is merged; T1 (selected, in merged at row 1 before) follows.
     const before: FoldInput[] = [
       E.create(T1, { title: 'one', task: TASK }, { wall: 100 }),
       E.create(T2, { title: 'two', task: TASK }, { wall: 110 }),
       E.move(T1, 'tests', { wall: 200 }),
       E.move(T2, 'tests', { wall: 210 }),
+      E.move(T2, 'implementing', { wall: 220 }),
+      E.move(T2, 'review', { wall: 230 }),
+      E.move(T2, 'merged', { wall: 240 }),
     ];
-    const ui = { ...START, board: { column: 1, row: 1 } };
-    expect(reconcileUi(ui, model(before))).toBe(ui);
-    const one = model([...before, E.move(T2, 'implementing', { wall: 300 })]);
-    expect(reconcileUi(ui, one)).toEqual({ ...ui, board: { column: 1, row: 0 } });
-    const none = model([
+    const ui = { ...START_UI, board: { column: 5, row: 1, ticket: T1 } };
+    const withT1Merged = [
       ...before,
-      E.move(T2, 'implementing', { wall: 300 }),
-      E.move(T1, 'implementing', { wall: 310 }),
+      E.move(T1, 'implementing', { wall: 300 }),
+      E.move(T1, 'review', { wall: 310 }),
+      E.move(T1, 'merged', { wall: 320 }),
+    ];
+    // merged: T1 (newest) then T2; T1 is followed to row 0.
+    expect(reconcileUi(ui, model(withT1Merged)).board).toEqual({ column: 5, row: 0, ticket: T1 });
+    // T1 closed and closed hidden: not listed, so the row clamps to T2.
+    const closed = model([...withT1Merged, E.close(T1, { noDecision: true }, { wall: 400 })]);
+    expect(reconcileUi({ ...ui, board: { column: 5, row: 0, ticket: T1 } }, closed).board).toEqual({
+      column: 5,
+      row: 0,
+      ticket: T2,
+    });
+    // Both closed: the column is empty.
+    const none = model([
+      ...withT1Merged,
+      E.close(T1, { noDecision: true }, { wall: 400 }),
+      E.close(T2, { noDecision: true }, { wall: 410 }),
     ]);
-    expect(reconcileUi(ui, none)).toEqual({ ...ui, board: { column: 1, row: 0 } });
+    expect(reconcileUi(ui, none).board).toEqual({ column: 5, row: 0, ticket: null });
   });
 
-  it('clamps the feed and lane selections to the new lists', () => {
+  it('clamps when the selected ticket disappears from the model (a reload after a resync)', () => {
+    // T3 was selected at row 2 of todo; the reloaded model has no T3.
+    const ui = { ...START_UI, board: { column: 0, row: 2, ticket: T3 } };
+    const without = model([
+      E.create(T1, { title: 'one', task: TASK }, { wall: 100 }),
+      E.create(T2, { title: 'two', task: TASK }, { wall: 110 }),
+    ]);
+    // Row 2 clamps to 1, the last card (T1).
+    expect(reconcileUi(ui, without).board).toEqual({ column: 0, row: 1, ticket: T1 });
+  });
+
+  it('keeps the selected feed entry selected when newer entries arrive', () => {
+    const base: FoldInput[] = [
+      E.create(T1, { title: 'one', task: TASK }, { actor: 'orch', wall: 100 }),
+      E.comment(T1, 'first', { actor: 'impl', wall: 200 }),
+    ];
+    const m1 = model(base);
+    const entries1 = feedEntries(m1);
+    // Select the create (index 1).
+    const ui = {
+      ...START_UI,
+      view: 'feed' as const,
+      feed: { index: 1, hash: entries1[1]?.hash ?? null },
+    };
+    expect(reconcileUi(ui, m1).feed).toEqual(ui.feed);
+    // The same events plus a newer comment (as an append would give).
+    const m2 = model([...base, E.comment(T1, 'later', { actor: 'rev', wall: 300 })]);
+    expect(reconcileUi(ui, m2).feed).toEqual({ index: 2, hash: entries1[1]?.hash ?? null });
+  });
+
+  it('clamps the feed selection when its entry is gone', () => {
     const small = model([E.create(T1, { title: 'one', task: TASK }, { actor: 'orch', wall: 100 })]);
-    const ui = { ...START, feed: 12, lanes: 3 };
-    expect(reconcileUi(ui, small)).toEqual({ ...ui, feed: 0, lanes: 0 });
-    expect(reconcileUi(ui, model([]))).toEqual({ ...ui, feed: 0, lanes: 0 });
+    const ui = { ...START, feed: feedSel(12) };
+    const only = feedEntries(small)[0]?.hash ?? null;
+    expect(reconcileUi(ui, small).feed).toEqual({ index: 0, hash: only });
+    expect(reconcileUi(ui, model([])).feed).toEqual({ index: 0, hash: null });
+  });
+
+  it('keeps the selected lane selected when lanes reorder, and clamps when it is gone', () => {
+    const base: FoldInput[] = [
+      E.create(T1, { title: 'one', task: TASK }, { actor: 'a', wall: 100 }),
+      E.comment(T1, 'hi', { actor: 'b', wall: 200 }),
+    ];
+    // Lanes: b (most recent), a.
+    const ui = { ...START_UI, view: 'lanes' as const, lanes: { index: 1, actor: 'a' } };
+    expect(reconcileUi(ui, model(base)).lanes).toEqual(ui.lanes);
+    // a writes again and becomes the first lane.
+    const reordered = model([...base, E.comment(T1, 'again', { actor: 'a', wall: 300 })]);
+    expect(reconcileUi(ui, reordered).lanes).toEqual({ index: 0, actor: 'a' });
+    // Only b remains (a reload without a's events): clamp to b.
+    const gone = model([E.create(T1, { title: 'one', task: TASK }, { actor: 'b', wall: 100 })]);
+    expect(reconcileUi(ui, gone).lanes).toEqual({ index: 0, actor: 'b' });
+    expect(reconcileUi(ui, model([])).lanes).toEqual({ index: 0, actor: null });
   });
 
   it('closes the detail when its ticket is gone, and keeps it (scroll too) otherwise', () => {
     const ui = { ...START, detail: { ticket: T1, scroll: 7 } };
     expect(reconcileUi(ui, M)).toBe(ui);
     const without = model([E.create(T2, { title: 'two', task: TASK }, { wall: 100 })]);
-    expect(reconcileUi(ui, without)).toEqual({ ...ui, detail: null });
+    expect(reconcileUi(ui, without).detail).toBeNull();
   });
 
-  it('keeps the view, the column, the flags and the notice', () => {
+  it('keeps the view, the flags and the notice', () => {
     const ui: UiState = {
       ...START,
       view: 'lanes',
-      board: { column: 5, row: 4 },
+      board: { column: 5, row: 4, ticket: 'GONE' },
       showClosed: true,
       help: true,
       notice: 'busy',
     };
-    const next = reconcileUi(ui, model([]));
-    expect(next).toEqual({ ...ui, board: { column: 5, row: 0 } });
+    expect(reconcileUi(ui, model([]))).toEqual({
+      ...ui,
+      board: { column: 5, row: 0, ticket: null },
+      feed: { index: 0, hash: null },
+      lanes: { index: 0, actor: null },
+    });
   });
 });
 
@@ -473,7 +605,7 @@ describe('reducers are pure', () => {
   it('reduceKey and reconcileUi do not modify their arguments and are deterministic', () => {
     const m = fixtureModel();
     const mCopy = structuredClone(m);
-    const ui = { ...START, board: { column: 0, row: 1 }, detail: { ticket: T1, scroll: 1 } };
+    const ui = { ...START, board: at(0, 1), detail: { ticket: T1, scroll: 1 } };
     const uiCopy = structuredClone(ui);
     for (const key of keys('jkhl123c?<tab><enter><escape><pagedown><pageup>q')) {
       expect(reduceKey(ui, key, m, SIZE)).toEqual(reduceKey(uiCopy, key, mCopy, SIZE));
