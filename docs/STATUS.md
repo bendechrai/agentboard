@@ -22,27 +22,29 @@ full workflow, and docs/adr/ for design decisions.
   commits during the build (`git log --oneline -- openspec/changes/add-board-core`
   lists them). Its specs are not yet in `openspec/specs/`; that happens
   when the change is archived after every group has landed.
-- `add-board-core` groups 1 to 7 are implemented, reviewed and merged into
-  `staging`: events, canonical JSON and fold (`src/events/`); the store,
-  discovery, atomic writes, cache and rebuild (`src/store/`); every CLI
-  command except `mcp` (`src/cli/`, operations in `src/board/`); the
-  concurrency and crash property tests; `inbox` and `watch`; `sync`; and
-  the OpenSpec integration (`import-change`, source adapters,
-  `close-merged`). `agentboard mcp` is still the placeholder that exits 1.
+- `add-board-core` groups 1 to 7 and 9 are implemented, reviewed and
+  merged into `staging`: events, canonical JSON and fold (`src/events/`);
+  the store, discovery, atomic writes, cache and rebuild (`src/store/`);
+  every CLI command (`src/cli/`, operations in `src/board/`); the
+  concurrency and crash property tests; `inbox` and `watch`; `sync`; the
+  OpenSpec integration (`import-change`, source adapters,
+  `close-merged`); and the MCP server (`agentboard mcp`, `src/mcp/`).
 - Group 8 (documentation and consumer setup: README usage, ADRs 0002 to
-  0005, "Using agentboard in a project" in CONTRIBUTING.md) is on the
-  branch `docs/usage-adrs`.
-- Group 9 (the MCP server) is in progress on its own branch.
+  0005, "Using agentboard in a project" in CONTRIBUTING.md) is in the PR
+  from the branch `docs/usage-adrs`. With it, every `add-board-core` task
+  is ticked.
 - The `add-agent-guidance` OpenSpec change (generated help, `help agents`,
   error hints, `agents install`/`agents check` for Claude Code skills,
   `AGENTS.md`, OpenSpec config and `.mcp.json`, and the guide over MCP) is
-  proposed, not implemented. It depends on `add-board-core` groups 3 and 9.
+  proposed; its task group 1 is in progress. It depends on
+  `add-board-core` groups 3 and 9, both merged.
 
 ## What to do next
 
-1. Land group 8 and group 9 of `add-board-core`, then archive the change
-   in its own PR so its deltas are folded into `openspec/specs/`.
-2. Start `add-agent-guidance`, one task group at a time.
+1. Land group 8, then archive `add-board-core` in its own PR so its deltas
+   are folded into `openspec/specs/`.
+2. Continue `add-agent-guidance` (group 1 is in progress), one task group
+   at a time.
 
 Each task group uses the three-role loop from CONTRIBUTING.md
 ("Three-agent workflow per task group"):

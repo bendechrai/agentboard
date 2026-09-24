@@ -3,10 +3,9 @@
 A local, offline, conflict-free ticket board for AI agents working on one
 project.
 
-Status: early development, not yet released. The board core (every command
-below except `mcp`) is implemented and tested; the MCP server is being
-built. There is no npm release yet, and commands, flags and output may
-still change before the first one.
+Status: early development, not yet released. Every command below, including
+the MCP server, is implemented and tested, but there is no npm release yet,
+and commands, flags and output may still change before the first one.
 
 ## What it is
 
@@ -377,9 +376,6 @@ modifies the cache.
 
 ## MCP server
 
-Available from the release that includes it; in the current build
-`agentboard mcp` exits 1 with a not-implemented message.
-
 `agentboard mcp` serves the board to MCP clients over stdio, with one tool
 per command, named `board_<command>` with spaces and hyphens turned into
 underscores: `board_new`, `board_show`, `board_list`, `board_claim`,
@@ -388,31 +384,56 @@ underscores: `board_new`, `board_show`, `board_list`, `board_claim`,
 `board_close`, `board_inbox`, `board_import_change` and
 `board_close_merged`. `init`, `watch`, `rebuild`, `sync`, `mcp` and
 `version` are not exposed: they are run by a human or an orchestrator in a
-shell.
+shell. Calling an unknown or excluded tool name returns a tool error with
+`exitCode` 1 and `reason` `usage`.
 
 - Tool input schemas come from the same command registry as the CLI, with
-  the same required arguments and validation; `--json` is implied.
-- Writing tools take the actor as an `as` argument, falling back to a
-  default actor for the server (`AGENTBOARD_ACTOR` in its environment, or
-  `agentboard mcp --as <actor>`), and fail exactly as the CLI does with
-  neither.
+  the same arguments (flag names without the leading `--`, for example
+  `{"id": "01M38YRHC3", "as": "impl-1"}`), the same required fields and
+  the same validation; `--json` is implied.
+- The actor of a call is, in order: the call's `as` argument, the default
+  given to the server as `agentboard mcp --as <actor>`, then
+  `AGENTBOARD_ACTOR` in the server's environment. With none of them a
+  writing tool fails exactly as the CLI does (exit code 1,
+  `missing-actor`).
 - A successful call returns the same JSON document the CLI prints with
-  `--json`. A failed call returns a tool error whose structured content is
-  `{exitCode, reason, message}`, with the exit code the CLI would have used
-  (for example `exitCode` 4 and `reason` `already-assigned`).
-- The server locates the board once at start-up and exits 2 if there is
-  none. Every call runs the same single transaction as the CLI, so MCP and
-  CLI writers can race safely.
+  `--json`, as text and as structured content. Structured content must be
+  an object, so an array result (`board_list`, `board_show` with `raw`)
+  arrives as `{"items": [...]}`.
+- A failed call returns a tool error (`isError` true) whose structured
+  content is `{exitCode, reason, message}`, with the exit code the CLI
+  would have used, for example `exitCode` 4, `reason` `already-assigned`
+  and a message naming the holder.
+- The server locates the board once at start-up, from its working
+  directory, by the usual discovery rules, and exits 2 before serving
+  anything if there is none. Every call catches up with events written
+  since by any process and runs the same single transaction as the CLI, so
+  MCP and CLI writers can race safely.
 
-A client configuration looks like:
+For Claude Code, put this in `.mcp.json` at the project root (one actor per
+agent; drop `--as` to have each call pass `as`, or to use
+`AGENTBOARD_ACTOR`):
 
 ```json
 {
   "mcpServers": {
     "agentboard": {
       "command": "npx",
-      "args": ["@bendechrai/agentboard", "mcp"],
-      "env": { "AGENTBOARD_ACTOR": "impl-1" }
+      "args": ["-y", "@bendechrai/agentboard", "mcp", "--as", "impl-1"]
+    }
+  }
+}
+```
+
+The package is not on npm yet. Until it is, build from source (see
+"Install and run") and point the server at the built file instead:
+
+```json
+{
+  "mcpServers": {
+    "agentboard": {
+      "command": "node",
+      "args": ["/path/to/agentboard/dist/cli.js", "mcp", "--as", "impl-1"]
     }
   }
 }
