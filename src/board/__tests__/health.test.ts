@@ -1,18 +1,18 @@
 /**
  * `boardHealth` (add-board-insights task 2.1; board-insights: "Health
- * command"; design.md: "The `health` command", "Risks / Trade-offs":
- * "`health` reads event files -> only those of open tickets").
+ * command"; design.md: "The `health` command"; orchestrator ruling
+ * 90c9f29: health reads the event files of all applied events, each at
+ * most once, within one read snapshot).
  *
  * The expected report is computed independently of `boardHealth`: the
- * group 1 `healthReport` over the whole board as `loadSnapshot` loads it
- * (which reads every event file, closed tickets included). The event
- * files `boardHealth` may read are computed from how the fixture was
- * written, and cross-checked with the independent `foldDir`.
+ * group 1 `healthReport` over the whole board as `loadSnapshot` loads it.
+ * The event files `boardHealth` may read (applied events only, never a
+ * rejected, unknown-kind or malformed one) are computed from how the
+ * fixture was written, and cross-checked with the independent `foldDir`.
  *
  * The fixture interleaves the events of open and closed tickets in time,
- * and applies a comment to a closed ticket after its close (the fold
- * applies events after a close by their own rules), so no wall range or
- * fold position separates the files of closed tickets from the others.
+ * applies a comment to a closed ticket after its close, and includes a
+ * rejected, an unknown-kind and a malformed file of an open ticket.
  */
 
 import { rmSync, writeFileSync } from 'node:fs';
@@ -58,7 +58,7 @@ const CLOSED_BLOCKED = '01F0000000ACTAV9WEVGEMMVRZ';
 
 const CLOSED_TICKETS: ReadonlySet<string> = new Set([CLOSED, CLOSED_BLOCKED]);
 
-type Expected = 'applied' | 'rejected' | 'unknown';
+type Expected = 'applied' | 'rejected' | 'unknown' | 'malformed';
 
 /** One event file written by the fixture. */
 interface Written {
@@ -142,6 +142,8 @@ function writeFixture(): Fixture {
     STALE,
     'unknown',
   );
+  // A malformed file (valid name, not a well-formed event): recorded, never read.
+  put({ v: 1, kind: 'ticket.comment', ticket: STALE, actor: 'broken' }, STALE, 'malformed');
   return { dir, eventsDir, written };
 }
 
@@ -151,13 +153,9 @@ function fixture(): Fixture & { board: ReturnType<typeof openTracked> } {
   return { ...f, board: openTracked(f.dir) };
 }
 
-/** The hashes `boardHealth` may read: applied events of open tickets. */
+/** The hashes `boardHealth` may read: applied events (of any ticket). */
 function allowed(f: Fixture): Set<string> {
-  return new Set(
-    f.written
-      .filter((w) => w.expected === 'applied' && !CLOSED_TICKETS.has(w.ticket))
-      .map((w) => w.hash),
-  );
+  return new Set(f.written.filter((w) => w.expected === 'applied').map((w) => w.hash));
 }
 
 /** A cache over the real reader that records every file name it reads. */
@@ -245,7 +243,7 @@ describe('boardHealth', () => {
     expect(stale?.since).toMatchObject({ kind: 'ticket.comment', actor: 'impl' });
   });
 
-  it('reads only the event files of applied events of open tickets, each at most once', () => {
+  it('reads only the event files of applied events, each at most once', () => {
     const f = fixture();
     const { cache, reads } = countingCache();
     boardHealth(f.board, { now: NOW, cache });
@@ -256,24 +254,20 @@ describe('boardHealth', () => {
       .filter((hash) => !ok.has(hash))
       .map((hash) => {
         const w = byHash.get(hash);
-        return w === undefined
-          ? hash
-          : `${w.ticket}${CLOSED_TICKETS.has(w.ticket) ? ' (closed)' : ''} ${w.expected}`;
+        return w === undefined ? hash : `${w.ticket} ${w.expected}`;
       });
-    expect(offending, 'files read that are not applied events of open tickets').toEqual([]);
+    expect(offending, 'files read that are not applied events').toEqual([]);
     expect(new Set(names).size, 'no file read twice').toBe(names.length);
     // Something had to be read: the checks need the times of specific events.
     expect(names.length).toBeGreaterThan(0);
-    // No file of a closed ticket, explicitly.
-    const closedHashes = f.written.filter((w) => CLOSED_TICKETS.has(w.ticket)).map((w) => w.hash);
-    for (const hash of closedHashes) {
-      expect(names).not.toContain(hash);
+    // No rejected, unknown-kind or malformed file, explicitly.
+    for (const w of f.written.filter((x) => x.expected !== 'applied')) {
+      expect(names, `${w.ticket} ${w.expected}`).not.toContain(w.hash);
     }
   });
 
-  it('needs no file but those: with every other event file deleted, the report is unchanged', () => {
-    // A read that bypasses the injected cache is caught here: the files of
-    // closed tickets and of rejected and unknown-kind events are gone.
+  it('needs no other file: with rejected, unknown-kind and malformed files deleted, the report is unchanged', () => {
+    // A read that bypasses the injected cache is caught here.
     const f = fixture();
     const want = expected(f.board);
     const ok = allowed(f);

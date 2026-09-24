@@ -46,11 +46,12 @@ export interface BoardHealthOptions {
  *
  * Reads, and never writes:
  * - ticket state (tickets, comments, links) from the cache, and
- * - event bodies only from the event files of the applied events of open
- *   (not closed) tickets, through `options.cache`. It never reads the file
- *   of an event of a closed ticket, of a rejected or unknown-kind event, or
- *   of a `board.meta` event, and never reads any file twice (the cache
- *   keeps what it read).
+ * - event bodies only from the event files of applied events (the
+ *   `folded` rows with `folded = 1`, of any ticket, closed or open; the
+ *   cache has no event-to-ticket index, so the files of closed tickets'
+ *   events may be read and are then ignored), through `options.cache`. It
+ *   never reads the file of a rejected, unknown-kind or malformed event,
+ *   and never reads any file twice (the cache keeps what it read).
  *
  * All cache reads are made within one read snapshot (a deferred read
  * transaction, as `inSnapshot`), so the tickets and the events used belong
