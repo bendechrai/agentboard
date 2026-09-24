@@ -333,8 +333,20 @@ export async function serveMcp(io: McpIo): Promise<ExitCode> {
   const onEnd = (): void => {
     stop();
   };
+  // A failed stdin is the same shutdown, with one diagnostic line however
+  // many errors the stream reports.
+  let reported = false;
+  const onStdinError = (error: unknown): void => {
+    if (!reported) {
+      reported = true;
+      const message = error instanceof Error ? error.message : String(error);
+      io.stderr(`agentboard: stdin error: ${message}\n`);
+    }
+    stop();
+  };
   stdin.once('end', onEnd);
   stdin.once('close', onEnd);
+  stdin.on('error', onStdinError);
   stdout.on('error', onEnd);
   signal?.addEventListener('abort', onEnd, { once: true });
   try {
@@ -350,6 +362,9 @@ export async function serveMcp(io: McpIo): Promise<ExitCode> {
     stdout.off('error', onEnd);
     signal?.removeEventListener('abort', onEnd);
     await server.close();
+    // `onStdinError` stays attached: an error stdin reports after shutdown
+    // must not escape as uncaught, and it prints nothing more.
   }
   return 0;
 }
+

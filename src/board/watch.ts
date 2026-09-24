@@ -4,6 +4,7 @@
  */
 
 import { watch, type FSWatcher } from 'node:fs';
+import type { DatabaseSync } from 'node:sqlite';
 
 import type { Board } from '../store/board.js';
 import { catchUp } from '../store/cache.js';
@@ -24,6 +25,16 @@ export const WATCH_POLL_MS = 2000;
  * becomes one tick.
  */
 const FS_SETTLE_MS = 25;
+
+/**
+ * The watch's change marker: `PRAGMA data_version` (moves when another
+ * connection commits) and `total_changes()` (moves when this connection
+ * changes rows, including commits by other callers sharing the `Board`).
+ */
+function changeMarker(db: DatabaseSync): string {
+  const row = db.prepare('SELECT total_changes() AS n').get();
+  return `${String(dataVersion(db))}:${String(row?.n)}`;
+}
 
 /** Options of `watchInbox`. */
 export interface WatchOptions {
@@ -133,14 +144,16 @@ export function watchInbox(board: Board, actor: string, options: WatchOptions): 
   const { signal, onEntries } = options;
   const read = options.readEventFile ?? readEventFile;
   const { db } = board;
-  // Every effective event examined so far, and `data_version` at the time.
+  // Every effective event examined so far, and the change marker at the
+  // time: `data_version` (other connections' commits) and `total_changes()`
+  // (this connection's own changes, which `data_version` never counts).
   const examined = new Set<string>();
-  let version: number | null = null;
+  let version: string | null = null;
 
   /** One tick's examination; the watch state changes only if it succeeds. */
   const examine = (): void => {
     const report = catchUp(board);
-    const current = dataVersion(db);
+    const current = changeMarker(db);
     if (
       version !== null &&
       current === version &&
