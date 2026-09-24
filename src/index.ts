@@ -34,6 +34,7 @@ export * from './board/sources.js';
 export * from './board/openspec.js';
 export * from './board/import.js';
 export * from './board/merged.js';
+export * from './board/health.js';
 export * from './cli/types.js';
 export * from './cli/registry.js';
 export * from './cli/parse.js';

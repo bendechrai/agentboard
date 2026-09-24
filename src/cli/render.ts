@@ -10,6 +10,7 @@ import type { InboxEntry } from '../board/inbox.js';
 import type { ShowResult } from '../board/tickets.js';
 import { CACHE_SCHEMA_VERSION } from '../store/cache.js';
 import type { CheckResult, RebuildReport } from '../store/rebuild.js';
+import type { HealthReport } from '../view/health.js';
 
 /** Re-exported from `src/board/text.ts` (defined there for layering). */
 export { asciiText };
@@ -233,4 +234,75 @@ export function renderCheck(doc: CheckDocument): string {
     lines.push(`  ${difference.table} ${asciiText(difference.key)} ${state}`);
   }
   return `${lines.join('\n')}\n`;
+}
+
+/**
+ * Human output of `agentboard health` (board-insights: "Health command":
+ * each section with its count, then one line per ticket in the `list`
+ * format followed by the finding). Every line ends with a newline; user
+ * text (titles, assignees, actors, comment text, pr values) passes through
+ * `asciiText`. Lines, in this order:
+ *
+ * ```
+ * thresholds: stale after <S>, blocked after <B>
+ * stale claims: <n>
+ * <card>  last active <age> (<kind> by <actor>)
+ * stuck in blocked: <n>
+ * <card>  blocked <age> from <status>; latest comment by <actor>: <text>
+ * unpromoted decisions: <n>
+ * <card>  <k> open decision(s), no decision link
+ * close-merged ready: <n>
+ * <card>  pr <prs>
+ * close-merged held by decision: <n>
+ * <card>  pr <prs>; <k> open decision(s), no decision link
+ * close-merged missing pr: <n>
+ * <card>  no pr link
+ * cache check: <check>
+ * ```
+ *
+ * where:
+ * - `<S>` and `<B>` are `report.thresholds.staleAfter` and `blockedAfter`
+ *   written with the largest unit that divides them exactly: `<n>d` for a
+ *   whole number of days, else `<n>h` for whole hours, else `<n>m` for
+ *   whole minutes, else `<n>ms` (so 7200000 is `2h`, 86400000 is `1d`,
+ *   5400000 is `90m`).
+ * - `<n>` is the number of entries of the section, and the section's
+ *   ticket lines follow its heading, in the report's order; a section with
+ *   no entry is just its heading with `0`.
+ * - `<card>` is the `list` line of the finding's `ticket` card, exactly as
+ *   `renderListLine` writes a ticket with the same id, status, assignee,
+ *   ad hoc marker, closed marker and title:
+ *   `<id>  <status>  <assignee or ->  <markers><title>`.
+ * - `<age>` is `relativeTime` (`src/view/time.ts`) of `idleMs` or
+ *   `blockedMs`, for example `3h ago`.
+ * - stale claim: `<kind>` and `<actor>` are `since.kind` and `since.actor`.
+ * - stuck in blocked: `<status>` is `blockedFrom`; when `latestComment` is
+ *   null the text after `; ` is `no comment` instead.
+ * - `<k> open decision(s)` is `1 open decision` or `<k> open decisions`
+ *   (`<k>` the length of `decisions`).
+ * - `<prs>` is the candidate's `prs`, each through `String` and
+ *   `asciiText`, joined with `, `.
+ * - `<check>` is `not run` when `report.check` is null, `matches (0
+ *   differing rows)` when it matches, and `differs (<d> differing rows)`
+ *   otherwise (`<d>` is `differingRows`; the word stays `rows` for 1).
+ *
+ * `report.late` is not printed (it is null for the CLI). Pure.
+ *
+ * Example:
+ *
+ * ```
+ * thresholds: stale after 2h, blocked after 1d
+ * stale claims: 1
+ * 01ARYZ6S41TSV4RRFFQ69G5FAV  implementing  impl  Parser  last active 3h ago (ticket.claim by impl)
+ * stuck in blocked: 0
+ * unpromoted decisions: 0
+ * close-merged ready: 0
+ * close-merged held by decision: 0
+ * close-merged missing pr: 0
+ * cache check: not run
+ * ```
+ */
+export function renderHealth(report: HealthReport): string {
+  void report;
+  throw new Error('not implemented');
 }
