@@ -102,6 +102,7 @@ import {
   catchUpUnlocked,
   inImmediate,
   loadState,
+  inSnapshot,
   loadTicket,
   stmt,
   tableRows,
@@ -307,9 +308,18 @@ export function catchUp(board: Board, options?: CatchUpOptions): CatchUpReport {
  * for `id` (exact id; prefix resolution is the CLI's job). Reads only the
  * cache. For a cache that is up to date the result deep-equals
  * `fold(<all well-formed events>).state.tickets[id]`, field for field.
+ *
+ * Snapshot: every row of the result (the ticket row, its comments and its
+ * links) comes from one read snapshot. When `db.isTransaction` is false the
+ * reads are wrapped in a deferred `BEGIN` ... `COMMIT` (never `BEGIN
+ * IMMEDIATE`, so a reader never takes or waits for the write lock); inside
+ * the caller's transaction (for example `runCommand`'s) no transaction
+ * statement is issued. A writer committing on another connection while the
+ * reads run is therefore either entirely visible or entirely invisible, and
+ * `version` always agrees with the comment list.
  */
 export function readTicket(db: DatabaseSync, id: string): Ticket | null {
-  return loadTicket(db, id);
+  return inSnapshot(db, () => loadTicket(db, id));
 }
 
 /**
@@ -317,9 +327,13 @@ export function readTicket(db: DatabaseSync, id: string): Ticket | null {
  * id; `meta` from the `board.<k>` rows, as a null-prototype object). For an
  * up-to-date cache, `canonicalEncode(readState(db))` equals
  * `canonicalEncode(fold(<all well-formed events>).state)`.
+ *
+ * Snapshot: as for `readTicket`, all rows come from one read snapshot (a
+ * deferred `BEGIN` ... `COMMIT` when `db.isTransaction` is false; nothing
+ * when already inside a transaction).
  */
 export function readState(db: DatabaseSync): BoardState {
-  return loadState(db);
+  return inSnapshot(db, () => loadState(db));
 }
 
 /** Tables covered by the canonical dump, in dump key order. */

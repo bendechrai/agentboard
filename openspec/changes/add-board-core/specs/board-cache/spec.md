@@ -34,7 +34,11 @@ closed, decision, checklist as a JSON array), `comments` (ticket id, sequence,
 actor, ts, text), `links` (ticket id, kind, value), `cursors` (actor, last
 wall, last counter, last actor, last hash), `folded` (event hash, folded flag,
 reject reason), and `meta` (key, value including the schema version and the
-last folded position). Query commands SHALL read only from the cache.
+last folded position). Query commands SHALL read ticket state only from the
+cache, inside one read transaction so that every field comes from one
+snapshot; `show` MAY additionally read the event files that `folded` marks
+as unknown kinds (to report them) and, with `--raw`, the ticket's event
+files.
 
 #### Scenario: List reads the cache
 - **WHEN** `agentboard list --status implementing --json` runs on a board with a current cache

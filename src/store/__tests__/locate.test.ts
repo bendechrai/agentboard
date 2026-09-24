@@ -201,3 +201,43 @@ describe('findBoard', () => {
     );
   });
 });
+
+describe('locateBoard inside the board directory itself', () => {
+  /** A repository whose `.board` is a board and its own git repository, as `init` makes it. */
+  function repoWithBoardRepo(): { repo: string; board: string } {
+    const repo = gitRepo(join(tempDir(), 'repo'));
+    const board = makeBoardDir(repo);
+    git(board, 'init', '-q');
+    return { repo, board };
+  }
+
+  it('resolves to that board, not <board>/.board', () => {
+    const { board } = repoWithBoardRepo();
+    const loc = locateBoard({ cwd: board, env: cleanEnv() });
+    expect(loc.source).toBe('git');
+    expect(real(loc.dir)).toBe(real(board));
+    expect(real(findBoard({ cwd: board, env: cleanEnv() }).dir)).toBe(real(board));
+  });
+
+  it('resolves to that board from a subdirectory of it', () => {
+    const { board } = repoWithBoardRepo();
+    const loc = locateBoard({ cwd: join(board, 'events'), env: cleanEnv() });
+    expect(real(loc.dir)).toBe(real(board));
+  });
+
+  it('still resolves to the board from the host repository', () => {
+    const { repo, board } = repoWithBoardRepo();
+    expect(real(locateBoard({ cwd: repo, env: cleanEnv() }).dir)).toBe(real(board));
+  });
+
+  it('applies only to a directory named .board that holds a board', () => {
+    const root = tempDir();
+    // A git repository named .board without events is not a board: the usual rule applies.
+    const notBoard = gitRepo(join(root, 'x', '.board'));
+    expect(locateBoard({ cwd: notBoard, env: cleanEnv() }).dir).toBe(join(notBoard, '.board'));
+    // A board repository under another name is not special either.
+    const other = gitRepo(join(root, 'boardish'));
+    mkdirSync(join(other, 'events'));
+    expect(locateBoard({ cwd: other, env: cleanEnv() }).dir).toBe(join(other, '.board'));
+  });
+});

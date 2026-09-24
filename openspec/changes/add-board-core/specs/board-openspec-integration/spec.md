@@ -31,9 +31,10 @@ locating its root in the host project, listing the importable units for a
 `ref`, and mapping an `item` to its tasks file path and line for reminders.
 This change SHALL ship the `openspec` adapter only. Tickets whose source has
 no adapter in the running version SHALL still be created, shown, listed,
-moved and closed normally; only `import-change` and the tasks-file reminder
-on `checklist tick` require an adapter, and they SHALL exit 1 naming the
-unsupported source.
+moved and closed normally. Only `import-change` requires an adapter, and it
+SHALL exit 1 naming the unsupported source; `checklist tick` on such a
+ticket SHALL succeed and state that no tasks-file reminder is available
+for that source.
 
 #### Scenario: Ticket from a source with no adapter
 - **WHEN** a ticket is created with `--task speckit:001-photo-albums#phase-2` on a version with only the `openspec` adapter

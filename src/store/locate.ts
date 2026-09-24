@@ -5,7 +5,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 import { BoardError } from './errors.js';
 
@@ -54,6 +54,11 @@ export interface LocateOptions {
  *    `.board`, source `git`. Because the common dir is shared by every
  *    linked worktree, all worktrees of one repository (and every
  *    subdirectory of each) resolve to the main checkout's `.board`.
+ *    Exception: the board directory is itself a git repository (`init`
+ *    makes it one), so inside it (or any of its subdirectories) the common
+ *    dir is `<board>/.git`. When the parent of the common dir is named
+ *    `.board` and `boardExists` holds for it, that directory is the board
+ *    (source `git`), never `<board>/.board`.
  * 3. Otherwise (not in a git repository, or `git` is not installed):
  *    `path.resolve(cwd, '.board')`, source `cwd`.
  *
@@ -68,7 +73,12 @@ export function locateBoard(options?: LocateOptions): BoardLocation {
   }
   const commonDir = gitCommonDir(cwd, env);
   if (commonDir !== null) {
-    return { dir: join(dirname(resolve(cwd, commonDir)), BOARD_DIR_NAME), source: 'git' };
+    const hostRoot = dirname(resolve(cwd, commonDir));
+    if (basename(hostRoot) === BOARD_DIR_NAME && boardExists(hostRoot)) {
+      // Inside the board's own repository: that directory is the board.
+      return { dir: hostRoot, source: 'git' };
+    }
+    return { dir: join(hostRoot, BOARD_DIR_NAME), source: 'git' };
   }
   return { dir: resolve(cwd, BOARD_DIR_NAME), source: 'cwd' };
 }
