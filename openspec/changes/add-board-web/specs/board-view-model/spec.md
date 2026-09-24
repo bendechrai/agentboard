@@ -115,8 +115,12 @@ model whose tickets, events, head and position id equal those of a model
 built from a snapshot taken right after the appended events; and, for a
 `resync`, the model unchanged with a flag telling the consumer to reload,
 together with the late event hashes, which the reloaded model SHALL mark
-as late.
+as late. The feed carries only effective events, so a model kept up to date
+by appends holds no rejected or unknown-kind events that arrived after its
+snapshot; the equality above holds when every appended event is effective,
+and views that show rejected events (the ticket detail) SHALL load them
+from the JSON API rather than from the feed.
 
 #### Scenario: Append equals reload
-- **WHEN** a model built from a snapshot receives an `append` of three events
+- **WHEN** a model built from a snapshot receives an `append` of three effective events
 - **THEN** it deep-equals a model built from a snapshot taken after those three events

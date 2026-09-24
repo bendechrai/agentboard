@@ -81,8 +81,12 @@ id parses, its head is a recorded effective event, and the digest of the
 effective events at or before that head equals the id's digest, the first
 message SHALL be an `append` of the effective events after that head (with
 the state of the tickets they name), or nothing when there are none;
-otherwise the first message SHALL be a `resync`. An id that does not parse
-SHALL cause a `resync`, never an error.
+otherwise the first message SHALL be a `resync`. The empty-board id
+resumes as the position before every event: it gives an `append` of every
+effective event, or nothing on a board that is still empty. A `resync`
+sent at resume carries empty `late` and `removed` lists, because the feed
+cannot know what the consumer held. An id that does not parse SHALL cause a
+`resync`, never an error.
 
 #### Scenario: Resume after missed appends
 - **WHEN** a consumer last received id X, then two comments are written, then a feed is started with X
