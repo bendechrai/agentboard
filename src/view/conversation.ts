@@ -3,8 +3,10 @@
  * Pure and browser-safe; see `types.ts`.
  */
 
+import { DECISION_PREFIX, RETRACTED_PREFIX, openDecisions } from '../events/decisions.js';
 import type { Hlc } from '../events/hlc.js';
-import type { Status } from '../events/schema.js';
+import { isKnownEvent, type Status } from '../events/schema.js';
+import { describeEvent } from './describe.js';
 import type { BoardModel } from './types.js';
 
 /** Fields every conversation message carries, from its event. */
@@ -61,6 +63,39 @@ export interface SystemMessage extends MessageBase {
 
 export type ConversationMessage = CommentMessage | HandoffMessage | SystemMessage;
 
+const NO_FLAGS: DecisionFlags = { decision: false, retracted: false, retraction: false };
+
+/**
+ * Sets the decision flags of every comment and hand-off message, in place.
+ *
+ * The open decisions come from `openDecisions` over the chat messages in
+ * order, so the close rule and this view share one definition. It returns
+ * copies holding only actor and text, so they are matched back to the
+ * messages walking both lists from the end: an actor's open decisions are
+ * always the ones after that actor's last retraction, a suffix of the
+ * actor's decisions, so the latest message equal to each open decision is
+ * the one it came from, even when an actor repeats a decision text.
+ */
+function flagDecisions(messages: ConversationMessage[]): void {
+  const chat = messages.filter((m): m is CommentMessage | HandoffMessage => m.type !== 'system');
+  const open = openDecisions(chat.map((m) => ({ actor: m.actor, text: m.text })));
+  let next = open.length - 1;
+  for (const message of chat.reverse()) {
+    message.decision = message.text.startsWith(DECISION_PREFIX);
+    message.retraction = message.text.startsWith(RETRACTED_PREFIX);
+    const candidate = open[next];
+    const isOpen =
+      message.decision &&
+      candidate !== undefined &&
+      candidate.actor === message.actor &&
+      candidate.text === message.text;
+    if (isOpen) {
+      next -= 1;
+    }
+    message.retracted = message.decision && !isOpen;
+  }
+}
+
 /**
  * The conversation of ticket `ticketId` (a full id): one message per event
  * of `model.events` whose `ticket` is `ticketId` and whose outcome is
@@ -75,5 +110,22 @@ export function conversation(
   model: Pick<BoardModel, 'events'>,
   ticketId: string,
 ): ConversationMessage[] {
-  throw new Error(`not implemented: conversation(${String(model.events.length)}, ${ticketId})`);
+  const messages: ConversationMessage[] = [];
+  for (const view of model.events) {
+    if (view.ticket !== ticketId || view.outcome !== 'applied') {
+      continue;
+    }
+    const base = { hash: view.hash, actor: view.actor, ts: view.ts };
+    const event = view.event;
+    if (isKnownEvent(event) && event.kind === 'ticket.comment') {
+      messages.push({ type: 'comment', ...base, text: event.body.text, ...NO_FLAGS });
+    } else if (isKnownEvent(event) && event.kind === 'ticket.handoff') {
+      const { note, to, status } = event.body;
+      messages.push({ type: 'handoff', ...base, text: note, to, status, ...NO_FLAGS });
+    } else {
+      messages.push({ type: 'system', ...base, kind: event.kind, text: describeEvent(event) });
+    }
+  }
+  flagDecisions(messages);
+  return messages;
 }

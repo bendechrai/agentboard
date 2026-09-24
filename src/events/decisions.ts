@@ -38,5 +38,17 @@ export const RETRACTED_PREFIX = 'RETRACTED:';
 export function openDecisions(
   comments: readonly { actor: string; text: string }[],
 ): { actor: string; text: string }[] {
-  throw new Error(`not implemented: openDecisions(${String(comments.length)})`);
+  const lastRetraction = new Map<string, number>();
+  comments.forEach((comment, index) => {
+    if (comment.text.startsWith(RETRACTED_PREFIX)) {
+      lastRetraction.set(comment.actor, index);
+    }
+  });
+  return comments
+    .filter(
+      (comment, index) =>
+        comment.text.startsWith(DECISION_PREFIX) &&
+        (lastRetraction.get(comment.actor) ?? -1) < index,
+    )
+    .map((comment) => ({ actor: comment.actor, text: comment.text }));
 }

@@ -4,7 +4,8 @@
  */
 
 import type { Hlc } from '../events/hlc.js';
-import type { BoardModel } from './types.js';
+import { describeEvent } from './describe.js';
+import type { BoardModel, EventView } from './types.js';
 
 /** One line of the activity feed. */
 export interface FeedEntry {
@@ -44,6 +45,34 @@ export interface FeedFilters {
   kinds?: readonly string[];
 }
 
+function feedEntry(
+  view: EventView,
+  tickets: BoardModel['tickets'],
+  late: ReadonlySet<string>,
+): FeedEntry {
+  const ticket = view.ticket === null ? undefined : tickets[view.ticket];
+  const task = ticket?.task ?? null;
+  return {
+    hash: view.hash,
+    kind: view.kind,
+    actor: view.actor,
+    ts: view.ts,
+    ticket: view.ticket,
+    title: ticket?.title ?? null,
+    change: task === null ? null : `${task.source}:${task.ref}`,
+    summary: describeEvent(view.event),
+    late: late.has(view.hash),
+  };
+}
+
+function passes(entry: FeedEntry, filters: FeedFilters): boolean {
+  return (
+    (filters.change === undefined || entry.change === filters.change) &&
+    (filters.actor === undefined || entry.actor === filters.actor) &&
+    (filters.kinds === undefined || filters.kinds.includes(entry.kind))
+  );
+}
+
 /**
  * The activity feed: one entry per event of `model.events` whose outcome
  * is `applied` (rejected and unknown-kind events are left out), newest
@@ -54,7 +83,17 @@ export function feedEntries(
   model: Pick<BoardModel, 'events' | 'tickets' | 'late'>,
   filters: FeedFilters = {},
 ): FeedEntry[] {
-  throw new Error(
-    `not implemented: feedEntries(${String(model.events.length)}, ${String(Object.keys(filters).length)})`,
-  );
+  const late = new Set(model.late);
+  const entries: FeedEntry[] = [];
+  for (let i = model.events.length - 1; i >= 0; i -= 1) {
+    const view = model.events[i];
+    if (view === undefined || view.outcome !== 'applied') {
+      continue;
+    }
+    const entry = feedEntry(view, model.tickets, late);
+    if (passes(entry, filters)) {
+      entries.push(entry);
+    }
+  }
+  return entries;
 }

@@ -21,8 +21,6 @@
  * is unchanged: 10 random bytes per fresh random part.
  */
 
-import { getRandomValues } from 'node:crypto';
-
 /** Crockford base32 alphabet, in digit order. */
 const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
@@ -80,7 +78,7 @@ function encodeRandom(value: bigint): string {
 }
 
 function defaultRandom(byteLength: number): Uint8Array {
-  return getRandomValues(new Uint8Array(byteLength));
+  return globalThis.crypto.getRandomValues(new Uint8Array(byteLength));
 }
 
 /**

@@ -3,8 +3,10 @@
  * Pure and browser-safe; see `types.ts`.
  */
 
+import { openDecisions } from '../events/decisions.js';
 import type { Ticket } from '../events/fold.js';
-import type { Status } from '../events/schema.js';
+import { formatTaskRef, parseTaskRef, type Status } from '../events/schema.js';
+import { byRecentUpdate } from './order.js';
 
 /**
  * The board's column order. Not `STATUSES` order: `blocked` comes before
@@ -87,11 +89,53 @@ export interface BoardFilters {
 }
 
 /**
+ * The predicate for a `BoardFilters.task` filter (see there); every ticket
+ * passes when the filter is absent.
+ */
+function taskMatcher(filter: string | undefined): (ticket: Ticket) => boolean {
+  if (filter === undefined) {
+    return () => true;
+  }
+  const exact = parseTaskRef(filter);
+  if (exact !== null) {
+    return ({ task }) =>
+      task !== null &&
+      task.source === exact.source &&
+      task.ref === exact.ref &&
+      task.item === exact.item;
+  }
+  const colon = filter.indexOf(':');
+  if (colon < 0) {
+    return () => false;
+  }
+  const source = filter.slice(0, colon);
+  const ref = filter.slice(colon + 1);
+  return ({ task }) => task !== null && task.source === source && task.ref === ref;
+}
+
+/**
  * The card of one ticket at time `now` (milliseconds since the Unix
  * epoch), with every field as documented on `Card`.
  */
 export function ticketCard(ticket: Ticket, now: number): Card {
-  throw new Error(`not implemented: ticketCard(${ticket.id}, ${String(now)})`);
+  return {
+    id: ticket.id,
+    shortId: ticket.id.slice(0, SHORT_ID_LENGTH),
+    title: ticket.title,
+    status: ticket.status,
+    assignee: ticket.assignee,
+    task: ticket.task === null ? null : formatTaskRef(ticket.task),
+    adhoc: ticket.adhoc !== null,
+    labels: [...ticket.labels],
+    checklist: {
+      done: ticket.checklist.filter((item) => item.done).length,
+      total: ticket.checklist.length,
+    },
+    blockedFrom: ticket.blockedFrom,
+    closed: ticket.closed,
+    openDecisions: openDecisions(ticket.comments).length,
+    changed: now - ticket.updatedAt.wall < CHANGED_WINDOW_MS,
+  };
 }
 
 /**
@@ -110,7 +154,16 @@ export function boardColumns(
   now: number,
   filters: BoardFilters = {},
 ): Column[] {
-  throw new Error(
-    `not implemented: boardColumns(${String(Object.keys(tickets).length)}, ${String(now)}, ${String(Object.keys(filters).length)})`,
+  const matchesTask = taskMatcher(filters.task);
+  const kept = Object.values(tickets).filter(
+    (ticket) =>
+      (filters.includeClosed === true || !ticket.closed) &&
+      (filters.assignee === undefined || ticket.assignee === filters.assignee) &&
+      matchesTask(ticket),
   );
+  const sorted = kept.sort(byRecentUpdate);
+  return BOARD_COLUMNS.map((status) => ({
+    status,
+    cards: sorted.filter((ticket) => ticket.status === status).map((t) => ticketCard(t, now)),
+  }));
 }
