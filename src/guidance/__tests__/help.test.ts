@@ -132,7 +132,7 @@ describe('the help data of record in the registry', () => {
         'checklist untick',
         'close',
       ],
-      awareness: ['inbox', 'watch'],
+      awareness: ['inbox', 'watch', 'serve'],
       planning: ['import-change', 'close-merged'],
       maintenance: ['rebuild', 'sync'],
       setup: ['init', 'mcp', 'agents install', 'agents check', 'version', 'help'],

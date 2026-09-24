@@ -48,6 +48,7 @@ const PINNED: Readonly<Record<string, number>> = {
   'decision-path-missing': 1,
   'detached-head': 3,
   'duplicate-create': 4,
+  'forbidden-host': 1,
   'gh-missing': 1,
   'git-missing': 1,
   'id-too-short': 1,
@@ -56,6 +57,7 @@ const PINNED: Readonly<Record<string, number>> = {
   'malformed-event': 1,
   'malformed-task-ref': 1,
   'malformed-tasks': 1,
+  'method-not-allowed': 1,
   'missing-actor': 1,
   'missing-status': 1,
   'needs-task-link': 4,
@@ -64,7 +66,9 @@ const PINNED: Readonly<Record<string, number>> = {
   'no-disposition': 1,
   'no-targets': 1,
   'not-assignee': 4,
+  'not-found': 1,
   'path-outside-tree': 1,
+  'port-in-use': 1,
   'schema-mismatch': 5,
   'secret-like': 1,
   'streaming-command': 1,
@@ -72,6 +76,8 @@ const PINNED: Readonly<Record<string, number>> = {
   'sync-failed': 3,
   'sync-in-progress': 3,
   'tasks-not-found': 1,
+  'too-many-streams': 1,
+  'unauthorized': 1,
   'unknown-cursor': 1,
   'unknown-ticket': 4,
   'unpromoted-decision': 1,
@@ -192,6 +198,12 @@ function commandFor(reason: string): string {
     integrity: 'show',
     'missing-actor': 'comment',
     usage: 'claim',
+    // The web server's refusals (add-board-web group 3) are reported by serve.
+    unauthorized: 'serve',
+    'forbidden-host': 'serve',
+    'not-found': 'serve',
+    'method-not-allowed': 'serve',
+    'too-many-streams': 'serve',
   };
   const found = COMMANDS.find((c) => c.exitCodes.some((e) => e.reason === reason));
   return special[reason] ?? found?.name ?? 'show';
@@ -418,11 +430,42 @@ describe('hint contracts (CLI)', () => {
     ['schema-mismatch', 'rebuild', ["'agentboard rebuild'"]],
     ['malformed-event', 'comment', ["'agentboard version'"]],
     ['streaming-command', 'watch', ["'agentboard watch"]],
+    ['streaming-command', 'serve', ["'agentboard serve'"]],
+    // add-board-web group 3: serve and the web server's refusals.
+    ['port-in-use', 'serve', ["'agentboard serve --port 0'", '--port']],
+    [
+      'unauthorized',
+      'serve',
+      ['printed at start-up', 'Authorization: Bearer <token>', "'agentboard help serve'"],
+    ],
+    ['forbidden-host', 'serve', ['127.0.0.1', 'localhost', "'agentboard help serve'"]],
+    [
+      'not-found',
+      'serve',
+      [
+        '/api/session',
+        '/api/board',
+        '/api/tickets/<ticket>',
+        '/api/events',
+        '/api/actors',
+        '/api/stream',
+        "'agentboard help serve'",
+      ],
+    ],
+    ['method-not-allowed', 'serve', ['read-only', 'GET', "'agentboard help serve'"]],
+    ['too-many-streams', 'serve', ['64', 'reconnect', "'agentboard help serve'"]],
+    ['unknown-cursor', 'serve', ['after', '/api/events', "'agentboard help serve'"]],
   ])('%s (from %s) contains %j', (reason, command, fragments) => {
     const hint = cli(reason, command, { id: '01J9K3', actor: 'impl' });
     for (const fragment of fragments) {
       expect(hint).toContain(fragment);
     }
+  });
+
+  it('unknown-cursor from serve (the events API) does not send the caller to inbox', () => {
+    const hint = cli('unknown-cursor', 'serve', { actor: 'impl' });
+    expect(hint).not.toContain('inbox');
+    expect(hint).not.toContain('--since');
   });
 
   it('secret-like suggests --allow-secret-like only to a command that has it', () => {

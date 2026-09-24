@@ -43,6 +43,7 @@ describe('the command registry', () => {
       'close',
       'inbox',
       'watch',
+      'serve',
       'rebuild',
       'sync',
       'import-change',
@@ -55,12 +56,15 @@ describe('the command registry', () => {
     ]);
   });
 
-  it('marks exactly inbox and watch as tracking a cursor, and only watch as streaming', () => {
+  it('marks exactly inbox and watch as tracking a cursor, and watch and serve as streaming', () => {
     expect(COMMANDS.filter((c) => c.tracksCursor === true).map((c) => c.name)).toEqual([
       'inbox',
       'watch',
     ]);
-    expect(COMMANDS.filter((c) => c.stream !== undefined).map((c) => c.name)).toEqual(['watch']);
+    expect(COMMANDS.filter((c) => c.stream !== undefined).map((c) => c.name)).toEqual([
+      'watch',
+      'serve',
+    ]);
     expect(command('inbox').operation).toBe('readInbox');
     expect(command('watch').operation).toBe('watchInbox');
   });
@@ -139,10 +143,10 @@ describe('the command registry', () => {
     }
   });
 
-  it('names an exported library operation for every command but mcp, version and help', () => {
+  it('names an exported library operation for every command but mcp, serve, version and help', () => {
     const exported = lib as unknown as Record<string, unknown>;
     for (const c of COMMANDS) {
-      if (c.name === 'mcp' || c.name === 'version' || c.name === 'help') {
+      if (c.name === 'mcp' || c.name === 'serve' || c.name === 'version' || c.name === 'help') {
         expect(c.operation).toBeNull();
       } else {
         expect(typeof exported[String(c.operation)], c.name).toBe('function');
@@ -249,6 +253,14 @@ describe('the command registry', () => {
       exclusive: [],
     });
     expect(shape('watch')).toEqual({ positionals: [], flags: [], exclusive: [] });
+    expect(shape('serve')).toEqual({
+      positionals: [],
+      flags: [
+        ['port', 'integer', false, false],
+        ['open', 'boolean', false, false],
+      ],
+      exclusive: [],
+    });
   });
 
   it('findCommand finds by full name only', () => {
