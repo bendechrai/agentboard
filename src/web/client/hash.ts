@@ -18,7 +18,15 @@
  *     given);
  *   - `#/ticket/<id>` (a ticket id or prefix, percent-encoded as
  *     `encodeURIComponent` encodes it);
- *   - `#/lanes`.
+ *   - `#/lanes`;
+ *   - `#/health` with the optional query parameters `stale` and `blocked`
+ *     (the health thresholds as duration texts, board-insights:
+ *     "Durations"; add-board-insights group 3);
+ *   - `#/replay` (no parameter: the replay position is not kept, since the
+ *     frozen event list is taken anew whenever the view opens);
+ *   - `#/graph` with the optional query parameters `change` (the graph's
+ *     change filter, `<source>:<ref>`) and `since` (a duration text: only
+ *     hand-offs at most that long before `now` count).
  *   The query follows the path after `?` and is read and written as
  *   `URLSearchParams` does (so `#` inside a value is `%23` and a space is
  *   `+`).
@@ -27,10 +35,14 @@
  *   filter. Unknown query parameters are ignored; for a parameter given
  *   more than once, other than `kind`, the first counts; an empty value
  *   counts as absent; `closed` is true only for the value `1`.
+ * - A duration parameter (`stale`, `blocked`, `since`) counts only when
+ *   `parseDuration` (`src/view/health.ts`) accepts it; any other value
+ *   counts as absent (null), so a hand-edited hash never shows an invalid
+ *   threshold.
  */
 
-/** The four views of the client. */
-export type ViewName = 'board' | 'feed' | 'ticket' | 'lanes';
+/** The views of the client. */
+export type ViewName = 'board' | 'feed' | 'ticket' | 'lanes' | 'health' | 'replay' | 'graph';
 
 /** The live board and its filters (as `boardColumns` takes them). */
 export interface BoardRoute {
@@ -69,8 +81,41 @@ export interface LanesRoute {
   view: 'lanes';
 }
 
+/** The health view and its thresholds (add-board-insights task 3.2). */
+export interface HealthRoute {
+  view: 'health';
+  /** The `staleAfter` threshold as a valid duration text, or null for the default (`2h`). */
+  stale: string | null;
+  /** The `blockedAfter` threshold as a valid duration text, or null for the default (`24h`). */
+  blocked: string | null;
+}
+
+/** The replay view (add-board-insights task 3.3). */
+export interface ReplayRoute {
+  view: 'replay';
+}
+
+/** The hand-off graph and its filters (add-board-insights task 3.3). */
+export interface GraphRoute {
+  view: 'graph';
+  /** `GraphFilter.change` (`<source>:<ref>`), or null for every change. */
+  change: string | null;
+  /**
+   * A valid duration text: the graph counts hand-offs with a wall at or
+   * after `now - parseDuration(since)`; null for all time.
+   */
+  since: string | null;
+}
+
 /** A view and its filters, as kept in the URL hash. */
-export type Route = BoardRoute | FeedRoute | TicketRoute | LanesRoute;
+export type Route =
+  | BoardRoute
+  | FeedRoute
+  | TicketRoute
+  | LanesRoute
+  | HealthRoute
+  | ReplayRoute
+  | GraphRoute;
 
 /** The route of an empty or unrecognized hash: the board with no filter. */
 export const DEFAULT_ROUTE: BoardRoute = {
@@ -141,8 +186,9 @@ function decodeSafely(text: string): string | null {
  * values are non-empty (an empty `kinds` list comes back as null).
  * Parameters are written in this order and only when set: board `change`,
  * `assignee`, `closed=1`; feed `change`, `actor`, then one `kind` per
- * kind. A route with no parameter has no `?`: `#/board`, `#/feed`,
- * `#/lanes`, `#/ticket/<encodeURIComponent(id)>`. Pure.
+ * kind; health `stale`, `blocked`; graph `change`, `since`. A route with
+ * no parameter has no `?`: `#/board`, `#/feed`, `#/lanes`, `#/health`,
+ * `#/replay`, `#/graph`, `#/ticket/<encodeURIComponent(id)>`. Pure.
  */
 export function formatHash(route: Route): string {
   const query = new URLSearchParams();

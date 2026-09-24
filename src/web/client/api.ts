@@ -28,6 +28,7 @@
 
 import type { Ticket } from '../../events/fold.js';
 import type { JsonValue } from '../../events/json.js';
+import type { HealthCheck, LateArrival } from '../../view/health.js';
 import type { BoardModel, EventView } from '../../view/types.js';
 
 /** The error document of every API refusal and of a stream `problem` (as `src/cli/main.ts`). */
@@ -265,4 +266,31 @@ export async function loadModel(conn: Connection, late: readonly string[]): Prom
  */
 export async function loadTicketDetail(conn: Connection, id: string): Promise<TicketDetail> {
   return (await getJson(conn, `/api/tickets/${encodeURIComponent(id)}`)) as TicketDetail;
+}
+
+/** `GET /api/health` (as `HealthResponse` of `src/web/health.ts`). */
+export interface HealthResponse {
+  /** The late and removed events the server observed, newest first, at most 100. */
+  late: LateArrival[];
+  /** The last cache check, or null when none ran. */
+  check: HealthCheck | null;
+}
+
+/**
+ * `GET /api/health`: what only the server knows (add-board-insights task
+ * 3.2). Never runs the cache check. Rejects as `getJson`.
+ */
+export async function loadHealth(conn: Connection): Promise<HealthResponse> {
+  void conn;
+  return Promise.reject(new Error('not implemented'));
+}
+
+/**
+ * `GET /api/health/check`: runs the server's cache check (or reuses one
+ * less than 30 seconds old) and resolves with its result. Called only when
+ * the user presses the check button. Rejects as `getJson`.
+ */
+export async function runHealthCheck(conn: Connection): Promise<HealthCheck> {
+  void conn;
+  return Promise.reject(new Error('not implemented'));
 }

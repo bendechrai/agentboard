@@ -72,6 +72,7 @@ import type { Board } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
 import type { FeedMessage } from '../view/types.js';
 import { API_HINT_CONTEXT, apiResponse, httpStatus } from './api.js';
+import type { CacheCheckOutcome } from './health.js';
 import { checkRequest, newToken, securityHeaders, type Guard } from './security.js';
 import {
   KEEPALIVE_MS,
@@ -169,6 +170,14 @@ export interface ServerOptions {
   readonly maxStreams?: number;
   /** Unread bytes per stream client before it is disconnected; default `STREAM_BUFFER_BYTES`. */
   readonly streamBufferBytes?: number;
+  /**
+   * Runs the cache comparison of `GET /api/health/check` (through the
+   * server's `CacheChecker`, `src/web/health.ts`); default `() =>
+   * checkCache(board)` (`src/store/rebuild.ts`). Called only for that
+   * route, never otherwise (tests count its calls and control when it
+   * completes).
+   */
+  readonly checkCache?: (board: Board) => CacheCheckOutcome | Promise<CacheCheckOutcome>;
 }
 
 /** A running server. */
@@ -231,6 +240,23 @@ export interface RunningServer {
  * transaction of the request has been committed (`board.db.isTransaction`
  * is false whenever the server writes to a response), and no transaction
  * is ever held across network IO or a timer.
+ *
+ * Health (board-insights: "Health in the web app"; add-board-insights
+ * task 3.1). The server keeps one `ObservedLog` (`createObservedLog()`,
+ * `src/web/health.ts`) and one `CacheChecker` (`createCacheChecker({
+ * check: () => checkCache(board), now })`, with `options.checkCache` when
+ * given) for its whole life. Every message of its feed is passed to
+ * `log.observe(message, now())` before it is written to the streams (a
+ * joiner's own first message is not a feed message and is not observed).
+ * Behind the same Host, token and method checks as every API route:
+ * - `GET /api/health`: 200 with `HealthResponse` `{ late: log.list(),
+ *   check: checker.last() }`; never runs the comparison;
+ * - `GET /api/health/check`: 200 with the `HealthCheck` of
+ *   `await checker.run()` (single flight, reused for `CHECK_REUSE_MS`);
+ *   when it rejects, `httpStatus(error)` with `errorDocument(error,
+ *   API_HINT_CONTEXT)`. A check that completes after the client went away,
+ *   or after `close()`, writes nothing.
+ * Any other path under `/api/health/` is 404 `not-found` as usual.
  *
  * The stream (`GET /api/stream`, board-web: "Live event stream"). The
  * server runs one board feed (`watchBoard`, `src/board/feed.ts`, with
