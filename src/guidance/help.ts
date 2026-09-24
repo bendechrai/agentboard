@@ -21,6 +21,7 @@ import type {
   ExclusiveGroup,
   ExitCodeSpec,
 } from '../cli/types.js';
+import { asciiText } from '../board/text.js';
 import { COMMAND_GROUPS } from '../cli/types.js';
 import { BoardError } from '../store/errors.js';
 import { unknownCommandMessage } from './suggest.js';
@@ -198,7 +199,7 @@ export function renderCommandHelp(source: HelpSource, command: CommandSpec): str
           : [
               ACTOR_FORM,
               typeText({ ...flag, required: false }),
-              'Accepted and ignored by this command',
+              command.actorHelp ?? 'Accepted and ignored by this command',
             ];
       }),
     ),
@@ -319,6 +320,18 @@ export function helpOutput(source: HelpSource, topic: readonly string[]): Comman
   }
   const name = topic.join(' ');
   const command = source.commands.find((candidate) => candidate.name === name);
+  const [first = '', word = ''] = topic;
+  if (
+    command === undefined &&
+    topic.length === 2 &&
+    source.commands.some((candidate) => candidate.name === first)
+  ) {
+    throw new BoardError(
+      1,
+      'usage',
+      `${first} has no help subtopic ${asciiText(word)}; run 'agentboard help ${first}'`,
+    );
+  }
   if (command === undefined) {
     throw new BoardError(1, 'usage', unknownCommandMessage(topic, source.commands));
   }
