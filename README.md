@@ -53,7 +53,25 @@ node dist/cli.js <command> [arguments]
 ```
 
 `npm link` in this repository puts an `agentboard` command on your PATH.
-The examples below write `agentboard`.
+The examples below write `agentboard`. `npm link` installs into the
+global prefix of the Node version that is active when you run it, so
+after switching Node versions (with nvm, for example) run `npm link`
+again, or `agentboard` is not found.
+
+To use the linked build in another project, run this at that project's
+root:
+
+```
+agentboard init
+agentboard agents install --mcp-command agentboard
+```
+
+`--mcp-command agentboard` registers the MCP server in `.mcp.json` as
+the linked `agentboard` command. Without it, `agents install --target
+mcp-json` writes an entry that runs `npx -y @bendechrai/agentboard mcp`,
+which fails until the package is published, because `npx` fetches the
+package from the npm registry rather than using the link (see
+"Installing agent guidance into a project" and "MCP server").
 
 `agentboard` with no command, `agentboard --help` and `agentboard help`
 print the list of commands; see "Getting help" below.
@@ -167,6 +185,7 @@ go stale when the CLI changes.
 agentboard agents install                                  # auto-detect the targets
 agentboard agents install --target claude --target agents-md
 agentboard agents install --target mcp-json                # never auto-selected
+agentboard agents install --mcp-command agentboard         # also register a linked agentboard in .mcp.json
 agentboard agents install --force                          # overwrite content agentboard does not own
 agentboard agents check                                    # is the installed guidance current?
 ```
@@ -185,14 +204,70 @@ order):
 | `claude`    | `.claude/skills/agentboard/SKILL.md` | the whole file: a Claude Code skill, `name: agentboard`, whose description triggers on claiming, handing off or blocking work, checking what other agents are doing, recording a decision and applying or archiving an OpenSpec change; marked `<!-- agentboard-guidance: v<N> -->` |
 | `agents-md` | `AGENTS.md`                          | the block between `<!-- agentboard:start v<N> -->` and `<!-- agentboard:end -->`, appended to the file (or a new file) and replaced in place on later installs |
 | `openspec`  | `openspec/config.yaml`               | `guidance` entries beginning `agentboard:` under `operations.apply` (claim the group's ticket before implementing, hand off or block before stopping, tick `tasks.md` in the implementing PR) and `operations.archive` (run `close-merged` first and archive only when no ticket of the change is open; promote `DECISION:` comments), each followed by the comment `# agentboard-guidance: v<N>` |
-| `mcp-json`  | `.mcp.json`                          | the `mcpServers.agentboard` entry, `npx -y @bendechrai/agentboard mcp` |
+| `mcp-json`  | `.mcp.json`                          | the `mcpServers.agentboard` entry: `npx -y @bendechrai/agentboard mcp`, or `<executable> mcp` with `--mcp-command <executable>` |
 
 With no `--target`, it selects `claude` when `.claude/` exists,
 `agents-md` when `AGENTS.md` exists and `openspec` when
 `openspec/config.yaml` exists, and prints each choice with its reason.
 `mcp-json` is never auto-selected, because registering a server changes
-what every session in the project loads. When nothing is detected it
-exits 1 (reason `no-targets`) and lists the four targets.
+what every session in the project loads: it is installed only when asked
+for with `--target mcp-json` or `--mcp-command`. When nothing is detected
+it exits 1 (reason `no-targets`) and lists the four targets.
+
+### The MCP entry and `--mcp-command`
+
+The `mcp-json` target writes one of two entry shapes, and both are
+agentboard's own (managed) entry:
+
+```json
+{ "command": "npx", "args": ["-y", "@bendechrai/agentboard", "mcp"] }
+```
+
+by default, which works once the package is published to npm, or, with
+`--mcp-command <executable>`:
+
+```json
+{ "command": "<executable>", "args": ["mcp"] }
+```
+
+for a linked or local install: `--mcp-command agentboard` after `npm
+link`, or an absolute path such as `/opt/agentboard/bin/agentboard`. The
+value is one executable, a name on the PATH or a path, and `mcp` is
+always its only argument. It is written as given, never resolved or
+checked for existence, because `.mcp.json` is also read on other
+machines. Giving `--mcp-command` selects the `mcp-json` target in
+addition to the explicit or auto-detected ones, and the output says so:
+
+```
+$ agentboard agents install --mcp-command agentboard
+selected claude: .claude/ exists
+selected mcp-json: requested with --mcp-command
+created claude .claude/skills/agentboard/SKILL.md
+created mcp-json .mcp.json
+agents install: 2 created, 0 updated, 0 unchanged, 0 refused (guidance v1) in /path/to/project
+```
+
+An existing `mcpServers.agentboard` entry is managed when it is exactly
+the `npx` entry, or exactly `{"command": <non-empty string>, "args":
+["mcp"]}` with no other keys. On a later install:
+
+- without `--mcp-command`, a managed entry of either shape is left
+  unchanged (reported `unchanged`); it is not switched back to `npx`;
+- with `--mcp-command <executable>`, a managed entry that already runs
+  that executable is left unchanged, and one of either shape that runs
+  anything else is replaced (reported `updated`), without `--force`;
+- any other entry (an extra key such as `env`, other arguments such as
+  `--as impl-1`) is refused as `entry-differs`, with or without
+  `--mcp-command`, unless `--force` is given, which replaces it with the
+  requested shape.
+
+`--force` does not turn a managed local entry back into the `npx` one,
+since there is nothing to override; to return to `npx`, delete the
+`agentboard` entry and run `agents install --target mcp-json` again.
+
+An `--mcp-command` value that is empty or contains a newline, or a
+missing value, is a usage error: exit 1 with reason `usage`, and nothing
+is written.
 
 ```
 $ agentboard agents install
@@ -232,8 +307,9 @@ when:
 - `operations`, `operations.<op>` or its `guidance` in
   `openspec/config.yaml` is not the map or list OpenSpec expects; the
   lines to add by hand are printed (and are in `manual` with `--json`);
-- `.mcp.json` already has an `mcpServers.agentboard` entry that differs
-  from the managed one (an added `env` counts as a difference).
+- `.mcp.json` already has an `mcpServers.agentboard` entry that is not
+  a managed entry (reason `entry-differs`; an added `env` or other
+  arguments count, see "The MCP entry and `--mcp-command`").
 
 `--force` overrides those four: it overwrites the foreign `SKILL.md`,
 removes the malformed marker lines (and nothing else) and appends a fresh
@@ -260,12 +336,18 @@ marker or managed entry in the current working tree and reports each as:
 - `modified`: its managed text differs from what its recorded version
   renders (edited by hand), its version or markers cannot be read, or the
   file cannot be read; for `mcp-json`, which carries no version, the entry
-  differs from the managed one.
+  is not a managed entry.
+
+For `mcp-json`, a managed entry of either shape (the `npx` entry, or any
+executable with exactly `["mcp"]` as its arguments) is `current`, so a
+project using a linked build can run `agents check` in its own checks
+too.
 
 ```
 $ agentboard agents check
 current claude .claude/skills/agentboard/SKILL.md (installed v1, current v1)
 current openspec openspec/config.yaml (installed v1, current v1)
+current mcp-json .mcp.json (installed unknown, current v1)
 ```
 
 It exits 0 when every target found is current (or when none is found,
@@ -657,38 +739,49 @@ not a tool:
   identical to `agentboard help agents --role <role>`.
 - Reading any other URI fails with the MCP InvalidParams error (-32602).
 
-For Claude Code, register the server in `.mcp.json` at the project root.
-`agentboard agents install --target mcp-json` writes the entry without an
-actor (each call then passes `as`, or the server uses `AGENTBOARD_ACTOR`);
-to give the server a default actor, one per agent, write it by hand with
-`--as` (a hand-edited entry is then reported as `modified` by `agents
-check` and refused by `agents install --target mcp-json` without
-`--force`):
+For Claude Code, register the server in `.mcp.json` at the project root
+with `agents install` (see "The MCP entry and `--mcp-command`"). It
+writes one of two entries. `agentboard agents install --target mcp-json`
+writes the `npx` entry, which works once the package is published:
 
 ```json
 {
   "mcpServers": {
     "agentboard": {
       "command": "npx",
-      "args": ["-y", "@bendechrai/agentboard", "mcp", "--as", "impl-1"]
+      "args": ["-y", "@bendechrai/agentboard", "mcp"]
     }
   }
 }
 ```
 
-The package is not on npm yet. Until it is, build from source (see
-"Install and run") and point the server at the built file instead:
+The package is not on npm yet. Until it is, build from source and `npm
+link` it (see "Install and run"), then run `agentboard agents install
+--mcp-command agentboard`, which writes an entry that runs the linked
+command instead (`--mcp-command` also takes an absolute path to an
+executable):
 
 ```json
 {
   "mcpServers": {
     "agentboard": {
-      "command": "node",
-      "args": ["/path/to/agentboard/dist/cli.js", "mcp", "--as", "impl-1"]
+      "command": "agentboard",
+      "args": ["mcp"]
     }
   }
 }
 ```
+
+A hand-written entry pointing at the build is no longer needed; both
+entries are agentboard's own, so `agents check` reports either as
+`current` and a later `agents install` keeps it.
+
+Both entries have no actor: each call then passes `as`, or the server
+uses `AGENTBOARD_ACTOR`. To give the server a default actor, one per
+agent, add `--as` to the arguments by hand (for example `"args": ["mcp",
+"--as", "impl-1"]`). A hand-edited entry is no longer a managed one, so
+`agents check` reports it as `modified` and `agents install` refuses it
+as `entry-differs` unless `--force` is given, which replaces it.
 
 ## What the board is not
 
