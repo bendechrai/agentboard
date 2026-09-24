@@ -55,8 +55,70 @@ node dist/cli.js <command> [arguments]
 `npm link` in this repository puts an `agentboard` command on your PATH.
 The examples below write `agentboard`.
 
-There is no `--help` yet (generated help is a planned change); running
-`agentboard` with no command prints the list of commands.
+`agentboard` with no command, `agentboard --help` and `agentboard help`
+print the list of commands; see "Getting help" below.
+
+## Getting help
+
+Help is generated from the same command registry that drives the parser
+and the MCP tools, so it always matches the commands the running version
+accepts. None of it needs a board or an actor.
+
+```
+agentboard                     # the overview: every command, grouped, with its summary
+agentboard --help              # the same (so do -h and help)
+agentboard help claim          # one command's help
+agentboard claim --help        # the same
+agentboard help --json         # the overview as a JSON array of registry entries
+agentboard help handoff --json # one command's registry entry as a JSON object
+```
+
+The overview lists the commands in five groups (ticket lifecycle, change
+awareness, planning integration, maintenance, setup) and ends with the line
+`Agents: run 'agentboard help agents' before first use.` A command's help
+shows its synopsis, summary and description, every argument and flag with
+its type and whether it is required, the global flags (`--json`, `--as`),
+the exit codes it can produce with their reasons, and examples. `--json`
+goes after the command, like every other flag. `--help` and `-h` work
+anywhere before a lone `--`, for example `agentboard handoff 01M38Y --help`.
+
+An unknown command or flag exits 1, names the token, suggests up to three
+commands or flags within an edit distance of 2, and points to the help:
+
+```
+$ agentboard clam 01J9K3 --as impl
+agentboard: unknown command clam; did you mean claim? run 'agentboard help' to list the commands
+hint: see the commands with 'agentboard help'
+$ agentboard list --stauts todo
+agentboard: unknown flag --stauts for list; did you mean --status? run 'agentboard help list' to list its flags
+hint: check the arguments with 'agentboard help list'
+```
+
+A two-word command is suggested when its first word is close enough
+(`checklist tik` suggests `checklist tick` and `checklist untick`).
+
+## The agent guide
+
+`agentboard help agents` prints a plain ASCII guide of at most 150 lines,
+stamped with the version, written for a coding agent that has never seen
+the board: what the board is and is not, the actor rule, finding work
+(`inbox`, `list`), claiming before starting, handing off and blocking with
+a comment, the `DECISION:` convention and why `close` needs a disposition,
+how tickets map to planning tasks (including the OpenSpec flow), using the
+MCP tools instead of the shell when they are available, and the exit codes.
+
+```
+agentboard help agents
+agentboard help agents --role orchestrator
+```
+
+`--role` appends a checklist for one role: `orchestrator`, `test-author`,
+`implementer` or `reviewer`. Any other role exits 1 and lists the four.
+The test suite parses every guide line that begins with `agentboard `
+against the command registry, so the guide cannot name a command or flag
+that the CLI does not accept. The same text is served over MCP (see "MCP
+server"), and the guidance that `agents install` writes into a project
+points agents here.
 
 ## Set up a project
 
@@ -65,6 +127,7 @@ Run `init` once at the root of the project's main checkout:
 ```
 $ agentboard init
 created the board at /path/to/project/.board
+Next: run 'agentboard agents install' so this project's coding agents learn to use the board.
 ```
 
 This creates `.board/`, which is itself a small git repository holding
@@ -73,6 +136,9 @@ cache (`cache.sqlite` and its `-wal` and `-shm` files). `init` also adds a
 `.board/` entry to the host project's `.gitignore` when it is missing, so
 board activity never touches the host project's history; commit that
 `.gitignore` change. Running `init` again changes nothing and exits 0.
+Either way its last line suggests `agentboard agents install` (see
+"Installing agent guidance into a project"); `init --json` prints only
+its JSON document.
 
 Every command finds the board without being told where it is:
 
@@ -84,6 +150,133 @@ Every command finds the board without being told where it is:
 
 A command run inside `.board` itself uses that board. When no board is
 found, commands exit 2 naming the path they looked at.
+
+## Installing agent guidance into a project
+
+`agentboard agents install` writes short guidance into the project so
+that the coding agents working in it know the board exists and follow
+its rules. The installed text is a pointer, not a copy of the guide: it
+says when to use the board, states the five rules an agent must never
+break (always pass an actor; claim before working; hand off or block with
+a comment before stopping; never mark completion on the board instead of
+in the tasks file; promote `DECISION:` comments before closing) and sends
+the agent to `agentboard help agents` for everything else, so it does not
+go stale when the CLI changes.
+
+```
+agentboard agents install                                  # auto-detect the targets
+agentboard agents install --target claude --target agents-md
+agentboard agents install --target mcp-json                # never auto-selected
+agentboard agents install --force                          # overwrite content agentboard does not own
+agentboard agents check                                    # is the installed guidance current?
+```
+
+It writes into the root of the current working tree (`git rev-parse
+--show-toplevel`, or the current directory outside git), not into the main
+checkout that holds `.board`: the files are ordinary project changes that
+belong on the branch you are working on, so commit them. It needs no board
+and no actor, and runs no git command that changes anything.
+
+The targets (`--target` is repeatable; they are always processed in this
+order):
+
+| Target      | File                                | What agentboard owns and writes |
+| ----------- | ----------------------------------- | ------------------------------- |
+| `claude`    | `.claude/skills/agentboard/SKILL.md` | the whole file: a Claude Code skill, `name: agentboard`, whose description triggers on claiming, handing off or blocking work, checking what other agents are doing, recording a decision and applying or archiving an OpenSpec change; marked `<!-- agentboard-guidance: v<N> -->` |
+| `agents-md` | `AGENTS.md`                          | the block between `<!-- agentboard:start v<N> -->` and `<!-- agentboard:end -->`, appended to the file (or a new file) and replaced in place on later installs |
+| `openspec`  | `openspec/config.yaml`               | `guidance` entries beginning `agentboard:` under `operations.apply` (claim the group's ticket before implementing, hand off or block before stopping, tick `tasks.md` in the implementing PR) and `operations.archive` (run `close-merged` first and archive only when no ticket of the change is open; promote `DECISION:` comments), each followed by the comment `# agentboard-guidance: v<N>` |
+| `mcp-json`  | `.mcp.json`                          | the `mcpServers.agentboard` entry, `npx -y @bendechrai/agentboard mcp` |
+
+With no `--target`, it selects `claude` when `.claude/` exists,
+`agents-md` when `AGENTS.md` exists and `openspec` when
+`openspec/config.yaml` exists, and prints each choice with its reason.
+`mcp-json` is never auto-selected, because registering a server changes
+what every session in the project loads. When nothing is detected it
+exits 1 (reason `no-targets`) and lists the four targets.
+
+```
+$ agentboard agents install
+selected claude: .claude/ exists
+selected openspec: openspec/config.yaml exists
+created claude .claude/skills/agentboard/SKILL.md
+updated openspec openspec/config.yaml
+agents install: 1 created, 1 updated, 0 unchanged, 0 refused (guidance v1) in /path/to/project
+```
+
+Each target reports `created`, `updated`, `unchanged` or `refused`.
+Reinstalling with the same guidance version changes no byte of any file
+and reports every target `unchanged`; after an upgrade it rewrites only
+agentboard's own region. `<N>` is the guidance version (`GUIDANCE_VERSION`),
+an integer bumped only when the installed text changes, not on every
+release. `--json` prints `{root, version, autoDetected, targets, refused}`,
+with one `{target, path, reason, action, refusal, message, manual}` per
+target.
+
+Installed guidance never clobbers your content. Everything in `AGENTS.md`
+and `SKILL.md` outside agentboard's region is kept byte for byte.
+`openspec/config.yaml` and `.mcp.json` are rewritten through a YAML or
+JSON serializer: every other key, value, entry and comment is kept in
+order, but insignificant formatting (indentation, quoting style) may be
+normalized. When the `operations` key is added to the template that
+`openspec init` generates, it goes at the end, after the commented
+examples.
+
+A target is refused (nothing is written for it, the message names the
+file, the other targets are still processed, and the command exits 1)
+when:
+
+- `SKILL.md` exists without the `agentboard-guidance` marker (someone
+  else's skill);
+- `AGENTS.md` has agentboard markers that are not exactly one well-formed
+  start and end pair;
+- `operations`, `operations.<op>` or its `guidance` in
+  `openspec/config.yaml` is not the map or list OpenSpec expects; the
+  lines to add by hand are printed (and are in `manual` with `--json`);
+- `.mcp.json` already has an `mcpServers.agentboard` entry that differs
+  from the managed one (an added `env` counts as a difference).
+
+`--force` overrides those four: it overwrites the foreign `SKILL.md`,
+removes the malformed marker lines (and nothing else) and appends a fresh
+block, replaces the wrongly typed YAML value, or replaces the differing
+server entry. These refusals are never overridden, even with `--force`:
+
+- `openspec/config.yaml` is missing (run `openspec init` first; agentboard
+  never creates it) or cannot be parsed, or `.mcp.json` is not a JSON
+  object with an `mcpServers` object;
+- outside the tree: the target path, with symlinks resolved, is outside
+  the working tree (a `.claude` symlink to another directory, for
+  example); nothing outside the tree is read, created or written;
+- not a file: the path is a directory, or a parent of it is not a
+  directory (`EISDIR`, `ENOTDIR`);
+- unwritable: reading or writing the file, or creating its directory,
+  fails with `EACCES` or `EPERM`. An `unchanged` target is not refused for
+  a read-only file.
+
+`agentboard agents check` inspects every target that has an agentboard
+marker or managed entry in the current working tree and reports each as:
+
+- `current`: exactly what `agents install` would write now;
+- `stale`: installed by a different guidance version;
+- `modified`: its managed text differs from what its recorded version
+  renders (edited by hand), its version or markers cannot be read, or the
+  file cannot be read; for `mcp-json`, which carries no version, the entry
+  differs from the managed one.
+
+```
+$ agentboard agents check
+current claude .claude/skills/agentboard/SKILL.md (installed v1, current v1)
+current openspec openspec/config.yaml (installed v1, current v1)
+```
+
+It exits 0 when every target found is current (or when none is found,
+which it says) and 1 otherwise, with a line on stderr counting the targets
+that are not current, so a project can run it in its own checks; `agents
+install` brings them up to date. `--json` prints an array of `{target,
+path, state, installedVersion, currentVersion}` (`installedVersion` is
+null when it is unknown, and always for `mcp-json`).
+
+This repository installs its own guidance the same way: see "Using
+agentboard in a project" in CONTRIBUTING.md.
 
 ## The actor rule
 
@@ -365,15 +558,45 @@ differs from the events (naming the differing rows), when there is no cache
 file, or when the file is not a cache of the running version; it never
 modifies the cache.
 
+## Error hints
+
+Every refusal also says what to run next. The CLI prints the hint on
+stderr, on a line beginning `hint: ` after the error line:
+
+```
+$ agentboard claim 01M38YRHC3 --as reviewer
+agentboard: ticket 01M38YRHC32109EYJ1TPDZPQ2N is already assigned to impl
+hint: another actor holds this ticket, so do not work on it: see who with 'agentboard show 01M38YRHC3', or find your own work with 'agentboard inbox --as reviewer'
+```
+
+A missing actor hints both `--as` and `AGENTBOARD_ACTOR`;
+`needs-task-link` hints `agentboard link <id> --task
+<source>:<ref>#<item> --as <actor>`; a close refused by the decision rule
+hints `--decision-recorded-in <path>`. Every rejection reason has a hint,
+including those of exit codes 2, 3 and 5 (`board-not-found`, for example,
+hints `agentboard init`); only an unexpected failure has none.
+
+With `--json`, stdout carries the error as one JSON document with the
+hint as a field, and stderr still has the error and `hint: ` lines:
+
+```
+{"error":{"exitCode":4,"reason":"already-assigned","message":"ticket 01M38YRHC32109EYJ1TPDZPQ2N is already assigned to impl","hint":"another actor holds this ticket, so do not work on it: see who with 'agentboard show 01M38YRHC3', or find your own work with 'agentboard inbox --as reviewer'"}}
+```
+
+MCP tool errors carry the same `hint` field (see "MCP server"). There a
+suggested command that is a tool is written as a tool call, such as
+`board_inbox {"as":"reviewer"}`, and the actor advice names the `as`
+argument and `agentboard mcp --as <actor>`.
+
 ## Exit codes
 
 | Code | Meaning |
 | ---- | ------- |
 | 0 | success |
-| 1 | usage error, missing actor, refused text or close disposition, or `rebuild --check` found a difference |
+| 1 | usage error (including an unknown command or flag), missing actor, refused text or close disposition, `rebuild --check` found a difference, an `agents install` target was refused or nothing was detected, or `agents check` found guidance that is not current |
 | 2 | board not found or unreadable |
 | 3 | sync problem that needs a human |
-| 4 | action rejected by board state: `invalid-transition`, `already-assigned`, `not-assignee`, `unknown-ticket`, `needs-task-link`, `checklist-index` |
+| 4 | action rejected by board state: `invalid-transition`, `already-assigned`, `not-assignee`, `unknown-ticket`, `duplicate-create`, `needs-task-link`, `checklist-index` |
 | 5 | event log or cache integrity problem, or the cache still locked after the busy timeout and one retry |
 
 ## MCP server
@@ -384,10 +607,14 @@ underscores: `board_new`, `board_show`, `board_list`, `board_claim`,
 `board_release`, `board_move`, `board_comment`, `board_handoff`,
 `board_link`, `board_checklist_tick`, `board_checklist_untick`,
 `board_close`, `board_inbox`, `board_import_change` and
-`board_close_merged`. `init`, `watch`, `rebuild`, `sync`, `mcp` and
-`version` are not exposed: they are run by a human or an orchestrator in a
-shell. Calling an unknown or excluded tool name returns a tool error with
-`exitCode` 1 and `reason` `usage`.
+`board_close_merged`. `init`, `watch`, `rebuild`, `sync`, `mcp`,
+`version`, `help`, `agents install` and `agents check` are not exposed:
+they are run by a human or an orchestrator in a shell (`agents install`
+and `agents check` write and read files in the caller's working tree,
+which a tool call must not do, and the guide reaches MCP clients as
+described below instead of through `help`). Calling an unknown or excluded
+tool name returns a tool error with `exitCode` 1, `reason` `usage` and a
+hint to call `tools/list`.
 
 - Tool input schemas come from the same command registry as the CLI, with
   the same arguments (flag names without the leading `--`, for example
@@ -403,18 +630,40 @@ shell. Calling an unknown or excluded tool name returns a tool error with
   an object, so an array result (`board_list`, `board_show` with `raw`)
   arrives as `{"items": [...]}`.
 - A failed call returns a tool error (`isError` true) whose structured
-  content is `{exitCode, reason, message}`, with the exit code the CLI
-  would have used, for example `exitCode` 4, `reason` `already-assigned`
-  and a message naming the holder.
+  content is `{exitCode, reason, message, hint}`, with the exit code the
+  CLI would have used, for example `exitCode` 4, `reason`
+  `already-assigned`, a message naming the holder and a hint naming the
+  tools to call next (see "Error hints"). The text content is the message
+  followed by a `hint: ` line.
 - The server locates the board once at start-up, from its working
   directory, by the usual discovery rules, and exits 2 before serving
   anything if there is none. Every call catches up with events written
   since by any process and runs the same single transaction as the CLI, so
   MCP and CLI writers can race safely.
 
-For Claude Code, put this in `.mcp.json` at the project root (one actor per
-agent; drop `--as` to have each call pass `as`, or to use
-`AGENTBOARD_ACTOR`):
+The server also teaches its clients how to use the board, since `help` is
+not a tool:
+
+- Its `instructions` (sent when a client connects) are a summary of the
+  agent guide of at most 2000 characters: the rules an agent must never
+  break, written in terms of the tools, ending by naming the resource
+  `agentboard://guide`.
+- The resource `agentboard://guide` (MIME type `text/plain`) is the full
+  guide, identical to the stdout of `agentboard help agents` for the same
+  version.
+- The resources `agentboard://guide/orchestrator`,
+  `agentboard://guide/test-author`, `agentboard://guide/implementer` and
+  `agentboard://guide/reviewer` are the guide with that role's checklist,
+  identical to `agentboard help agents --role <role>`.
+- Reading any other URI fails with the MCP InvalidParams error (-32602).
+
+For Claude Code, register the server in `.mcp.json` at the project root.
+`agentboard agents install --target mcp-json` writes the entry without an
+actor (each call then passes `as`, or the server uses `AGENTBOARD_ACTOR`);
+to give the server a default actor, one per agent, write it by hand with
+`--as` (a hand-edited entry is then reported as `modified` by `agents
+check` and refused by `agents install --target mcp-json` without
+`--force`):
 
 ```json
 {

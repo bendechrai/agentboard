@@ -28,4 +28,4 @@ or above 90 percent.
 
 ## 5. Documentation
 
-- [ ] 5.1 Document `agents install`, `agents check` and `help agents` in README.md (including the project's own use of them) and verify with `make ascii` and by running `agents install` on a fresh temporary project with `.claude/` and OpenSpec initialized
+- [x] 5.1 Document `agents install`, `agents check` and `help agents` in README.md (including the project's own use of them) and verify with `make ascii` and by running `agents install` on a fresh temporary project with `.claude/` and OpenSpec initialized
