@@ -104,6 +104,7 @@ import {
   loadState,
   inSnapshot,
   loadTicket,
+  retryBusy,
   stmt,
   tableRows,
 } from './engine.js';
@@ -127,30 +128,44 @@ export const BUSY_TIMEOUT_MS = 5000;
  * `schema_version` differs from `CACHE_SCHEMA_VERSION`, every table is
  * dropped and recreated empty (the cache is disposable). Never folds events.
  *
+ * Every statement of the open waits on the busy timeout, including the
+ * switch to WAL, which SQLite can fail with SQLITE_BUSY without consulting
+ * the busy handler while another process creates the same file: such a
+ * step is retried with a short sleep until `BUSY_TIMEOUT_MS` after the open
+ * began, then `BoardError(5, 'busy')` is thrown. Many processes opening a
+ * board with no cache at once therefore all succeed.
+ *
  * `path` may be `':memory:'` (journal mode is then `memory`; used for the
  * temporary database of `checkCache`).
  */
 export function openCache(path: string): DatabaseSync {
+  const deadline = Date.now() + BUSY_TIMEOUT_MS;
   const db = new DatabaseSync(path);
   try {
-    // The busy timeout comes first so that switching to WAL waits for a
-    // concurrent opener instead of failing.
+    // The busy timeout comes first so that every later statement waits for
+    // a concurrent opener. SQLite can still fail the switch to WAL (and the
+    // first reads of a file another connection is creating) with
+    // SQLITE_BUSY without waiting, so each step is also retried with a
+    // short sleep until the busy timeout has passed (board-cache: opening
+    // waits on the busy timeout for every statement).
     db.exec(`PRAGMA busy_timeout = ${String(BUSY_TIMEOUT_MS)}`);
-    db.exec('PRAGMA journal_mode = WAL');
+    retryBusy(() => db.exec('PRAGMA journal_mode = WAL'), deadline);
     db.exec('PRAGMA foreign_keys = ON');
-    if (storedSchemaVersion(db) !== String(CACHE_SCHEMA_VERSION)) {
-      inImmediate(db, () => {
-        // Re-checked under the write lock: a concurrent opener may have won.
-        if (storedSchemaVersion(db) !== String(CACHE_SCHEMA_VERSION)) {
-          db.exec(SCHEMA);
-          stmt(db, 'INSERT INTO meta (key, value) VALUES (?, ?)').run(
-            'schema_version',
-            String(CACHE_SCHEMA_VERSION),
-          );
-          stmt(db, "INSERT INTO meta (key, value) VALUES ('last_position', 'null')").run();
-        }
-      });
-    }
+    retryBusy(() => {
+      if (storedSchemaVersion(db) !== String(CACHE_SCHEMA_VERSION)) {
+        inImmediate(db, () => {
+          // Re-checked under the write lock: a concurrent opener may have won.
+          if (storedSchemaVersion(db) !== String(CACHE_SCHEMA_VERSION)) {
+            db.exec(SCHEMA);
+            stmt(db, 'INSERT INTO meta (key, value) VALUES (?, ?)').run(
+              'schema_version',
+              String(CACHE_SCHEMA_VERSION),
+            );
+            stmt(db, "INSERT INTO meta (key, value) VALUES ('last_position', 'null')").run();
+          }
+        });
+      }
+    }, deadline);
   } catch (error) {
     db.close();
     throw error;

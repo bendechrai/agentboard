@@ -9,7 +9,7 @@ import { openBoard, type Board } from '../store/board.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
 import { findBoard } from '../store/locate.js';
 import { parseArgs, resolveActor, type ParsedCommand } from './parse.js';
-import type { Env, RunContext } from './types.js';
+import type { BoardOpenOptions, Env, RunContext } from './types.js';
 
 /** The process surroundings `runCli` uses; nothing else is read or written. */
 export interface CliIo {
@@ -98,11 +98,13 @@ export function runCli(io: CliIo): ExitCode {
       env: io.env,
       actor,
       boardDir(): string {
-        throw new Error('not implemented: RunContext.boardDir');
+        return findBoard({ cwd: io.cwd, env: io.env }).dir;
       },
-      board(): Board {
+      board(options?: BoardOpenOptions): Board {
         if (board === null) {
-          board = openBoard(findBoard({ cwd: io.cwd, env: io.env }).dir);
+          board = openBoard(findBoard({ cwd: io.cwd, env: io.env }).dir, {
+            catchUp: options?.catchUp !== false,
+          });
           for (const path of board.opened?.reaped ?? []) {
             io.stderr(`agentboard: removed stale temporary file ${path}\n`);
           }
@@ -114,8 +116,11 @@ export function runCli(io: CliIo): ExitCode {
       },
     };
     const output = command.run(ctx, values);
+    for (const line of output.warnings ?? []) {
+      io.stderr(`agentboard: ${line}\n`);
+    }
     io.stdout(parsed.json ? `${JSON.stringify(output.json)}\n` : output.text);
-    return 0;
+    return output.exitCode ?? 0;
   } catch (error) {
     const doc = errorDocument(error);
     io.stderr(`agentboard: ${doc.error.message}\n`);

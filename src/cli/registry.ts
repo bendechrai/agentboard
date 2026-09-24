@@ -29,9 +29,21 @@ import { parseTaskFilter, taskRefFromArgs, type TaskFilter } from '../board/reso
 import { listTickets, newTicket, showRaw, showTicket } from '../board/tickets.js';
 import type { WriteOutcome } from '../board/types.js';
 import { STATUSES, type Status } from '../events/schema.js';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { CACHE_FILE } from '../store/cache.js';
 import { BoardError } from '../store/errors.js';
+import { checkCache, rebuild } from '../store/rebuild.js';
 import { VERSION } from '../version.js';
-import { asciiText, renderListLine, renderShow } from './render.js';
+import {
+  asciiText,
+  renderCheck,
+  renderListLine,
+  renderRebuild,
+  renderShow,
+  type CheckDocument,
+} from './render.js';
 import type {
   ArgSpec,
   ArgValues,
@@ -241,6 +253,44 @@ function listTaskFilter(values: ArgValues): TaskFilter | undefined {
     );
   }
   return { source: 'openspec', ref: change };
+}
+
+/** `rebuild`: a full refold on the board opened without catch-up. */
+function runRebuild(ctx: RunContext): CommandOutput {
+  const report = rebuild(ctx.board({ catchUp: false }));
+  return { json: report, text: renderRebuild(report) };
+}
+
+/**
+ * `rebuild --check`: compares the live cache, opened without catch-up, with
+ * a fresh rebuild; never creates a missing cache file.
+ */
+function runCheck(ctx: RunContext): CommandOutput {
+  const cachePath = join(ctx.boardDir(), CACHE_FILE);
+  if (!existsSync(cachePath)) {
+    const doc: CheckDocument = { ok: false, noCache: true, differences: [], report: null };
+    return {
+      json: doc,
+      text: renderCheck(doc),
+      exitCode: 1,
+      warnings: [
+        `there is no cache file at ${cachePath}; run agentboard rebuild to create it`,
+      ],
+    };
+  }
+  const result = checkCache(ctx.board({ catchUp: false }));
+  const doc: CheckDocument = { ...result, noCache: false };
+  if (result.ok) {
+    return { json: doc, text: renderCheck(doc) };
+  }
+  return {
+    json: doc,
+    text: renderCheck(doc),
+    exitCode: 1,
+    warnings: [
+      `the cache differs from the event log in ${String(result.differences.length)} row(s); run agentboard rebuild to replace it`,
+    ],
+  };
 }
 
 /** `checklist tick` and `checklist untick`. */
@@ -571,9 +621,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [],
     writes: false,
     operation: 'rebuild',
-    run: () => {
-      throw new Error('not implemented: rebuild');
-    },
+    run: (ctx, values) => (bool(values, 'check') ? runCheck(ctx) : runRebuild(ctx)),
   },
   {
     name: 'mcp',

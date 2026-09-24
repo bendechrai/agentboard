@@ -107,8 +107,13 @@ function closedText(t: Ticket): string {
  * Example: `3 folded, 1 rejected, 0 malformed, 0 corrupt, 0 unknown`. Pure.
  */
 export function renderCounts(report: RebuildReport): string {
-  void report;
-  throw new Error('not implemented: renderCounts');
+  return [
+    `${String(report.folded)} folded`,
+    `${String(report.rejected)} rejected`,
+    `${String(report.malformed)} malformed`,
+    `${String(report.corrupt)} corrupt`,
+    `${String(report.unknown)} unknown`,
+  ].join(', ');
 }
 
 /**
@@ -127,8 +132,14 @@ export function renderCounts(report: RebuildReport): string {
  * Names pass through `asciiText`. Pure.
  */
 export function renderRebuild(report: RebuildReport): string {
-  void report;
-  throw new Error('not implemented: renderRebuild');
+  const lines = [`rebuilt: ${renderCounts(report)}`];
+  for (const file of report.corruptFiles) {
+    lines.push(`  corrupt ${asciiText(file.name)}`);
+  }
+  for (const file of report.malformedFiles) {
+    lines.push(`  malformed ${asciiText(file.hash)}.json`);
+  }
+  return `${lines.join('\n')}\n`;
 }
 
 /**
@@ -167,6 +178,21 @@ export type CheckDocument =
  * `--json` document carries them). Pure.
  */
 export function renderCheck(doc: CheckDocument): string {
-  void doc;
-  throw new Error('not implemented: renderCheck');
+  if (doc.noCache) {
+    return 'no-cache: there is no cache file\n';
+  }
+  if (doc.ok) {
+    return `no divergence: ${renderCounts(doc.report)}\n`;
+  }
+  const lines = [`divergence: ${String(doc.differences.length)} differing row(s)`];
+  for (const difference of doc.differences) {
+    const state =
+      difference.rebuilt === null
+        ? 'only-in-cache'
+        : difference.live === null
+          ? 'only-in-rebuild'
+          : 'changed';
+    lines.push(`  ${difference.table} ${asciiText(difference.key)} ${state}`);
+  }
+  return `${lines.join('\n')}\n`;
 }
