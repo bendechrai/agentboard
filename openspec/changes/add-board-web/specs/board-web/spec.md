@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Serve command
-`agentboard serve [--port <n>] [--open]` SHALL start a local HTTP server
+`agentboard serve [--port <port>] [--open]` SHALL start a local HTTP server
 for the board found by the usual discovery rules and run until SIGINT or
 SIGTERM, then close every connection and exit 0. Without `--port` the port
 SHALL be chosen by the operating system (port 0); `--port` SHALL accept an
@@ -86,7 +86,7 @@ base-uri 'none'; form-action 'self'; frame-ancestors 'none'`,
 
 #### Scenario: Preflight is refused
 - **WHEN** a client sends `OPTIONS /api/board` with an `Origin` of another site
-- **THEN** the response is 405 and carries no `Access-Control-Allow-*` header
+- **THEN** the response is 401 without a valid token (the token is checked before the method) and 405 with one, and neither carries an `Access-Control-Allow-*` header
 
 #### Scenario: Headers on every response
 - **WHEN** the page, an asset, an API response, a stream and a 401 are each requested
