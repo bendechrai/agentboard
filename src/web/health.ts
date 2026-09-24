@@ -31,7 +31,7 @@
  * - Single flight. A request that arrives while a comparison runs waits
  *   for that comparison and gets its result (or its failure); it never
  *   starts a second one.
- * - Failure. When the comparison throws (for example `BoardError(5,
+ * - Failure. When the comparison throws or rejects (for example `BoardError(5,
  *   'busy')` when the write lock cannot be taken), every request waiting
  *   on it fails with that error, which the server answers with
  *   `httpStatus(error)` and `errorDocument(error, API_HINT_CONTEXT)`
@@ -135,10 +135,14 @@ export interface CacheChecker {
    *   succeeds, keeps and resolves with `checkSummary(result, ranAt)`.
    * Rejects with the error `check` threw or rejected with (see the module
    * comment); nothing is kept then. Every caller gets a value deep-equal
-   * to the kept result.
+   * to the kept result but not the kept object itself, so changing it
+   * changes nothing kept.
    */
   run(): Promise<HealthCheck>;
-  /** The last successful result, or null when none has succeeded. Never runs `check`. */
+  /**
+   * A copy of the last successful result, or null when none has succeeded.
+   * Never runs `check`.
+   */
   last(): HealthCheck | null;
 }
 

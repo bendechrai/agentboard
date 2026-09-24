@@ -109,13 +109,7 @@ export interface GraphRoute {
 
 /** A view and its filters, as kept in the URL hash. */
 export type Route =
-  | BoardRoute
-  | FeedRoute
-  | TicketRoute
-  | LanesRoute
-  | HealthRoute
-  | ReplayRoute
-  | GraphRoute;
+  BoardRoute | FeedRoute | TicketRoute | LanesRoute | HealthRoute | ReplayRoute | GraphRoute;
 
 /** The route of an empty or unrecognized hash: the board with no filter. */
 export const DEFAULT_ROUTE: BoardRoute = {

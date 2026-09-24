@@ -23,6 +23,8 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { CONTENT_SECURITY_POLICY } from '../security.js';
+
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CLIENT = join(SRC, 'web', 'client');
 
@@ -130,5 +132,65 @@ describe('client authentication', () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+describe('inline styles and the Content-Security-Policy (add-board-insights group 3)', () => {
+  /** The client sources (not tests) whose text sets an inline style or holds a style element. */
+  function styleOffenders(dir: string): string[] {
+    const offenders: string[] = [];
+    const sources = filesUnder(dir).filter(
+      (f) => /\.tsx?$/.test(f) && !f.includes(`${sep}__tests__${sep}`),
+    );
+    for (const file of sources) {
+      const text = readFileSync(file, 'utf8');
+      for (const pattern of [
+        /\bstyle\s*=/,
+        /<style\b/,
+        /\.style\b/,
+        /setAttribute\(\s*['"]style['"]/,
+        /\bcssText\b/,
+      ]) {
+        if (pattern.test(text)) {
+          offenders.push(`${relative(SRC, file)}: ${pattern.source}`);
+        }
+      }
+    }
+    return offenders;
+  }
+
+  it('the policy allows styles only from the stylesheet of the page itself', () => {
+    const styleSrc = CONTENT_SECURITY_POLICY.split(';')
+      .map((part) => part.trim())
+      .find((part) => part.startsWith('style-src '));
+    expect(styleSrc).toBe("style-src 'self'");
+    expect(CONTENT_SECURITY_POLICY).not.toContain('unsafe-inline');
+  });
+
+  it('the scan finds an inline style', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentboard-client-style-'));
+    try {
+      mkdirSync(join(dir, 'views'));
+      writeFileSync(join(dir, 'views', 'A.tsx'), '<g style={{ opacity: 1 }} />');
+      writeFileSync(join(dir, 'views', 'B.tsx'), '<svg><style>{css}</style></svg>');
+      writeFileSync(join(dir, 'ok.tsx'), '<g class="edge animated" stroke-width={2} />');
+      expect(styleOffenders(dir).map((f) => f.split(sep).join('/'))).toEqual([
+        expect.stringContaining('views/A.tsx'),
+        expect.stringContaining('views/B.tsx'),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('no client source sets an inline style or uses a style element', () => {
+    expect(styleOffenders(CLIENT)).toEqual([]);
+  });
+
+  it('the insight views exist and are scanned', () => {
+    const names = filesUnder(join(CLIENT, 'views')).map((f) => f.split(sep).at(-1));
+    for (const view of ['HealthView.tsx', 'ReplayView.tsx', 'GraphView.tsx']) {
+      expect(names).toContain(view);
+    }
   });
 });

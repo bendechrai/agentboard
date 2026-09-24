@@ -40,7 +40,8 @@
  *   (`{ view: 'board', change: null, assignee: null, closed: false }`);
  * - a `select` with id `replay-speed`, labelled `Speed`, with the options
  *   `1`, `4` and `16` (values; texts `1 event/s`, `4 events/s`,
- *   `16 events/s`), `1` selected at first;
+ *   `16 events/s`), `1` selected at first; its `change` event sets the
+ *   speed;
  * - an element with class `replay-event`, `data-hash="<hash>"` and
  *   `data-outcome="<outcome>"` of the event at the position (the outcome
  *   the replay recomputed: `applied`, `rejected` or `unknown`), holding
