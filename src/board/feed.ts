@@ -10,11 +10,20 @@
  * `src/index.ts`.
  */
 
+import type { JsonValue } from '../events/canonical.js';
+import type { Ticket } from '../events/fold.js';
+import type { Hlc } from '../events/hlc.js';
 import type { BoardEvent, UnknownKindEvent } from '../events/schema.js';
 import type { Board } from '../store/board.js';
-import type { FeedMessage } from '../view/types.js';
+import { catchUp } from '../store/cache.js';
+import { comparePositions } from '../store/cursors.js';
+import { inSnapshot, loadMeta, loadTicket } from '../store/engine.js';
+import { BoardError } from '../store/errors.js';
+import { readEventFile } from '../store/eventfile.js';
+import { changeMarker, recordedPositions } from '../store/folded.js';
+import type { EventView, FeedMessage } from '../view/types.js';
 import type { EventReader } from './pending.js';
-import type { TickerTimers, WatchDir } from './ticker.js';
+import { runTicker, type TickerOptions, type TickerTimers, type WatchDir } from './ticker.js';
 
 /** The digest of no event: 64 zeros. */
 export const EMPTY_DIGEST = '0'.repeat(64);
@@ -36,10 +45,11 @@ export interface Position {
  * lowercase hex characters). Pure; the arguments are not checked.
  */
 export function positionId(head: string | null, digest: string): string {
-  void head;
-  void digest;
-  throw new Error('not implemented');
+  return `${head ?? 'none'}.${digest}`;
 }
+
+/** A position id: `none` or a 64-hex head, a dot, a 64-hex digest. */
+const POSITION_ID = /^(none|[0-9a-f]{64})\.([0-9a-f]{64})$/;
 
 /**
  * Parses a position id. Returns null (never throws) unless `text` is
@@ -50,8 +60,17 @@ export function positionId(head: string | null, digest: string): string {
  * `EMPTY_DIGEST` parses (and then never matches a board). Pure.
  */
 export function parsePositionId(text: string): Position | null {
-  void text;
-  throw new Error('not implemented');
+  // `$` would also match before a final newline; exclude one explicitly.
+  if (text.endsWith('\n')) {
+    return null;
+  }
+  const match = POSITION_ID.exec(text);
+  const head = match?.[1];
+  const digest = match?.[2];
+  if (head === undefined || digest === undefined) {
+    return null;
+  }
+  return { head: head === 'none' ? null : head, digest };
 }
 
 /**
@@ -62,8 +81,27 @@ export function parsePositionId(text: string): Position | null {
  * more than once counts once (the argument is a set of events). Pure.
  */
 export function effectiveDigest(hashes: Iterable<string>): string {
-  void hashes;
-  throw new Error('not implemented');
+  const acc = new Uint8Array(32);
+  for (const hash of new Set(hashes)) {
+    xorInto(acc, hash);
+  }
+  return toHex(acc);
+}
+
+/** XORs the 32 bytes of the 64-hex `hash` into `acc`. */
+function xorInto(acc: Uint8Array, hash: string): void {
+  for (let i = 0; i < 32; i += 1) {
+    acc[i] = (acc[i] ?? 0) ^ Number.parseInt(hash.slice(2 * i, 2 * i + 2), 16);
+  }
+}
+
+/** Lowercase hex of `bytes`. */
+function toHex(bytes: Uint8Array): string {
+  let out = '';
+  for (const byte of bytes) {
+    out += byte.toString(16).padStart(2, '0');
+  }
+  return out;
 }
 
 /**
@@ -94,9 +132,29 @@ export interface EventCache {
  * A new, empty event cache reading files through `read` (default
  * `readEventFile`, `src/store/eventfile.ts`), so tests can count reads.
  */
-export function createEventCache(read?: EventReader): EventCache {
-  void read;
-  throw new Error('not implemented');
+export function createEventCache(read: EventReader = readEventFile): EventCache {
+  const kept = new Map<string, BoardEvent | UnknownKindEvent>();
+  return {
+    get(eventsDir: string, hash: string): BoardEvent | UnknownKindEvent {
+      const hit = kept.get(hash);
+      if (hit !== undefined) {
+        return hit;
+      }
+      const outcome = read(eventsDir, `${hash}.json`);
+      if (outcome.status !== 'ok') {
+        throw new BoardError(
+          5,
+          'integrity',
+          `event ${hash} is recorded as well-formed but its file is not a well-formed event`,
+        );
+      }
+      kept.set(hash, outcome.input.event);
+      return outcome.input.event;
+    },
+    get size(): number {
+      return kept.size;
+    },
+  };
 }
 
 /** Options of `watchBoard`. */
@@ -212,7 +270,183 @@ export interface WatchBoardOptions {
  * close `board`.
  */
 export function watchBoard(board: Board, options: WatchBoardOptions): Promise<void> {
-  void board;
-  void options;
-  throw new Error('not implemented');
+  const { db, eventsDir } = board;
+  const cache = options.cache ?? createEventCache();
+  // The feed state; replaced only when a tick succeeds.
+  let state: FeedState | null = null;
+  let version: string | null = null;
+
+  const views = (list: readonly Effective[]): EventView[] =>
+    list.map((p) => eventView(p.hash, cache.get(eventsDir, p.hash)));
+
+  /** An append of `list` (in fold order), read in the caller's snapshot. */
+  const appendOf = (list: readonly Effective[], id: string): FeedMessage => {
+    const events = views(list);
+    const ids = [...new Set(events.flatMap((e) => (e.ticket === null ? [] : [e.ticket])))].sort(
+      (a, b) => (a < b ? -1 : a > b ? 1 : 0),
+    );
+    const tickets = ids.map((ticketId): Ticket => {
+      const ticket = loadTicket(db, ticketId);
+      if (ticket === null) {
+        throw new BoardError(
+          5,
+          'integrity',
+          `ticket ${ticketId} is named by an applied event but has no cache row`,
+        );
+      }
+      return ticket;
+    });
+    const meta: Record<string, JsonValue> | null = events.some((e) => e.kind === 'board.meta')
+      ? loadMeta(db)
+      : null;
+    return { type: 'append', id, events, tickets, meta };
+  };
+
+  /** The first examination: a full append, or resume from `since`. */
+  const first = (all: Effective[], next: FeedState): FeedMessage | null => {
+    const id = next.id;
+    if (options.since === undefined) {
+      return appendOf(all, id);
+    }
+    const position = parsePositionId(options.since);
+    if (position !== null) {
+      let prefix = -1;
+      if (position.head !== null) {
+        const index = all.findIndex((p) => p.hash === position.head);
+        prefix =
+          index >= 0 && effectiveDigest(all.slice(0, index + 1).map((p) => p.hash)) === position.digest
+            ? index + 1
+            : -1;
+      } else if (position.digest === EMPTY_DIGEST) {
+        prefix = 0;
+      }
+      if (prefix >= 0) {
+        const rest = all.slice(prefix);
+        return rest.length === 0 ? null : appendOf(rest, id);
+      }
+    }
+    return { type: 'resync', id, late: [], removed: [] };
+  };
+
+  /** A later examination against the delivered state `prev`. */
+  const later = (all: Effective[], prev: FeedState, next: FeedState): FeedMessage | null => {
+    const fresh = all.filter((p) => !prev.delivered.has(p.hash));
+    const removed = [...prev.delivered.values()]
+      .filter((p) => !next.delivered.has(p.hash))
+      .sort(comparePositions);
+    if (fresh.length === 0 && removed.length === 0) {
+      return null;
+    }
+    const { head } = prev;
+    if (removed.length === 0 && fresh.every((p) => head === null || comparePositions(p, head) > 0)) {
+      return appendOf(fresh, next.id);
+    }
+    const late = fresh.filter((p) => head !== null && comparePositions(p, head) < 0);
+    return { type: 'resync', id: next.id, late: views(late), removed: removed.map((p) => p.hash) };
+  };
+
+  const examine = (): void => {
+    const report = catchUp(board);
+    const current = changeMarker(db);
+    if (
+      state !== null &&
+      current === version &&
+      report.applied.length === 0 &&
+      !report.refolded
+    ) {
+      return;
+    }
+    const prev = state;
+    const { next, message } = inSnapshot(db, () => {
+      const all = recordedPositions(db, { effectiveOnly: true })
+        .map(({ hash, ts }) => ({ hash, ts }))
+        .sort(comparePositions);
+      const nextState = stateOf(all, prev);
+      return {
+        next: nextState,
+        message: prev === null ? first(all, nextState) : later(all, prev, nextState),
+      };
+    });
+    // The snapshot is committed: no transaction is open while the consumer runs.
+    if (message !== null) {
+      options.onMessage(message);
+    }
+    state = next;
+    version = current;
+  };
+
+  const ticker: TickerOptions = {
+    signal: options.signal,
+    examine,
+    dir: eventsDir,
+    ...(options.pollMs === undefined ? {} : { pollMs: options.pollMs }),
+    ...(options.fsWatch === undefined ? {} : { fsWatch: options.fsWatch }),
+    ...(options.onWarning === undefined ? {} : { onWarning: options.onWarning }),
+    ...(options.onProblem === undefined ? {} : { onFailure: options.onProblem }),
+    ...(options.timers === undefined ? {} : { timers: options.timers }),
+    ...(options.watchDir === undefined ? {} : { watchDir: options.watchDir }),
+  };
+  return runTicker(ticker);
+}
+
+/** An effective event's hash and timestamp. */
+interface Effective {
+  hash: string;
+  ts: Hlc;
+}
+
+/** What the feed has delivered. */
+interface FeedState {
+  /** Every delivered effective event, by hash. */
+  delivered: Map<string, Effective>;
+  /** The greatest delivered event in fold order, or null. */
+  head: Effective | null;
+  /** The digest of every delivered event, as bytes. */
+  digest: Uint8Array;
+  /** The position id of this state. */
+  id: string;
+}
+
+/**
+ * The state after delivering every event of `all` (in fold order). The
+ * digest is updated from `prev` by XOR of what was added and removed, so a
+ * tick costs work in the size of the change, plus the listing.
+ */
+function stateOf(all: readonly Effective[], prev: FeedState | null): FeedState {
+  const delivered = new Map(all.map((p) => [p.hash, p]));
+  let digest: Uint8Array;
+  if (prev === null) {
+    digest = new Uint8Array(32);
+    for (const p of all) {
+      xorInto(digest, p.hash);
+    }
+  } else {
+    digest = Uint8Array.from(prev.digest);
+    for (const p of all) {
+      if (!prev.delivered.has(p.hash)) {
+        xorInto(digest, p.hash);
+      }
+    }
+    for (const hash of prev.delivered.keys()) {
+      if (!delivered.has(hash)) {
+        xorInto(digest, hash);
+      }
+    }
+  }
+  const head = all.at(-1) ?? null;
+  return { delivered, head, digest, id: positionId(head?.hash ?? null, toHex(digest)) };
+}
+
+/** The `EventView` of an applied event. */
+function eventView(hash: string, event: BoardEvent | UnknownKindEvent): EventView {
+  return {
+    hash,
+    kind: event.kind,
+    ticket: 'ticket' in event && typeof event.ticket === 'string' ? event.ticket : null,
+    actor: event.actor,
+    ts: event.ts,
+    outcome: 'applied',
+    reason: null,
+    event,
+  };
 }

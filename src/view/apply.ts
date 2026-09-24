@@ -43,7 +43,20 @@ export interface FeedApplyResult {
  * true, and `late` the hashes of `message.late` in order.
  */
 export function applyFeedMessage(model: BoardModel, message: FeedMessage): FeedApplyResult {
-  void model;
-  void message;
-  throw new Error('not implemented');
+  if (message.type === 'resync') {
+    return { model, reload: true, late: message.late.map((e) => e.hash) };
+  }
+  const tickets = { ...model.tickets };
+  for (const ticket of message.tickets) {
+    tickets[ticket.id] = ticket;
+  }
+  const next: BoardModel = {
+    tickets,
+    meta: message.meta ?? model.meta,
+    events: [...model.events, ...message.events],
+    head: message.events.at(-1)?.hash ?? model.head,
+    id: message.id,
+    late: model.late,
+  };
+  return { model: next, reload: false, late: [] };
 }

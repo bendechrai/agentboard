@@ -3,38 +3,19 @@
  * an actor's pending inbox entries that never acknowledges them.
  */
 
-import { watch, type FSWatcher } from 'node:fs';
-import type { DatabaseSync } from 'node:sqlite';
-
 import type { Board } from '../store/board.js';
 import { catchUp } from '../store/cache.js';
 import { isPending, readCursor } from '../store/cursors.js';
 import { inSnapshot } from '../store/engine.js';
 import { BoardError } from '../store/errors.js';
 import { readEventFile, type ReadOutcome } from '../store/eventfile.js';
-import { dataVersion, effectiveExcept } from '../store/folded.js';
+import { changeMarker, effectiveExcept } from '../store/folded.js';
 import type { InboxEntry } from './inbox.js';
 import { toEntries } from './pending.js';
+import { TICK_POLL_MS, runTicker } from './ticker.js';
 
 /** Interval of the polling fallback, in milliseconds. */
-export const WATCH_POLL_MS = 2000;
-
-/**
- * Delay between an `fs.watch` notification and the tick it triggers, so the
- * burst of notifications one event write produces (temporary file, rename)
- * becomes one tick.
- */
-const FS_SETTLE_MS = 25;
-
-/**
- * The watch's change marker: `PRAGMA data_version` (moves when another
- * connection commits) and `total_changes()` (moves when this connection
- * changes rows, including commits by other callers sharing the `Board`).
- */
-function changeMarker(db: DatabaseSync): string {
-  const row = db.prepare('SELECT total_changes() AS n').get();
-  return `${String(dataVersion(db))}:${String(row?.n)}`;
-}
+export const WATCH_POLL_MS = TICK_POLL_MS;
 
 /** Options of `watchInbox`. */
 export interface WatchOptions {
@@ -177,71 +158,12 @@ export function watchInbox(board: Board, actor: string, options: WatchOptions): 
     }
   };
 
-  return new Promise<void>((resolve, reject) => {
-    let watcher: FSWatcher | null = null;
-    let poll: NodeJS.Timeout | null = null;
-    let settle: NodeJS.Timeout | null = null;
-    let stopped = false;
-
-    const stop = (): void => {
-      stopped = true;
-      signal.removeEventListener('abort', onAbort);
-      watcher?.close();
-      watcher = null;
-      if (poll !== null) {
-        clearInterval(poll);
-      }
-      if (settle !== null) {
-        clearTimeout(settle);
-      }
-    };
-    function onAbort(): void {
-      stop();
-      resolve();
-    }
-    // Synchronous from start to end, so two ticks can never overlap; only
-    // the timers and the watcher call it, and `stop` removes all of them.
-    const tick = (): void => {
-      try {
-        examine();
-      } catch (error) {
-        if (error instanceof BoardError && error.exitCode === 5 && error.reason === 'busy') {
-          options.onWarning?.(error.message);
-          return;
-        }
-        stop();
-        reject(error as Error);
-      }
-    };
-
-    tick();
-    if (stopped) {
-      return;
-    }
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
-    signal.addEventListener('abort', onAbort, { once: true });
-    poll = setInterval(tick, options.pollMs ?? WATCH_POLL_MS);
-    if (options.fsWatch !== false) {
-      try {
-        const w = watch(board.eventsDir, () => {
-          if (settle === null) {
-            settle = setTimeout(() => {
-              settle = null;
-              tick();
-            }, FS_SETTLE_MS);
-          }
-        });
-        // Closing twice (here, then in `stop`) is harmless.
-        w.on('error', () => {
-          w.close();
-        });
-        watcher = w;
-      } catch {
-        // fs.watch is unavailable here; polling alone continues.
-      }
-    }
+  return runTicker({
+    signal,
+    examine,
+    dir: board.eventsDir,
+    ...(options.pollMs === undefined ? {} : { pollMs: options.pollMs }),
+    ...(options.fsWatch === undefined ? {} : { fsWatch: options.fsWatch }),
+    ...(options.onWarning === undefined ? {} : { onWarning: options.onWarning }),
   });
 }

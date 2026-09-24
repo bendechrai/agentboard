@@ -306,6 +306,11 @@ export function loadState(db: DatabaseSync): BoardState {
     const id = text(row, 'id');
     tickets[id] = toTicket(row, comments.get(id) ?? [], links.get(id) ?? []);
   }
+  return { tickets, meta: loadMeta(db) };
+}
+
+/** The board `meta` settings from the cache rows, as a null-prototype object. */
+export function loadMeta(db: DatabaseSync): Record<string, JsonValue> {
   const meta = Object.create(null) as Record<string, JsonValue>;
   const metaRows = stmt(
     db,
@@ -314,7 +319,7 @@ export function loadState(db: DatabaseSync): BoardState {
   for (const row of metaRows) {
     meta[text(row, 'key').slice(META_PREFIX.length)] = JSON.parse(text(row, 'value')) as JsonValue;
   }
-  return { tickets, meta };
+  return meta;
 }
 
 /** Prefix of `meta` keys holding `board.meta` settings. */

@@ -17,6 +17,10 @@
  * `fs.watch`.
  */
 
+import { watch } from 'node:fs';
+
+import { BoardError } from '../store/errors.js';
+
 /** Interval of the polling fallback, in milliseconds (the default `pollMs`). */
 export const TICK_POLL_MS = 2000;
 
@@ -120,6 +124,116 @@ export interface TickerOptions {
  * Errors: see `TickerOptions.examine` and `TickerOptions.onFailure`.
  */
 export function runTicker(options: TickerOptions): Promise<void> {
-  void options;
-  throw new Error('not implemented');
+  const { signal, examine } = options;
+  const timers = options.timers ?? defaultTimers;
+  const watchDir = options.watchDir ?? fsWatchDir;
+
+  return new Promise<void>((resolve, reject) => {
+    let watcher: DirWatcher | null = null;
+    let poll: TimerHandle | null = null;
+    let settle: TimerHandle | null = null;
+    let stopped = false;
+    let running = false;
+
+    const stop = (): void => {
+      stopped = true;
+      signal.removeEventListener('abort', onAbort);
+      watcher?.close();
+      watcher = null;
+      if (poll !== null) {
+        timers.clearInterval(poll);
+        poll = null;
+      }
+      if (settle !== null) {
+        timers.clearTimeout(settle);
+        settle = null;
+      }
+    };
+    function onAbort(): void {
+      stop();
+      resolve();
+    }
+    // Synchronous from start to end; the `running` flag drops any tick
+    // requested from inside one (never queued), so ticks never overlap.
+    const tick = (): void => {
+      if (running || stopped) {
+        return;
+      }
+      running = true;
+      try {
+        examine();
+      } catch (error) {
+        if (error instanceof BoardError && error.exitCode === 5 && error.reason === 'busy') {
+          options.onWarning?.(error.message);
+        } else if (options.onFailure !== undefined) {
+          options.onFailure(error);
+        } else {
+          stop();
+          reject(error as Error);
+        }
+      } finally {
+        running = false;
+      }
+    };
+
+    tick();
+    if (stopped) {
+      return;
+    }
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+    poll = timers.setInterval(tick, options.pollMs ?? TICK_POLL_MS);
+    if (options.fsWatch !== false) {
+      try {
+        const w = watchDir(
+          options.dir,
+          () => {
+            if (settle === null && !stopped) {
+              settle = timers.setTimeout(() => {
+                settle = null;
+                tick();
+              }, FS_SETTLE_MS);
+            }
+          },
+          () => {
+            // Closing twice (here, then in `stop`) is harmless.
+            w.close();
+          },
+        );
+        watcher = w;
+      } catch {
+        // Watching is unavailable here; polling alone continues.
+      }
+    }
+  });
 }
+
+/** The global timers. */
+const defaultTimers: TickerTimers = {
+  setInterval: (callback, ms) => setInterval(callback, ms),
+  clearInterval: (handle) => {
+    clearInterval(handle as NodeJS.Timeout);
+  },
+  setTimeout: (callback, ms) => setTimeout(callback, ms),
+  clearTimeout: (handle) => {
+    clearTimeout(handle as NodeJS.Timeout);
+  },
+};
+
+/** The default directory watcher, on `fs.watch`. */
+const fsWatchDir: WatchDir = (dir, onChange, onError) => {
+  const watcher = watch(dir, () => {
+    onChange();
+  });
+  watcher.on('error', () => {
+    onError();
+  });
+  return {
+    close: () => {
+      watcher.close();
+    },
+  };
+};
