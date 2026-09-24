@@ -89,6 +89,25 @@ describe('parseDuration', () => {
     expect(parseDuration(text)).toBe(ms);
   });
 
+  // Ruling on add-board-insights group 1: leading zeros are accepted on a
+  // positive value (still at most 5 digits); a zero value is refused
+  // however many zeros it is written with.
+  it.each([
+    ['01h', HOUR],
+    ['007m', 7 * MINUTE],
+    ['00001d', DAY],
+    ['09999m', 9_999 * MINUTE],
+  ])('accepts leading zeros on a positive value: %j as %d ms', (text, ms) => {
+    expect(parseDuration(text)).toBe(ms);
+  });
+
+  it.each(['0h', '000m', '00000d', '000001h'])(
+    'refuses a zero value or more than 5 digits, whatever the leading zeros: %j',
+    (text) => {
+      expect(parseDuration(text)).toBeNull();
+    },
+  );
+
   it.each([
     '0h',
     '0m',

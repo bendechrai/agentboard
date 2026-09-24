@@ -98,6 +98,14 @@ function foldOutcome(events: readonly FoldInput[], index: number): EventOutcome 
   return result.unknown.some((u) => u.hash === target?.hash) ? 'unknown' : 'applied';
 }
 
+/**
+ * Timeout for the two CPU-heavy property tests below. Each folds prefixes
+ * of 1000+ event logs many times over; they take about a second on an idle
+ * machine but approached vitest's 5 second default under load, so they get
+ * an explicit, generous limit instead.
+ */
+const PROPERTY_TIMEOUT_MS = 60_000;
+
 describe('CHECKPOINT_INTERVAL', () => {
   it('is 500 events', () => {
     expect(CHECKPOINT_INTERVAL).toBe(500);
@@ -242,47 +250,55 @@ describe('replayState', () => {
     expect(replayState(events, 499, checkpoints).state).toEqual(fold(events.slice(0, 500)).state);
   });
 
-  it('property: at every index, with and without checkpoints, equals fold of the prefix', () => {
-    for (const [seed, length] of [
-      [101, 40],
-      [202, 80],
-      [303, 120],
-      [404, 1060],
-    ] as const) {
-      const events = randomEvents(seed, length);
-      const checkpoints: ReplayCheckpoint[] = replayCheckpoints(events);
-      for (let index = 0; index < events.length; index += 1) {
-        const expected = fold(events.slice(0, index + 1)).state;
-        const outcome = foldOutcome(events, index);
-        const withCheckpoints = replayState(events, index, checkpoints);
-        expect(withCheckpoints.index).toBe(index);
-        expect(withCheckpoints.state).toEqual(expected);
-        expect(withCheckpoints.outcome).toBe(outcome);
-        expect(withCheckpoints.reason === null).toBe(outcome !== 'rejected');
-        if (length < 500 || index % 97 === 0 || index % 500 >= 498 || index % 500 <= 1) {
-          expect(replayState(events, index)).toEqual(withCheckpoints);
+  it(
+    'property: at every index, with and without checkpoints, equals fold of the prefix',
+    () => {
+      for (const [seed, length] of [
+        [101, 40],
+        [202, 80],
+        [303, 120],
+        [404, 1060],
+      ] as const) {
+        const events = randomEvents(seed, length);
+        const checkpoints: ReplayCheckpoint[] = replayCheckpoints(events);
+        for (let index = 0; index < events.length; index += 1) {
+          const expected = fold(events.slice(0, index + 1)).state;
+          const outcome = foldOutcome(events, index);
+          const withCheckpoints = replayState(events, index, checkpoints);
+          expect(withCheckpoints.index).toBe(index);
+          expect(withCheckpoints.state).toEqual(expected);
+          expect(withCheckpoints.outcome).toBe(outcome);
+          expect(withCheckpoints.reason === null).toBe(outcome !== 'rejected');
+          if (length < 500 || index % 97 === 0 || index % 500 >= 498 || index % 500 <= 1) {
+            expect(replayState(events, index)).toEqual(withCheckpoints);
+          }
         }
       }
-    }
-  });
+    },
+    PROPERTY_TIMEOUT_MS,
+  );
 
-  it('property: stepping from a random position reaches the same state as seeking directly', () => {
-    const rnd = prng(777);
-    for (const seed of [11, 12, 13]) {
-      const events = randomEvents(seed, 1040);
-      const checkpoints = replayCheckpoints(events);
-      for (let trial = 0; trial < 6; trial += 1) {
-        const target = Math.floor(rnd() * events.length);
-        const start = Math.floor(rnd() * events.length);
-        const step = start < target ? 1 : -1;
-        let current = replayState(events, start, checkpoints);
-        for (let i = start; i !== target; i += step) {
-          current = replayState(events, i + step, checkpoints);
+  it(
+    'property: stepping from a random position reaches the same state as seeking directly',
+    () => {
+      const rnd = prng(777);
+      for (const seed of [11, 12, 13]) {
+        const events = randomEvents(seed, 1040);
+        const checkpoints = replayCheckpoints(events);
+        for (let trial = 0; trial < 6; trial += 1) {
+          const target = Math.floor(rnd() * events.length);
+          const start = Math.floor(rnd() * events.length);
+          const step = start < target ? 1 : -1;
+          let current = replayState(events, start, checkpoints);
+          for (let i = start; i !== target; i += step) {
+            current = replayState(events, i + step, checkpoints);
+          }
+          expect(current).toEqual(replayState(events, target, checkpoints));
+          expect(current).toEqual(replayState(events, target));
+          expect(current.state).toEqual(fold(events.slice(0, target + 1)).state);
         }
-        expect(current).toEqual(replayState(events, target, checkpoints));
-        expect(current).toEqual(replayState(events, target));
-        expect(current.state).toEqual(fold(events.slice(0, target + 1)).state);
       }
-    }
-  });
+    },
+    PROPERTY_TIMEOUT_MS,
+  );
 });
