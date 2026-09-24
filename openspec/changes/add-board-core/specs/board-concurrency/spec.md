@@ -50,7 +50,15 @@ cursor to the last returned event unless `--peek` is given. Events that
 arrive between two inbox calls, including events synced from another
 machine with earlier timestamps than the cursor, SHALL still be returned:
 the cursor SHALL therefore be a set of seen hashes bounded by a position,
-not a timestamp alone.
+not a timestamp alone. Every effective event counts, including the actor's
+own events and `board.meta` events; rejected, unknown and malformed events
+never appear. An actor with no cursor receives every effective event.
+`--since <hash>` starts after the named event and implies `--peek`. Whenever
+an event becomes effective at a position behind an actor's cursor and
+outside that cursor's seen window (because it arrived late, or because a
+late event made a previously rejected event effective), the cursor SHALL be
+moved back so the event is delivered; redelivering other events as a
+consequence is permitted, skipping one is not.
 
 #### Scenario: Late-arriving synced event
 - **WHEN** an actor's cursor is at wall 2000 and `sync` brings in an event with wall 1500 from another machine
