@@ -94,10 +94,14 @@ event that does not exist in the source of truth.
 `inbox` cursors store the last fold position and the set of hashes seen at
 or before that position within a bounded window (the events whose wall is
 within the last hour of the cursor). A synced event with an earlier wall
-than the cursor is detected because its hash is not in the seen set. Older
-than the window, the event is reported by `rebuild` as late and the cursor
-is reset to its position so it is delivered. This keeps cursors small
-without ever silently skipping an event.
+than the cursor is detected because its hash is not in the seen set. An
+event older than the window is caught where it becomes effective (arriving
+late, or turned effective by a late event): the catch-up at the start of
+any command, or `rebuild`, moves the cursor back to the greatest effective
+event before it, so it is delivered. A catch-up does this silently;
+`rebuild` also lists the late events it made effective in its report. This
+keeps cursors small without ever silently skipping an event. See
+docs/adr/0003.
 
 ### `watch`
 `fs.watch` on `events/` with a 2 second polling fallback, because `fs.watch`
@@ -107,8 +111,10 @@ events for the actor's cursor without advancing it (watch is a stream, not
 an acknowledgement; the agent runs `inbox` to acknowledge).
 
 ### Git sync model
-`.board/` is its own repository. `sync` runs `git add events`, `git commit`
-when there is anything to commit, `git pull --rebase`, `git push`. Event
+`.board/` is its own repository. `sync` stages only new event files and
+`.board/.gitignore`, commits exactly those paths as the fixed identity
+`agentboard <agentboard@localhost>` when anything is staged, then runs
+`git pull --rebase` and `git push` (see docs/adr/0005). Event
 files are add-only with content-derived names, so two clones can never
 produce an add/add conflict with different content for the same path; the
 only conflicts possible are on non-event paths, which `sync` refuses to

@@ -59,9 +59,9 @@ branch is reviewed and merged, and its decisions are in a spec delta or ADR.
 
 ## 8. Documentation and consumer setup
 
-- [ ] 8.1 Write README.md usage covering init, the orchestrator inbox protocol, the role columns, the decision-promotion rule, import-change, sync between machines, and what the board is not (a secret store), and verify with `make ascii` and by following the README on a fresh temporary project end to end
-- [ ] 8.2 Add docs/adr/0002-one-transaction-per-command.md and docs/adr/0003-cursors-as-position-plus-seen-set.md recording the design decisions above, and verify the ADR index lists them
-- [ ] 8.3 Add a "Using agentboard in a project" section to CONTRIBUTING.md (gitignore entry, `make hooks` unaffected, `agentboard init`, `import-change` on every new OpenSpec change) and verify with `make check`
+- [x] 8.1 Write README.md usage covering init, the orchestrator inbox protocol, the role columns, the decision-promotion rule, import-change, sync between machines, and what the board is not (a secret store), and verify with `make ascii` and by following the README on a fresh temporary project end to end
+- [x] 8.2 Add docs/adr/0002-one-transaction-per-command.md and docs/adr/0003-cursors-as-position-plus-seen-set.md recording the design decisions above, and verify the ADR index lists them
+- [x] 8.3 Add a "Using agentboard in a project" section to CONTRIBUTING.md (gitignore entry, `make hooks` unaffected, `agentboard init`, `import-change` on every new OpenSpec change) and verify with `make check`
 
 ## 9. MCP server
 
