@@ -7,8 +7,9 @@
  * from it.
  *
  * This group registers the ticket lifecycle commands plus `version` and the
- * `mcp` placeholder. `inbox`, `watch`, `rebuild`, `sync`, `import-change`
- * and `close-merged` are added by the task groups that implement them.
+ * `mcp` placeholder; task group 6 adds `sync`. `inbox`, `watch`,
+ * `rebuild`, `import-change` and `close-merged` are added by the task
+ * groups that implement them.
  */
 
 import {
@@ -23,6 +24,7 @@ import {
   type LinkTarget,
 } from '../board/actions.js';
 import { initBoard } from '../board/init.js';
+import { syncBoard } from '../board/sync.js';
 import { TASK_RULE } from '../board/text.js';
 import { parseTaskFilter, taskRefFromArgs, type TaskFilter } from '../board/resolve.js';
 import { listTickets, newTicket, showRaw, showTicket } from '../board/tickets.js';
@@ -257,7 +259,7 @@ function checklistRun(done: boolean): CommandSpec['run'] {
 /**
  * Every command of this version, in this order: `init`, `new`, `show`,
  * `list`, `claim`, `release`, `move`, `comment`, `handoff`, `link`,
- * `checklist tick`, `checklist untick`, `close`, `mcp`, `version`.
+ * `checklist tick`, `checklist untick`, `close`, `sync`, `mcp`, `version`.
  *
  * `run` of each command calls the named operation and returns its result
  * as the `--json` document, with this human rendering:
@@ -270,6 +272,9 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   `checklist tick|untick`); text: the `list` line of the resulting
  *   ticket, preceded by `already claimed by <actor>` for a claim that
  *   wrote nothing, and followed, for a tick, by the reminder `message`.
+ * - `sync`: `SyncResult` (`syncBoard` with `ctx.env`; writes no event, so
+ *   no actor is needed); text: its `message` and a newline; `warnings`:
+ *   the result's `warnings`, printed to stderr by `runCli`.
  * - `version`: `{ version }`; text: the version.
  * - `mcp`: always `BoardError(1, 'not-implemented')`, with a message saying
  *   `agentboard mcp` is not implemented yet (it arrives with task group 9).
@@ -531,6 +536,19 @@ export const COMMANDS: readonly CommandSpec[] = [
             : { id, decisionRecordedIn: path, cwd: ctx.cwd, env: ctx.env },
         ),
       );
+    },
+  },
+  {
+    name: 'sync',
+    summary: "Commit new events, pull with rebase from the board's remote and push",
+    positionals: [],
+    flags: [],
+    exclusive: [],
+    writes: false,
+    operation: 'syncBoard',
+    run: (ctx) => {
+      const result = syncBoard(ctx.board(), { env: ctx.env });
+      return { json: result, text: `${result.message}\n`, warnings: result.warnings };
     },
   },
   {

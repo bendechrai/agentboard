@@ -66,8 +66,10 @@ export function errorDocument(error: unknown): ErrorDocument {
  *    stderr line `agentboard: removed stale temporary file <path>` is
  *    printed for each reaped temporary file and `agentboard: <message>` for
  *    each corrupt event file in the open report.
- * 4. Success: with `--json`, stdout receives `JSON.stringify(output.json)`
- *    and a newline, and nothing else; without it, `output.text`. Exit 0.
+ * 4. Success: first, stderr receives `agentboard: <warning>` and a newline
+ *    for each of `output.warnings` (if any), in order; then, with `--json`,
+ *    stdout receives `JSON.stringify(output.json)` and a newline, and
+ *    nothing else; without it, `output.text`. Exit 0.
  * 5. Failure (anything thrown in steps 1 to 3): stderr receives
  *    `agentboard: <message>` and a newline; with `--json` (detected
  *    anywhere in `io.argv`, even when parsing failed), stdout also receives

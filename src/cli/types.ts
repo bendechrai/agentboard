@@ -98,6 +98,14 @@ export interface CommandOutput {
    * with a newline.
    */
   readonly text: string;
+  /**
+   * Warnings of a successful command (for example `sync`'s host tracking
+   * warning), plain ASCII, without the `agentboard: ` prefix. `runCli`
+   * prints each to stderr as `agentboard: <warning>` and a newline, with or
+   * without `--json`; they never reach stdout and never change the exit
+   * code. Absent or empty when there is nothing to warn about.
+   */
+  readonly warnings?: readonly string[];
 }
 
 /** One command of the registry. */
