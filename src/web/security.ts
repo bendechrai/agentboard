@@ -140,6 +140,8 @@ export function securityHeaders(api: boolean): Record<string, string> {
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
     'X-Frame-Options': 'DENY',
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Resource-Policy': 'same-origin',
   };
   if (api) {
     headers['Cache-Control'] = 'no-store';
@@ -193,7 +195,11 @@ export interface Guard {
  * path and method. Pure.
  */
 export function presentedTokens(head: RequestHead, guard: Guard): TokenForm[] {
-  const authorization = head.headers.authorization;
+  const values = head.headersDistinct?.authorization;
+  if (values?.length !== 1) {
+    return [];
+  }
+  const authorization = values[0];
   if (
     typeof authorization === 'string' &&
     authorization.startsWith(BEARER_PREFIX) &&
