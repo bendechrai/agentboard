@@ -81,7 +81,11 @@ human, and exit 3.
 Running `import-change <name>` twice for the same change SHALL create no
 duplicate tickets: tickets are keyed by their task reference (source, ref,
 item) and a second import
-SHALL update checklists for existing tickets by appending new lines only.
+SHALL update checklists for existing tickets by appending new lines only,
+with one `ticket.checklist.add` event per ticket that gained lines. Existing
+lines are matched by position and never edited or removed; a re-import never
+changes a ticket's title, labels or status. `import-change` also accepts
+`<source>:<ref>` so an unsupported source can be named.
 
 #### Scenario: Second import adds nothing
 - **WHEN** `import-change add-board-core` runs twice with an unchanged tasks file
