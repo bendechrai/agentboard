@@ -26,7 +26,7 @@ function command(name: string): CommandSpec {
 }
 
 describe('the command registry', () => {
-  it('defines the commands of this group, once each, in order', () => {
+  it('defines the commands of this version, once each, in order', () => {
     expect(COMMANDS.map((c) => c.name)).toEqual([
       'init',
       'new',
@@ -43,6 +43,10 @@ describe('the command registry', () => {
       'close',
       'inbox',
       'watch',
+      'rebuild',
+      'sync',
+      'import-change',
+      'close-merged',
       'mcp',
       'version',
     ]);
@@ -70,6 +74,8 @@ describe('the command registry', () => {
       'checklist tick',
       'checklist untick',
       'close',
+      'import-change',
+      'close-merged',
     ]);
   });
 
@@ -206,12 +212,25 @@ describe('the command registry', () => {
         ['index', 'integer', true],
       ],
     });
+    expect(shape('import-change')).toEqual({
+      positionals: [['name', 'string', true]],
+      flags: [],
+      exclusive: [],
+    });
+    expect(shape('close-merged')).toEqual({ positionals: [], flags: [], exclusive: [] });
+    expect(command('import-change').operation).toBe('importChange');
+    expect(command('close-merged').operation).toBe('closeMerged');
     expect(shape('close')).toMatchObject({
       flags: [
         ['decision-recorded-in', 'string', false, false],
         ['no-decision', 'boolean', false, false],
       ],
       exclusive: [[[['decision-recorded-in'], ['no-decision']], true]],
+    });
+    expect(shape('rebuild')).toEqual({
+      positionals: [],
+      flags: [['check', 'boolean', false, false]],
+      exclusive: [],
     });
     expect(shape('show')).toEqual({
       positionals: [['id', 'string', true]],

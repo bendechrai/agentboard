@@ -136,6 +136,8 @@ of strings; `task` and `adhoc` SHALL NOT both be present);
 `ticket.link` (exactly one of: `task` reference, pr URL or number, decision path);
 `ticket.close` (either `decision` path string or `noDecision` true);
 `ticket.checklist` (index: integer, done: boolean);
+`ticket.checklist.add` (items: non-empty array of objects with `text`, a
+non-empty string, and `done`, a boolean; the fold appends them in order);
 `board.meta` (key, value; board-level settings such as the default column
 set). Bodies with extra fields SHALL be malformed.
 

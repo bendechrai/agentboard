@@ -117,6 +117,43 @@ describe('refuseSecretLike', () => {
     expect(err.message).toContain('github-token');
   });
 
+  it('gives the exact message with the bypass hint by default', () => {
+    const err = expectBoardError(
+      () => {
+        refuseSecretLike([SAMPLES['github-token'], SAMPLES['aws-access-key-id']], false);
+      },
+      1,
+      'secret-like',
+    );
+    expect(err.message).toBe(
+      'refused: the text matches the secret pattern(s) aws-access-key-id, github-token; ' +
+        'the board is not a secret store (pass --allow-secret-like if this is not a secret)',
+    );
+  });
+
+  it('omits the bypass hint when the command has no bypass flag', () => {
+    const err = expectBoardError(
+      () => {
+        refuseSecretLike(['clean', `x ${SAMPLES['github-token']} y`], false, false);
+      },
+      1,
+      'secret-like',
+    );
+    expect(err.message).toBe(
+      'refused: the text matches the secret pattern(s) github-token; ' +
+        'the board is not a secret store',
+    );
+  });
+
+  it('still returns for clean text and honours allowSecretLike without a bypass flag', () => {
+    expect(() => {
+      refuseSecretLike(['fine'], false, false);
+    }).not.toThrow();
+    expect(() => {
+      refuseSecretLike([SAMPLES['github-token']], true, false);
+    }).not.toThrow();
+  });
+
   it('is bypassed by allowSecretLike', () => {
     expect(() => {
       refuseSecretLike([SAMPLES['pem-private-key']], true);

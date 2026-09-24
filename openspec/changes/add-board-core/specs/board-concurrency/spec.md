@@ -41,7 +41,7 @@ ever be visible under its final hash name.
 
 #### Scenario: Killed during temporary write
 - **WHEN** a child process is killed while writing the temporary file
-- **THEN** no file with a hash name was created, the ticket is unchanged, and the leftover temporary file is ignored by every command and reported and removed by the first command that runs once it is older than one minute
+- **THEN** no file with a hash name was created, the ticket is unchanged, and the leftover temporary file is ignored by every command and reported and removed by the first command other than `rebuild --check` that runs once it is older than one minute
 
 ### Requirement: Inbox never misses an event
 `inbox --as <actor>` SHALL return every effective event whose fold position
@@ -73,9 +73,24 @@ consequence is permitted, skipping one is not.
 board's remote, and push. Because event files are add-only and named by
 content, two clones that each added events SHALL merge without conflict, and
 after both have synced, `rebuild` on each SHALL produce byte-identical
-canonical dumps. If git reports a conflict on any path other than an event
-file, `sync` SHALL stop, leave the repository in the conflicted state for a
-human, and exit 3.
+canonical dumps. If git reports a conflict on any path, `sync` SHALL stop,
+leave the repository in the conflicted state for a human, and exit 3 naming
+the paths. `sync` SHALL stage only new files under `events/` (never temporary
+files, never deletions) and `.board/.gitignore`, so the cache and its WAL and
+SHM files are never committed even if `.gitignore` is emptied. It SHALL
+commit with the fixed identity `agentboard <agentboard@localhost>`, never the
+user's git identity, and only when something is staged. When event files
+that are recorded in the board's git history are missing from the working
+tree, `sync` SHALL stage nothing and exit 5 with reason `integrity`, naming
+the missing files and how to restore them. When the board directory is not
+itself the top level of a git repository, `sync` SHALL exit 2. When the host
+project's git repository tracks any path under `.board`, `sync` SHALL warn
+on stderr (and in its JSON output) without failing. After pulling, `sync`
+SHALL fold the arrived events and report them.
+
+#### Scenario: Deleted event file is not synced
+- **WHEN** a committed event file is deleted from `.board/events` and `sync` runs
+- **THEN** nothing is staged or pushed and the command exits 5 naming the file
 
 #### Scenario: Divergent clones converge
 - **WHEN** clone A adds three events and clone B adds two events, both run `sync`, and A runs `sync` again
@@ -89,7 +104,11 @@ human, and exit 3.
 Running `import-change <name>` twice for the same change SHALL create no
 duplicate tickets: tickets are keyed by their task reference (source, ref,
 item) and a second import
-SHALL update checklists for existing tickets by appending new lines only.
+SHALL update checklists for existing tickets by appending new lines only,
+with one `ticket.checklist.add` event per ticket that gained lines. Existing
+lines are matched by position and never edited or removed; a re-import never
+changes a ticket's title, labels or status. `import-change` also accepts
+`<source>:<ref>` so an unsupported source can be named.
 
 #### Scenario: Second import adds nothing
 - **WHEN** `import-change add-board-core` runs twice with an unchanged tasks file

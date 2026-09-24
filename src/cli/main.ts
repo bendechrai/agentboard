@@ -9,7 +9,7 @@ import { openBoard, type Board } from '../store/board.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
 import { findBoard } from '../store/locate.js';
 import { parseArgs, resolveActor, type ParsedCommand } from './parse.js';
-import type { Env, RunContext } from './types.js';
+import type { BoardOpenOptions, Env, RunContext } from './types.js';
 
 /** The process surroundings `runCli` uses; nothing else is read or written. */
 export interface CliIo {
@@ -75,12 +75,17 @@ export function errorDocument(error: unknown): ErrorDocument {
  *    (`CommandSpec.tracksCursor`), `resolveActor(values.as, io.env)`.
  * 3. `command.run(ctx, values)` with a context whose `board()` finds and
  *    opens the board lazily (`findBoard` with `io.cwd` and `io.env`, then
- *    `openBoard`); the board is closed before returning. After opening, one
+ *    `openBoard`, passing `catchUp: false` when the first call asks for
+ *    it) and whose `boardDir()` runs discovery only; the board is closed
+ *    before returning. After opening, one
  *    stderr line `agentboard: removed stale temporary file <path>` is
  *    printed for each reaped temporary file and `agentboard: <message>` for
  *    each corrupt event file in the open report.
- * 4. Success: with `--json`, stdout receives `JSON.stringify(output.json)`
- *    and a newline, and nothing else; without it, `output.text`. Exit 0.
+ * 4. Success (`run` returned): stderr first receives `agentboard: <line>`
+ *    and a newline for each of `output.warnings`; then, with `--json`,
+ *    stdout receives `JSON.stringify(output.json)` and a newline, and
+ *    nothing else; without it, `output.text`. Returns `output.exitCode`
+ *    when present (1 for a divergent `rebuild --check`), otherwise 0.
  * 5. Failure (anything thrown in steps 1 to 3): stderr receives
  *    `agentboard: <message>` and a newline; with `--json` (detected
  *    anywhere in `io.argv`, even when parsing failed), stdout also receives
@@ -98,8 +103,11 @@ export function runCli(io: CliIo): ExitCode {
     parsed = parseArgs(io.argv);
     const { command, values } = parsed;
     const output = command.run(context(io, parsed, opened), values);
+    for (const line of output.warnings ?? []) {
+      io.stderr(`agentboard: ${line}\n`);
+    }
     io.stdout(parsed.json ? `${JSON.stringify(output.json)}\n` : output.text);
-    return 0;
+    return output.exitCode ?? 0;
   } catch (error) {
     return fail(io, parsed, error);
   } finally {
@@ -116,10 +124,19 @@ class LazyBoard {
     this.io = io;
   }
 
-  get(): Board {
+  /** Discovery only: the board directory, without opening anything. */
+  dir(): string {
+    return findBoard({ cwd: this.io.cwd, env: this.io.env }).dir;
+  }
+
+  /** `options` apply to the first call only (see `RunContext.board`). */
+  get(options?: BoardOpenOptions): Board {
     if (this.board === null) {
       const { io } = this;
-      this.board = openBoard(findBoard({ cwd: io.cwd, env: io.env }).dir);
+      this.board = openBoard(this.dir(), {
+        catchUp: options?.catchUp !== false,
+        prepare: options?.prepare !== false,
+      });
       for (const path of this.board.opened?.reaped ?? []) {
         io.stderr(`agentboard: removed stale temporary file ${path}\n`);
       }
@@ -143,7 +160,13 @@ function context(io: CliIo, parsed: ParsedCommand, opened: LazyBoard): RunContex
     command.writes || command.tracksCursor === true
       ? resolveActor(typeof given === 'string' ? given : undefined, io.env)
       : null;
-  return { cwd: io.cwd, env: io.env, actor, board: () => opened.get() };
+  return {
+    cwd: io.cwd,
+    env: io.env,
+    actor,
+    boardDir: () => opened.dir(),
+    board: (options?: BoardOpenOptions) => opened.get(options),
+  };
 }
 
 /** Step 5 of `runCli`: reports `error` and returns its exit code. */

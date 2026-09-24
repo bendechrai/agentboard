@@ -36,26 +36,27 @@ branch is reviewed and merged, and its decisions are in a spec delta or ADR.
 ## 4. Concurrency and crash properties
 
 - [x] 4.1 Add a test harness that builds the CLI once and spawns it as child processes against a temporary board, and verify it can run 20 processes concurrently on macOS and Linux within the vitest timeout
-- [x] 4.2 Ten concurrent `claim` processes on one ticket: verify exactly one exits 0, nine exit 4 naming the winner, `show` reports one assignee, and `rebuild --check` reports no divergence
-- [x] 4.3 Twenty concurrent `comment` processes: verify all twenty comments are present in deterministic order and `rebuild --check` reports no divergence
-- [x] 4.4 Crash injection: with an environment variable that makes the CLI pause after rename and after temp-write, kill the child with SIGKILL at each point and verify the next command recovers (event folded in the first case; temp reaped and ticket unchanged in the second)
-- [x] 4.5 Busy-timeout behaviour: verify two writers within the same millisecond both succeed and neither reports a locked database
+- [ ] 4.2 Ten concurrent `claim` processes on one ticket: verify exactly one exits 0, nine exit 4 naming the winner, `show` reports one assignee, and `rebuild --check` reports no divergence
+- [ ] 4.3 Twenty concurrent `comment` processes: verify all twenty comments are present in deterministic order and `rebuild --check` reports no divergence
+- [ ] 4.4 Crash injection: with an environment variable that makes the CLI pause after rename and after temp-write, kill the child with SIGKILL at each point and verify the next command recovers (event folded in the first case; temp reaped and ticket unchanged in the second)
+- [ ] 4.5 Busy-timeout behaviour: verify two writers within the same millisecond both succeed and neither reports a locked database
 
 ## 5. Inbox and watch
 
 - [x] 5.1 Implement cursors (position plus bounded seen set) and `inbox` with `--since` and `--peek` and verify with tests that a late-arriving event with an earlier timestamp is delivered, that peek does not advance, and that a second call returns nothing new
-- [x] 5.2 Implement `watch` with `fs.watch` plus a 2 second polling fallback and verify with a test that an event written by another process appears on the watcher's stdout within 3 seconds and that watch does not advance the cursor
+- [ ] 5.2 Implement `watch` with `fs.watch` plus a 2 second polling fallback and verify with a test that an event written by another process appears on the watcher's stdout within 3 seconds and that watch does not advance the cursor
 
 ## 6. Sync
 
-- [x] 6.1 Implement `sync` (add, commit if needed, pull --rebase, push; no-remote path; exit 3 on any conflict or other problem that needs a human; warning if the host repo tracks `.board`) and verify with tests using two clones of a bare temporary remote that divergent add-only events converge to identical rebuilt caches
-- [x] 6.2 Verify with a test that `cache.sqlite` and its WAL and SHM files are never committed by `sync`
+- [ ] 6.1 Implement `sync` (add, commit if needed, pull --rebase, push; no-remote path; exit 3 on non-event conflicts; warning if the host repo tracks `.board`) and verify with tests using two clones of a bare temporary remote that divergent add-only events converge to identical rebuilt caches
+      continuation text that is not a task line
+- [ ] 6.2 Verify with a test that `cache.sqlite` and its WAL and SHM files are never committed by `sync`
 
 ## 7. OpenSpec integration
 
-- [x] 7.1 Implement `import-change <name>` (locate the OpenSpec root, parse numbered groups and checkbox lines, one ticket per group with labels and checklist, fully ticked groups as merged) and verify with tests against a fixture tasks file and an idempotency test that a second import writes no events
-- [x] 7.2 Implement the tickets-reference-tasks rule (`--task`, `--change/--group` or `--adhoc <reason>`; ad hoc tickets cannot enter `implementing` without a task link) and the source adapter interface with the `openspec` adapter, and verify with tests for both refusals, a ticket from a source with no adapter being fully usable, and `import-change` naming the unsupported source
-- [x] 7.3 Implement `close-merged` (gh-backed PR merge state, closes with the right disposition, lists unmerged) and verify with tests that stub the gh invocation for merged, unmerged and gh-missing cases
+- [ ] 7.1 Implement `import-change <name>` (locate the OpenSpec root, parse numbered groups and checkbox lines, one ticket per group with labels and checklist, fully ticked groups as merged) and verify with tests against a fixture tasks file and an idempotency test that a second import writes no events
+- [ ] 7.2 Implement the tickets-reference-tasks rule (`--task`, `--change/--group` or `--adhoc <reason>`; ad hoc tickets cannot enter `implementing` without a task link) and the source adapter interface with the `openspec` adapter, and verify with tests for both refusals, a ticket from a source with no adapter being fully usable, and `import-change` naming the unsupported source
+- [ ] 7.3 Implement `close-merged` (gh-backed PR merge state, closes with the right disposition, lists unmerged) and verify with tests that stub the gh invocation for merged, unmerged and gh-missing cases
 
 ## 8. Documentation and consumer setup
 

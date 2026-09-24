@@ -105,7 +105,10 @@ export interface Ticket {
   task: TaskRef | null;
   /** From create; cleared to null when a task link is applied. */
   adhoc: string | null;
-  /** From create, all `done: false`; `[]` when not given. */
+  /**
+   * From create, all `done: false` (`[]` when not given), followed by the
+   * items of each applied `ticket.checklist.add`, in fold order.
+   */
   checklist: ChecklistItem[];
   /** In fold order. */
   comments: TicketComment[];
@@ -238,6 +241,10 @@ export function isTransitionAllowed(from: Status, to: Status, blockedFrom: Statu
  * - `ticket.checklist`: `checklist-index` if `index` is negative or not less
  *   than the checklist length; otherwise sets that item's `done` (setting
  *   it to its current value still counts as applied).
+ * - `ticket.checklist.add`: appends `body.items` to the checklist in array
+ *   order, each as `{ text, done }` copied from the item; never rejected
+ *   once the ticket exists (it may be closed), and counts as one applied
+ *   event (version goes up by exactly 1, however many items).
  * - `board.meta`: sets `state.meta[key] = value`; never rejected; affects no
  *   ticket.
  * - Unknown kinds: appended to `unknown`; affect no ticket and are never
@@ -430,6 +437,11 @@ function applyToTicket(
       item.done = event.body.done;
       return null;
     }
+    case 'ticket.checklist.add':
+      for (const item of event.body.items) {
+        ticket.checklist.push({ text: item.text, done: item.done });
+      }
+      return null;
   }
 }
 

@@ -9,7 +9,9 @@
  * - 1: usage error or missing actor (for example an empty actor, or a
  *   proposed event that fails `validateEvent`).
  * - 2: board not found or unreadable.
- * - 3: conflict during sync that needs a human.
+ * - 3: sync problem that needs a human (a conflict, a sync already in
+ *   progress, a detached HEAD, content staged in the board repository that
+ *   sync does not commit, or an unreachable or rejecting remote).
  * - 4: action rejected by board state (invalid transition, already assigned,
  *   not assignee, unknown ticket, and every other fold rejection reason).
  * - 5: event log integrity problem where the command needed the data.

@@ -8,6 +8,8 @@ import { formatTaskRef } from '../events/schema.js';
 import { asciiText } from '../board/text.js';
 import type { InboxEntry } from '../board/inbox.js';
 import type { ShowResult } from '../board/tickets.js';
+import { CACHE_SCHEMA_VERSION } from '../store/cache.js';
+import type { CheckResult, RebuildReport } from '../store/rebuild.js';
 
 /** Re-exported from `src/board/text.ts` (defined there for layering). */
 export { asciiText };
@@ -121,4 +123,114 @@ export function renderInboxLine(entry: InboxEntry): string {
     fields.push(`note ${asciiText(entry.note)}`);
   }
   return fields.join('  ');
+}
+
+/**
+ * The counts of a rebuild report, as used by `renderRebuild` and
+ * `renderCheck`, without a newline:
+ * `<folded> folded, <rejected> rejected, <malformed> malformed, <corrupt> corrupt, <unknown> unknown`.
+ * Example: `3 folded, 1 rejected, 0 malformed, 0 corrupt, 0 unknown`. Pure.
+ */
+export function renderCounts(report: RebuildReport): string {
+  return [
+    `${String(report.folded)} folded`,
+    `${String(report.rejected)} rejected`,
+    `${String(report.malformed)} malformed`,
+    `${String(report.corrupt)} corrupt`,
+    `${String(report.unknown)} unknown`,
+  ].join(', ');
+}
+
+/**
+ * Human output of `agentboard rebuild`: the line
+ * `rebuilt: <renderCounts(report)>`, then one line per corrupt file
+ * (`  corrupt <name>`, in `report.corruptFiles` order) and one per malformed
+ * file (`  malformed <hash>.json`, in `report.malformedFiles` order), each
+ * ending with a newline. `rebuild` opens the board without catch-up, so the
+ * open reports nothing and these files are reported here. Example:
+ *
+ * ```
+ * rebuilt: 3 folded, 1 rejected, 1 malformed, 0 corrupt, 0 unknown
+ *   malformed 5f0c...e1.json
+ * ```
+ *
+ * Names pass through `asciiText`. Pure.
+ */
+export function renderRebuild(report: RebuildReport): string {
+  const lines = [`rebuilt: ${renderCounts(report)}`];
+  for (const file of report.corruptFiles) {
+    lines.push(`  corrupt ${asciiText(file.name)}`);
+  }
+  for (const file of report.malformedFiles) {
+    lines.push(`  malformed ${asciiText(file.hash)}.json`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+/**
+ * The `--json` document of `agentboard rebuild --check` (board-cache:
+ * "Rebuild").
+ *
+ * - The cache is a cache of the running schema version: the store's
+ *   `CheckResult` plus `noCache: false` and `schemaMismatch: false`.
+ * - No cache file exists (`<board>/cache.sqlite` is absent): `{ ok: false,
+ *   noCache: true, schemaMismatch: false, differences: [], report: null }`.
+ *   Nothing is created and no event file is read.
+ * - The cache file exists but is not a cache of `CACHE_SCHEMA_VERSION`
+ *   (another `meta.schema_version`, an empty file, not a SQLite database,
+ *   no `meta` table): `{ ok: false, noCache: false, schemaMismatch: true,
+ *   differences: [], report: null }`. The file is left byte for byte
+ *   unchanged, cursor rows included.
+ */
+export type CheckDocument =
+  | (CheckResult & { noCache: false; schemaMismatch: false })
+  | { ok: false; noCache: true; schemaMismatch: false; differences: []; report: null }
+  | { ok: false; noCache: false; schemaMismatch: true; differences: []; report: null };
+
+/**
+ * Human output of `agentboard rebuild --check`, ending with a newline.
+ *
+ * - No cache file (`doc.noCache`): one line, `no-cache: there is no cache file`.
+ * - Not a cache of this version (`doc.schemaMismatch`): one line,
+ *   `schema-mismatch: the cache file is not a cache of schema version <CACHE_SCHEMA_VERSION>`.
+ * - No divergence (`doc.ok`): one line,
+ *   `no divergence: <renderCounts(doc.report)>`.
+ * - Divergence: a first line `divergence: <n> differing row(s)` (`<n>` the
+ *   number of differences), then one line per difference, in the order of
+ *   `doc.differences`: two spaces, the table, the key and the state,
+ *   separated by single spaces, where the state is `changed` (the row is on
+ *   both sides and differs), `only-in-cache` (`rebuilt` is null) or
+ *   `only-in-rebuild` (`live` is null). The key of a `tickets` row is the
+ *   ticket id and that of a `comments` or `links` row is `<ticket>#<seq>`,
+ *   so every differing ticket is named. Example:
+ *
+ * ```
+ * divergence: 1 differing row(s)
+ *   tickets 01ARYZ6S41TSV4RRFFQ69G5FAV changed
+ * ```
+ *
+ * Keys pass through `asciiText`. Row contents are never printed (the
+ * `--json` document carries them). Pure.
+ */
+export function renderCheck(doc: CheckDocument): string {
+  if (doc.noCache) {
+    return 'no-cache: there is no cache file\n';
+  }
+  if (doc.schemaMismatch) {
+    return `schema-mismatch: the cache file is not a cache of schema version ${String(CACHE_SCHEMA_VERSION)}\n`;
+  }
+  if (doc.ok) {
+    return `no divergence: ${renderCounts(doc.report)}\n`;
+  }
+  const lines = [`divergence: ${String(doc.differences.length)} differing row(s)`];
+  for (const difference of doc.differences) {
+    const state =
+      difference.rebuilt === null
+        ? 'only-in-cache'
+        : difference.live === null
+          ? 'only-in-rebuild'
+          : 'changed';
+    lines.push(`  ${difference.table} ${asciiText(difference.key)} ${state}`);
+  }
+  return `${lines.join('\n')}\n`;
 }
