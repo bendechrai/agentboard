@@ -24,9 +24,12 @@ another web site.
   the same reason, message and hint as the CLI; secret-like text is still
   refused; `close` keeps the decision disposition rules, with decision
   paths relative to the working tree root.
-- Protection against cross-site request forgery on top of the access
-  token: `SameSite=Strict` cookie, an exact `Origin` check, a per-run CSRF
-  token sent in a custom header, JSON bodies only, a body size limit.
+- Protection against cross-site request forgery: structural, because
+  the access token is sent only as an `Authorization: Bearer` header (no
+  cookie; see `add-board-web`), which a cross-origin page cannot set
+  without a CORS preflight the server never approves; plus, as defence in
+  depth, JSON bodies only, an exact `Origin` check when one is sent, and a
+  body size limit.
 - Action controls on the ticket detail, with refusals shown beside the
   control with their hint.
 
@@ -39,8 +42,8 @@ another web site.
 
 ### Modified Capabilities
 - `board-web`: "Serve command" takes `--as`; "Read-only server" permits
-  the action endpoints when writable; "JSON API" adds `csrf` to the
-  session. Requires `add-board-web` to be archived first.
+  the action endpoints when writable; "JSON API" reports the actor and
+  `writable` true in the session of a writable server. Requires `add-board-web` to be archived first.
 - `board-cli`: "Actor is explicit" states the `serve` exception (explicit
   `--as` only, `AGENTBOARD_ACTOR` ignored).
 
@@ -61,5 +64,6 @@ another web site.
   run-context building shared by the CLI and MCP are reused, not copied.
 - No new dependency.
 - New reasons with hints: `read-only`, `csrf-failed`, `body-too-large`.
+  No CSRF token is drawn or exposed.
 - README section; ADR 0006 gains a section on write mode (or ADR 0009 if
   0006 has been accepted by then).

@@ -12,7 +12,7 @@ integer from 0 to 65535 and anything else SHALL exit 1 with reason
 SHALL exit 1 with reason `port-in-use` before serving anything. When no
 board is found it SHALL exit 2 before listening. At start-up it SHALL print
 on stdout the line `serving <board dir> read-only at <url>` where `<url>`
-is `http://127.0.0.1:<port>/?token=<token>`, or, with `--json`, exactly one
+is `http://127.0.0.1:<port>/#token=<token>`, or, with `--json`, exactly one
 line holding the JSON object `{"url", "port", "token", "writable"}` with
 `writable` false, and nothing else on stdout afterwards. With `--open` it
 SHALL also ask the system to open `<url>` in the default browser; failing
@@ -42,37 +42,68 @@ other address.
 ### Requirement: Access token
 The server SHALL draw a new access token of 32 random bytes, encoded as
 43 base64url characters, at every start, and SHALL require it on every
-request, in one of these forms: the query parameter `token` on `GET /`
-only, which SHALL be answered with `303 See Other` to `/` and a
-`Set-Cookie` of the cookie below; the cookie `agentboard-<port>` with the
-attributes `HttpOnly`, `SameSite=Strict` and `Path=/`; or the header
-`Authorization: Bearer <token>`. Tokens SHALL be compared in constant
-time. A request without a valid token SHALL be answered with status 401:
-an `ErrorDocument` with reason `unauthorized` on API paths, a plain text
-page telling the user to open the URL printed at start-up otherwise. The
-token SHALL never be logged, written to a file, or included in any
-response body.
+request whose path is `/api` or begins with `/api/`, the stream
+included, in exactly one form: the header `Authorization: Bearer <token>`.
+No other form SHALL be accepted: a `token` query parameter and every
+cookie SHALL be ignored, and the server SHALL set no cookie. Tokens SHALL
+be compared in constant time. An API request without a valid token SHALL
+be answered with status 401 and an `ErrorDocument` with reason
+`unauthorized`. The page and the static assets (`GET /` and the other
+paths served from `dist/web/`, see "Self-contained front end") SHALL be
+served without a token; they SHALL contain no board data, and the Host
+check, the method check and the security headers SHALL apply to them as
+to every other request. The start-up URL carries the token in its
+fragment (`#token=<token>`), which a browser never sends to a server. The
+page SHALL read the token from the fragment, store it in `sessionStorage`
+under the key `agentboard-token` (replacing any stored token), remove the
+fragment from the address bar with `history.replaceState`, and send it as
+`Authorization: Bearer` on every API and stream request. A page with no
+token, or whose token is refused with 401, SHALL discard any stored token
+and show a message telling the user to open the URL printed by
+`agentboard serve`. The token SHALL never be logged, written to a file,
+set in a cookie, or included in any response body or header.
 
-#### Scenario: Entry URL sets the cookie
-- **WHEN** a client requests `GET /?token=<token>` with the correct token
-- **THEN** the response is 303 to `/` with a `Set-Cookie` for `agentboard-<port>` that is `HttpOnly` and `SameSite=Strict`
+#### Scenario: Page is served without a token
+- **WHEN** a client requests `GET /` and `GET /app.js` with no Authorization header
+- **THEN** both responses are 200 with the security headers and no `Set-Cookie`, and neither contains board data
 
-#### Scenario: Query token is not accepted on the API
-- **WHEN** a client requests `GET /api/board?token=<token>` with no cookie and no Authorization header
+#### Scenario: API requires the bearer header
+- **WHEN** a client requests `GET /api/board` and `GET /api/stream` with no Authorization header
+- **THEN** both responses are 401 with reason `unauthorized`
+
+#### Scenario: Query token and cookie are ignored
+- **WHEN** a client requests `GET /api/board?token=<token>` with a `Cookie` header holding `agentboard-<port>=<token>` and no Authorization header
 - **THEN** the response is 401 with reason `unauthorized`
 
 #### Scenario: Wrong token
 - **WHEN** a client requests `GET /api/board` with `Authorization: Bearer` and a token of the right length that differs in one character
 - **THEN** the response is 401
 
+#### Scenario: Token moves from the fragment to session storage
+- **WHEN** the page is opened at the start-up URL `http://127.0.0.1:<port>/#token=<token>`
+- **THEN** `sessionStorage` holds the token under `agentboard-token`, the address bar shows no fragment holding the token, and every API request of the page carries `Authorization: Bearer <token>`
+
+#### Scenario: No token in the page
+- **WHEN** the page is opened at `http://127.0.0.1:<port>/` in a tab with no stored token
+- **THEN** it makes no API request and shows a message pointing to the URL printed by `agentboard serve`
+
 ### Requirement: Host header check
-Before checking the token, the server SHALL require the `Host` header to
-be exactly `127.0.0.1:<port>` or `localhost:<port>`, and SHALL answer any
-other value, or a missing header, with 403 and reason `forbidden-host`.
+Before checking the token, the server SHALL require exactly one `Host`
+header, whose value is exactly `127.0.0.1:<port>` or `localhost:<port>`,
+and SHALL answer any other value, a missing header, or more than one
+`Host` header with 403 and reason `forbidden-host`, on every path.
 
 #### Scenario: DNS rebinding
-- **WHEN** a request with a valid token cookie carries `Host: attacker.example:<port>`
+- **WHEN** a request with a valid `Authorization: Bearer` token carries `Host: attacker.example:<port>`
 - **THEN** the response is 403 with reason `forbidden-host` and no board data
+
+#### Scenario: Duplicate Host header
+- **WHEN** a request with a valid `Authorization: Bearer` token carries `Host: 127.0.0.1:<port>` followed by a second `Host: attacker.example`
+- **THEN** the response is 403 with reason `forbidden-host` and no board data
+
+#### Scenario: Rebinding the page
+- **WHEN** a client requests `GET /` with `Host: attacker.example:<port>`
+- **THEN** the response is 403 with reason `forbidden-host`
 
 ### Requirement: No cross-origin access and security headers
 No response SHALL carry an `Access-Control-Allow-Origin` or any other
@@ -86,10 +117,10 @@ base-uri 'none'; form-action 'self'; frame-ancestors 'none'`,
 
 #### Scenario: Preflight is refused
 - **WHEN** a client sends `OPTIONS /api/board` with an `Origin` of another site
-- **THEN** the response is 401 without a valid token (the token is checked before the method) and 405 with one, and neither carries an `Access-Control-Allow-*` header
+- **THEN** the response is 401 without a valid token (on API paths the token is checked before the method) and 405 with one, and neither carries an `Access-Control-Allow-*` header
 
 #### Scenario: Headers on every response
-- **WHEN** the page, an asset, an API response, a stream and a 401 are each requested
+- **WHEN** the page, an asset, an API response, a stream, a 401 and a 403 are each requested
 - **THEN** every response carries the Content-Security-Policy, nosniff, no-referrer and frame headers above
 
 ### Requirement: Read-only server
@@ -151,7 +182,12 @@ event whose `event` field is its type (`append` or `resync`), whose `id`
 is its position id and whose `data` is the message as JSON. The feed
 SHALL start from the position id in the `Last-Event-ID` header, else from
 the `since` query parameter, else from the start (an `append` of every
-effective event). A comment line SHALL be sent every 15 seconds. A tick
+effective event). The position id given is compared with the board, not
+with what the shared feed has delivered so far, so a stream started with
+the id of any `/api/board` snapshot taken before it receives an `append`
+of exactly the events after that snapshot, or nothing, and never a
+`resync` or an event the snapshot already held (see board-feed "Joining a
+running feed"). A comment line SHALL be sent every 15 seconds. A tick
 failure other than `busy` SHALL be sent as a `problem` event whose data is
 its `ErrorDocument`, and the stream SHALL continue. One feed SHALL serve
 every stream of the server. At most 64 streams SHALL be open at once; a
@@ -164,6 +200,10 @@ further request SHALL be answered with 503 and reason `too-many-streams`.
 #### Scenario: Reconnect resumes
 - **WHEN** a client reconnects with `Last-Event-ID` set to the last id it received, and one comment was written while it was disconnected
 - **THEN** its first event is an `append` of exactly that comment
+
+#### Scenario: Stream from a fresh snapshot
+- **WHEN** another process writes a comment, a client at once requests `/api/board` (whose `id` includes the comment) and then `/api/stream?since=<that id>` before the server's feed has ticked
+- **THEN** the stream sends no `resync`, and no event on it is one the snapshot already listed
 
 #### Scenario: Late arrival reaches the browser
 - **WHEN** a client holds the stream open and an event file sorting before its head is copied into `events/`
@@ -180,7 +220,11 @@ detail (fields, checklist, links, disposition, the conversation as
 `conversation` defines it with decisions and retractions highlighted, and
 the ticket's events with their outcomes); and agent lanes (as `agentLanes`
 defines them, with "last seen" as `relativeTime`, refreshed at least every
-10 seconds). A resync SHALL reload the snapshot. The current view and its
+10 seconds). A resync SHALL reload the snapshot. The page SHALL read the stream with
+`fetch` (sending the `Authorization` header, which `EventSource` cannot
+send) and an SSE parser, and SHALL reconnect after the `retry` interval
+when the stream ends or fails, sending the last id it received as the
+`Last-Event-ID` header. The current view and its
 filters SHALL be kept in the URL hash, so reloading the page restores them.
 
 #### Scenario: Card moves live
@@ -196,11 +240,21 @@ The page, script and stylesheet SHALL be built at package build time into
 `dist/web/` and served from there; serving SHALL need no package beyond
 the runtime dependencies of agentboard, and the page SHALL request nothing
 from any origin other than the server. No built asset SHALL contain an
-`http://` or `https://` URL referring to another host.
+`http://` or `https://` URL referring to another host. `GET /` SHALL serve
+`index.html`, and `GET /<name>` the file `<name>` directly inside
+`dist/web/`, where `<name>` contains no `/`, `\` or `%` and does not begin
+with `.`. A file SHALL be opened without blocking and without following a
+symbolic link, and served only when the opened file is a regular file;
+any other path, and a directory, FIFO, device or symbolic link, SHALL be
+404.
 
 #### Scenario: No external requests
 - **WHEN** the built assets in `dist/web/` are scanned
 - **THEN** they contain no `http://` or `https://` URL naming a host
+
+#### Scenario: A FIFO among the assets
+- **WHEN** `dist/web/` contains a FIFO named `pipe` with no writer and a client requests `GET /pipe`
+- **THEN** the response is 404 at once, and a concurrent `GET /api/session` is answered without waiting
 
 ### Requirement: Board text is never markup
 Every text taken from the board (titles, descriptions, labels, comments,

@@ -14,8 +14,10 @@ local and offline like the rest of agentboard.
 
 - `agentboard serve [--port <n>] [--open]`: a read-only local web app,
   served by `node:http` (no web framework), bound to `127.0.0.1` only,
-  protected by a random access token printed at start-up, a `Host` header
-  check against DNS rebinding and no cross-origin access.
+  protected by a random access token printed at start-up (handed to the
+  page in the URL fragment and sent only as an `Authorization: Bearer`
+  header, never in a cookie), a `Host` header check against DNS rebinding
+  and no cross-origin access.
 - A board-wide change feed (new capability `board-feed`): the catch-up,
   `fs.watch` and polling machinery of `watch`, generalized to every
   effective event of the board instead of one actor's cursor, reporting

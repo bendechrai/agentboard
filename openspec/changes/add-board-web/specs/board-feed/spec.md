@@ -100,6 +100,30 @@ cannot know what the consumer held. An id that does not parse SHALL cause a
 - **WHEN** a feed is started with the position id `garbage`
 - **THEN** its first message is a `resync`
 
+### Requirement: Joining a running feed
+One running feed MAY serve several consumers, each joining at its own
+position id. A consumer's position id SHALL be compared with the board,
+not with the state the feed has delivered so far: before computing a
+joining consumer's first message, the feed SHALL bring itself up to date
+in the same synchronous turn, running one catch-up and examination as a
+tick does and delivering any resulting message to the consumers already
+joined, and SHALL then compute the joiner's first message from the
+resulting state exactly as "Resume from a position id" describes. No
+message of the feed SHALL fall between that first message and the
+joiner's subscription. So a consumer joining with the id of any snapshot
+of the board taken before the join receives an `append` of exactly the
+effective events after that id, or nothing, and never a `resync` or an
+event the snapshot already held (unless the board itself changed so that
+a resync is due).
+
+#### Scenario: Join from a snapshot ahead of the feed
+- **WHEN** a feed is running, another process writes a comment, a snapshot of the board is taken (its id includes the comment), and a consumer joins with that id before the feed's next tick
+- **THEN** the joiner's first message is nothing (no `resync`), the consumers already joined receive an `append` of the comment, and no later message to the joiner carries the comment
+
+#### Scenario: Join from an older snapshot
+- **WHEN** a consumer joins a running feed with the id of a snapshot taken before two comments that the feed has not yet examined
+- **THEN** the joiner's first message is an `append` of exactly those two comments
+
 ### Requirement: The feed never blocks writers
 The feed SHALL take the write lock only when its catch-up has something to
 fold or reap, SHALL read each message's data inside one short read
