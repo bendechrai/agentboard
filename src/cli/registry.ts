@@ -494,8 +494,16 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   plus its `list` line plus ` (<reason>)`; then
  *   `close-merged: <c> closed, <u> unmerged, <s> skipped`.
  * - `version`: `{ version }`; text: the version.
- * - `mcp`: always `BoardError(1, 'not-implemented')`, with a message saying
- *   `agentboard mcp` is not implemented yet (it arrives with task group 9).
+ * - `mcp`: serves MCP over stdio (`serveMcp` in `src/mcp/server.ts`),
+ *   which needs the process's stdin and stdout and runs until the client
+ *   goes away, so it cannot answer with one `CommandOutput`. The
+ *   executable dispatches it before `runCli` (see `src/cli.ts`); its `run`,
+ *   reachable only through the in-process `runCli`, always throws
+ *   `BoardError(1, 'streaming-command')` with the message
+ *   `agentboard mcp serves MCP over stdio and runs only from the agentboard executable`.
+ *   `--json` is accepted and ignored (it is implied for every tool);
+ *   `--as <actor>` sets the server's default actor, used by a tool call
+ *   that has no `as` of its own, before `AGENTBOARD_ACTOR`.
  * - `help [<topic>] [<subtopic>]`: `helpOutput(HELP_SOURCE, <the given
  *   words>)`: the overview, or one command's help, as text or (`--json`)
  *   one JSON document. Needs no board and no actor. `parseArgs` also turns
@@ -1318,14 +1326,21 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'mcp',
-    summary: 'Serve the board as MCP tools over stdio (not implemented yet)',
+    summary: 'Serve the board as MCP tools over stdio',
     description:
-      'Will serve the board as MCP tools over stdio, one tool per command, for agents that prefer tools to the shell. Not implemented in this version.',
+      'Serves the board as MCP tools over stdio, one tool per board command (not init, watch, rebuild, sync, mcp, version or help), for agents that prefer tools to the shell. Runs until the client disconnects or the process gets SIGINT or SIGTERM. --as sets the default actor for tool calls that pass no as of their own, before AGENTBOARD_ACTOR. Nothing but protocol messages is written to stdout.',
     group: 'setup',
-    examples: [{ command: 'agentboard mcp', summary: 'Serve the board over MCP on stdio' }],
+    examples: [
+      { command: 'agentboard mcp', summary: 'Serve the board over MCP on stdio' },
+      {
+        command: 'agentboard mcp --as impl',
+        summary: 'Serve the board with impl as the default actor for tool calls',
+      },
+    ],
     exitCodes: [
+      { code: 0, meaning: 'The client disconnected or the server was stopped by a signal' },
       EXIT_USAGE,
-      { code: 1, reason: 'not-implemented', meaning: 'The MCP server is not implemented yet' },
+      EXIT_NO_BOARD,
     ],
     positionals: [],
     flags: [],
@@ -1335,8 +1350,8 @@ export const COMMANDS: readonly CommandSpec[] = [
     run: () => {
       throw new BoardError(
         1,
-        'not-implemented',
-        'agentboard mcp is not implemented yet; the MCP server arrives with task group 9',
+        'streaming-command',
+        'agentboard mcp serves MCP over stdio and runs only from the agentboard executable',
       );
     },
   },
