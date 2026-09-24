@@ -22,7 +22,11 @@ before proceeding. `rebuild` SHALL keep existing cursor rows, and
 refolds every event file itself (so late events are recorded, and reported,
 by the rebuild), and `rebuild --check` compares the live cache as it is,
 never reaps temporary files, and, when no cache file exists, exits 1
-reporting `no-cache` without creating one. Opening the cache SHALL wait on
+reporting `no-cache` without creating one. `rebuild --check` SHALL NOT
+modify the live cache file in any way: when its schema version differs from
+the running version, or the file is empty or not a valid cache, it SHALL exit
+1 reporting `schema-mismatch` and leave the file, including its cursor
+tables, byte for byte unchanged. Opening the cache SHALL wait on
 the busy timeout for every statement, including switching to WAL mode, so
 many processes opening a board with no cache at once all succeed.
 
