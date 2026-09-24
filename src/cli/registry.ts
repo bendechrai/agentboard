@@ -41,6 +41,7 @@ import type { Board } from '../store/board.js';
 import { CACHE_FILE, CACHE_SCHEMA_VERSION } from '../store/cache.js';
 import { BoardError } from '../store/errors.js';
 import { checkCache, rebuild } from '../store/rebuild.js';
+import { helpOutput, type HelpSource } from '../guidance/help.js';
 import { VERSION } from '../version.js';
 import {
   asciiText,
@@ -57,6 +58,7 @@ import type {
   CommandOutput,
   CommandSpec,
   ExclusiveGroup,
+  ExitCodeSpec,
   RunContext,
 } from './types.js';
 
@@ -173,6 +175,71 @@ const CLOSE_GROUP: ExclusiveGroup = {
   reason: 'no-disposition',
   message: CLOSE_RULE,
 };
+
+/** Exit code entries shared by many commands (see `ExitCodeSpec`). */
+const EXIT_OK: ExitCodeSpec = { code: 0, meaning: 'Success' };
+const EXIT_USAGE: ExitCodeSpec = {
+  code: 1,
+  reason: 'usage',
+  meaning: 'Invalid arguments: unknown command or flag, missing or malformed argument',
+};
+const EXIT_ACTOR: ExitCodeSpec = {
+  code: 1,
+  reason: 'missing-actor',
+  meaning: 'No actor: pass --as <actor> or set AGENTBOARD_ACTOR',
+};
+const EXIT_ID_SHORT: ExitCodeSpec = {
+  code: 1,
+  reason: 'id-too-short',
+  meaning: 'The id prefix is shorter than 6 characters',
+};
+const EXIT_ID_AMBIGUOUS: ExitCodeSpec = {
+  code: 1,
+  reason: 'ambiguous-id',
+  meaning: 'The id prefix matches several tickets (all are listed)',
+};
+const EXIT_SECRET: ExitCodeSpec = {
+  code: 1,
+  reason: 'secret-like',
+  meaning: 'The text matches a secret pattern (named); nothing is written',
+};
+const EXIT_TASK_REF: ExitCodeSpec = {
+  code: 1,
+  reason: 'malformed-task-ref',
+  meaning: 'The task reference is not of the form <source>:<ref>#<item>',
+};
+const EXIT_NO_BOARD: ExitCodeSpec = {
+  code: 2,
+  reason: 'board-not-found',
+  meaning: 'No board found from this directory (see AGENTBOARD_DIR)',
+};
+const EXIT_UNKNOWN_TICKET: ExitCodeSpec = {
+  code: 4,
+  reason: 'unknown-ticket',
+  meaning: 'No ticket matches the id',
+};
+const EXIT_TRANSITION: ExitCodeSpec = {
+  code: 4,
+  reason: 'invalid-transition',
+  meaning: 'The status machine does not permit this move from the current status',
+};
+const EXIT_TASK_LINK: ExitCodeSpec = {
+  code: 4,
+  reason: 'needs-task-link',
+  meaning: 'A ticket without a task reference cannot enter implementing; link one first',
+};
+const EXIT_INTEGRITY: ExitCodeSpec = {
+  code: 5,
+  meaning: 'Event log or cache integrity problem, or the cache stayed locked (busy)',
+};
+
+/** The exit codes of a command that reads one ticket by id. */
+const READ_ID_EXITS: readonly ExitCodeSpec[] = [
+  EXIT_ID_SHORT,
+  EXIT_ID_AMBIGUOUS,
+  EXIT_NO_BOARD,
+  EXIT_UNKNOWN_TICKET,
+];
 
 /** A string argument, or undefined when absent. */
 function str(values: ArgValues, name: string): string | undefined {
@@ -355,7 +422,11 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  * `list`, `claim`, `release`, `move`, `comment`, `handoff`, `link`,
  * `checklist tick`, `checklist untick`, `close`, `inbox`, `watch`, `rebuild`,
  * `sync`, `import-change`, `close-merged`, `mcp`, `version` (the board-cli
- * order).
+ * order), then `help` (add-agent-guidance).
+ *
+ * Every entry carries the help data of record (`description`, `group`,
+ * `examples`, `exitCodes`; see `CommandSpec`), rendered by
+ * `src/guidance/help.ts`.
  *
  * `run` of each command calls the named operation and returns its result
  * as the `--json` document, with this human rendering:
@@ -425,6 +496,10 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  * - `version`: `{ version }`; text: the version.
  * - `mcp`: always `BoardError(1, 'not-implemented')`, with a message saying
  *   `agentboard mcp` is not implemented yet (it arrives with task group 9).
+ * - `help [<topic>] [<subtopic>]`: `helpOutput(HELP_SOURCE, <the given
+ *   words>)`: the overview, or one command's help, as text or (`--json`)
+ *   one JSON document. Needs no board and no actor. `parseArgs` also turns
+ *   `agentboard`, `--help`, `-h` and `<command> --help` into `help`.
  *
  * Argument mapping: `--change`/`--group`/`--task` go through
  * `taskRefFromArgs`; `list --change <name>` is `list --task openspec:<name>`
@@ -439,6 +514,16 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'init',
     summary: 'Create the board for this project',
+    description:
+      'Creates the board for the project containing the current directory: a .board directory that is a git repository of its own, ignored by the host project. Running it again on an existing board changes nothing. Needs git; needs no actor.',
+    group: 'setup',
+    examples: [{ command: 'agentboard init', summary: 'Create the board for this project' }],
+    exitCodes: [
+      { code: 0, meaning: 'The board was created, or already existed' },
+      EXIT_USAGE,
+      { code: 1, reason: 'git-missing', meaning: 'git could not be run' },
+      EXIT_INTEGRITY,
+    ],
     positionals: [],
     flags: [],
     exclusive: [],
@@ -452,6 +537,33 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'new',
     summary: 'Create a ticket',
+    description:
+      'Creates a ticket in todo, unassigned. Every ticket names the planning task it implements (--task, or --change with --group for an OpenSpec task group) or says why it has none (--adhoc). Checklist lines become the ticket checklist. Text that looks like a secret is refused unless --allow-secret-like is given.',
+    group: 'lifecycle',
+    examples: [
+      {
+        command: 'agentboard new "Implement the parser" --change add-parser --group 2 --as orch',
+        summary: 'Create a ticket for task group 2 of the OpenSpec change add-parser',
+      },
+      {
+        command: 'agentboard new "Fix flaky test" --adhoc "found in CI" --label ci --as orch',
+        summary: 'Create a ticket that implements no planning task',
+      },
+    ],
+    exitCodes: [
+      EXIT_OK,
+      EXIT_USAGE,
+      EXIT_ACTOR,
+      {
+        code: 1,
+        reason: 'needs-task-or-adhoc',
+        meaning: 'Neither a task reference nor --adhoc was given',
+      },
+      EXIT_TASK_REF,
+      EXIT_SECRET,
+      EXIT_NO_BOARD,
+      EXIT_INTEGRITY,
+    ],
     positionals: [positional('title', 'string', 'Ticket title')],
     flags: [
       flag('description', 'string', 'Longer description'),
@@ -485,6 +597,14 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'show',
     summary: 'Show one ticket in full',
+    description:
+      'Prints one ticket in full: status, assignee, task reference, links, checklist, every comment in order and the number of events. The id may be a unique prefix of at least 6 characters. --raw prints the ticket event files instead. Needs no actor.',
+    group: 'lifecycle',
+    examples: [
+      { command: 'agentboard show 01J9K3', summary: 'Show the ticket whose id starts with 01J9K3' },
+      { command: 'agentboard show 01J9K3 --json', summary: 'The same, as one JSON document' },
+    ],
+    exitCodes: [EXIT_OK, EXIT_USAGE, ...READ_ID_EXITS, EXIT_INTEGRITY],
     positionals: [ID],
     flags: [flag('raw', 'boolean', "Print the ticket's raw event files")],
     exclusive: [],
@@ -503,6 +623,17 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'list',
     summary: 'List open tickets, optionally filtered',
+    description:
+      'Lists tickets, one per line: id prefix, status, assignee or -, title. Closed tickets are left out unless --closed is given. Filters combine; --change <name> is the same as --task openspec:<name>. Needs no actor.',
+    group: 'lifecycle',
+    examples: [
+      { command: 'agentboard list --status todo', summary: 'List the tickets waiting in todo' },
+      {
+        command: 'agentboard list --change add-parser --json',
+        summary: 'List the tickets of the OpenSpec change add-parser as JSON',
+      },
+    ],
+    exitCodes: [EXIT_OK, EXIT_USAGE, EXIT_TASK_REF, EXIT_NO_BOARD, EXIT_INTEGRITY],
     positionals: [],
     flags: [
       flag('status', 'string', 'Only tickets in this status'),
@@ -531,6 +662,27 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'claim',
     summary: 'Assign an unassigned ticket to yourself',
+    description:
+      'Assigns an unassigned ticket to the actor. Claim a ticket before starting work on it. If another actor holds it the claim is refused (exit 4, already-assigned) naming the holder; a claim by the current holder succeeds without writing anything, so retrying a claim is safe.',
+    group: 'lifecycle',
+    examples: [
+      { command: 'agentboard claim 01J9K3 --as impl', summary: 'Claim ticket 01J9K3 as impl' },
+    ],
+    exitCodes: [
+      { code: 0, meaning: 'Claimed, or already held by the actor' },
+      EXIT_USAGE,
+      EXIT_ACTOR,
+      EXIT_ID_SHORT,
+      EXIT_ID_AMBIGUOUS,
+      EXIT_NO_BOARD,
+      {
+        code: 4,
+        reason: 'already-assigned',
+        meaning: 'Another actor holds the ticket (named in the message)',
+      },
+      EXIT_UNKNOWN_TICKET,
+      EXIT_INTEGRITY,
+    ],
     positionals: [ID],
     flags: [],
     exclusive: [],
@@ -545,6 +697,23 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'release',
     summary: 'Give up a ticket you hold',
+    description:
+      'Clears the assignment of a ticket the actor holds, leaving its status unchanged, so another actor can claim it. Only the current assignee can release a ticket.',
+    group: 'lifecycle',
+    examples: [
+      { command: 'agentboard release 01J9K3 --as impl', summary: 'Give up ticket 01J9K3' },
+    ],
+    exitCodes: [
+      EXIT_OK,
+      EXIT_USAGE,
+      EXIT_ACTOR,
+      EXIT_ID_SHORT,
+      EXIT_ID_AMBIGUOUS,
+      EXIT_NO_BOARD,
+      { code: 4, reason: 'not-assignee', meaning: 'The actor does not hold the ticket' },
+      EXIT_UNKNOWN_TICKET,
+      EXIT_INTEGRITY,
+    ],
     positionals: [ID],
     flags: [],
     exclusive: [],
@@ -556,6 +725,33 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'move',
     summary: 'Move a ticket to another status (a blocked ticket returns to its origin)',
+    description:
+      'Moves a ticket to another status: todo, tests, implementing, review, merged or blocked. Permitted moves: todo to tests, tests to implementing, implementing to review, review back to implementing or tests, review to merged, any open status to blocked. A blocked ticket moved with no status returns to the status it was blocked from. merged is terminal.',
+    group: 'lifecycle',
+    examples: [
+      { command: 'agentboard move 01J9K3 blocked --as impl', summary: 'Block ticket 01J9K3' },
+      {
+        command: 'agentboard move 01J9K3 --as impl',
+        summary: 'Return a blocked ticket to the status it was blocked from',
+      },
+    ],
+    exitCodes: [
+      EXIT_OK,
+      EXIT_USAGE,
+      EXIT_ACTOR,
+      {
+        code: 1,
+        reason: 'missing-status',
+        meaning: 'No target status was given and the ticket is not blocked',
+      },
+      EXIT_ID_SHORT,
+      EXIT_ID_AMBIGUOUS,
+      EXIT_NO_BOARD,
+      EXIT_TRANSITION,
+      EXIT_TASK_LINK,
+      EXIT_UNKNOWN_TICKET,
+      EXIT_INTEGRITY,
+    ],
     positionals: [ID, positional('status', 'string', 'Target status', false)],
     flags: [],
     exclusive: [],
@@ -574,6 +770,30 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'comment',
     summary: 'Add a comment to a ticket',
+    description:
+      'Adds a comment to a ticket. A comment starting with DECISION: records a decision, which must be promoted to a spec delta or ADR before the ticket is closed. Text that looks like a secret is refused unless --allow-secret-like is given.',
+    group: 'lifecycle',
+    examples: [
+      {
+        command: 'agentboard comment 01J9K3 "blocked on the schema question" --as impl',
+        summary: 'Add a comment to ticket 01J9K3',
+      },
+      {
+        command: 'agentboard comment 01J9K3 "DECISION: ids are ULIDs" --as impl',
+        summary: 'Record a decision that must be promoted before close',
+      },
+    ],
+    exitCodes: [
+      EXIT_OK,
+      EXIT_USAGE,
+      EXIT_ACTOR,
+      EXIT_ID_SHORT,
+      EXIT_ID_AMBIGUOUS,
+      EXIT_SECRET,
+      EXIT_NO_BOARD,
+      EXIT_UNKNOWN_TICKET,
+      EXIT_INTEGRITY,
+    ],
     positionals: [ID, positional('text', 'string', 'Comment text')],
     flags: [ALLOW_SECRET_FLAG],
     exclusive: [],
@@ -591,6 +811,29 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'handoff',
     summary: 'Reassign, move and comment in one event',
+    description:
+      'Reassigns a ticket, moves it and adds a note, all in one event: the way to pass work to the next role. --status may be the current status to only reassign. If the move is not permitted nothing is written. Text that looks like a secret is refused unless --allow-secret-like is given.',
+    group: 'lifecycle',
+    examples: [
+      {
+        command:
+          'agentboard handoff 01J9K3 --to reviewer --status review --note "green, 96% coverage" --as impl',
+        summary: 'Hand ticket 01J9K3 to reviewer for review',
+      },
+    ],
+    exitCodes: [
+      EXIT_OK,
+      EXIT_USAGE,
+      EXIT_ACTOR,
+      EXIT_ID_SHORT,
+      EXIT_ID_AMBIGUOUS,
+      EXIT_SECRET,
+      EXIT_NO_BOARD,
+      EXIT_TRANSITION,
+      EXIT_TASK_LINK,
+      EXIT_UNKNOWN_TICKET,
+      EXIT_INTEGRITY,
+    ],
     positionals: [ID],
     flags: [
       flag('to', 'string', 'New assignee', { required: true }),
@@ -619,6 +862,35 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'link',
     summary: 'Link a ticket to a task, a PR or a decision record',
+    description:
+      'Links a ticket to the planning task it implements (--task, or --change with --group; replaces any earlier task and clears --adhoc), to a pull request (--pr, a URL or number), or to a decision record (--decision, a path inside the working tree, recorded relative to its root). Give exactly one target.',
+    group: 'lifecycle',
+    examples: [
+      {
+        command: 'agentboard link 01J9K3 --pr 42 --as impl',
+        summary: 'Link ticket 01J9K3 to pull request 42',
+      },
+      {
+        command: 'agentboard link 01J9K3 --task openspec:add-parser#2 --as orch',
+        summary: 'Link ticket 01J9K3 to task group 2 of the OpenSpec change add-parser',
+      },
+    ],
+    exitCodes: [
+      EXIT_OK,
+      EXIT_USAGE,
+      EXIT_ACTOR,
+      EXIT_TASK_REF,
+      {
+        code: 1,
+        reason: 'path-outside-tree',
+        meaning: 'The decision path lies outside the working tree',
+      },
+      EXIT_ID_SHORT,
+      EXIT_ID_AMBIGUOUS,
+      EXIT_NO_BOARD,
+      EXIT_UNKNOWN_TICKET,
+      EXIT_INTEGRITY,
+    ],
     positionals: [ID],
     flags: [
       ...TASK_FLAGS,
@@ -643,6 +915,26 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'checklist tick',
     summary: 'Mark a checklist line done (0-based index)',
+    description:
+      'Marks checklist line <index> (counted from 0) of a ticket done. For a ticket linked to a planning task it also reminds you to tick the task in the tasks file: the board is not the record of completion.',
+    group: 'lifecycle',
+    examples: [
+      {
+        command: 'agentboard checklist tick 01J9K3 0 --as impl',
+        summary: 'Mark the first checklist line of ticket 01J9K3 done',
+      },
+    ],
+    exitCodes: [
+      EXIT_OK,
+      EXIT_USAGE,
+      EXIT_ACTOR,
+      EXIT_ID_SHORT,
+      EXIT_ID_AMBIGUOUS,
+      EXIT_NO_BOARD,
+      { code: 4, reason: 'checklist-index', meaning: 'The ticket has no checklist line <index>' },
+      EXIT_UNKNOWN_TICKET,
+      EXIT_INTEGRITY,
+    ],
     positionals: [ID, positional('index', 'integer', 'Checklist line index, from 0')],
     flags: [],
     exclusive: [],
@@ -653,6 +945,25 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'checklist untick',
     summary: 'Mark a checklist line not done (0-based index)',
+    description: 'Marks checklist line <index> (counted from 0) of a ticket not done.',
+    group: 'lifecycle',
+    examples: [
+      {
+        command: 'agentboard checklist untick 01J9K3 0 --as impl',
+        summary: 'Mark the first checklist line of ticket 01J9K3 not done',
+      },
+    ],
+    exitCodes: [
+      EXIT_OK,
+      EXIT_USAGE,
+      EXIT_ACTOR,
+      EXIT_ID_SHORT,
+      EXIT_ID_AMBIGUOUS,
+      EXIT_NO_BOARD,
+      { code: 4, reason: 'checklist-index', meaning: 'The ticket has no checklist line <index>' },
+      EXIT_UNKNOWN_TICKET,
+      EXIT_INTEGRITY,
+    ],
     positionals: [ID, positional('index', 'integer', 'Checklist line index, from 0')],
     flags: [],
     exclusive: [],
@@ -663,6 +974,54 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'close',
     summary: 'Close a merged or blocked ticket with a decision disposition',
+    description:
+      'Closes a merged or blocked ticket. A decision made in a ticket must be recorded in a spec delta or ADR: name that file with --decision-recorded-in (it must exist inside the working tree), or declare that the ticket made no decision with --no-decision, which is refused while the ticket has an unretracted DECISION: comment.',
+    group: 'lifecycle',
+    examples: [
+      {
+        command: 'agentboard close 01J9K3 --decision-recorded-in docs/adr/0007-ids.md --as orch',
+        summary: 'Close ticket 01J9K3, naming the ADR that records its decision',
+      },
+      {
+        command: 'agentboard close 01J9K3 --no-decision --as orch',
+        summary: 'Close ticket 01J9K3, which made no decision',
+      },
+    ],
+    exitCodes: [
+      EXIT_OK,
+      EXIT_USAGE,
+      EXIT_ACTOR,
+      {
+        code: 1,
+        reason: 'no-disposition',
+        meaning: 'Neither --decision-recorded-in nor --no-decision was given',
+      },
+      {
+        code: 1,
+        reason: 'path-outside-tree',
+        meaning: 'The decision path lies outside the working tree',
+      },
+      {
+        code: 1,
+        reason: 'decision-path-missing',
+        meaning: 'The decision record does not exist',
+      },
+      {
+        code: 1,
+        reason: 'unpromoted-decision',
+        meaning: '--no-decision on a ticket with an unretracted DECISION: comment',
+      },
+      EXIT_ID_SHORT,
+      EXIT_ID_AMBIGUOUS,
+      EXIT_NO_BOARD,
+      {
+        code: 4,
+        reason: 'invalid-transition',
+        meaning: 'The ticket is not merged or blocked, or is already closed',
+      },
+      EXIT_UNKNOWN_TICKET,
+      EXIT_INTEGRITY,
+    ],
     positionals: [ID],
     flags: [
       flag('decision-recorded-in', 'string', 'Spec delta, ADR or tasks file recording decisions'),
@@ -688,6 +1047,31 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'inbox',
     summary: 'List new board events for an actor and acknowledge them',
+    description:
+      "Lists the board events since the actor last acknowledged its inbox (every ticket, the actor's own events included, in board order) and acknowledges them, advancing the actor's cursor. Run it before starting or dispatching work. --peek lists without acknowledging; --since <hash> lists the events after that event without acknowledging.",
+    group: 'awareness',
+    examples: [
+      {
+        command: 'agentboard inbox --as impl',
+        summary: 'List and acknowledge what is new for impl',
+      },
+      {
+        command: 'agentboard inbox --as impl --peek --json',
+        summary: 'List what is new for impl as JSON without acknowledging it',
+      },
+    ],
+    exitCodes: [
+      EXIT_OK,
+      EXIT_USAGE,
+      EXIT_ACTOR,
+      {
+        code: 1,
+        reason: 'unknown-cursor',
+        meaning: 'The --since hash names no event on this board',
+      },
+      EXIT_NO_BOARD,
+      EXIT_INTEGRITY,
+    ],
     positionals: [],
     flags: [
       flag('since', 'string', 'List events after this event hash, without acknowledging'),
@@ -711,6 +1095,19 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'watch',
     summary: 'Stream new board events for an actor without acknowledging them',
+    description:
+      'Streams new board events for the actor, one line per event (one JSON document per line with --json), as they arrive, without acknowledging them. Runs until interrupted (SIGINT or SIGTERM), then exits 0.',
+    group: 'awareness',
+    examples: [
+      { command: 'agentboard watch --as orch', summary: 'Stream new board events for orch' },
+    ],
+    exitCodes: [
+      { code: 0, meaning: 'Stopped by SIGINT or SIGTERM' },
+      EXIT_USAGE,
+      EXIT_ACTOR,
+      EXIT_NO_BOARD,
+      EXIT_INTEGRITY,
+    ],
     positionals: [],
     flags: [],
     exclusive: [],
@@ -742,6 +1139,23 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'rebuild',
     summary: 'Refold the cache from the event log (--check: compare only, exit 1 on divergence)',
+    description:
+      'Rebuilds the cache from the event log, which is the source of truth; run it when the cache is missing, stale or corrupt. With --check it only compares a fresh rebuild with the cache, changing nothing, and exits 1 when they differ or there is no cache. Needs no actor.',
+    group: 'maintenance',
+    examples: [
+      { command: 'agentboard rebuild', summary: 'Rebuild the cache from the event log' },
+      {
+        command: 'agentboard rebuild --check',
+        summary: 'Check the cache against the event log without changing it',
+      },
+    ],
+    exitCodes: [
+      EXIT_OK,
+      { code: 1, meaning: 'With --check: the cache differs from the event log, or is missing' },
+      EXIT_USAGE,
+      EXIT_NO_BOARD,
+      EXIT_INTEGRITY,
+    ],
     positionals: [],
     flags: [
       flag(
@@ -758,6 +1172,39 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'sync',
     summary: "Commit new events, pull with rebase from the board's remote and push",
+    description:
+      'Shares the board with other clones: commits new event files in the board repository, pulls with rebase from its remote and pushes. Event files never conflict with each other; a problem that needs a human (a conflict, a rebase in progress, a detached HEAD, an unreachable remote) exits 3. Needs no actor.',
+    group: 'maintenance',
+    examples: [{ command: 'agentboard sync', summary: "Commit, pull and push the board's events" }],
+    exitCodes: [
+      EXIT_OK,
+      EXIT_USAGE,
+      { code: 1, reason: 'git-missing', meaning: 'git could not be run' },
+      {
+        code: 1,
+        reason: 'ambiguous-remote',
+        meaning: 'The board repository has several remotes and no upstream or origin',
+      },
+      EXIT_NO_BOARD,
+      {
+        code: 2,
+        reason: 'board-not-a-repository',
+        meaning: 'The board directory is not the top of its own git repository',
+      },
+      {
+        code: 3,
+        reason: 'sync-in-progress',
+        meaning: 'A rebase is in progress in the board repository',
+      },
+      { code: 3, reason: 'detached-head', meaning: 'The board repository has a detached HEAD' },
+      { code: 3, reason: 'sync-conflict', meaning: 'The pull stopped on a conflict' },
+      {
+        code: 3,
+        reason: 'sync-failed',
+        meaning: 'A git step failed, or the remote is unreachable or rejected the push',
+      },
+      EXIT_INTEGRITY,
+    ],
     positionals: [],
     flags: [],
     exclusive: [],
@@ -771,6 +1218,35 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'import-change',
     summary: 'Create or update one ticket per task group of a planning change',
+    description:
+      'Creates one ticket per task group of a planning change: a plain name is an OpenSpec change (its tasks.md is read), <source>:<ref> names another source. A group whose tasks are all ticked gets a ticket in merged. Running it again creates tickets for new groups and appends new task lines to existing checklists. Run it after proposing a change.',
+    group: 'planning',
+    examples: [
+      {
+        command: 'agentboard import-change add-parser --as orch',
+        summary: 'Create a ticket per task group of the OpenSpec change add-parser',
+      },
+    ],
+    exitCodes: [
+      EXIT_OK,
+      EXIT_USAGE,
+      EXIT_ACTOR,
+      EXIT_TASK_REF,
+      {
+        code: 1,
+        reason: 'unsupported-source',
+        meaning: 'The task source has no adapter in this version',
+      },
+      { code: 1, reason: 'tasks-not-found', meaning: 'The change has no readable tasks file' },
+      {
+        code: 1,
+        reason: 'malformed-tasks',
+        meaning: 'The tasks file cannot be parsed (line named)',
+      },
+      EXIT_SECRET,
+      EXIT_NO_BOARD,
+      EXIT_INTEGRITY,
+    ],
     positionals: [
       positional('name', 'string', 'OpenSpec change name, or <source>:<ref> for another source'),
     ],
@@ -795,6 +1271,23 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'close-merged',
     summary: 'Close merged tickets whose pull request is merged',
+    description:
+      'Closes every merged ticket whose last linked pull request GitHub reports as merged: with its decision link as the decision record, or with no decision. A ticket with an open DECISION: comment and no decision link is skipped and left open, as is one whose pull request is not merged. Needs the GitHub CLI gh when there is anything to check.',
+    group: 'planning',
+    examples: [
+      {
+        command: 'agentboard close-merged --as orch',
+        summary: 'Close the merged tickets whose pull request has merged',
+      },
+    ],
+    exitCodes: [
+      EXIT_OK,
+      EXIT_USAGE,
+      EXIT_ACTOR,
+      { code: 1, reason: 'gh-missing', meaning: 'The GitHub CLI gh was not found on PATH' },
+      EXIT_NO_BOARD,
+      EXIT_INTEGRITY,
+    ],
     positionals: [],
     flags: [],
     exclusive: [],
@@ -826,6 +1319,14 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'mcp',
     summary: 'Serve the board as MCP tools over stdio (not implemented yet)',
+    description:
+      'Will serve the board as MCP tools over stdio, one tool per command, for agents that prefer tools to the shell. Not implemented in this version.',
+    group: 'setup',
+    examples: [{ command: 'agentboard mcp', summary: 'Serve the board over MCP on stdio' }],
+    exitCodes: [
+      EXIT_USAGE,
+      { code: 1, reason: 'not-implemented', meaning: 'The MCP server is not implemented yet' },
+    ],
     positionals: [],
     flags: [],
     exclusive: [],
@@ -842,6 +1343,10 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'version',
     summary: 'Print the agentboard version',
+    description: 'Prints the version of this agentboard. Needs no board and no actor.',
+    group: 'setup',
+    examples: [{ command: 'agentboard version', summary: 'Print the version' }],
+    exitCodes: [EXIT_OK, EXIT_USAGE],
     positionals: [],
     flags: [],
     exclusive: [],
@@ -849,7 +1354,55 @@ export const COMMANDS: readonly CommandSpec[] = [
     operation: null,
     run: () => ({ json: { version: VERSION }, text: `${VERSION}\n` }),
   },
+  {
+    name: 'help',
+    summary: 'Show the overview, or the help of one command',
+    description:
+      "With no topic, prints the overview of every command; with a command name (one or two words), prints that command's synopsis, arguments, exit codes and examples. agentboard <command> --help and -h are the same. Needs no board and no actor. With --json, prints the same help as JSON.",
+    group: 'setup',
+    examples: [
+      { command: 'agentboard help', summary: 'Print the overview of every command' },
+      { command: 'agentboard help claim', summary: 'Print the help of claim' },
+      {
+        command: 'agentboard help checklist tick --json',
+        summary: 'Print the help of checklist tick as one JSON document',
+      },
+    ],
+    exitCodes: [
+      EXIT_OK,
+      {
+        code: 1,
+        reason: 'usage',
+        meaning: 'The topic is not a command (close matches are suggested)',
+      },
+    ],
+    positionals: [
+      positional('topic', 'string', 'Command name, or its first word', false),
+      positional('subtopic', 'string', 'Second word of a two-word command name', false),
+    ],
+    flags: [],
+    exclusive: [],
+    writes: false,
+    operation: null,
+    run: (_ctx, values) =>
+      helpOutput(
+        HELP_SOURCE,
+        [str(values, 'topic'), str(values, 'subtopic')].filter(
+          (word): word is string => word !== undefined,
+        ),
+      ),
+  },
 ];
+
+/**
+ * What help is rendered from: `COMMANDS`, `GLOBAL_FLAGS` and `VERSION`
+ * (read by the `help` command at run time).
+ */
+export const HELP_SOURCE: HelpSource = {
+  commands: COMMANDS,
+  globalFlags: GLOBAL_FLAGS,
+  version: VERSION,
+};
 
 /** The command named exactly `name` (e.g. `checklist tick`), or undefined. */
 export function findCommand(name: string): CommandSpec | undefined {

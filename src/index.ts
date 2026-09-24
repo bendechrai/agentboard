@@ -40,3 +40,5 @@ export * from './cli/parse.js';
 export * from './cli/render.js';
 export * from './cli/main.js';
 export * from './cli/warnings.js';
+export * from './guidance/help.js';
+export * from './guidance/suggest.js';
