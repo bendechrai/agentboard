@@ -90,6 +90,14 @@
  * The `cursors` table is the one non-derivable table (board-cache: losing
  * cursors only causes redelivery, never a skipped event): `rebuild` keeps its
  * rows and `rebuild --check` does not compare it.
+ *
+ * Cursor seen sets (task group 5, `src/store/cursors.ts`) are stored in one
+ * more table, `cursor_seen (actor, hash, wall)`, documented there. It is
+ * part of the cursors and is treated exactly like `cursors`: kept by
+ * `rebuild`, not covered by `dumpCache` or `rebuild --check`, dropped with
+ * every other table when the schema version differs. `openCache` creates it
+ * with `CREATE TABLE IF NOT EXISTS` on every open, so a version 1 cache made
+ * before group 5 gains it without a version change.
  */
 
 import { existsSync } from 'node:fs';
@@ -174,6 +182,11 @@ export interface OpenCacheOptions {
  *
  * `path` may be `':memory:'` (journal mode is then `memory`; used for the
  * temporary database of `checkCache`).
+ *
+ * On every preparing open, whatever the stored version, it also ensures
+ * the `cursor_seen` table exists (`CREATE TABLE IF NOT EXISTS`, see
+ * `src/store/cursors.ts`); recreating the schema drops it too. An
+ * inspect-only open (`prepare: false`) never creates it.
  */
 export function openCache(path: string, options?: OpenCacheOptions): DatabaseSync {
   if (options?.prepare === false) {
@@ -206,12 +219,40 @@ export function openCache(path: string, options?: OpenCacheOptions): DatabaseSyn
         });
       }
     }, deadline);
+    // After the schema step, which drops it along with every table.
+    retryBusy(() => {
+      ensureCursorSeen(db);
+    }, deadline);
   } catch (error) {
     db.close();
     throw error;
   }
   return db;
 }
+
+/**
+ * Creates `cursor_seen` when it is missing (a version 1 cache made before
+ * task group 5). Looks first, so an open that finds the table never
+ * writes and never waits for a concurrent writer's lock.
+ */
+function ensureCursorSeen(db: DatabaseSync): void {
+  const table = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cursor_seen'")
+    .get();
+  if (table === undefined) {
+    db.exec(CURSOR_SEEN);
+  }
+}
+
+/** The seen sets of the cursors (see `src/store/cursors.ts`). */
+const CURSOR_SEEN = `
+CREATE TABLE IF NOT EXISTS cursor_seen (
+  actor TEXT NOT NULL,
+  hash  TEXT NOT NULL,
+  wall  INTEGER NOT NULL,
+  PRIMARY KEY (actor, hash)
+);
+`;
 
 /** SQLITE_NOTADB and SQLITE_CORRUPT: the file is not a (valid) database. */
 function isNotADatabase(error: unknown): boolean {
@@ -279,6 +320,7 @@ DROP TABLE IF EXISTS comments;
 DROP TABLE IF EXISTS links;
 DROP TABLE IF EXISTS tickets;
 DROP TABLE IF EXISTS cursors;
+DROP TABLE IF EXISTS cursor_seen;
 DROP TABLE IF EXISTS folded;
 DROP TABLE IF EXISTS meta;
 CREATE TABLE tickets (
@@ -396,6 +438,15 @@ export interface CatchUpOptions {
  * the busy retry, then `BoardError(5, 'busy')`), redo the work above under
  * the lock, and `COMMIT` (rolled back on error). A call that finds nothing
  * new changes no rows.
+ *
+ * Late events (task group 5): after the derived rows are up to date, the
+ * events this call newly recorded as applied, plus (after a refold) every
+ * event already recorded whose `folded` flag went from 0 to 1, are passed to
+ * `resetLateCursors` (`src/store/cursors.ts`) in the same transaction, so an
+ * event that becomes effective behind an actor's cursor and outside its
+ * seen-set window (late itself, or made effective by a late event) moves
+ * that cursor back and is delivered by the next `inbox`. The report does
+ * not list them; `rebuild` does.
  */
 export function catchUp(board: Board, options?: CatchUpOptions): CatchUpReport {
   const now = options?.now ?? Date.now();

@@ -217,6 +217,6 @@ export function resolveActor(given: string | undefined, env: Env): string {
   throw new BoardError(
     1,
     'missing-actor',
-    `this command writes to the board and needs an actor: pass --as <actor> or set ${ACTOR_ENV}`,
+    `this command needs an actor: pass --as <actor> or set ${ACTOR_ENV}`,
   );
 }

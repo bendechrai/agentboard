@@ -72,8 +72,9 @@ export interface RunContext {
   readonly cwd: string;
   readonly env: Env;
   /**
-   * The resolved actor (`resolveActor`) for a writing command; null for a
-   * command that does not write.
+   * The resolved actor (`resolveActor`) for a writing command or a command
+   * that tracks a per-actor cursor (`CommandSpec.tracksCursor`); null for
+   * any other command.
    */
   readonly actor: string | null;
   /**
@@ -146,6 +147,23 @@ export interface CommandOutput {
   readonly warnings?: readonly string[];
 }
 
+/** What a streaming command (`CommandSpec.stream`) writes to and stops on. */
+export interface StreamIo {
+  /** Receives stdout text; each call is one or more whole lines. */
+  stdout(text: string): void;
+  /** True when `--json` was given. */
+  readonly json: boolean;
+  /**
+   * Receives stderr text (whole lines), for warnings while streaming such as
+   * a `watch` tick that found the cache busy. `runCliAsync` always provides
+   * it, as `io.stderr` of its `CliIo`; optional only so that other callers
+   * of `stream` may omit it (warnings are then dropped).
+   */
+  stderr?(text: string): void;
+  /** Aborted when the stream must stop (SIGINT or SIGTERM for the CLI). */
+  readonly signal: AbortSignal;
+}
+
 /** One command of the registry. */
 export interface CommandSpec {
   /**
@@ -170,6 +188,14 @@ export interface CommandSpec {
    */
   readonly writes: boolean;
   /**
+   * True for the commands that track a per-actor cursor (`inbox`,
+   * `watch`): they write no event but require an actor exactly as a
+   * writing command does (`--as` or `AGENTBOARD_ACTOR`, else exit 1
+   * `missing-actor` before any board lookup), and receive it as
+   * `RunContext.actor`. Absent (false) for every other command.
+   */
+  readonly tracksCursor?: boolean;
+  /**
    * Name of the library function (exported from `src/index.ts`) the command
    * calls, e.g. `claimTicket`; null for `version` and `mcp`, which call
    * none. Normally in `src/board/`; `rebuild` names the store's `rebuild`
@@ -181,4 +207,13 @@ export interface CommandSpec {
    * `BoardError` on failure.
    */
   run(ctx: RunContext, values: ArgValues): CommandOutput;
+  /**
+   * Present only for a streaming command (`watch`), which cannot answer
+   * with one `CommandOutput`: runs until `io.signal` aborts, writing lines
+   * to `io.stdout` as they come, and resolves when it has stopped; rejects
+   * with a `BoardError` on failure. `runCliAsync` calls it instead of
+   * `run`; the `run` of a streaming command, reachable only through the
+   * synchronous `runCli`, throws `BoardError(1, 'streaming-command')`.
+   */
+  stream?(ctx: RunContext, values: ArgValues, io: StreamIo): Promise<void>;
 }

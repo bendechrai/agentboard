@@ -2,6 +2,14 @@
  * CLI entry point for agentboard: runs `runCli` with the real process and
  * sets the exit code (without `process.exit`, so stdout is flushed).
  *
+ * Task group 5: the entry point runs `runCliAsync` (which behaves exactly
+ * as `runCli` for every non-streaming command) and awaits it. Its
+ * `stopSignal` installs SIGINT and SIGTERM handlers that abort one
+ * `AbortController` and returns its signal; they are installed only then,
+ * so a non-streaming command keeps Node's default signal behaviour. A
+ * `watch` stopped by either signal therefore exits 0 once its stream has
+ * closed, with every line it printed flushed.
+ *
  * Contract: a successful command writes nothing to stderr. Node prints an
  * `ExperimentalWarning` when `node:sqlite` is loaded; the entry point
  * drops exactly that warning (a warning whose name is `ExperimentalWarning`
@@ -35,9 +43,9 @@ process.on('warning', (warning) => {
   );
 });
 
-const { runCli } = await import('./cli/main.js');
+const { runCliAsync } = await import('./cli/main.js');
 
-process.exitCode = runCli({
+process.exitCode = await runCliAsync({
   argv: process.argv.slice(2),
   cwd: process.cwd(),
   env: process.env,
@@ -46,5 +54,14 @@ process.exitCode = runCli({
   },
   stderr: (text) => {
     process.stderr.write(text);
+  },
+  stopSignal: () => {
+    const controller = new AbortController();
+    const stop = (): void => {
+      controller.abort();
+    };
+    process.on('SIGINT', stop);
+    process.on('SIGTERM', stop);
+    return controller.signal;
   },
 });

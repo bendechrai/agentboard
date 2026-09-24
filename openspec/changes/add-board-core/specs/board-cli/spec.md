@@ -136,7 +136,9 @@ status, assignee or `-`, title), and a full record in `show` including the
 ordered comments and the event count. With `--json`, output SHALL be exactly
 one JSON document on stdout: an object for single-ticket commands, an array
 for `list`, and for writing commands an object containing the event hash and
-the resulting ticket. Diagnostics SHALL go to stderr. No command SHALL print
+the resulting ticket. The one exception is `watch --json`, which prints one
+JSON document per line, one per inbox entry, as entries arrive. Diagnostics
+SHALL go to stderr. No command SHALL print
 the contents of the cache file or raw event files unless asked with `show
 --raw`.
 
