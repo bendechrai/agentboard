@@ -43,8 +43,8 @@ branch is reviewed and merged, and its decisions are in a spec delta or ADR.
 
 ## 5. Inbox and watch
 
-- [ ] 5.1 Implement cursors (position plus bounded seen set) and `inbox` with `--since` and `--peek` and verify with tests that a late-arriving event with an earlier timestamp is delivered, that peek does not advance, and that a second call returns nothing new
-- [ ] 5.2 Implement `watch` with `fs.watch` plus a 2 second polling fallback and verify with a test that an event written by another process appears on the watcher's stdout within 3 seconds and that watch does not advance the cursor
+- [x] 5.1 Implement cursors (position plus bounded seen set) and `inbox` with `--since` and `--peek` and verify with tests that a late-arriving event with an earlier timestamp is delivered, that peek does not advance, and that a second call returns nothing new
+- [x] 5.2 Implement `watch` with `fs.watch` plus a 2 second polling fallback and verify with a test that an event written by another process appears on the watcher's stdout within 3 seconds and that watch does not advance the cursor
 
 ## 6. Sync
 

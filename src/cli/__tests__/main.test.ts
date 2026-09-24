@@ -69,6 +69,10 @@ describe('every command prints exactly one JSON document with --json', () => {
         run(['move', id(), 'blocked', ...AS], root);
         return run(['close', id(), '--no-decision', ...AS, '--json'], root);
       },
+      inbox: () => run(['inbox', '--as', 'watcher', '--json'], root),
+      // watch streams; through the synchronous runCli it refuses with one
+      // error document (its NDJSON stream is tested in inbox.test.ts).
+      watch: () => run(['watch', '--as', 'watcher', '--json'], root),
       rebuild: () => run(['rebuild', '--json'], root),
       sync: () => {
         git(join(root, '.board'), 'init', '-q');
@@ -97,7 +101,7 @@ describe('every command prints exactly one JSON document with --json', () => {
     const docs: Record<string, unknown> = {};
     for (const [name, step] of Object.entries(steps(root, state))) {
       const out = step();
-      expect(out.code, `${name}: ${out.stderr}`).toBe(name === 'mcp' ? 1 : 0);
+      expect(out.code, `${name}: ${out.stderr}`).toBe(name === 'mcp' || name === 'watch' ? 1 : 0);
       docs[name] = oneJson(out);
     }
     expect(docs.init).toMatchObject({ created: true });
@@ -114,6 +118,9 @@ describe('every command prints exactly one JSON document with --json', () => {
     });
     expect(docs['checklist untick']).toMatchObject({ ticket: { id: id() }, reminder: null });
     expect(docs.close).toMatchObject({ ticket: { closed: true } });
+    expect(docs.inbox).toMatchObject({ actor: 'watcher', advanced: true });
+    expect((docs.inbox as { entries: unknown[] }).entries).toHaveLength(11);
+    expect(docs.watch).toMatchObject({ error: { exitCode: 1, reason: 'streaming-command' } });
     expect(docs.rebuild).toMatchObject({ folded: 11, rejected: 0 });
     expect(docs.sync).toMatchObject({ remote: null, pushed: false, warnings: [] });
     expect(docs['import-change']).toMatchObject({ source: 'openspec', ref: 'c', events: 1 });

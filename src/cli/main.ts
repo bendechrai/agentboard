@@ -23,6 +23,18 @@ export interface CliIo {
   stderr(text: string): void;
 }
 
+/** `CliIo` for `runCliAsync`, which can also run streaming commands. */
+export interface AsyncCliIo extends CliIo {
+  /**
+   * Called once, only when a streaming command is about to start
+   * streaming (after parsing, actor resolution and nothing else), and
+   * returns the signal that stops it. `src/cli.ts` installs its SIGINT and
+   * SIGTERM handlers here, so every other command keeps Node's default
+   * signal behaviour.
+   */
+  stopSignal(): AbortSignal;
+}
+
 /** The `--json` document printed on stdout when a command fails. */
 export interface ErrorDocument {
   error: {
@@ -59,7 +71,8 @@ export function errorDocument(error: unknown): ErrorDocument {
  * Runs one CLI invocation and returns its exit code.
  *
  * 1. `parseArgs(io.argv)`.
- * 2. For a writing command, `resolveActor(values.as, io.env)`.
+ * 2. For a writing command or one that tracks a cursor
+ *    (`CommandSpec.tracksCursor`), `resolveActor(values.as, io.env)`.
  * 3. `command.run(ctx, values)` with a context whose `board()` finds and
  *    opens the board lazily (`findBoard` with `io.cwd` and `io.env`, then
  *    `openBoard`, passing `catchUp: false` when the first call asks for
@@ -85,52 +98,135 @@ export function errorDocument(error: unknown): ErrorDocument {
  */
 export function runCli(io: CliIo): ExitCode {
   let parsed: ParsedCommand | null = null;
-  let board: Board | null = null;
+  const opened = new LazyBoard(io);
   try {
     parsed = parseArgs(io.argv);
     const { command, values } = parsed;
-    const given = values.as;
-    const actor = command.writes
-      ? resolveActor(typeof given === 'string' ? given : undefined, io.env)
-      : null;
-    const ctx: RunContext = {
-      cwd: io.cwd,
-      env: io.env,
-      actor,
-      boardDir(): string {
-        return findBoard({ cwd: io.cwd, env: io.env }).dir;
-      },
-      board(options?: BoardOpenOptions): Board {
-        if (board === null) {
-          board = openBoard(findBoard({ cwd: io.cwd, env: io.env }).dir, {
-            catchUp: options?.catchUp !== false,
-            prepare: options?.prepare !== false,
-          });
-          for (const path of board.opened?.reaped ?? []) {
-            io.stderr(`agentboard: removed stale temporary file ${path}\n`);
-          }
-          for (const file of board.opened?.corrupt ?? []) {
-            io.stderr(`agentboard: ${file.message}\n`);
-          }
-        }
-        return board;
-      },
-    };
-    const output = command.run(ctx, values);
+    const output = command.run(context(io, parsed, opened), values);
     for (const line of output.warnings ?? []) {
       io.stderr(`agentboard: ${line}\n`);
     }
     io.stdout(parsed.json ? `${JSON.stringify(output.json)}\n` : output.text);
     return output.exitCode ?? 0;
   } catch (error) {
-    const doc = errorDocument(error);
-    io.stderr(`agentboard: ${doc.error.message}\n`);
-    if (parsed?.json ?? io.argv.includes('--json')) {
-      io.stdout(`${JSON.stringify(doc)}\n`);
-    }
-    return doc.error.exitCode;
+    return fail(io, parsed, error);
   } finally {
-    // `board` is assigned inside the closure above.
-    (board as Board | null)?.close();
+    opened.close();
+  }
+}
+
+/** Opens the board on first use and prints the open diagnostics. */
+class LazyBoard {
+  private board: Board | null = null;
+  private readonly io: CliIo;
+
+  constructor(io: CliIo) {
+    this.io = io;
+  }
+
+  /** Discovery only: the board directory, without opening anything. */
+  dir(): string {
+    return findBoard({ cwd: this.io.cwd, env: this.io.env }).dir;
+  }
+
+  /** `options` apply to the first call only (see `RunContext.board`). */
+  get(options?: BoardOpenOptions): Board {
+    if (this.board === null) {
+      const { io } = this;
+      this.board = openBoard(this.dir(), {
+        catchUp: options?.catchUp !== false,
+        prepare: options?.prepare !== false,
+      });
+      for (const path of this.board.opened?.reaped ?? []) {
+        io.stderr(`agentboard: removed stale temporary file ${path}\n`);
+      }
+      for (const file of this.board.opened?.corrupt ?? []) {
+        io.stderr(`agentboard: ${file.message}\n`);
+      }
+    }
+    return this.board;
+  }
+
+  close(): void {
+    this.board?.close();
+  }
+}
+
+/** Resolves the actor (writing and cursor-tracking commands) and builds the context. */
+function context(io: CliIo, parsed: ParsedCommand, opened: LazyBoard): RunContext {
+  const { command, values } = parsed;
+  const given = values.as;
+  const actor =
+    command.writes || command.tracksCursor === true
+      ? resolveActor(typeof given === 'string' ? given : undefined, io.env)
+      : null;
+  return {
+    cwd: io.cwd,
+    env: io.env,
+    actor,
+    boardDir: () => opened.dir(),
+    board: (options?: BoardOpenOptions) => opened.get(options),
+  };
+}
+
+/** Step 5 of `runCli`: reports `error` and returns its exit code. */
+function fail(io: CliIo, parsed: ParsedCommand | null, error: unknown): Exclude<ExitCode, 0> {
+  const doc = errorDocument(error);
+  io.stderr(`agentboard: ${doc.error.message}\n`);
+  if (parsed?.json ?? io.argv.includes('--json')) {
+    io.stdout(`${JSON.stringify(doc)}\n`);
+  }
+  return doc.error.exitCode;
+}
+
+/**
+ * `runCli` for the executable (`src/cli.ts`): identical to `runCli`, with
+ * the same output and exit codes, for every command without `stream`.
+ *
+ * For a streaming command (`watch`): steps 1 and 2 of `runCli` (parse,
+ * resolve the actor; failures exit 1 before any board lookup), then
+ * `io.stopSignal()`, then `command.stream(ctx, values, { stdout:
+ * io.stdout, stderr: io.stderr, json, signal })` with the same lazily opened board as `runCli`
+ * (stale temporary and corrupt file diagnostics on stderr likewise). When
+ * the stream resolves (the signal aborted), the board is closed and the
+ * result is 0: SIGINT and SIGTERM are the normal way to stop `watch`. When
+ * it rejects (or opening the board fails), stderr receives `agentboard:
+ * <message>` and, with `--json`, stdout receives the `errorDocument` as one
+ * more line after any lines already streamed; the result is
+ * `exitCodeFor(error)`.
+ *
+ * Output of `watch`: one line per entry, `renderInboxLine(entry)` without
+ * `--json`, and with `--json` `JSON.stringify(entry)` of the `InboxEntry`
+ * (newline-delimited JSON, one document per line). This is the single
+ * exception to "exactly one JSON document on stdout": a stream has no end
+ * at which to print one.
+ */
+export async function runCliAsync(io: AsyncCliIo): Promise<ExitCode> {
+  let parsed: ParsedCommand;
+  try {
+    parsed = parseArgs(io.argv);
+  } catch {
+    // runCli reports the usage error exactly as it always does.
+    return runCli(io);
+  }
+  const { command, values } = parsed;
+  if (command.stream === undefined) {
+    return runCli(io);
+  }
+  const opened = new LazyBoard(io);
+  try {
+    const ctx = context(io, parsed, opened);
+    const signal = io.stopSignal();
+    await command.stream(ctx, values, {
+      stdout: io.stdout,
+      stderr: io.stderr,
+      json: parsed.json,
+      signal,
+    });
+    return 0;
+  } catch (error) {
+    return fail(io, parsed, error);
+  } finally {
+    opened.close();
   }
 }

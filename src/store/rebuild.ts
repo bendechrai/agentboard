@@ -14,11 +14,13 @@ import {
   inImmediate,
   jsonText,
   refold,
+  refoldWithCursors,
   rollback,
   tableRows,
   type KeyedRow,
   type RefoldResult,
 } from './engine.js';
+import type { LateEvent } from './cursors.js';
 import type { CorruptFile, MalformedFile } from './eventfile.js';
 
 /**
@@ -41,6 +43,20 @@ export interface RebuildReport {
   malformedFiles: MalformedFile[];
   /** By file name. */
   corruptFiles: CorruptFile[];
+  /**
+   * Events that this rebuild made effective: applied (`folded` 1) after it,
+   * and either recorded for the first time (their hash was not in the live
+   * `folded` table before it) or not applied before it (`folded` 0), and
+   * that lie behind an actor's cursor and outside its seen-set window, one
+   * per (actor, event), as
+   * returned by `resetLateCursors`, which `rebuild` calls in its
+   * transaction after the refold. Each such cursor has been moved back so
+   * the event is delivered by the next `inbox`. Always empty for the report
+   * of `checkCache`, which never touches cursors. Events that a catch-up
+   * recorded earlier (for example when the CLI opened the board) are not
+   * listed: that catch-up already reset the cursors.
+   */
+  late: LateEvent[];
 }
 
 /**
@@ -50,13 +66,17 @@ export interface RebuildReport {
  * rows, `folded` and `meta` exactly as catch-up would. Rebuilding twice on
  * the same event files yields byte-identical `dumpCache` output, equal to
  * the dump of any other cache built from those files. Does not reap
- * temporary files.
+ * temporary files. Keeps `cursor_seen` rows as well as `cursors` rows, and
+ * reports late events in `late` (see `RebuildReport.late`).
  */
 export function rebuild(board: Board): RebuildReport {
-  return toReport(inImmediate(board.db, () => refold(board.db, board.eventsDir)));
+  const { result, late } = inImmediate(board.db, () =>
+    refoldWithCursors(board.db, board.eventsDir),
+  );
+  return toReport(result, late);
 }
 
-function toReport(result: RefoldResult): RebuildReport {
+function toReport(result: RefoldResult, late: LateEvent[]): RebuildReport {
   return {
     folded: result.applied.length,
     rejected: result.rejected.length,
@@ -67,6 +87,7 @@ function toReport(result: RefoldResult): RebuildReport {
     unknownEvents: result.unknown,
     malformedFiles: result.malformed,
     corruptFiles: result.corrupt,
+    late,
   };
 }
 
@@ -152,7 +173,10 @@ export function checkCache(board: Board): CheckResult {
     // writer is either fully committed (file and rows) or not started.
     beginImmediate(board.db);
     try {
-      const report = toReport(inImmediate(temp, () => refold(temp, board.eventsDir)));
+      const report = toReport(
+        inImmediate(temp, () => refold(temp, board.eventsDir)),
+        [],
+      );
       const differences = diffCaches(board.db, temp);
       return { ok: differences.length === 0, differences, report };
     } finally {

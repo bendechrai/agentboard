@@ -26,6 +26,7 @@ import { compareHlc, decodeHlc, encodeHlc, type Hlc } from '../events/hlc.js';
 import { isKnownEvent, type Status } from '../events/schema.js';
 import type { Board } from './board.js';
 import type { CatchUpReport, DumpTable } from './cache.js';
+import { resetLateCursors, type CursorPosition, type LateEvent } from './cursors.js';
 import { BoardError } from './errors.js';
 import {
   STALE_TEMP_MS,
@@ -35,6 +36,7 @@ import {
   type CorruptFile,
   type MalformedFile,
 } from './eventfile.js';
+import { recordedPositions } from './folded.js';
 import { staleTemps } from './temps.js';
 
 /** A row as `node:sqlite` returns it. */
@@ -548,7 +550,8 @@ export interface RefoldResult extends BatchReport {
 }
 
 /**
- * Deletes every derived row (all but `cursors` and `meta.schema_version`)
+ * Deletes every derived row (all but `cursors`, `cursor_seen` and
+ * `meta.schema_version`)
  * and folds every event file from scratch. Caller holds the transaction.
  */
 export function refold(db: DatabaseSync, eventsDir: string): RefoldResult {
@@ -599,17 +602,62 @@ function recordedHashes(db: DatabaseSync): Set<string> {
   );
 }
 
+/** The `folded` flag of every recorded hash (1 applied, 0 anything else). */
+export function recordedFlags(db: DatabaseSync): Map<string, number> {
+  return new Map(
+    stmt(db, 'SELECT hash, folded FROM folded')
+      .all()
+      .map((row) => [text(row, 'hash'), int(row, 'folded')]),
+  );
+}
+
+/**
+ * The events applied now that were not applied according to `prior` (a
+ * `recordedFlags` snapshot taken before a refold): recorded for the first
+ * time, or flipped from rejected to applied.
+ */
+export function becameEffective(
+  db: DatabaseSync,
+  prior: ReadonlyMap<string, number>,
+): CursorPosition[] {
+  return recordedPositions(db, { effectiveOnly: true })
+    .filter((recorded) => prior.get(recorded.hash) !== 1)
+    .map(({ hash, ts }) => ({ hash, ts }));
+}
+
+/**
+ * `refold` followed by `resetLateCursors` for every event it made
+ * effective (see `RebuildReport.late`). Caller holds the transaction.
+ */
+export function refoldWithCursors(
+  db: DatabaseSync,
+  eventsDir: string,
+): { result: RefoldResult; late: LateEvent[] } {
+  const prior = recordedFlags(db);
+  const result = refold(db, eventsDir);
+  return { result, late: resetLateCursors(db, becameEffective(db, prior)) };
+}
+
 /** `catchUp` with the transaction already held by the caller. */
 export function catchUpLocked(board: Board, now: number): CatchUpReport {
   const { db, eventsDir } = board;
   const reaped = reapStaleTemps(eventsDir, { now });
-  const recorded = recordedHashes(db);
+  const prior = recordedFlags(db);
+  const recorded = new Set(prior.keys());
   const log = readEventLog(eventsDir, recorded);
   const last = readLastPosition(db);
   const late = last !== null && log.inputs.some((input) => compareToPosition(input, last) < 0);
   if (!late) {
+    const batch = applyBatch(db, log.inputs, log.malformed);
+    const applied = new Set(batch.applied);
+    resetLateCursors(
+      db,
+      log.inputs
+        .filter((input) => applied.has(input.hash))
+        .map((input) => ({ hash: input.hash, ts: input.event.ts })),
+    );
     return {
-      ...applyBatch(db, log.inputs, log.malformed),
+      ...batch,
       malformed: log.malformed,
       corrupt: log.corrupt,
       reaped,
@@ -617,6 +665,7 @@ export function catchUpLocked(board: Board, now: number): CatchUpReport {
     };
   }
   const full = refold(db, eventsDir);
+  resetLateCursors(db, becameEffective(db, prior));
   const isNew = (hash: string): boolean => !recorded.has(hash);
   return {
     applied: full.applied.filter(isNew),
