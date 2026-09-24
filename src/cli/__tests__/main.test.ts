@@ -7,7 +7,7 @@ import { SAMPLES } from '../../board/__tests__/helpers.js';
 import { SECRET_PATTERN_NAMES } from '../../board/secrets.js';
 import { version } from '../../index.js';
 import { BoardError } from '../../store/errors.js';
-import { ev, eventNames, gitRepo, putEvent, tempDir } from '../../store/__tests__/helpers.js';
+import { ev, eventNames, git, gitRepo, putEvent, tempDir } from '../../store/__tests__/helpers.js';
 import { errorDocument, exitCodeFor } from '../main.js';
 import { CLOSE_RULE, COMMANDS } from '../registry.js';
 import { cliEnv, oneJson, project, run, written, type Run } from './cli-helpers.js';
@@ -69,6 +69,10 @@ describe('every command prints exactly one JSON document with --json', () => {
         run(['move', id(), 'blocked', ...AS], root);
         return run(['close', id(), '--no-decision', ...AS, '--json'], root);
       },
+      sync: () => {
+        git(join(root, '.board'), 'init', '-q');
+        return run(['sync', '--json'], root);
+      },
       mcp: () => run(['mcp', '--json'], root),
       version: () => run(['version', '--json'], root),
     };
@@ -102,6 +106,7 @@ describe('every command prints exactly one JSON document with --json', () => {
     });
     expect(docs['checklist untick']).toMatchObject({ ticket: { id: id() }, reminder: null });
     expect(docs.close).toMatchObject({ ticket: { closed: true } });
+    expect(docs.sync).toMatchObject({ remote: null, pushed: false, warnings: [] });
     expect(docs.mcp).toMatchObject({ error: { exitCode: 1, reason: 'not-implemented' } });
     expect(docs.version).toEqual({ version });
     expect(count(boardDir)).toBe(11);
