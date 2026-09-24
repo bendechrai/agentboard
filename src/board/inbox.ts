@@ -14,8 +14,23 @@
  */
 
 import type { Hlc } from '../events/hlc.js';
-import type { BoardEvent, KnownKind, Status } from '../events/schema.js';
+import { isKnownEvent, type BoardEvent, type KnownKind, type Status } from '../events/schema.js';
 import type { Board } from '../store/board.js';
+import { catchUp } from '../store/cache.js';
+import {
+  SEEN_WINDOW_MS,
+  advanceCursor,
+  comparePositions,
+  isPending,
+  readCursor,
+  writeCursor,
+  type Cursor,
+  type CursorPosition,
+} from '../store/cursors.js';
+import { inImmediate, inSnapshot } from '../store/engine.js';
+import { BoardError } from '../store/errors.js';
+import { readEventFile } from '../store/eventfile.js';
+import { recordedPosition, recordedPositions } from '../store/folded.js';
 
 /**
  * One inbox entry: an effective event, with the fields an orchestrator
@@ -112,8 +127,121 @@ export interface InboxResult {
  *   well-formed event of this board.
  */
 export function readInbox(board: Board, actor: string, options?: InboxOptions): InboxResult {
-  void board;
-  void actor;
-  void options;
-  throw new Error('not implemented');
+  if (actor === '') {
+    throw new BoardError(
+      1,
+      'missing-actor',
+      'inbox needs an actor: pass --as <actor> or set AGENTBOARD_ACTOR',
+    );
+  }
+  const { since } = options ?? {};
+  if (since !== undefined) {
+    return readSince(board, actor, since);
+  }
+  const { db } = board;
+  if (options?.peek === true) {
+    catchUp(board);
+    return inSnapshot(db, () => {
+      const cursor = readCursor(db, actor);
+      return result(actor, pendingEntries(board, cursor), cursor, false);
+    });
+  }
+  return inImmediate(db, () => {
+    catchUp(board);
+    const cursor = readCursor(db, actor);
+    const entries = pendingEntries(board, cursor);
+    if (entries.length === 0) {
+      return result(actor, entries, cursor, false);
+    }
+    const next = advanceCursor(cursor, entries);
+    writeCursor(db, next);
+    return result(actor, entries, next, true);
+  });
+}
+
+/** `readInbox` with `since`. */
+function readSince(board: Board, actor: string, since: string): InboxResult {
+  if (!/^[0-9a-f]{64}$/.test(since)) {
+    throw new BoardError(
+      1,
+      'usage',
+      '--since takes the full 64-character lowercase hex hash of an event',
+    );
+  }
+  const { db } = board;
+  catchUp(board);
+  return inSnapshot(db, () => {
+    const start = recordedPosition(db, since);
+    if (start === null) {
+      throw new BoardError(1, 'unknown-cursor', `no event ${since} on this board`);
+    }
+    const after = recordedPositions(db, { effectiveOnly: true, minWall: start.ts.wall }).filter(
+      (p) => comparePositions(p, start) > 0,
+    );
+    return result(actor, toEntries(board, after), readCursor(db, actor), false);
+  });
+}
+
+function result(
+  actor: string,
+  entries: InboxEntry[],
+  cursor: Cursor,
+  advanced: boolean,
+): InboxResult {
+  return { actor, entries, cursor: cursor.position?.hash ?? null, advanced };
+}
+
+/** The effective events pending for `cursor`, as entries in fold order. */
+function pendingEntries(board: Board, cursor: Cursor): InboxEntry[] {
+  // Nothing older than the window before the position can be pending.
+  const minWall = cursor.position === null ? undefined : cursor.position.ts.wall - SEEN_WINDOW_MS;
+  const due = recordedPositions(board.db, { effectiveOnly: true, minWall }).filter((p) =>
+    isPending(cursor, p),
+  );
+  return toEntries(board, due);
+}
+
+/** Sorts `positions` in fold order and reads each event file into an entry. */
+function toEntries(board: Board, positions: CursorPosition[]): InboxEntry[] {
+  return positions.sort(comparePositions).map((p) => toEntry(board, p.hash));
+}
+
+/** The inbox entry of the effective event `hash`, read from its file. */
+function toEntry(board: Board, hash: string): InboxEntry {
+  const outcome = readEventFile(board.eventsDir, `${hash}.json`);
+  if (outcome.status !== 'ok' || !isKnownEvent(outcome.input.event)) {
+    throw new BoardError(
+      5,
+      'integrity',
+      `event ${hash} is recorded as applied but its file is not a well-formed known event`,
+    );
+  }
+  return entryOf(hash, outcome.input.event);
+}
+
+/** Lifts the fields an orchestrator acts on out of `event`. */
+function entryOf(hash: string, event: BoardEvent): InboxEntry {
+  const entry: InboxEntry = {
+    hash,
+    kind: event.kind,
+    ticket: event.kind === 'board.meta' ? null : event.ticket,
+    from: event.actor,
+    ts: event.ts,
+    to: null,
+    status: null,
+    note: null,
+    event,
+  };
+  switch (event.kind) {
+    case 'ticket.handoff':
+      return { ...entry, to: event.body.to, status: event.body.status, note: event.body.note };
+    case 'ticket.assign':
+      return { ...entry, to: event.body.to };
+    case 'ticket.move':
+      return { ...entry, status: event.body.to };
+    case 'ticket.comment':
+      return { ...entry, note: event.body.text };
+    default:
+      return entry;
+  }
 }

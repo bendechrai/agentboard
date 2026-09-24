@@ -47,9 +47,10 @@
  * hash as a string.
  */
 
-import type { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync, SQLOutputValue } from 'node:sqlite';
 
-import type { Hlc } from '../events/hlc.js';
+import { compareHlc, type Hlc } from '../events/hlc.js';
+import { recordedPositions } from './folded.js';
 
 /** Width of the seen-set window in wall milliseconds: one hour. */
 export const SEEN_WINDOW_MS = 3_600_000;
@@ -94,9 +95,7 @@ export interface LateEvent {
  * hashes as strings. 0 only for equal hash and timestamp. Pure.
  */
 export function comparePositions(a: CursorPosition, b: CursorPosition): -1 | 0 | 1 {
-  void a;
-  void b;
-  throw new Error('not implemented');
+  return compareHlc(a.ts, b.ts) || compareText(a.hash, b.hash);
 }
 
 /**
@@ -105,9 +104,18 @@ export function comparePositions(a: CursorPosition, b: CursorPosition): -1 | 0 |
  * caller provides the transaction or snapshot.
  */
 export function readCursor(db: DatabaseSync, actor: string): Cursor {
-  void db;
-  void actor;
-  throw new Error('not implemented');
+  const row = db
+    .prepare('SELECT last_wall, last_counter, last_actor, last_hash FROM cursors WHERE actor = ?')
+    .get(actor);
+  if (row === undefined) {
+    return { actor, position: null, seen: [] };
+  }
+  const position = rowPosition(row);
+  const seen = db
+    .prepare('SELECT hash, wall FROM cursor_seen WHERE actor = ?')
+    .all(actor)
+    .map((r) => ({ hash: String(r.hash), wall: Number(r.wall) }));
+  return { actor, position, seen: sortSeen(seen) };
 }
 
 /**
@@ -117,9 +125,25 @@ export function readCursor(db: DatabaseSync, actor: string): Cursor {
  * transaction. Never touches another actor's rows or any derived table.
  */
 export function writeCursor(db: DatabaseSync, cursor: Cursor): void {
-  void db;
-  void cursor;
-  throw new Error('not implemented');
+  const p = cursor.position;
+  db.prepare(
+    `INSERT INTO cursors (actor, last_wall, last_counter, last_actor, last_hash)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT (actor) DO UPDATE SET
+       last_wall = excluded.last_wall, last_counter = excluded.last_counter,
+       last_actor = excluded.last_actor, last_hash = excluded.last_hash`,
+  ).run(
+    cursor.actor,
+    p?.ts.wall ?? null,
+    p?.ts.counter ?? null,
+    p?.ts.actor ?? null,
+    p?.hash ?? null,
+  );
+  db.prepare('DELETE FROM cursor_seen WHERE actor = ?').run(cursor.actor);
+  const insert = db.prepare('INSERT INTO cursor_seen (actor, hash, wall) VALUES (?, ?, ?)');
+  for (const s of cursor.seen) {
+    insert.run(cursor.actor, s.hash, s.wall);
+  }
 }
 
 /**
@@ -140,9 +164,18 @@ export function writeCursor(db: DatabaseSync, cursor: Cursor): void {
  * Pure.
  */
 export function isPending(cursor: Cursor, event: CursorPosition): boolean {
-  void cursor;
-  void event;
-  throw new Error('not implemented');
+  if (cursor.seen.some((s) => s.hash === event.hash)) {
+    return false;
+  }
+  const position = cursor.position;
+  if (position === null) {
+    return true;
+  }
+  const order = comparePositions(event, position);
+  if (order === 0) {
+    return false;
+  }
+  return order > 0 || event.ts.wall >= position.ts.wall - SEEN_WINDOW_MS;
 }
 
 /**
@@ -159,9 +192,26 @@ export function isPending(cursor: Cursor, event: CursorPosition): boolean {
  *   duplicates.
  */
 export function advanceCursor(cursor: Cursor, delivered: readonly CursorPosition[]): Cursor {
-  void cursor;
-  void delivered;
-  throw new Error('not implemented');
+  const last = delivered.at(-1);
+  if (last === undefined) {
+    return { actor: cursor.actor, position: cursor.position, seen: [...cursor.seen] };
+  }
+  const position =
+    cursor.position !== null && comparePositions(cursor.position, last) > 0
+      ? cursor.position
+      : last;
+  const floor = position.ts.wall - SEEN_WINDOW_MS;
+  const byHash = new Map<string, number>();
+  for (const s of cursor.seen) {
+    byHash.set(s.hash, s.wall);
+  }
+  for (const d of delivered) {
+    byHash.set(d.hash, d.ts.wall);
+  }
+  const seen = [...byHash]
+    .filter(([, wall]) => wall >= floor)
+    .map(([hash, wall]) => ({ hash, wall }));
+  return { actor: cursor.actor, position, seen: sortSeen(seen) };
 }
 
 /**
@@ -200,7 +250,89 @@ export function resetLateCursors(
   db: DatabaseSync,
   arrived: readonly CursorPosition[],
 ): LateEvent[] {
-  void db;
-  void arrived;
-  throw new Error('not implemented');
+  if (arrived.length === 0) {
+    return [];
+  }
+  const ordered = [...new Map(arrived.map((a) => [a.hash, a])).values()].sort(comparePositions);
+  const rows = db
+    .prepare('SELECT actor, last_wall, last_counter, last_actor, last_hash FROM cursors')
+    .all();
+  const cursors = rows
+    .map((row) => ({ actor: String(row.actor), position: rowPosition(row) }))
+    .sort((a, b) => compareText(a.actor, b.actor));
+  const found: LateEvent[] = [];
+  const move = db.prepare(
+    `UPDATE cursors SET last_wall = ?, last_counter = ?, last_actor = ?, last_hash = ?
+     WHERE actor = ?`,
+  );
+  for (const { actor, position } of cursors) {
+    if (position === null) {
+      continue;
+    }
+    const floor = position.ts.wall - SEEN_WINDOW_MS;
+    const late = ordered.filter(
+      (event) => comparePositions(event, position) < 0 && event.ts.wall < floor,
+    );
+    const earliest = late[0];
+    if (earliest === undefined) {
+      continue;
+    }
+    const back = positionBefore(db, earliest);
+    move.run(
+      back?.ts.wall ?? null,
+      back?.ts.counter ?? null,
+      back?.ts.actor ?? null,
+      back?.hash ?? null,
+      actor,
+    );
+    for (const event of late) {
+      found.push({ actor, hash: event.hash, ts: event.ts, cursor: position });
+    }
+  }
+  return found;
+}
+
+/** `<` order on strings (UTF-16 code units), as -1, 0 or 1. */
+function compareText(a: string, b: string): -1 | 0 | 1 {
+  if (a < b) {
+    return -1;
+  }
+  return a > b ? 1 : 0;
+}
+
+/** A seen set sorted by hash. */
+function sortSeen(seen: SeenHash[]): SeenHash[] {
+  return seen.sort((a, b) => compareText(a.hash, b.hash));
+}
+
+/** The position stored in a `cursors` row, or null when its columns are null. */
+function rowPosition(row: Record<string, SQLOutputValue>): CursorPosition | null {
+  const { last_wall: wall, last_counter: counter, last_actor: actor, last_hash: hash } = row;
+  if (
+    typeof wall !== 'number' ||
+    typeof counter !== 'number' ||
+    typeof actor !== 'string' ||
+    typeof hash !== 'string'
+  ) {
+    return null;
+  }
+  return { hash, ts: { wall, counter, actor } };
+}
+
+/**
+ * The greatest well-formed event recorded in `folded` that sorts strictly
+ * before `event`, or null when there is none.
+ */
+function positionBefore(db: DatabaseSync, event: CursorPosition): CursorPosition | null {
+  let best: CursorPosition | null = null;
+  for (const recorded of recordedPositions(db, { maxWall: event.ts.wall })) {
+    const candidate = { hash: recorded.hash, ts: recorded.ts };
+    if (
+      comparePositions(candidate, event) < 0 &&
+      (best === null || comparePositions(candidate, best) > 0)
+    ) {
+      best = candidate;
+    }
+  }
+  return best;
 }

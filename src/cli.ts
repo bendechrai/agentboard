@@ -43,9 +43,9 @@ process.on('warning', (warning) => {
   );
 });
 
-const { runCli } = await import('./cli/main.js');
+const { runCliAsync } = await import('./cli/main.js');
 
-process.exitCode = runCli({
+process.exitCode = await runCliAsync({
   argv: process.argv.slice(2),
   cwd: process.cwd(),
   env: process.env,
@@ -54,5 +54,14 @@ process.exitCode = runCli({
   },
   stderr: (text) => {
     process.stderr.write(text);
+  },
+  stopSignal: () => {
+    const controller = new AbortController();
+    const stop = (): void => {
+      controller.abort();
+    };
+    process.on('SIGINT', stop);
+    process.on('SIGTERM', stop);
+    return controller.signal;
   },
 });

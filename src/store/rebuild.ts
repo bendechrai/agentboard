@@ -14,6 +14,7 @@ import {
   inImmediate,
   jsonText,
   refold,
+  refoldWithCursors,
   rollback,
   tableRows,
   type KeyedRow,
@@ -69,10 +70,13 @@ export interface RebuildReport {
  * reports late events in `late` (see `RebuildReport.late`).
  */
 export function rebuild(board: Board): RebuildReport {
-  return toReport(inImmediate(board.db, () => refold(board.db, board.eventsDir)));
+  const { result, late } = inImmediate(board.db, () =>
+    refoldWithCursors(board.db, board.eventsDir),
+  );
+  return toReport(result, late);
 }
 
-function toReport(result: RefoldResult): RebuildReport {
+function toReport(result: RefoldResult, late: LateEvent[]): RebuildReport {
   return {
     folded: result.applied.length,
     rejected: result.rejected.length,
@@ -83,8 +87,7 @@ function toReport(result: RefoldResult): RebuildReport {
     unknownEvents: result.unknown,
     malformedFiles: result.malformed,
     corruptFiles: result.corrupt,
-    // Task group 5 stub: late-event detection is not implemented yet.
-    late: [],
+    late,
   };
 }
 
@@ -170,7 +173,10 @@ export function checkCache(board: Board): CheckResult {
     // writer is either fully committed (file and rows) or not started.
     beginImmediate(board.db);
     try {
-      const report = toReport(inImmediate(temp, () => refold(temp, board.eventsDir)));
+      const report = toReport(
+        inImmediate(temp, () => refold(temp, board.eventsDir)),
+        [],
+      );
       const differences = diffCaches(board.db, temp);
       return { ok: differences.length === 0, differences, report };
     } finally {

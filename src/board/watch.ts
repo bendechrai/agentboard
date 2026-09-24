@@ -3,11 +3,21 @@
  * an actor's pending inbox entries that never acknowledges them.
  */
 
+import { watch, type FSWatcher } from 'node:fs';
+
 import type { Board } from '../store/board.js';
-import type { InboxEntry } from './inbox.js';
+import { BoardError } from '../store/errors.js';
+import { readInbox, type InboxEntry } from './inbox.js';
 
 /** Interval of the polling fallback, in milliseconds. */
 export const WATCH_POLL_MS = 2000;
+
+/**
+ * Delay between an `fs.watch` notification and the tick it triggers, so the
+ * burst of notifications one event write produces (temporary file, rename)
+ * becomes one tick.
+ */
+const FS_SETTLE_MS = 25;
 
 /** Options of `watchInbox`. */
 export interface WatchOptions {
@@ -55,8 +65,86 @@ export interface WatchOptions {
  *   is empty, before the first tick.
  */
 export function watchInbox(board: Board, actor: string, options: WatchOptions): Promise<void> {
-  void board;
-  void actor;
-  void options;
-  return Promise.reject(new Error('not implemented'));
+  if (actor === '') {
+    return Promise.reject(
+      new BoardError(
+        1,
+        'missing-actor',
+        'watch needs an actor: pass --as <actor> or set AGENTBOARD_ACTOR',
+      ),
+    );
+  }
+  const { signal, onEntries } = options;
+  const passed = new Set<string>();
+  return new Promise<void>((resolve, reject) => {
+    let watcher: FSWatcher | null = null;
+    let poll: NodeJS.Timeout | null = null;
+    let settle: NodeJS.Timeout | null = null;
+    let stopped = false;
+
+    const stop = (): void => {
+      stopped = true;
+      signal.removeEventListener('abort', onAbort);
+      watcher?.close();
+      watcher = null;
+      if (poll !== null) {
+        clearInterval(poll);
+      }
+      if (settle !== null) {
+        clearTimeout(settle);
+      }
+    };
+    function onAbort(): void {
+      stop();
+      resolve();
+    }
+    // Synchronous from start to end, so two ticks can never overlap; only
+    // the timers and the watcher call it, and `stop` removes all of them.
+    const tick = (): void => {
+      try {
+        const fresh = readInbox(board, actor, { peek: true }).entries.filter(
+          (entry) => !passed.has(entry.hash),
+        );
+        for (const entry of fresh) {
+          passed.add(entry.hash);
+        }
+        if (fresh.length > 0) {
+          onEntries(fresh);
+        }
+      } catch (error) {
+        stop();
+        reject(error as Error);
+      }
+    };
+
+    tick();
+    if (stopped) {
+      return;
+    }
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+    poll = setInterval(tick, options.pollMs ?? WATCH_POLL_MS);
+    if (options.fsWatch !== false) {
+      try {
+        const w = watch(board.eventsDir, () => {
+          if (settle === null) {
+            settle = setTimeout(() => {
+              settle = null;
+              tick();
+            }, FS_SETTLE_MS);
+          }
+        });
+        // Closing twice (here, then in `stop`) is harmless.
+        w.on('error', () => {
+          w.close();
+        });
+        watcher = w;
+      } catch {
+        // fs.watch is unavailable here; polling alone continues.
+      }
+    }
+  });
 }

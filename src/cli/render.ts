@@ -110,6 +110,15 @@ function closedText(t: Ticket): string {
  * Pure.
  */
 export function renderInboxLine(entry: InboxEntry): string {
-  void entry;
-  throw new Error('not implemented');
+  const fields = [entry.ticket ?? '-', entry.kind, asciiText(entry.from)];
+  if (entry.to !== null) {
+    fields.push(`to ${asciiText(entry.to)}`);
+  }
+  if (entry.status !== null) {
+    fields.push(`status ${entry.status}`);
+  }
+  if (entry.note !== null) {
+    fields.push(`note ${asciiText(entry.note)}`);
+  }
+  return fields.join('  ');
 }

@@ -93,45 +93,67 @@ export function errorDocument(error: unknown): ErrorDocument {
  */
 export function runCli(io: CliIo): ExitCode {
   let parsed: ParsedCommand | null = null;
-  let board: Board | null = null;
+  const opened = new LazyBoard(io);
   try {
     parsed = parseArgs(io.argv);
     const { command, values } = parsed;
-    const given = values.as;
-    const actor = command.writes
-      ? resolveActor(typeof given === 'string' ? given : undefined, io.env)
-      : null;
-    const ctx: RunContext = {
-      cwd: io.cwd,
-      env: io.env,
-      actor,
-      board(): Board {
-        if (board === null) {
-          board = openBoard(findBoard({ cwd: io.cwd, env: io.env }).dir);
-          for (const path of board.opened?.reaped ?? []) {
-            io.stderr(`agentboard: removed stale temporary file ${path}\n`);
-          }
-          for (const file of board.opened?.corrupt ?? []) {
-            io.stderr(`agentboard: ${file.message}\n`);
-          }
-        }
-        return board;
-      },
-    };
-    const output = command.run(ctx, values);
+    const output = command.run(context(io, parsed, opened), values);
     io.stdout(parsed.json ? `${JSON.stringify(output.json)}\n` : output.text);
     return 0;
   } catch (error) {
-    const doc = errorDocument(error);
-    io.stderr(`agentboard: ${doc.error.message}\n`);
-    if (parsed?.json ?? io.argv.includes('--json')) {
-      io.stdout(`${JSON.stringify(doc)}\n`);
-    }
-    return doc.error.exitCode;
+    return fail(io, parsed, error);
   } finally {
-    // `board` is assigned inside the closure above.
-    (board as Board | null)?.close();
+    opened.close();
   }
+}
+
+/** Opens the board on first use and prints the open diagnostics. */
+class LazyBoard {
+  private board: Board | null = null;
+  private readonly io: CliIo;
+
+  constructor(io: CliIo) {
+    this.io = io;
+  }
+
+  get(): Board {
+    if (this.board === null) {
+      const { io } = this;
+      this.board = openBoard(findBoard({ cwd: io.cwd, env: io.env }).dir);
+      for (const path of this.board.opened?.reaped ?? []) {
+        io.stderr(`agentboard: removed stale temporary file ${path}\n`);
+      }
+      for (const file of this.board.opened?.corrupt ?? []) {
+        io.stderr(`agentboard: ${file.message}\n`);
+      }
+    }
+    return this.board;
+  }
+
+  close(): void {
+    this.board?.close();
+  }
+}
+
+/** Resolves the actor (writing and cursor-tracking commands) and builds the context. */
+function context(io: CliIo, parsed: ParsedCommand, opened: LazyBoard): RunContext {
+  const { command, values } = parsed;
+  const given = values.as;
+  const actor =
+    command.writes || command.tracksCursor === true
+      ? resolveActor(typeof given === 'string' ? given : undefined, io.env)
+      : null;
+  return { cwd: io.cwd, env: io.env, actor, board: () => opened.get() };
+}
+
+/** Step 5 of `runCli`: reports `error` and returns its exit code. */
+function fail(io: CliIo, parsed: ParsedCommand | null, error: unknown): Exclude<ExitCode, 0> {
+  const doc = errorDocument(error);
+  io.stderr(`agentboard: ${doc.error.message}\n`);
+  if (parsed?.json ?? io.argv.includes('--json')) {
+    io.stdout(`${JSON.stringify(doc)}\n`);
+  }
+  return doc.error.exitCode;
 }
 
 /**
@@ -156,7 +178,27 @@ export function runCli(io: CliIo): ExitCode {
  * exception to "exactly one JSON document on stdout": a stream has no end
  * at which to print one.
  */
-export function runCliAsync(io: AsyncCliIo): Promise<ExitCode> {
-  void io;
-  return Promise.reject(new Error('not implemented'));
+export async function runCliAsync(io: AsyncCliIo): Promise<ExitCode> {
+  let parsed: ParsedCommand;
+  try {
+    parsed = parseArgs(io.argv);
+  } catch {
+    // runCli reports the usage error exactly as it always does.
+    return runCli(io);
+  }
+  const { command, values } = parsed;
+  if (command.stream === undefined) {
+    return runCli(io);
+  }
+  const opened = new LazyBoard(io);
+  try {
+    const ctx = context(io, parsed, opened);
+    const signal = io.stopSignal();
+    await command.stream(ctx, values, { stdout: io.stdout, json: parsed.json, signal });
+    return 0;
+  } catch (error) {
+    return fail(io, parsed, error);
+  } finally {
+    opened.close();
+  }
 }

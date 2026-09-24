@@ -163,12 +163,37 @@ export function openCache(path: string): DatabaseSync {
         }
       });
     }
+    ensureCursorSeen(db);
   } catch (error) {
     db.close();
     throw error;
   }
   return db;
 }
+
+/**
+ * Creates `cursor_seen` when it is missing (a version 1 cache made before
+ * task group 5). Looks first, so an open that finds the table never
+ * writes and never waits for a concurrent writer's lock.
+ */
+function ensureCursorSeen(db: DatabaseSync): void {
+  const table = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cursor_seen'")
+    .get();
+  if (table === undefined) {
+    db.exec(CURSOR_SEEN);
+  }
+}
+
+/** The seen sets of the cursors (see `src/store/cursors.ts`). */
+const CURSOR_SEEN = `
+CREATE TABLE IF NOT EXISTS cursor_seen (
+  actor TEXT NOT NULL,
+  hash  TEXT NOT NULL,
+  wall  INTEGER NOT NULL,
+  PRIMARY KEY (actor, hash)
+);
+`;
 
 /** `meta.schema_version`, or null when there is no such row or no meta table. */
 function storedSchemaVersion(db: DatabaseSync): string | null {
@@ -188,6 +213,7 @@ DROP TABLE IF EXISTS comments;
 DROP TABLE IF EXISTS links;
 DROP TABLE IF EXISTS tickets;
 DROP TABLE IF EXISTS cursors;
+DROP TABLE IF EXISTS cursor_seen;
 DROP TABLE IF EXISTS folded;
 DROP TABLE IF EXISTS meta;
 CREATE TABLE tickets (
