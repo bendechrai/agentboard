@@ -31,3 +31,4 @@ export * from './cli/registry.js';
 export * from './cli/parse.js';
 export * from './cli/render.js';
 export * from './cli/main.js';
+export * from './cli/warnings.js';

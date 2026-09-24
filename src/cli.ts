@@ -9,6 +9,12 @@
  * warning to stderr. The filter must be in place before `node:sqlite` is
  * loaded (for example by installing it and then importing the CLI module
  * dynamically).
+ *
+ * Every other warning is printed in Node's own format:
+ * `(node:<pid>) [<code>] <name>: <message>` (the `[<code>] ` part only when
+ * the warning has a code). When `warningsDisabled(process.execArgv,
+ * process.env)` is true (`--no-warnings`, or `NODE_NO_WARNINGS=1`), no
+ * warning at all is printed, as Node itself would do.
  */
 
 // Installed before the CLI module (and with it node:sqlite) is loaded.

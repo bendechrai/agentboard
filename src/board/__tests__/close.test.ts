@@ -218,6 +218,85 @@ describe('closeTicket: decision paths inside the working tree', () => {
   });
 });
 
+describe('closeTicket: check order when several conditions fail', () => {
+  it.each(STATUSES.filter((s) => s !== 'merged' && s !== 'blocked'))(
+    'a ticket in %s with an open DECISION: and --no-decision is exit 4 invalid-transition',
+    (status) => {
+      const { board } = setup();
+      const t = ticketIn(board, status);
+      commentTicket(board, 'impl', { id: t.id, text: 'DECISION: keep it' });
+      const before = eventCount(board);
+      expectBoardError(
+        () => closeTicket(board, 'orch', { id: t.id, noDecision: true }),
+        4,
+        'invalid-transition',
+      );
+      expect(eventCount(board)).toBe(before);
+    },
+  );
+
+  it('an already closed ticket with an open DECISION: is exit 4 invalid-transition', () => {
+    const { board, root } = setup();
+    const path = withAdr(root);
+    const t = ticketIn(board, 'merged');
+    commentTicket(board, 'impl', { id: t.id, text: 'DECISION: x' });
+    closeTicket(board, 'orch', { id: t.id, decisionRecordedIn: path, cwd: root, env: cleanEnv() });
+    expectBoardError(
+      () => closeTicket(board, 'orch', { id: t.id, noDecision: true }),
+      4,
+      'invalid-transition',
+    );
+  });
+
+  it('path errors come before closability: outside the tree, then a missing file', () => {
+    const { board, root } = setup();
+    mkdirSync(join(root, 'sub'));
+    const t = ticketIn(board, 'todo');
+    commentTicket(board, 'impl', { id: t.id, text: 'DECISION: x' });
+    const before = eventCount(board);
+    expectBoardError(
+      () =>
+        closeTicket(board, 'orch', {
+          id: t.id,
+          decisionRecordedIn: '../x.md',
+          cwd: join(root, 'sub'),
+          env: cleanEnv(),
+        }),
+      1,
+      'path-outside-tree',
+    );
+    expectBoardError(
+      () =>
+        closeTicket(board, 'orch', {
+          id: t.id,
+          decisionRecordedIn: 'docs/adr/0099.md',
+          cwd: root,
+          env: cleanEnv(),
+        }),
+      1,
+      'decision-path-missing',
+    );
+    expect(eventCount(board)).toBe(before);
+  });
+
+  it('the decision guard applies once the ticket is closable', () => {
+    const { board } = setup();
+    const t = ticketIn(board, 'review');
+    commentTicket(board, 'impl', { id: t.id, text: 'DECISION: x' });
+    expectBoardError(
+      () => closeTicket(board, 'orch', { id: t.id, noDecision: true }),
+      4,
+      'invalid-transition',
+    );
+    handoffTicket(board, 'rev', { id: t.id, to: 'orch', status: 'merged', note: 'merged' });
+    expectBoardError(
+      () => closeTicket(board, 'orch', { id: t.id, noDecision: true }),
+      1,
+      'unpromoted-decision',
+    );
+  });
+});
+
 describe('closeTicket: decisions are promoted, not buried', () => {
   it('scenario: a DECISION: comment blocks --no-decision, quoting it and the rule', () => {
     const { board } = setup();

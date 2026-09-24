@@ -1,4 +1,4 @@
-import { mkdirSync, symlinkSync } from 'node:fs';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -99,6 +99,53 @@ describe('treePath outside git', () => {
       () => treePath('../a.md', { cwd: join(root, 'src'), env }),
       1,
       'path-outside-tree',
+    );
+  });
+});
+
+describe('treePath resolves symbolic links in the target', () => {
+  function repoAndOutside(): { root: string; outside: string } {
+    const root = gitRepo(join(tempDir(), 'proj'));
+    const outside = tempDir();
+    mkdirSync(join(root, 'docs'));
+    writeFileSync(join(outside, 'secret-plan.md'), '# outside\n');
+    return { root, outside };
+  }
+
+  it('refuses a symlink inside the tree that points outside it', () => {
+    const { root, outside } = repoAndOutside();
+    symlinkSync(outside, join(root, 'docs', 'escape'));
+    symlinkSync(join(outside, 'secret-plan.md'), join(root, 'docs', 'file-link.md'));
+    for (const text of ['docs/escape/secret-plan.md', 'docs/file-link.md']) {
+      expectBoardError(
+        () => treePath(text, { cwd: root, env: cleanEnv() }),
+        1,
+        'path-outside-tree',
+      );
+    }
+  });
+
+  it('refuses a missing target whose nearest existing ancestor is outside the tree', () => {
+    const { root, outside } = repoAndOutside();
+    symlinkSync(outside, join(root, 'docs', 'escape'));
+    expectBoardError(
+      () => treePath('docs/escape/new/0100.md', { cwd: root, env: cleanEnv() }),
+      1,
+      'path-outside-tree',
+    );
+  });
+
+  it('records the real in-tree location of a path through an in-tree symlink', () => {
+    const { root } = repoAndOutside();
+    mkdirSync(join(root, 'docs', 'adr'));
+    writeFileSync(join(root, 'docs', 'adr', '1.md'), '# x\n');
+    symlinkSync(join(root, 'docs', 'adr'), join(root, 'decisions'));
+    expect(treePath('decisions/1.md', { cwd: root, env: cleanEnv() })).toEqual({
+      absolute: join(root, 'docs', 'adr', '1.md'),
+      recorded: 'docs/adr/1.md',
+    });
+    expect(treePath('decisions/new/2.md', { cwd: root, env: cleanEnv() }).recorded).toBe(
+      'docs/adr/new/2.md',
     );
   });
 });

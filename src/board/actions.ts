@@ -363,6 +363,14 @@ export function openDecisions(
  *   the same actor).
  * - The fold refuses a close unless the ticket is in `merged` or `blocked`
  *   and not already closed: exit 4 `invalid-transition`.
+ *
+ * Check order (group 3 round 2 ruling): usage errors (neither or both
+ * dispositions, at the parser) first; then the path checks
+ * (`path-outside-tree`, then `decision-path-missing`); then closability
+ * (exit 4 `invalid-transition` for a ticket not in `merged` or `blocked`,
+ * or already closed); only then, for a closable ticket, the decision guard
+ * (exit 1 `unpromoted-decision`). So `--no-decision` on a `todo` ticket
+ * with an open `DECISION:` comment is exit 4 `invalid-transition`.
  */
 export function closeTicket(
   board: Board,

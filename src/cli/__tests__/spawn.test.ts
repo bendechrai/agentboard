@@ -4,7 +4,7 @@
  * subset of commands. Breadth is covered in process by main.test.ts.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -104,5 +104,44 @@ describe('the built CLI', () => {
     const out = spawnCli(['list', '--json'], join(repo, '.board'));
     expect(out.code).toBe(0);
     expect(oneJson(out)).toMatchObject([{ id }]);
+  });
+});
+
+describe('the built CLI and process warnings', () => {
+  /**
+   * A preload module that emits one non-SQLite warning once the CLI has
+   * finished (on beforeExit), when the entry point's warning handling is in
+   * place.
+   */
+  function probe(): string {
+    const path = join(tempDir(), 'probe.mjs');
+    writeFileSync(
+      path,
+      "process.once('beforeExit', () => { process.emitWarning('agentboard probe', { code: 'AB_PROBE' }); });\n",
+    );
+    return path;
+  }
+
+  it('prints other warnings in Node format, and never the SQLite one', () => {
+    const { root } = project();
+    const out = spawnCli(['list', '--json'], root, cliEnv({ NODE_OPTIONS: `--import=${probe()}` }));
+    expect(out.code).toBe(0);
+    expect(oneJson(out)).toEqual([]);
+    expect(out.stderr).toMatch(/^\(node:\d+\) \[AB_PROBE\] Warning: agentboard probe$/m);
+    expect(out.stderr).not.toMatch(/SQLite/i);
+  });
+
+  it.each([
+    ['NODE_OPTIONS=--no-warnings', { NODE_OPTIONS: '--no-warnings' }, []],
+    ['NODE_NO_WARNINGS=1', { NODE_NO_WARNINGS: '1' }, []],
+    ['node --no-warnings', {}, ['--no-warnings']],
+  ] as const)('prints no warning at all with %s', (_label, extra, nodeArgs) => {
+    const { root } = project();
+    const options = 'NODE_OPTIONS' in extra ? `${extra.NODE_OPTIONS} ` : '';
+    const env = cliEnv({ ...extra, NODE_OPTIONS: `${options}--import=${probe()}` });
+    const out = spawnCli(['list', '--json'], root, env, nodeArgs);
+    expect(out.code).toBe(0);
+    expect(oneJson(out)).toEqual([]);
+    expect(out.stderr).toBe('');
   });
 });

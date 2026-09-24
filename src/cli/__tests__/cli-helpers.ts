@@ -53,8 +53,13 @@ export const BUILT_CLI = resolve(
   'cli.js',
 );
 
-/** Runs the built CLI as a child process (`node dist/cli.js`). */
-export function spawnCli(argv: readonly string[], cwd: string, env: RunEnv = cliEnv()): Run {
+/** Runs the built CLI as a child process (`node <nodeArgs> dist/cli.js <argv>`). */
+export function spawnCli(
+  argv: readonly string[],
+  cwd: string,
+  env: RunEnv = cliEnv(),
+  nodeArgs: readonly string[] = [],
+): Run {
   if (!existsSync(BUILT_CLI)) {
     throw new Error(`${BUILT_CLI} is missing; run npm run build first`);
   }
@@ -64,7 +69,7 @@ export function spawnCli(argv: readonly string[], cwd: string, env: RunEnv = cli
       childEnv[key] = value;
     }
   }
-  const result = spawnSync(process.execPath, [BUILT_CLI, ...argv], {
+  const result = spawnSync(process.execPath, [...nodeArgs, BUILT_CLI, ...argv], {
     cwd,
     env: childEnv,
     encoding: 'utf8',

@@ -303,8 +303,41 @@ describe('new, show and list through the CLI', () => {
     expect(out.code).toBe(0);
     expect(out.stderr).toBe('');
     expect(out.stdout).toBe(
-      `${id.slice(0, 10)}  todo  impl  Build the CLI\n${adhoc.slice(0, 10)}  todo  -  [adhoc] Fix thing\n`,
+      `${id}  todo  impl  Build the CLI\n${adhoc}  todo  -  [adhoc] Fix thing\n`,
     );
+  });
+
+  it('list shows full ids, so tickets from the same millisecond stay distinct and resolvable', () => {
+    const { root, boardDir } = project();
+    const events = join(boardDir, 'events');
+    const task = { source: 'openspec', ref: 'add-board-core', item: '3' };
+    // Same ULID timestamp (first 10 characters), different randomness.
+    const a = '01J9K3AAAAXXXXXXXXXXXXXXXX';
+    const b = '01J9K3AAAAYYYYYYYYYYYYYYYY';
+    putEvent(
+      events,
+      ev({ kind: 'ticket.create', ticket: a, body: { title: 'a', task } }, 'orch', 1000),
+    );
+    putEvent(
+      events,
+      ev({ kind: 'ticket.create', ticket: b, body: { title: 'b', task } }, 'orch', 1000),
+    );
+    const out = run(['list'], root);
+    expect(out.code).toBe(0);
+    const ids = out.stdout
+      .trimEnd()
+      .split('\n')
+      .map((line) => line.split('  ')[0] ?? '');
+    expect(ids).toEqual([a, b]);
+    const pairs: [string, string][] = [
+      [ids[0] ?? '', 'a'],
+      [ids[1] ?? '', 'b'],
+    ];
+    for (const [pasted, title] of pairs) {
+      const shown = run(['show', pasted, '--json'], root);
+      expect(shown.code, shown.stderr).toBe(0);
+      expect(oneJson(shown)).toMatchObject({ ticket: { id: pasted, title } });
+    }
   });
 
   it('list filters and --change equals --task openspec:<name>', () => {

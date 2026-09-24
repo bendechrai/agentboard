@@ -7,7 +7,13 @@
 
 import type { Board } from '../store/board.js';
 
-/** The environment a command runs with. */
+/**
+ * The environment a command runs with.
+ *
+ * Layering: `src/board` never imports from `src/cli` (not even types), so
+ * this is defined in `src/board` (for example `src/board/text.ts`) and
+ * re-exported here unchanged.
+ */
 export type Env = Readonly<Record<string, string | undefined>>;
 
 /**

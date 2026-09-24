@@ -7,7 +7,12 @@ import type { Ticket } from '../events/fold.js';
 import { formatTaskRef } from '../events/schema.js';
 import type { ShowResult } from '../board/tickets.js';
 
-/** Length of the id prefix shown by `list`. */
+/**
+ * Obsolete (group 3 round 2 ruling): `list` prints the full 26-character
+ * id, because a 10-character prefix is only the ULID timestamp and tickets
+ * created in the same millisecond would share it. To be removed; nothing
+ * may depend on it.
+ */
 export const LIST_ID_PREFIX = 10;
 
 /**
@@ -16,6 +21,10 @@ export const LIST_ID_PREFIX = 10;
  * four upper-case hex digits of its UTF-16 code unit (a character outside
  * the BMP becomes two escapes), and a backslash is written as `\\`, so the
  * output is unambiguous and one line. Pure.
+ *
+ * Layering: `src/board` never imports from `src/cli` (not even types), so
+ * this is defined in `src/board` (for example `src/board/text.ts`) and
+ * re-exported here unchanged.
  */
 export function asciiText(text: string): string {
   let out = '';
@@ -34,11 +43,14 @@ export function asciiText(text: string): string {
 
 /**
  * The `list` line of a ticket, without a newline:
- * `<first LIST_ID_PREFIX characters of id>  <status>  <assignee or ->  <markers><title>`,
+ * `<full 26-character id>  <status>  <assignee or ->  <markers><title>`,
  * fields separated by two spaces, where `<markers>` is `[adhoc] ` for a
  * ticket with an ad hoc reason and `[closed] ` for a closed ticket (in
  * that order when both apply), and assignee and title pass through
- * `asciiText`. Example: `01ARYZ6S41  todo  -  [adhoc] Fix thing`. Pure.
+ * `asciiText`. Example:
+ * `01ARYZ6S41TSV4RRFFQ69G5FAV  todo  -  [adhoc] Fix thing`. The id is never
+ * shortened, so every id printed by `list` can be pasted back into any
+ * command. Pure.
  */
 export function renderListLine(ticket: Ticket): string {
   const markers = (ticket.adhoc === null ? '' : '[adhoc] ') + (ticket.closed ? '[closed] ' : '');

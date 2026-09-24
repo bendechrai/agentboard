@@ -3,6 +3,9 @@
  * disposition"): resolved against the current directory, required to lie
  * inside the current working tree, and recorded relative to its root so the
  * recorded path means the same thing in every worktree and clone.
+ *
+ * Layering: nothing in `src/board` imports from `src/cli`; `Env` and
+ * `asciiText` come from `src/board`.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -39,8 +42,14 @@ export interface TreePath {
  *   run in `cwd` (with `env`), or `cwd` itself when that fails (not in a
  *   git repository, or git missing).
  * - `text` (relative or absolute) is resolved against `cwd`. Symbolic links
- *   in `cwd` and in the root are resolved (`realpath`) before comparing, so
- *   a temporary directory behind a symlink does not count as outside.
+ *   in `cwd`, in the root and in the target are resolved (`realpath`)
+ *   before comparing: a temporary directory behind a symlink does not count
+ *   as outside, and a symlink inside the tree that points outside it is
+ *   refused. When the target does not exist (`link --decision`), the
+ *   nearest existing ancestor is resolved and the missing remainder
+ *   appended. `absolute` and `recorded` are both computed from this
+ *   resolved form, so a path through an in-tree symlink records the real
+ *   in-tree location.
  * - When the result is the root itself or lies outside it,
  *   `BoardError(1, 'path-outside-tree')` naming `text`.
  * - Otherwise returns the absolute path and the root-relative path with

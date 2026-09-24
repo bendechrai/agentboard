@@ -90,6 +90,10 @@ export const CLOSE_RULE =
  * The explanation `new` gives when no task reference and no ad hoc reason
  * is given (board-openspec-integration: "Ticket without a task is
  * refused").
+ *
+ * Layering: `src/board` never imports from `src/cli` (not even types), so
+ * this is defined in `src/board` (for example `src/board/text.ts`) and
+ * re-exported here unchanged.
  */
 export const TASK_RULE =
   'tickets must reference a task (--task <source>:<ref>#<item>, or --change <name> ' +

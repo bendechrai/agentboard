@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Ticket } from '../../events/fold.js';
-import { LIST_ID_PREFIX, asciiText, renderListLine, renderShow } from '../render.js';
+import { asciiText, renderListLine, renderShow } from '../render.js';
 
 // Non-ASCII characters are built from code points: sources stay plain ASCII.
 const E = String.fromCharCode(0xe9);
@@ -47,29 +47,28 @@ describe('asciiText', () => {
 });
 
 describe('renderListLine', () => {
-  it('prints id prefix, status, assignee or -, title', () => {
-    expect(LIST_ID_PREFIX).toBe(10);
-    expect(renderListLine(ticket())).toBe('01ARYZ6S41  todo  -  Build the CLI');
+  it('prints the full id, status, assignee or -, title', () => {
+    expect(renderListLine(ticket())).toBe('01ARYZ6S41TSV4RRFFQ69G5FAV  todo  -  Build the CLI');
     expect(renderListLine(ticket({ status: 'review', assignee: 'rev' }))).toBe(
-      '01ARYZ6S41  review  rev  Build the CLI',
+      '01ARYZ6S41TSV4RRFFQ69G5FAV  review  rev  Build the CLI',
     );
   });
 
   it('marks ad hoc and closed tickets', () => {
     expect(renderListLine(ticket({ task: null, adhoc: 'hotfix', title: 'Fix thing' }))).toBe(
-      '01ARYZ6S41  todo  -  [adhoc] Fix thing',
+      '01ARYZ6S41TSV4RRFFQ69G5FAV  todo  -  [adhoc] Fix thing',
     );
     expect(
       renderListLine(ticket({ status: 'merged', closed: true, disposition: { noDecision: true } })),
-    ).toBe('01ARYZ6S41  merged  -  [closed] Build the CLI');
+    ).toBe('01ARYZ6S41TSV4RRFFQ69G5FAV  merged  -  [closed] Build the CLI');
     expect(
       renderListLine(ticket({ task: null, adhoc: 'x', closed: true, status: 'blocked' })),
-    ).toBe('01ARYZ6S41  blocked  -  [adhoc] [closed] Build the CLI');
+    ).toBe('01ARYZ6S41TSV4RRFFQ69G5FAV  blocked  -  [adhoc] [closed] Build the CLI');
   });
 
   it('is plain ASCII even for non-ASCII titles', () => {
     expect(renderListLine(ticket({ title: `caf${E}`, assignee: E }))).toBe(
-      '01ARYZ6S41  todo  \\u00E9  caf\\u00E9',
+      '01ARYZ6S41TSV4RRFFQ69G5FAV  todo  \\u00E9  caf\\u00E9',
     );
   });
 });
