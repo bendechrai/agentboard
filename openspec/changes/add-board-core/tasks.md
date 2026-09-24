@@ -53,9 +53,9 @@ branch is reviewed and merged, and its decisions are in a spec delta or ADR.
 
 ## 7. OpenSpec integration
 
-- [ ] 7.1 Implement `import-change <name>` (locate the OpenSpec root, parse numbered groups and checkbox lines, one ticket per group with labels and checklist, fully ticked groups as merged) and verify with tests against a fixture tasks file and an idempotency test that a second import writes no events
-- [ ] 7.2 Implement the tickets-reference-tasks rule (`--task`, `--change/--group` or `--adhoc <reason>`; ad hoc tickets cannot enter `implementing` without a task link) and the source adapter interface with the `openspec` adapter, and verify with tests for both refusals, a ticket from a source with no adapter being fully usable, and `import-change` naming the unsupported source
-- [ ] 7.3 Implement `close-merged` (gh-backed PR merge state, closes with the right disposition, lists unmerged) and verify with tests that stub the gh invocation for merged, unmerged and gh-missing cases
+- [x] 7.1 Implement `import-change <name>` (locate the OpenSpec root, parse numbered groups and checkbox lines, one ticket per group with labels and checklist, fully ticked groups as merged) and verify with tests against a fixture tasks file and an idempotency test that a second import writes no events
+- [x] 7.2 Implement the tickets-reference-tasks rule (`--task`, `--change/--group` or `--adhoc <reason>`; ad hoc tickets cannot enter `implementing` without a task link) and the source adapter interface with the `openspec` adapter, and verify with tests for both refusals, a ticket from a source with no adapter being fully usable, and `import-change` naming the unsupported source
+- [x] 7.3 Implement `close-merged` (gh-backed PR merge state, closes with the right disposition, lists unmerged) and verify with tests that stub the gh invocation for merged, unmerged and gh-missing cases
 
 ## 8. Documentation and consumer setup
 
