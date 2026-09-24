@@ -41,9 +41,21 @@ describe('the command registry', () => {
       'checklist tick',
       'checklist untick',
       'close',
+      'inbox',
+      'watch',
       'mcp',
       'version',
     ]);
+  });
+
+  it('marks exactly inbox and watch as tracking a cursor, and only watch as streaming', () => {
+    expect(COMMANDS.filter((c) => c.tracksCursor === true).map((c) => c.name)).toEqual([
+      'inbox',
+      'watch',
+    ]);
+    expect(COMMANDS.filter((c) => c.stream !== undefined).map((c) => c.name)).toEqual(['watch']);
+    expect(command('inbox').operation).toBe('readInbox');
+    expect(command('watch').operation).toBe('watchInbox');
   });
 
   it('marks exactly the event-writing commands as writing', () => {
@@ -206,6 +218,15 @@ describe('the command registry', () => {
       flags: [['raw', 'boolean', false, false]],
       exclusive: [],
     });
+    expect(shape('inbox')).toEqual({
+      positionals: [],
+      flags: [
+        ['since', 'string', false, false],
+        ['peek', 'boolean', false, false],
+      ],
+      exclusive: [],
+    });
+    expect(shape('watch')).toEqual({ positionals: [], flags: [], exclusive: [] });
   });
 
   it('findCommand finds by full name only', () => {

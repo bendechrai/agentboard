@@ -127,6 +127,9 @@ export function writeCursor(db: DatabaseSync, cursor: Cursor): void {
  *
  * - false when `event.hash` is in `cursor.seen`;
  * - otherwise true when `cursor.position` is null;
+ * - otherwise false when `event` is the position itself (equal hash and
+ *   timestamp): it was delivered, even if a reset has since left it out
+ *   of the seen set;
  * - otherwise true when `event` sorts after `cursor.position`;
  * - otherwise (at or before the position) true exactly when
  *   `event.ts.wall >= cursor.position.ts.wall - SEEN_WINDOW_MS`: a late
