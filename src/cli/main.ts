@@ -9,7 +9,7 @@ import { openBoard, type Board } from '../store/board.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
 import { findBoard } from '../store/locate.js';
 import { parseArgs, resolveActor, type ParsedCommand } from './parse.js';
-import type { BoardOpenOptions, Env, RunContext } from './types.js';
+import type { BoardOpenOptions, CommandSpec, Env, RunContext } from './types.js';
 
 /** The process surroundings `runCli` uses; nothing else is read or written. */
 export interface CliIo {
@@ -98,7 +98,7 @@ export function errorDocument(error: unknown): ErrorDocument {
  */
 export function runCli(io: CliIo): ExitCode {
   let parsed: ParsedCommand | null = null;
-  const opened = new LazyBoard(io);
+  const opened = cliBoard(io);
   try {
     parsed = parseArgs(io.argv);
     const { command, values } = parsed;
@@ -115,58 +115,99 @@ export function runCli(io: CliIo): ExitCode {
   }
 }
 
-/** Opens the board on first use and prints the open diagnostics. */
-class LazyBoard {
+/**
+ * Opens a board directory on first use and prints the open diagnostics
+ * (shared by `runCli` and the MCP server's tool calls).
+ */
+export class LazyBoard {
   private board: Board | null = null;
-  private readonly io: CliIo;
+  private readonly locate: () => string;
+  private readonly stderr: (text: string) => void;
 
-  constructor(io: CliIo) {
-    this.io = io;
+  /**
+   * @param locate returns the board directory (discovery for the CLI, the
+   *   directory fixed at start-up for the MCP server); called by `dir` and
+   *   on first open.
+   * @param stderr receives the reaped and corrupt file diagnostics.
+   */
+  constructor(locate: () => string, stderr: (text: string) => void) {
+    this.locate = locate;
+    this.stderr = stderr;
   }
 
-  /** Discovery only: the board directory, without opening anything. */
+  /** The board directory, without opening anything. */
   dir(): string {
-    return findBoard({ cwd: this.io.cwd, env: this.io.env }).dir;
+    return this.locate();
   }
 
   /** `options` apply to the first call only (see `RunContext.board`). */
   get(options?: BoardOpenOptions): Board {
     if (this.board === null) {
-      const { io } = this;
       this.board = openBoard(this.dir(), {
         catchUp: options?.catchUp !== false,
         prepare: options?.prepare !== false,
       });
       for (const path of this.board.opened?.reaped ?? []) {
-        io.stderr(`agentboard: removed stale temporary file ${path}\n`);
+        this.stderr(`agentboard: removed stale temporary file ${path}\n`);
       }
       for (const file of this.board.opened?.corrupt ?? []) {
-        io.stderr(`agentboard: ${file.message}\n`);
+        this.stderr(`agentboard: ${file.message}\n`);
       }
     }
     return this.board;
   }
 
+  /** Closes the board if it was opened. */
   close(): void {
     this.board?.close();
   }
 }
 
-/** Resolves the actor (writing and cursor-tracking commands) and builds the context. */
-function context(io: CliIo, parsed: ParsedCommand, opened: LazyBoard): RunContext {
-  const { command, values } = parsed;
-  const given = values.as;
-  const actor =
-    command.writes || command.tracksCursor === true
-      ? resolveActor(typeof given === 'string' ? given : undefined, io.env)
-      : null;
+/** The CLI's `LazyBoard`: discovery with `io.cwd` and `io.env`. */
+function cliBoard(io: CliIo): LazyBoard {
+  return new LazyBoard(
+    () => findBoard({ cwd: io.cwd, env: io.env }).dir,
+    (text) => {
+      io.stderr(text);
+    },
+  );
+}
+
+/**
+ * The actor of `command`: `resolveActor(given, env)` for a writing or
+ * cursor-tracking command, null for any other (shared with the MCP server).
+ *
+ * @throws BoardError exit 1, reason `missing-actor`, from `resolveActor`.
+ */
+export function commandActor(
+  command: CommandSpec,
+  given: string | undefined,
+  env: Env,
+): string | null {
+  return command.writes || command.tracksCursor === true ? resolveActor(given, env) : null;
+}
+
+/** The `RunContext` of one command run on `opened` (shared with the MCP server). */
+export function runContext(
+  cwd: string,
+  env: Env,
+  actor: string | null,
+  opened: LazyBoard,
+): RunContext {
   return {
-    cwd: io.cwd,
-    env: io.env,
+    cwd,
+    env,
     actor,
     boardDir: () => opened.dir(),
     board: (options?: BoardOpenOptions) => opened.get(options),
   };
+}
+
+/** Resolves the actor (writing and cursor-tracking commands) and builds the context. */
+function context(io: CliIo, parsed: ParsedCommand, opened: LazyBoard): RunContext {
+  const given = parsed.values.as;
+  const actor = commandActor(parsed.command, typeof given === 'string' ? given : undefined, io.env);
+  return runContext(io.cwd, io.env, actor, opened);
 }
 
 /** Step 5 of `runCli`: reports `error` and returns its exit code. */
@@ -213,7 +254,7 @@ export async function runCliAsync(io: AsyncCliIo): Promise<ExitCode> {
   if (command.stream === undefined) {
     return runCli(io);
   }
-  const opened = new LazyBoard(io);
+  const opened = cliBoard(io);
   try {
     const ctx = context(io, parsed, opened);
     const signal = io.stopSignal();

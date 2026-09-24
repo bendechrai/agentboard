@@ -125,7 +125,8 @@ describe('every command prints exactly one JSON document with --json', () => {
     expect(docs.sync).toMatchObject({ remote: null, pushed: false, warnings: [] });
     expect(docs['import-change']).toMatchObject({ source: 'openspec', ref: 'c', events: 1 });
     expect(docs['close-merged']).toEqual({ closed: [], unmerged: [], skipped: [] });
-    expect(docs.mcp).toMatchObject({ error: { exitCode: 1, reason: 'not-implemented' } });
+    // mcp serves over stdio from the executable only (src/cli.ts dispatches it).
+    expect(docs.mcp).toMatchObject({ error: { exitCode: 1, reason: 'streaming-command' } });
     expect(docs.version).toEqual({ version });
     expect(count(boardDir)).toBe(12);
   });
@@ -651,11 +652,13 @@ describe('decision paths are recorded relative to the working tree root', () => 
 });
 
 describe('other commands', () => {
-  it('mcp exits 1 with the not-implemented message', () => {
+  it('mcp through the in-process runCli refuses: it serves only from the executable', () => {
     const out = run(['mcp'], tempDir());
     expect(out.code).toBe(1);
     expect(out.stdout).toBe('');
-    expect(out.stderr).toMatch(/mcp.*not implemented/);
+    expect(out.stderr).toBe(
+      'agentboard: agentboard mcp serves MCP over stdio and runs only from the agentboard executable\n',
+    );
   });
 
   it('version prints the version', () => {

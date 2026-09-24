@@ -186,9 +186,14 @@ example `board_claim`, `board_checklist_tick`, `board_import_change`). Each
 tool's input schema SHALL be generated from the registry, with the same
 required arguments and the same validation as the CLI; `--json` is implied.
 Writing tools SHALL take the actor as an `as` argument, falling back to the
+actor given to the server as `agentboard mcp --as <actor>`, then to the
 server process's `AGENTBOARD_ACTOR`, and SHALL fail exactly as the CLI does
-when neither is present. A successful call SHALL return the same JSON
-document the CLI prints with `--json`, as structured content. A failed call
+when none is present. A successful call SHALL return the same JSON document
+the CLI prints with `--json` as a text content item, and as structured
+content: the document itself when it is an object, or `{items: <array>}`
+when it is an array (MCP structured content must be an object). A call to an
+unknown or excluded tool name SHALL return a tool error with `exitCode` 1
+and `reason` `usage`, not a protocol error. A failed call
 SHALL return a tool error (`isError` true) whose structured content is
 `{exitCode, reason, message}`, where `exitCode` is the code the CLI would
 have exited with and `reason` is the rejection reason where one exists (for
