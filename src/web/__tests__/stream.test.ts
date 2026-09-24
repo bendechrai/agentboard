@@ -39,6 +39,8 @@ import {
 } from '../stream.js';
 import {
   expectSecurityHeaders,
+  frozenTimers,
+  get,
   json,
   open,
   openStream,
@@ -364,6 +366,97 @@ describe('resume', () => {
   });
 });
 
+describe('scenario: Stream from a fresh snapshot (board-feed: Joining a running feed)', () => {
+  /** A server whose feed never ticks on its own (timers fired by hand, no fs.watch). */
+  async function frozen(): Promise<
+    Awaited<ReturnType<typeof withTicket>> & {
+      timers: ReturnType<typeof frozenTimers>;
+    }
+  > {
+    const timers = frozenTimers();
+    const served = await withTicket({ feed: { timers, fsWatch: false } });
+    return { ...served, timers };
+  }
+
+  for (const how of ['since', 'Last-Event-ID'] as const) {
+    it(
+      `a stream started (${how}) from /api/board taken right after a write gets no resync and no event the snapshot held`,
+      { timeout: 30_000 },
+      async () => {
+        const { server, writer, id, timers } = await frozen();
+        const early = await openStream(server);
+        await early.until((c) => feedEvents(c).length === 1, 3000, 'the first event');
+        const written = commentTicket(writer, 'impl', { id, text: 'fresh' });
+        const snapshot = json(await get(server, '/api/board')) as { id: string };
+        expect(snapshot.id.split('.')[0]).toBe(written.hash);
+        const joiner = await openStream(
+          server,
+          how === 'since'
+            ? { path: `/api/stream?since=${snapshot.id}` }
+            : { headers: { 'Last-Event-ID': snapshot.id } },
+        );
+        expect(joiner.status).toBe(200);
+        // The join brought the feed up to date: the stream already open gets the comment.
+        await early.until(
+          (c) => feedEvents(c).length === 2,
+          3000,
+          'the comment on the early stream',
+        );
+        expect(texts(asAppend(message(feedEvents(early)[1])))).toEqual(['fresh']);
+        // The next tick finds nothing new.
+        timers.fire();
+        await pause(300);
+        expect(joiner.events().filter((e) => e.event === 'resync')).toEqual([]);
+        expect(feedEvents(joiner)).toEqual([]);
+        expect(feedEvents(early)).toHaveLength(2);
+        // A later write reaches the joiner once, and nothing it carries was in the snapshot.
+        commentTicket(writer, 'impl', { id, text: 'after' });
+        timers.fire();
+        await joiner.until((c) => feedEvents(c).length === 1, 3000, 'the later comment');
+        const later = asAppend(message(feedEvents(joiner)[0]));
+        expect(texts(later)).toEqual(['after']);
+        expect(later.events.map((e) => e.hash)).not.toContain(written.hash);
+      },
+    );
+  }
+
+  it(
+    'a stream started from an older snapshot gets an append of exactly the two comments the feed had not examined',
+    { timeout: 30_000 },
+    async () => {
+      const { server, writer, id } = await frozen();
+      const before = json(await get(server, '/api/board')) as { id: string };
+      commentTicket(writer, 'impl', { id, text: 'one' });
+      commentTicket(writer, 'impl', { id, text: 'two' });
+      const joiner = await openStream(server, { path: `/api/stream?since=${before.id}` });
+      await joiner.until((c) => feedEvents(c).length > 0, 3000, 'the first event');
+      const first = asAppend(message(feedEvents(joiner)[0]));
+      expect(texts(first)).toEqual(['one', 'two']);
+      expect(first.events).toHaveLength(2);
+      expect(first.id).toBe((json(await get(server, '/api/board')) as { id: string }).id);
+    },
+  );
+});
+
+describe('stream authentication', () => {
+  it('scenario: the stream requires the bearer header; a query token and a cookie are ignored', async () => {
+    const { server } = await withTicket();
+    for (const options of [
+      { auth: false },
+      { auth: false, path: `/api/stream?token=${server.token}` },
+      { auth: false, headers: { Cookie: `agentboard-${String(server.port)}=${server.token}` } },
+    ]) {
+      const client = await openStream(server, options);
+      expect(client.status).toBe(401);
+      expect(client.headers['content-type']).toBe('application/json; charset=utf-8');
+      await client.until((c) => c.ended(), 3000, 'the 401 body');
+      expect(JSON.parse(client.raw())).toMatchObject({ error: { reason: 'unauthorized' } });
+      expect(client.headers['set-cookie']).toBeUndefined();
+    }
+    expect(server.streamCount()).toBe(0);
+  });
+});
+
 describe('keepalive', () => {
   it('sends a comment line every keepalive interval', async () => {
     const { server } = await withTicket({ ...FAST, keepaliveMs: 50 });
@@ -444,29 +537,33 @@ describe('tick failures', () => {
 });
 
 describe('the stream cap', () => {
-  it('answers the 65th stream with 503 too-many-streams, and frees a slot when a stream closes', async () => {
-    const { server } = await withTicket();
-    expect(MAX_STREAMS).toBe(64);
-    const clients: StreamClient[] = [];
-    for (let n = 0; n < 64; n += 1) {
-      const client = await openStream(server);
-      expect(client.status, String(n)).toBe(200);
-      clients.push(client);
-    }
-    await until(() => server.streamCount() === 64, 3000, '64 open streams');
-    const refused = await request(server.port, '/api/stream', {
-      headers: { Authorization: `Bearer ${server.token}` },
-    });
-    expect(refused.status).toBe(503);
-    expect(json(refused)).toMatchObject({ error: { exitCode: 1, reason: 'too-many-streams' } });
-    expectSecurityHeaders(refused.headers, true);
-    expect(server.streamCount()).toBe(64);
-    clients[0]?.close();
-    await until(() => server.streamCount() === 63, 3000, 'the slot to free');
-    const again = await openStream(server);
-    expect(again.status).toBe(200);
-    await again.until((c) => feedEvents(c).length > 0, 3000, 'the first event');
-  });
+  it(
+    'answers the 65th stream with 503 too-many-streams, and frees a slot when a stream closes',
+    { timeout: 30_000 },
+    async () => {
+      const { server } = await withTicket();
+      expect(MAX_STREAMS).toBe(64);
+      const clients: StreamClient[] = [];
+      for (let n = 0; n < 64; n += 1) {
+        const client = await openStream(server);
+        expect(client.status, String(n)).toBe(200);
+        clients.push(client);
+      }
+      await until(() => server.streamCount() === 64, 3000, '64 open streams');
+      const refused = await request(server.port, '/api/stream', {
+        headers: { Authorization: `Bearer ${server.token}` },
+      });
+      expect(refused.status).toBe(503);
+      expect(json(refused)).toMatchObject({ error: { exitCode: 1, reason: 'too-many-streams' } });
+      expectSecurityHeaders(refused.headers, true);
+      expect(server.streamCount()).toBe(64);
+      clients[0]?.close();
+      await until(() => server.streamCount() === 63, 3000, 'the slot to free');
+      const again = await openStream(server);
+      expect(again.status).toBe(200);
+      await again.until((c) => feedEvents(c).length > 0, 3000, 'the first event');
+    },
+  );
 });
 
 describe('the per-client buffer', () => {

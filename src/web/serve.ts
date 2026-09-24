@@ -101,13 +101,17 @@ export interface ServeDeps {
  *    `BoardError(1, 'port-in-use')`.
  * 4. Prints exactly one line on stdout: without `--json`, `serving <board
  *    dir> read-only at <url>` (`<board dir>` is `board.dir`, `<url>` the
- *    server's entry URL); with `--json`, `JSON.stringify({ url, port,
+ *    server's start-up URL `http://127.0.0.1:<port>/#token=<token>`, the
+ *    token in the fragment); with `--json`, `JSON.stringify({ url, port,
  *    token, writable: false })` with the keys in that order. Nothing else
  *    is ever written to stdout.
- * 5. With `--open`: `open(url)` (default `openInBrowser`); when it
- *    rejects, `io.stderr` receives `agentboard: could not open a browser:
- *    <message>` and a newline and serving carries on. The URL is never
- *    written to stderr.
+ * 5. With `--open`: `open(url)` (default `openInBrowser`) with that same
+ *    fragment URL; when it rejects, `io.stderr` receives `agentboard:
+ *    could not open a browser: <message>` and a newline, where every
+ *    occurrence of the token in the error's message is replaced by the
+ *    literal `<token>` (an opener that echoes the URL leaves
+ *    `http://127.0.0.1:<port>/#token=<token>` with the placeholder), and
+ *    serving carries on. The token is never written to stderr.
  * 6. Waits until `io.signal` aborts (at once when it already has), then
  *    `close()`s the server and resolves (the CLI then closes the board and
  *    exits 0).

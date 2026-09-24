@@ -441,16 +441,22 @@ const joins = new WeakMap<
 /**
  * The first message for a consumer joining the running feed that was
  * started with `watchBoard(board, options)` (this exact options object),
- * relative to the effective events that feed has delivered (added by the
- * add-board-web group 3 implementer, so that one feed can serve many
- * consumers, each starting at its own position; design.md: "One feed per
- * server, fanned out to every client"). Call it synchronously with the
- * consumer's subscription, so no message of the feed falls between the
- * two. Called from inside that feed's `onMessage`, it joins after the
- * message being delivered.
+ * so that one feed can serve many consumers, each starting at its own
+ * position (board-feed: "Joining a running feed"; design.md: "One feed
+ * per server, fanned out to every client"; added by the add-board-web
+ * group 3 implementer, contract reworked in round 2 after the security
+ * review, finding B1).
  *
- * With the delivered effective events `D` (in fold order) and their
- * position id `id` (the id of the feed's last message):
+ * The position is compared with the board, not with what the feed has
+ * delivered so far. So, in the same synchronous turn and before anything
+ * else, the join brings the feed up to date: it runs one tick's
+ * examination (`catchUp(board)` then the examination `watchBoard`
+ * describes, sharing the feed's state, so the ticker's next tick finds
+ * nothing new), and a resulting message is delivered through the feed's
+ * `onMessage` to the consumers already joined, exactly as a tick would
+ * deliver it. Only then is the joiner's first message computed, from the
+ * resulting delivered effective events `D` (in fold order) and their
+ * position id `id`:
  * - `since` undefined: an `append` of every event of `D` (an append with
  *   no event, no ticket, meta null and `EMPTY_POSITION_ID` when `D` is
  *   empty);
@@ -459,16 +465,32 @@ const joins = new WeakMap<
  *   events of `D` after its head, or null when there is none;
  * - otherwise (unparsable, unknown head, digest mismatch): a `resync` with
  *   `id`, no late event and nothing removed.
+ * So a consumer joining with the id of any snapshot of the board taken
+ * before the join (for example `loadSnapshot(...).id`, even one taken
+ * after a write the feed has not examined yet) gets an `append` of exactly
+ * the effective events after that snapshot, or null, and never a `resync`
+ * or an event the snapshot already held, unless the board changed so that
+ * a resync is due. No message of the feed falls between the returned
+ * message and the consumer's subscription made in the same turn.
+ *
+ * Called from inside that feed's `onMessage`, the join does not examine
+ * again (ticks never overlap): it joins after the message being
+ * delivered. When the join's examination throws, the error is handled as
+ * a tick failure (`onWarning` for busy, else `onProblem`, or rethrown when
+ * there is no `onProblem`), the feed's state is unchanged, and the first
+ * message is computed from the last successful state.
+ *
  * An append carries the state of the tickets its events name and the meta
  * (when one of them is a `board.meta`) as they are in the cache now, read
  * in one read snapshot committed before this returns; event bodies are
- * read through the feed's cache. Returns undefined when that feed is not
- * running or has not delivered its first message yet (the consumer then
- * waits for the feed's first message and joins from inside `onMessage`).
+ * read through the feed's cache. No transaction is open while `onMessage`
+ * runs or when this returns. Returns undefined when that feed is not
+ * running, or has no successful examination yet (the consumer then waits
+ * for the feed's first message and joins from inside `onMessage`).
  *
  * @throws BoardError exit 5 `integrity` (a delivered event whose file is
  *   no longer well-formed, or a named ticket without a cache row), and
- *   the event reader's errors.
+ *   the event reader's errors, from computing the joiner's message.
  */
 export function joinBoardFeed(
   options: WatchBoardOptions,

@@ -17,11 +17,20 @@
  *   HTML page with no script that says the web assets are not built
  *   (naming `dist/web` and `npm run build`), so `serve` and the whole API
  *   still work.
- * - Only direct children of `assetsDir` are served: `/` serves
- *   `index.html`, and `/<name>` serves the file `<name>` when `<name>`
- *   matches `ASSET_NAME` (no `/`, no `%`, no leading dot, so no traversal
- *   and no hidden file) and is a regular file; anything else outside
- *   `/api` is 404 `not-found`.
+ * - Only direct children of `assetsDir` are served, without a token (round
+ *   2): `/` serves `index.html`, and `/<name>` serves the file `<name>`
+ *   when `<name>` matches `ASSET_NAME` (no `/`, `\` or `%`, no leading
+ *   dot, so no traversal and no hidden file). The file is opened once with
+ *   `O_RDONLY | O_NONBLOCK | O_NOFOLLOW` and served only when `fstat` of
+ *   that descriptor says it is a regular file, so a FIFO (with or without
+ *   a writer), a device, a directory or a symbolic link (even one to a
+ *   regular file inside `assetsDir`) is 404 at once and never blocks the
+ *   event loop, and nothing can be swapped between the check and the
+ *   read. Anything else outside `/api` is 404 `not-found`.
+ * - Malformed HTTP (a `clientError` of the parser, for example a raw NUL
+ *   in the request target) is answered `400 Bad Request` with
+ *   `securityHeaders(false)`, `Content-Length: 0` and `Connection: close`,
+ *   never Node's bare 400 page.
  * - Plain text pages (refusals outside `/api`) are `text/plain;
  *   charset=utf-8`, one or two short lines naming the reason, never the
  *   token.
@@ -164,7 +173,10 @@ export interface ServerOptions {
 
 /** A running server. */
 export interface RunningServer {
-  /** `http://127.0.0.1:<port>/?token=<token>`: the entry URL. */
+  /**
+   * `http://127.0.0.1:<port>/#token=<token>`: the start-up URL, with the
+   * token in the fragment, which a browser never sends to a server.
+   */
   readonly url: string;
   /** The port listened on (the one chosen by the system for port 0). */
   readonly port: number;
@@ -193,25 +205,23 @@ export interface RunningServer {
  *   integer from 0 to 65535.
  *
  * Requests. For every request, before anything else, `checkRequest`
- * (`src/web/security.ts`) with this port and token. A request without a
- * `Host` header reaches that check too (it is 403 `forbidden-host`, not
- * Node's own 400: the `node:http` server is created with
- * `requireHostHeader: false`).
+ * (`src/web/security.ts`) with this port and token, `req.headers` and
+ * `req.headersDistinct`. A request without a `Host` header reaches that
+ * check too (it is 403 `forbidden-host`, not Node's own 400: the
+ * `node:http` server is created with `requireHostHeader: false`), and so
+ * does one with two `Host` headers (403).
  * - `refuse`: the status, `securityHeaders(api)`, `Allow: GET` on a 405;
  *   the body is `errorDocument(error, API_HINT_CONTEXT)` as JSON on an API
- *   path, else a plain text page. For 401 the page tells the user to open
- *   the URL printed by `agentboard serve` at start-up.
- * - `enter`: `303 See Other`, `Location: /`, the `Set-Cookie`, no board
- *   data.
+ *   path, else a plain text page. A 401 happens only on API paths.
  * - `route`: `/` serves `<assetsDir>/index.html` (or `PLACEHOLDER_PAGE`),
  *   `/<name>` an asset (see the module comment), `/api/stream` the stream,
  *   and every other API path `apiResponse` (`src/web/api.ts`) with
  *   `{ board, cache, now }`, sent as JSON with its status.
  * Every response, whatever its status, carries `securityHeaders(api)`
  * (so `Cache-Control: no-store` on API and stream responses) and never an
- * `Access-Control-Allow-*` header. No response body ever contains the
- * token; the only header that does is the 303's `Set-Cookie`. Nothing is
- * logged per request. A response body is written only after every read
+ * `Access-Control-Allow-*` header, and never a `Set-Cookie` header. No
+ * response, body or header, ever contains the token. Nothing is logged per
+ * request. A response body is written only after every read
  * transaction of the request has been committed (`board.db.isTransaction`
  * is false whenever the server writes to a response), and no transaction
  * is ever held across network IO or a timer.
@@ -224,10 +234,17 @@ export interface RunningServer {
  * 'too-many-streams')` as JSON. Otherwise the response is 200,
  * `Content-Type: text/event-stream`, and writes `sseRetry()` first. Its
  * start position is the `Last-Event-ID` header when present, else the
- * `since` query parameter when present, else none. Its first message,
- * computed in the same synchronous turn in which it joins the fan-out (so
- * no feed message falls between the two), and relative to the messages
- * the shared feed has delivered:
+ * `since` query parameter when present, else none. Its first message is
+ * `joinBoardFeed` of the shared feed (`src/board/feed.ts`), called in the
+ * same synchronous turn in which the stream joins the fan-out (so no feed
+ * message falls between the two). That join first brings the feed up to
+ * date (one catch-up and examination, whose message, if any, goes to the
+ * streams already open), so the position is compared with the board, not
+ * with what the feed had delivered before (board-feed: "Joining a running
+ * feed"; board-web scenario "Stream from a fresh snapshot"): a stream
+ * started with the id of any `/api/board` snapshot taken before it gets an
+ * `append` of exactly the events after it, or nothing, never a `resync`
+ * or an event the snapshot held. In detail:
  * - no start position: an `append` of every effective event (on an empty
  *   board an `append` with no event and id `EMPTY_POSITION_ID`);
  * - a start position that resumes (board-feed: "Resume from a position

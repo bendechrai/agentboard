@@ -11,12 +11,13 @@
 
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { request as httpRequest, type IncomingHttpHeaders, type IncomingMessage } from 'node:http';
-import { createServer, type Server } from 'node:net';
+import { connect, createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, expect } from 'vitest';
 
+import type { TickerTimers } from '../../board/ticker.js';
 import { openBoard, type Board } from '../../store/board.js';
 import { startServer, type RunningServer, type ServerOptions } from '../server.js';
 
@@ -191,11 +192,6 @@ export type Endpoint = Pick<RunningServer, 'port' | 'token'>;
 /** `Authorization: Bearer <token>`. */
 export function bearer(server: Endpoint): Record<string, string> {
   return { Authorization: `Bearer ${server.token}` };
-}
-
-/** The session cookie, written out from the spec (`agentboard-<port>=<token>`). */
-export function cookie(server: Endpoint): Record<string, string> {
-  return { Cookie: `agentboard-${String(server.port)}=${server.token}` };
 }
 
 /** GET with the bearer token. */
@@ -408,4 +404,86 @@ export async function until(check: () => boolean, ms: number, what: string): Pro
 /** Resolves after `ms`. */
 export function pause(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** A raw HTTP response, as text: status line, headers (lower-case names) and body. */
+export interface RawResult {
+  status: number;
+  /** Every header line, lower-case name to values in order. */
+  headers: Record<string, string[]>;
+  body: string;
+}
+
+/**
+ * Writes `text` (a whole request, CRLF line ends) to 127.0.0.1:`port` on
+ * a fresh socket and reads the response until the server closes the
+ * connection or `ms` passes (then the socket is destroyed and what arrived
+ * is parsed). For requests `node:http` cannot send: repeated `Host`
+ * headers and malformed requests.
+ */
+export function rawRequest(port: number, text: string, ms = 3000): Promise<RawResult> {
+  return new Promise((resolve, reject) => {
+    const socket = connect({ host: '127.0.0.1', port });
+    let data = '';
+    const timer = setTimeout(() => {
+      socket.destroy();
+      finish();
+    }, ms);
+    const finish = (): void => {
+      clearTimeout(timer);
+      const [head = '', ...rest] = data.split('\r\n\r\n');
+      const [statusLine = '', ...lines] = head.split('\r\n');
+      const headers: Record<string, string[]> = {};
+      for (const line of lines) {
+        const colon = line.indexOf(':');
+        if (colon > 0) {
+          const name = line.slice(0, colon).trim().toLowerCase();
+          (headers[name] ??= []).push(line.slice(colon + 1).trim());
+        }
+      }
+      resolve({
+        status: Number(statusLine.split(' ')[1] ?? 0),
+        headers,
+        body: rest.join('\r\n\r\n'),
+      });
+    };
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk: string) => {
+      data += chunk;
+    });
+    socket.on('close', finish);
+    socket.on('error', reject);
+    socket.write(text);
+  });
+}
+
+/**
+ * Ticker timers that never fire on their own: the feed runs only its first
+ * tick (at start) until `fire()` runs every pending interval and timeout
+ * callback once, as one later tick would. With `fsWatch: false` the feed
+ * then examines only when told to.
+ */
+export function frozenTimers(): TickerTimers & { fire(): void } {
+  let next = 0;
+  const pending = new Map<number, () => void>();
+  const add = (callback: () => void): number => {
+    next += 1;
+    pending.set(next, callback);
+    return next;
+  };
+  return {
+    setInterval: (callback) => add(callback),
+    setTimeout: (callback) => add(callback),
+    clearInterval: (handle) => {
+      pending.delete(handle as number);
+    },
+    clearTimeout: (handle) => {
+      pending.delete(handle as number);
+    },
+    fire: () => {
+      for (const callback of [...pending.values()]) {
+        callback();
+      }
+    },
+  };
 }

@@ -16,13 +16,11 @@ import {
   TOKEN_BYTES,
   TOKEN_LENGTH,
   checkRequest,
-  cookieName,
   hostAllowed,
   isApiPath,
   newToken,
   presentedTokens,
   securityHeaders,
-  sessionCookie,
   tokensEqual,
   type Guard,
   type RequestHead,
@@ -54,12 +52,31 @@ function differsAt(i: number): string {
   return TOKEN.slice(0, i) + other + TOKEN.slice(i + 1);
 }
 
-function head(method: string, url: string, headers: Record<string, string> = {}): RequestHead {
-  const lower: Record<string, string> = { host: HOST };
-  for (const [k, v] of Object.entries(headers)) {
-    lower[k.toLowerCase()] = v;
+/**
+ * A request head as `node:http` gives it: `headers` with the first value
+ * of each header, `headersDistinct` with every value. `hosts` are the Host
+ * header values in order (default one, `HOST`); `headers.host` takes an
+ * explicit override from `headers`.
+ */
+function head(
+  method: string,
+  url: string,
+  headers: Record<string, string> = {},
+  hosts: readonly string[] = [headers.host ?? HOST],
+): RequestHead {
+  const lower: Record<string, string> = {};
+  const distinct: Record<string, string[]> = {};
+  if (hosts.length > 0) {
+    lower.host = hosts[0] ?? '';
+    distinct.host = [...hosts];
   }
-  return { method, url, headers: lower };
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() !== 'host') {
+      lower[k.toLowerCase()] = v;
+      distinct[k.toLowerCase()] = [v];
+    }
+  }
+  return { method, url, headers: lower, headersDistinct: distinct };
 }
 
 function withoutHost(
@@ -67,7 +84,7 @@ function withoutHost(
   url: string,
   headers: Record<string, string> = {},
 ): RequestHead {
-  return { method, url, headers: { ...headers } };
+  return head(method, url, headers, []);
 }
 
 const BEARER = { authorization: `Bearer ${TOKEN}` };
@@ -125,19 +142,6 @@ describe('tokensEqual', () => {
   });
 });
 
-describe('the cookie', () => {
-  it('is named after the port', () => {
-    expect(cookieName(4477)).toBe('agentboard-4477');
-    expect(cookieName(65535)).toBe('agentboard-65535');
-  });
-
-  it('scenario: the entry cookie is HttpOnly, SameSite=Strict, Path=/ and a session cookie', () => {
-    const value = sessionCookie(PORT, TOKEN);
-    expect(value).toBe(`agentboard-4477=${TOKEN}; HttpOnly; SameSite=Strict; Path=/`);
-    expect(value).not.toMatch(/max-age|expires|domain|secure/i);
-  });
-});
-
 describe('hostAllowed', () => {
   it.each([
     ['127.0.0.1:4477', true],
@@ -161,9 +165,15 @@ describe('hostAllowed', () => {
     expect(hostAllowed(host, PORT)).toBe(allowed);
   });
 
-  it('refuses a missing or repeated header', () => {
+  it('accepts every value node:http kept only when there is exactly one allowed value', () => {
+    expect(hostAllowed([HOST], PORT)).toBe(true);
+    expect(hostAllowed([`localhost:${String(PORT)}`], PORT)).toBe(true);
     expect(hostAllowed(undefined, PORT)).toBe(false);
+    expect(hostAllowed([], PORT)).toBe(false);
     expect(hostAllowed([HOST, HOST], PORT)).toBe(false);
+    expect(hostAllowed([HOST, 'attacker.example'], PORT)).toBe(false);
+    expect(hostAllowed(['attacker.example', HOST], PORT)).toBe(false);
+    expect(hostAllowed(['attacker.example:4477'], PORT)).toBe(false);
   });
 });
 
@@ -212,43 +222,9 @@ describe('securityHeaders', () => {
 });
 
 describe('presentedTokens', () => {
-  it('accepts the query token on GET / only', () => {
-    expect(presentedTokens(head('GET', `/?token=${TOKEN}`), GUARD)).toEqual(['query']);
-    expect(presentedTokens(head('GET', `/?x=1&token=${TOKEN}`), GUARD)).toEqual(['query']);
-    expect(presentedTokens(head('GET', `/api/board?token=${TOKEN}`), GUARD)).toEqual([]);
-    expect(presentedTokens(head('GET', `/api/stream?token=${TOKEN}`), GUARD)).toEqual([]);
-    expect(presentedTokens(head('GET', `/app.js?token=${TOKEN}`), GUARD)).toEqual([]);
-    expect(presentedTokens(head('GET', `/index.html?token=${TOKEN}`), GUARD)).toEqual([]);
-    expect(presentedTokens(head('POST', `/?token=${TOKEN}`), GUARD)).toEqual([]);
-    expect(presentedTokens(head('GET', `/?token=${differsAt(3)}`), GUARD)).toEqual([]);
-  });
-
-  it('finds the cookie of this port among others, and ignores another port', () => {
-    expect(presentedTokens(head('GET', '/api/board', COOKIE), GUARD)).toEqual(['cookie']);
-    expect(
-      presentedTokens(
-        head('GET', '/api/board', {
-          cookie: `a=b; agentboard-4478=${TOKEN};agentboard-${String(PORT)}=${TOKEN}; c=d`,
-        }),
-        GUARD,
-      ),
-    ).toEqual(['cookie']);
-    expect(
-      presentedTokens(head('GET', '/api/board', { cookie: `agentboard-4478=${TOKEN}` }), GUARD),
-    ).toEqual([]);
-    expect(
-      presentedTokens(
-        head('GET', '/api/board', { cookie: `agentboard-${String(PORT)}=${differsAt(0)}` }),
-        GUARD,
-      ),
-    ).toEqual([]);
-    expect(presentedTokens(head('GET', '/api/board', { cookie: `token=${TOKEN}` }), GUARD)).toEqual(
-      [],
-    );
-  });
-
   it('accepts Authorization: Bearer with the token only', () => {
     expect(presentedTokens(head('GET', '/api/board', BEARER), GUARD)).toEqual(['bearer']);
+    expect(presentedTokens(head('POST', '/', BEARER), GUARD)).toEqual(['bearer']);
     expect(
       presentedTokens(
         head('GET', '/api/board', { authorization: `Bearer ${differsAt(42)}` }),
@@ -261,12 +237,25 @@ describe('presentedTokens', () => {
     expect(presentedTokens(head('GET', '/api/board', { authorization: TOKEN }), GUARD)).toEqual([]);
   });
 
-  it('lists every form that carries the token, in the order query, cookie, bearer', () => {
-    expect(
-      presentedTokens(head('GET', `/?token=${TOKEN}`, { ...COOKIE, ...BEARER }), GUARD),
-    ).toEqual(['query', 'cookie', 'bearer']);
-    expect(presentedTokens(head('GET', `/?token=${differsAt(1)}`, { ...COOKIE }), GUARD)).toEqual([
-      'cookie',
+  it('ignores a token query parameter on every path, GET / included', () => {
+    for (const url of [`/?token=${TOKEN}`, `/api/board?token=${TOKEN}`, `/app.js?token=${TOKEN}`]) {
+      expect(presentedTokens(head('GET', url), GUARD), url).toEqual([]);
+    }
+  });
+
+  it('ignores every cookie, the old agentboard-<port> cookie included', () => {
+    for (const cookie of [
+      `agentboard-${String(PORT)}=${TOKEN}`,
+      `a=b; agentboard-${String(PORT)}=${TOKEN}; c=d`,
+      `token=${TOKEN}`,
+    ]) {
+      expect(presentedTokens(head('GET', '/api/board', { cookie }), GUARD), cookie).toEqual([]);
+      expect(presentedTokens(head('GET', `/?token=${TOKEN}`, { cookie }), GUARD), cookie).toEqual(
+        [],
+      );
+    }
+    expect(presentedTokens(head('GET', '/api/board', { ...COOKIE, ...BEARER }), GUARD)).toEqual([
+      'bearer',
     ]);
   });
 });
@@ -296,17 +285,14 @@ describe('checkRequest', () => {
   it('scenario: DNS rebinding is refused 403 forbidden-host, before the token is looked at', () => {
     for (const host of ['attacker.example:4477', '127.0.0.1', 'localhost:1']) {
       refused(
-        checkRequest(head('GET', '/api/board', { ...COOKIE, host }), GUARD),
+        checkRequest(head('GET', '/api/board', { ...BEARER, host }), GUARD),
         403,
         'forbidden-host',
         true,
       );
-      refused(
-        checkRequest(head('GET', '/', { ...BEARER, host }), GUARD),
-        403,
-        'forbidden-host',
-        false,
-      );
+      // Rebinding the page: the page needs no token but the Host check still applies.
+      refused(checkRequest(head('GET', '/', { host }), GUARD), 403, 'forbidden-host', false);
+      refused(checkRequest(head('GET', '/app.js', { host }), GUARD), 403, 'forbidden-host', false);
       // Without a token too: the Host check comes first.
       refused(
         checkRequest(head('POST', '/api/board', { host }), GUARD),
@@ -316,17 +302,51 @@ describe('checkRequest', () => {
       );
     }
     refused(
-      checkRequest(withoutHost('GET', '/api/board', COOKIE), GUARD),
+      checkRequest(withoutHost('GET', '/api/board', BEARER), GUARD),
       403,
       'forbidden-host',
       true,
     );
+    refused(checkRequest(withoutHost('GET', '/'), GUARD), 403, 'forbidden-host', false);
   });
 
-  it('refuses a request without a valid token with 401 unauthorized, whatever its method', () => {
-    refused(checkRequest(head('GET', '/api/board'), GUARD), 401, 'unauthorized', true);
-    refused(checkRequest(head('GET', '/'), GUARD), 401, 'unauthorized', false);
-    refused(checkRequest(head('GET', '/app.js'), GUARD), 401, 'unauthorized', false);
+  it('scenario: a duplicate Host header is 403 forbidden-host, whichever value comes first', () => {
+    for (const hosts of [
+      [HOST, 'attacker.example'],
+      ['attacker.example', HOST],
+      [HOST, HOST],
+    ]) {
+      refused(
+        checkRequest(head('GET', '/api/board', BEARER, hosts), GUARD),
+        403,
+        'forbidden-host',
+        true,
+      );
+      refused(checkRequest(head('GET', '/', {}, hosts), GUARD), 403, 'forbidden-host', false);
+    }
+  });
+
+  it('checks the Host with headersDistinct, not with the first value in headers', () => {
+    const smuggled: RequestHead = {
+      method: 'GET',
+      url: '/api/board',
+      headers: { host: HOST, ...BEARER },
+      headersDistinct: { host: [HOST, 'attacker.example'], authorization: [BEARER.authorization] },
+    };
+    refused(checkRequest(smuggled, GUARD), 403, 'forbidden-host', true);
+    // No headersDistinct at all counts as no Host header.
+    refused(
+      checkRequest({ method: 'GET', url: '/', headers: { host: HOST } }, GUARD),
+      403,
+      'forbidden-host',
+      false,
+    );
+  });
+
+  it('scenario: the API requires the bearer header, whatever the method', () => {
+    for (const path of ['/api/board', '/api/stream', '/api', '/api/nope']) {
+      refused(checkRequest(head('GET', path), GUARD), 401, 'unauthorized', true);
+    }
     refused(checkRequest(head('POST', '/api/board'), GUARD), 401, 'unauthorized', true);
     refused(
       checkRequest(head('OPTIONS', '/api/board', { origin: 'https://evil.example' }), GUARD),
@@ -336,9 +356,15 @@ describe('checkRequest', () => {
     );
   });
 
-  it('scenario: the query token is not accepted on the API', () => {
+  it('scenario: a query token and a cookie are ignored on the API', () => {
     refused(
-      checkRequest(head('GET', `/api/board?token=${TOKEN}`), GUARD),
+      checkRequest(head('GET', `/api/board?token=${TOKEN}`, COOKIE), GUARD),
+      401,
+      'unauthorized',
+      true,
+    );
+    refused(
+      checkRequest(head('GET', `/api/stream?token=${TOKEN}`, COOKIE), GUARD),
       401,
       'unauthorized',
       true,
@@ -357,17 +383,39 @@ describe('checkRequest', () => {
   it('never puts a token in the unauthorized message', () => {
     const wrong = differsAt(7);
     const error = refused(
-      checkRequest(head('GET', `/?token=${wrong}`, { authorization: `Bearer ${wrong}` }), GUARD),
+      checkRequest(
+        head('GET', `/api/board?token=${wrong}`, { authorization: `Bearer ${wrong}` }),
+        GUARD,
+      ),
       401,
       'unauthorized',
-      false,
+      true,
     );
     expect(error.message).not.toContain(TOKEN);
     expect(error.message).not.toContain(wrong);
     expect(error.message).toMatch(/URL/);
   });
 
-  it('scenario: every method but GET is 405 method-not-allowed once authenticated', () => {
+  it('scenario: the page and the assets are routed without a token', () => {
+    for (const url of ['/', '/app.js', '/app.css', '/index.html', '/nope']) {
+      const verdict = checkRequest(head('GET', url), GUARD);
+      expect(verdict, url).toMatchObject({ kind: 'route', path: url, api: false });
+    }
+  });
+
+  it('routes GET /?token=<token> as the page: no entry URL, no cookie', () => {
+    for (const headers of [{}, COOKIE, BEARER]) {
+      const verdict = checkRequest(head('GET', `/?token=${TOKEN}`, headers), GUARD);
+      expect(verdict.kind).toBe('route');
+      if (verdict.kind === 'route') {
+        expect(verdict.path).toBe('/');
+        expect(verdict.api).toBe(false);
+      }
+      expect(JSON.stringify(verdict)).not.toContain('Set-Cookie');
+    }
+  });
+
+  it('scenario: every method but GET is 405 once past the token check', () => {
     for (const method of [
       'POST',
       'PUT',
@@ -384,20 +432,13 @@ describe('checkRequest', () => {
         'method-not-allowed',
         true,
       );
-      refused(checkRequest(head(method, '/', COOKIE), GUARD), 405, 'method-not-allowed', false);
+      // The page needs no token, so a non-GET there is 405 without one.
+      refused(checkRequest(head(method, '/'), GUARD), 405, 'method-not-allowed', false);
+      refused(checkRequest(head(method, '/app.js'), GUARD), 405, 'method-not-allowed', false);
     }
   });
 
-  it('scenario: the entry URL with the token enters with the session cookie', () => {
-    for (const url of [`/?token=${TOKEN}`, `/?token=${TOKEN}&x=1`]) {
-      const verdict = checkRequest(head('GET', url), GUARD);
-      expect(verdict).toEqual({ kind: 'enter', setCookie: sessionCookie(PORT, TOKEN) });
-    }
-    // Even when a cookie is present as well.
-    expect(checkRequest(head('GET', `/?token=${TOKEN}`, COOKIE), GUARD).kind).toBe('enter');
-  });
-
-  it('routes an authenticated GET with its path and query', () => {
+  it('routes an authenticated API GET with its path and query', () => {
     const verdict = checkRequest(head('GET', '/api/events?after=abc&limit=5', BEARER), GUARD);
     expect(verdict.kind).toBe('route');
     if (verdict.kind === 'route') {
@@ -406,19 +447,10 @@ describe('checkRequest', () => {
       expect(verdict.query.get('limit')).toBe('5');
       expect(verdict.api).toBe(true);
     }
-    const page = checkRequest(head('GET', '/', COOKIE), GUARD);
-    expect(page).toMatchObject({ kind: 'route', path: '/', api: false });
-    const asset = checkRequest(
-      head('GET', '/app.js', { host: `localhost:${String(PORT)}`, ...COOKIE }),
+    const local = checkRequest(
+      head('GET', '/api/session', { host: `localhost:${String(PORT)}`, ...BEARER }),
       GUARD,
     );
-    expect(asset).toMatchObject({ kind: 'route', path: '/app.js', api: false });
-  });
-
-  it('routes GET / with a wrong query token when a valid cookie authenticates it', () => {
-    expect(checkRequest(head('GET', `/?token=${differsAt(2)}`, COOKIE), GUARD)).toMatchObject({
-      kind: 'route',
-      path: '/',
-    });
+    expect(local).toMatchObject({ kind: 'route', path: '/api/session', api: true });
   });
 });

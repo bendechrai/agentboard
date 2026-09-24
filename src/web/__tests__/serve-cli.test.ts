@@ -94,9 +94,15 @@ describe('scenario: Start and stop (in process)', () => {
     expect(port).toBeGreaterThan(0);
     expect(doc.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(doc.writable).toBe(false);
-    expect(doc.url).toBe(`http://127.0.0.1:${String(port)}/?token=${String(doc.token)}`);
-    const entry = await request(port, `/?token=${String(doc.token)}`);
-    expect(entry.status).toBe(303);
+    expect(doc.url).toBe(`http://127.0.0.1:${String(port)}/#token=${String(doc.token)}`);
+    // The page needs no token; the API needs the bearer header.
+    const page = await request(port, '/');
+    expect(page.status).toBe(200);
+    expect(page.headers['set-cookie']).toBeUndefined();
+    const session = await request(port, '/api/session', {
+      headers: { Authorization: `Bearer ${String(doc.token)}` },
+    });
+    expect(session.status).toBe(200);
     running.stop();
     expect(await running.done).toBe(0);
     expect(running.stdout()).toBe(`${line}\n`);
@@ -109,7 +115,7 @@ describe('scenario: Start and stop (in process)', () => {
     const running = start(['serve'], root);
     const line = await startupLine(running);
     const match =
-      /^serving (.+) read-only at (http:\/\/127\.0\.0\.1:(\d+)\/\?token=([A-Za-z0-9_-]{43}))$/.exec(
+      /^serving (.+) read-only at (http:\/\/127\.0\.0\.1:(\d+)\/#token=([A-Za-z0-9_-]{43}))$/.exec(
         line,
       );
     expect(match, line).not.toBeNull();
@@ -236,7 +242,7 @@ function direct(argv: readonly string[], cwd: string, open: (url: string) => Pro
 }
 
 describe('--open', () => {
-  it('asks the system to open the entry URL once', async () => {
+  it('asks the system to open the start-up URL, token in the fragment, once', async () => {
     const { root } = project();
     const opened: string[] = [];
     const running = direct(['serve', '--open', '--json'], root, (url) => {
@@ -247,6 +253,7 @@ describe('--open', () => {
     const doc = JSON.parse(running.stdout()) as { url: string };
     await until(() => opened.length === 1, 3000, 'the opener');
     expect(opened).toEqual([doc.url]);
+    expect(doc.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/#token=[A-Za-z0-9_-]{43}$/);
     running.stop();
     await running.done;
     expect(running.stderr()).toBe('');
@@ -283,6 +290,22 @@ describe('--open', () => {
     await running.done;
     expect(running.stdout().trim().split('\n')).toHaveLength(1);
   });
+
+  it('masks the token when the opener echoes the URL in its error', async () => {
+    const { root } = project();
+    const running = direct(['serve', '--open', '--json'], root, (url) =>
+      Promise.reject(new Error(`xdg-open ${url} failed; retried ${url}`)),
+    );
+    await until(() => running.stderr().includes('\n'), 5000, 'the warning');
+    const doc = JSON.parse(running.stdout()) as { port: number; token: string };
+    const masked = `http://127.0.0.1:${String(doc.port)}/#token=<token>`;
+    expect(running.stderr()).toBe(
+      `agentboard: could not open a browser: xdg-open ${masked} failed; retried ${masked}\n`,
+    );
+    expect(running.stderr()).not.toContain(doc.token);
+    running.stop();
+    await running.done;
+  });
 });
 
 /** A fake spawner recording its calls; each child ends as `outcome` says. */
@@ -307,7 +330,7 @@ function fakeSpawn(outcome: { code?: number | null; signal?: string; error?: Err
 }
 
 describe('openInBrowser', () => {
-  const URL = 'http://127.0.0.1:4477/?token=abc';
+  const URL = 'http://127.0.0.1:4477/#token=abc';
 
   it.each([
     ['darwin', 'open', [URL]],
