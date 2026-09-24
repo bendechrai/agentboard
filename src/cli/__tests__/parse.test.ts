@@ -49,6 +49,7 @@ describe('the command registry', () => {
       'close-merged',
       'mcp',
       'version',
+      'help',
     ]);
   });
 
@@ -136,10 +137,10 @@ describe('the command registry', () => {
     }
   });
 
-  it('names an exported library operation for every command but mcp and version', () => {
+  it('names an exported library operation for every command but mcp, version and help', () => {
     const exported = lib as unknown as Record<string, unknown>;
     for (const c of COMMANDS) {
-      if (c.name === 'mcp' || c.name === 'version') {
+      if (c.name === 'mcp' || c.name === 'version' || c.name === 'help') {
         expect(c.operation).toBeNull();
       } else {
         expect(typeof exported[String(c.operation)], c.name).toBe('function');

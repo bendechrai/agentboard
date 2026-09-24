@@ -87,6 +87,7 @@ describe('every command prints exactly one JSON document with --json', () => {
       'close-merged': () => run(['close-merged', ...AS, '--json'], root),
       mcp: () => run(['mcp', '--json'], root),
       version: () => run(['version', '--json'], root),
+      help: () => run(['help', '--json'], root),
     };
   }
 
@@ -127,6 +128,9 @@ describe('every command prints exactly one JSON document with --json', () => {
     expect(docs['close-merged']).toEqual({ closed: [], unmerged: [], skipped: [] });
     expect(docs.mcp).toMatchObject({ error: { exitCode: 1, reason: 'not-implemented' } });
     expect(docs.version).toEqual({ version });
+    expect((docs.help as { name: string }[]).map((d) => d.name)).toEqual(
+      COMMANDS.map((c) => c.name),
+    );
     expect(count(boardDir)).toBe(12);
   });
 });
