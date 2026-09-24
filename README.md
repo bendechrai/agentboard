@@ -29,7 +29,8 @@ See `docs/adr/` for the reasoning behind the design, starting with
 
 ## Install and run
 
-Requires Node 22.16 or later (for the built-in `node:sqlite`), `git` on the
+Requires Node 22.16 or later (the store uses `node:sqlite` and its
+`DatabaseSync.isTransaction`, added in 22.16), `git` on the
 PATH for board discovery and `sync`, and the GitHub CLI `gh` on the PATH
 only for `close-merged`.
 
@@ -203,7 +204,8 @@ agentboard release 01M38YRHC3 --as impl-1
 - `move <id> <status>` and `move <id>` (leave `blocked`) change status only.
   Blocking is a `move` to `blocked` plus a `comment` saying why.
 - `comment <id> <text>` appends to the ticket's thread. Text that starts
-  with `-` goes after `--`: `comment <id> --as a -- "- item"`.
+  with `--` would be read as a flag, so it goes after a lone `--`:
+  `comment <id> --as a -- "--force was needed"`.
 - `checklist tick <id> <index>` and `checklist untick` set a checklist line
   (indexes start at 0). A tick prints a reminder naming the tasks file:
   the board never marks a task complete; the task's checkbox in `tasks.md`
