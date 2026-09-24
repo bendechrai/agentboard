@@ -1,0 +1,40 @@
+/*
+ * The one stylesheet of the agentboard web client (add-board-web group 4):
+ * hand-written, no CSS framework, a light and a dark scheme. The class
+ * names are the DOM contract documented in src/web/client/views/.
+ * Placeholder until the views are implemented.
+ */
+
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1d1f21;
+  --muted: #6b7075;
+  --panel: #f3f4f6;
+  --accent: #2f6fdb;
+  --changed: #fff3bf;
+  --decision: #e6f4ea;
+  --problem: #fde8e8;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181b;
+    --fg: #e6e8eb;
+    --muted: #9aa0a6;
+    --panel: #23262b;
+    --accent: #7aa7ff;
+    --changed: #4a4220;
+    --decision: #1f3a2a;
+    --problem: #4a2020;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font:
+    14px/1.4 system-ui,
+    sans-serif;
+}

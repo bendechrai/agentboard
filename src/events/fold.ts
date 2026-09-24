@@ -8,7 +8,7 @@
  * order in the array or of any clock.
  */
 
-import type { JsonValue } from './canonical.js';
+import type { JsonValue } from './json.js';
 import { compareHlc, type Hlc } from './hlc.js';
 import {
   isKnownEvent,
