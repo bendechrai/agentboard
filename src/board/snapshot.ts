@@ -8,9 +8,20 @@
  * `src/index.ts`.
  */
 
+import type { RejectionReason } from '../events/fold.js';
+import { decodeHlc } from '../events/hlc.js';
 import type { Board } from '../store/board.js';
-import type { BoardModel } from '../view/types.js';
-import type { EventCache } from './feed.js';
+import { catchUp } from '../store/cache.js';
+import { comparePositions } from '../store/cursors.js';
+import { inSnapshot, loadState, stmt } from '../store/engine.js';
+import type { BoardModel, EventOutcome, EventView } from '../view/types.js';
+import {
+  EMPTY_POSITION_ID,
+  createEventCache,
+  effectiveDigest,
+  positionId,
+  type EventCache,
+} from './feed.js';
 
 /**
  * A snapshot of the board: a `BoardModel` without the client-side `late`
@@ -59,7 +70,50 @@ export interface LoadSnapshotOptions {
  *   (for example `BoardError(5, 'busy')`).
  */
 export function loadSnapshot(board: Board, options?: LoadSnapshotOptions): BoardSnapshot {
-  void board;
-  void options;
-  throw new Error('not implemented');
+  const cache = options?.cache ?? createEventCache();
+  const { db, eventsDir } = board;
+  catchUp(board);
+  return inSnapshot(db, () => {
+    const state = loadState(db);
+    const rows = stmt(
+      db,
+      'SELECT hash, folded, reason, position FROM folded WHERE position IS NOT NULL',
+    )
+      .all()
+      .map((row) => ({
+        hash: String(row.hash),
+        ts: decodeHlc(String(row.position)),
+        applied: row.folded === 1,
+        reason: row.reason === null ? null : String(row.reason),
+      }))
+      .sort(comparePositions);
+    const events = rows.map((row): EventView => {
+      const event = cache.get(eventsDir, row.hash);
+      const outcome: EventOutcome = row.applied
+        ? 'applied'
+        : row.reason === 'unknown-kind'
+          ? 'unknown'
+          : 'rejected';
+      return {
+        hash: row.hash,
+        kind: event.kind,
+        ticket: 'ticket' in event && typeof event.ticket === 'string' ? event.ticket : null,
+        actor: event.actor,
+        ts: event.ts,
+        outcome,
+        // A rejected row's reason is a fold RejectionReason (the cache schema).
+        reason: outcome === 'rejected' ? (row.reason as RejectionReason) : null,
+        event,
+      };
+    });
+    const applied = rows.filter((row) => row.applied).map((row) => row.hash);
+    const head = applied.at(-1) ?? null;
+    return {
+      tickets: state.tickets,
+      meta: state.meta,
+      events,
+      head,
+      id: head === null ? EMPTY_POSITION_ID : positionId(head, effectiveDigest(applied)),
+    };
+  });
 }

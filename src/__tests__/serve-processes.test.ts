@@ -79,7 +79,7 @@ describe('scenario: Start and stop', () => {
       expect(typeof line.port).toBe('number');
       expect(line.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
       expect(line.writable).toBe(false);
-      expect(line.url).toBe(`http://127.0.0.1:${String(line.port)}/?token=${line.token}`);
+      expect(line.url).toBe(`http://127.0.0.1:${String(line.port)}/#token=${line.token}`);
       const board = await get(line, '/api/board');
       expect(board.status).toBe(200);
       expect((await get({ port: line.port, token: 'x'.repeat(43) }, '/api/board')).status).toBe(

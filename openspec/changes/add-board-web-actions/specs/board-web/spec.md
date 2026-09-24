@@ -13,7 +13,7 @@ SHALL exit 1 with reason `port-in-use` before serving anything. When no
 board is found it SHALL exit 2 before listening. At start-up it SHALL print
 on stdout the line `serving <board dir> read-only at <url>`, or, when
 started with `--as <actor>`, `serving <board dir> as <actor> at <url>`,
-where `<url>` is `http://127.0.0.1:<port>/?token=<token>`; with `--json`
+where `<url>` is `http://127.0.0.1:<port>/#token=<token>`; with `--json`
 it SHALL instead print exactly one line holding the JSON object
 `{"url", "port", "token", "writable", "actor"}`, with `writable` true and
 `actor` the actor exactly when `--as` was given (else false and null), and
@@ -62,9 +62,9 @@ performs.
 
 ### Requirement: JSON API
 The server SHALL answer these authenticated `GET` routes with JSON:
-- `/api/session`: `{version, boardDir, writable, actor, csrf}`: `writable`
-  true, `actor` the `--as` actor and `csrf` the CSRF token when started
-  with `--as`, else false, null and null;
+- `/api/session`: `{version, boardDir, writable, actor}`: `writable` true
+  and `actor` the `--as` actor when started with `--as`, else false and
+  null;
 - `/api/board`: `{tickets, meta, id}`: every ticket, open and closed, the
   board meta, and the feed position id of the same snapshot;
 - `/api/tickets/<id>`: `{ticket, events}` for a full id or unique prefix

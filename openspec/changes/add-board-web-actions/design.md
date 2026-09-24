@@ -3,9 +3,9 @@
 ## Context
 
 `add-board-web` serves a read-only app on `127.0.0.1` behind an access
-token (query on the entry URL, then an `HttpOnly`, `SameSite=Strict`
-per-port cookie, or a bearer header), a Host check, no CORS and a strict
-Content-Security-Policy. Every write in agentboard goes through a board
+token (handed to the page in the start-up URL's fragment, kept in
+`sessionStorage` and sent only as `Authorization: Bearer`; no cookie), a
+Host check, no CORS and a strict Content-Security-Policy. Every write in agentboard goes through a board
 operation run by `runCommand` in one `BEGIN IMMEDIATE` transaction
 (ADR 0002). The MCP server already exposes those operations to a caller
 that is not a shell: it converts a JSON argument object into the
@@ -97,36 +97,50 @@ The CLI's `--allow-secret-like` is not offered: the browser is the
 surface where pasted text is most likely to be a real credential, and a
 false positive has an easy path through the CLI.
 
-### CSRF protection in depth
-The access token is carried by a cookie, which a browser attaches
-automatically, so a write endpoint needs more than the cookie. Every
-`POST` must pass all of:
+### CSRF protection: structural, with defence in depth
+Cross-site request forgery needs a credential that the browser attaches
+by itself. `add-board-web` has none: there is no cookie, and the token is
+sent only in the `Authorization` header, which only this origin's script
+sets, from its own `sessionStorage`. A page on another origin (another
+site, or another port on `127.0.0.1`) cannot read that storage, and
+cannot send an `Authorization` header or a JSON body to the server
+without a CORS preflight, which the server never approves (no
+`Access-Control-Allow-*` header, and `OPTIONS` is refused). A form post or
+a `no-cors` fetch carries no token and gets 401. So the token check of
+every request is itself the CSRF defence. Every `POST` must pass:
 
-1. The Host check and token check of every request (from
-   `add-board-web`). The cookie is `SameSite=Strict`, so a cross-site
-   request normally carries no cookie at all.
-2. `Content-Type: application/json`. A cross-origin page cannot send it
-   without a CORS preflight, and the server never approves one.
-3. `Origin` equal to `http://127.0.0.1:<port>` or `http://localhost:<port>`
-   and consistent with `Host`. Browsers send `Origin` on every `POST`. A
-   request without `Origin` is accepted only when authenticated with
-   `Authorization: Bearer` (a script, which is not a browser and cannot
-   be forged by one).
-4. `X-Agentboard-CSRF` equal to a second random token drawn at start-up
-   and returned only by `/api/session` of a writable server. Reading it
-   requires the token and same-origin script access; setting a custom
-   header cross-origin requires a preflight.
-5. A body of at most 64 KiB (413 `body-too-large`).
+1. The Host check and the bearer token check of every API request (from
+   `add-board-web`).
+2. `Content-Type: application/json` (with an optional `charset`). Kept:
+   the body is JSON anyway, and it keeps a second, independent reason for
+   a browser to preflight any cross-origin write, so a browser bug in the
+   handling of one of the two headers is not enough.
+3. `Origin`, when present, equal to `http://127.0.0.1:<port>` or
+   `http://localhost:<port>` and naming the same host as `Host`. Kept:
+   browsers send `Origin` on every `POST`, so this costs one comparison
+   and refuses any browser request from another origin even if a token
+   ever reached a page there. A request without `Origin` is accepted: it
+   does not come from a browser, and it already proved the token.
+4. A body of at most 64 KiB (413 `body-too-large`). Kept as a resource
+   bound, not as a CSRF measure: the largest real action body is a few
+   KiB.
 
-Any failure is 403 `csrf-failed` with nothing written. Each layer alone
-would stop the classic form-post attack; together they also cover a
-browser bug in any one of them.
+A failure of 2 or 3 is 403 `csrf-failed` with nothing written.
 
-Alternatives considered: the cookie alone (`SameSite=Strict` is strong
-but has had browser-specific gaps, and gives nothing against a
-same-site-but-different-port page on localhost, since SameSite ignores
-ports); a double-submit cookie (weaker than a server-held token, since
-cookies are shared across ports on the same host).
+Dropped: the per-run CSRF token in an `X-Agentboard-CSRF` header,
+returned by `/api/session`. It existed because the access token rode in a
+cookie that the browser attached automatically; it required reading
+`/api/session` with the token, which is exactly what the bearer header
+already requires. With the cookie gone it would be a second copy of the
+same secret proving the same thing.
+
+Alternatives considered: keeping the CSRF header anyway (no attacker is
+stopped by it that the bearer header does not stop, and it adds a
+session field and a second secret to guard); requiring `Origin` on every
+`POST` (breaks scripts and `curl`, which prove the token and are not
+browsers); dropping the content type and `Origin` checks as redundant
+(they are cheap, and they do not depend on the token handling of the
+client being right).
 
 ### The page
 The ticket detail gains the controls when the session is writable. The
@@ -145,8 +159,9 @@ session.
   requests and streams of this server for that time; acceptable for a
   single-user local tool, and identical in effect to a CLI command.
 - [Someone with the URL can write as the actor] -> the URL (with its
-  token) is the credential, as documented; it is printed only to the
-  terminal that started the server.
+  token in the fragment) is the credential, as documented; it is printed
+  only to the terminal that started the server, and a browser never sends
+  the fragment to any server.
 - [A stale page submits an action on an old view] -> the operation
   validates against the state at write time, so the worst case is a
   refusal (for example `invalid-transition`) shown with its hint.

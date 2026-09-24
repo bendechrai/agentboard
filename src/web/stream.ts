@@ -27,7 +27,7 @@ export const STREAM_BUFFER_BYTES = 4 * 1024 * 1024;
 
 /** The first bytes of every stream, exactly `retry: 2000\n\n`. */
 export function sseRetry(): string {
-  throw new Error('not implemented');
+  return `retry: ${String(STREAM_RETRY_MS)}\n\n`;
 }
 
 /**
@@ -39,8 +39,7 @@ export function sseRetry(): string {
  * `Last-Event-ID` on reconnect.
  */
 export function sseMessage(message: FeedMessage): string {
-  void message;
-  throw new Error('not implemented');
+  return `event: ${message.type}\nid: ${message.id}\ndata: ${JSON.stringify(message)}\n\n`;
 }
 
 /**
@@ -49,8 +48,7 @@ export function sseMessage(message: FeedMessage): string {
  * client's last event id stays the last position id it received.
  */
 export function sseProblem(doc: ErrorDocument): string {
-  void doc;
-  throw new Error('not implemented');
+  return `event: problem\ndata: ${JSON.stringify(doc)}\n\n`;
 }
 
 /**
@@ -59,5 +57,5 @@ export function sseProblem(doc: ErrorDocument): string {
  * stream.
  */
 export function sseKeepalive(): string {
-  throw new Error('not implemented');
+  return ': keepalive\n\n';
 }

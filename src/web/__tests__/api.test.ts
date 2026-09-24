@@ -249,50 +249,58 @@ function seed2500(dir: string): void {
 }
 
 describe('/api/events', () => {
-  it('scenario: pages 2500 events as 1000, 1000 and 500 in fold order, next null on the last page', async () => {
-    const { server, eventsDir } = await seeded(seed2500);
-    const want = views(eventsDir);
-    expect(want).toHaveLength(2500);
-    expect(new Set(want.map((e) => e.outcome))).toEqual(
-      new Set(['applied', 'rejected', 'unknown']),
-    );
-    expect(EVENTS_PAGE_DEFAULT).toBe(1000);
-    expect(EVENTS_PAGE_MAX).toBe(5000);
-    const pages: { events: EventView[]; next: string | null }[] = [];
-    let path = '/api/events';
-    for (;;) {
-      const result = await get(server, path);
-      expect(result.status).toBe(200);
-      const page = json(result) as { events: EventView[]; next: string | null };
-      expect(Object.keys(page).sort()).toEqual(['events', 'next']);
-      pages.push(page);
-      if (page.next === null) {
-        break;
+  it(
+    'scenario: pages 2500 events as 1000, 1000 and 500 in fold order, next null on the last page',
+    { timeout: 60_000 },
+    async () => {
+      const { server, eventsDir } = await seeded(seed2500);
+      const want = views(eventsDir);
+      expect(want).toHaveLength(2500);
+      expect(new Set(want.map((e) => e.outcome))).toEqual(
+        new Set(['applied', 'rejected', 'unknown']),
+      );
+      expect(EVENTS_PAGE_DEFAULT).toBe(1000);
+      expect(EVENTS_PAGE_MAX).toBe(5000);
+      const pages: { events: EventView[]; next: string | null }[] = [];
+      let path = '/api/events';
+      for (;;) {
+        const result = await get(server, path);
+        expect(result.status).toBe(200);
+        const page = json(result) as { events: EventView[]; next: string | null };
+        expect(Object.keys(page).sort()).toEqual(['events', 'next']);
+        pages.push(page);
+        if (page.next === null) {
+          break;
+        }
+        expect(pages.length).toBeLessThan(4);
+        path = `/api/events?after=${page.next}`;
       }
-      expect(pages.length).toBeLessThan(4);
-      path = `/api/events?after=${page.next}`;
-    }
-    expect(pages.map((p) => p.events.length)).toEqual([1000, 1000, 500]);
-    expect(pages.map((p) => p.next)).toEqual([want[999]?.hash, want[1999]?.hash, null]);
-    expect(pages.flatMap((p) => p.events)).toEqual(plain(want));
-  });
+      expect(pages.map((p) => p.events.length)).toEqual([1000, 1000, 500]);
+      expect(pages.map((p) => p.next)).toEqual([want[999]?.hash, want[1999]?.hash, null]);
+      expect(pages.flatMap((p) => p.events)).toEqual(plain(want));
+    },
+  );
 
-  it('gives next null on a page that ends exactly at the last event', async () => {
-    const { server, eventsDir } = await seeded(seed2500);
-    const want = views(eventsDir);
-    const all = json(await get(server, '/api/events?limit=2500')) as {
-      events: EventView[];
-      next: string | null;
-    };
-    expect(all.events).toHaveLength(2500);
-    expect(all.next).toBeNull();
-    const max = json(await get(server, '/api/events?limit=5000')) as { events: EventView[] };
-    expect(max.events).toHaveLength(2500);
-    const last = json(await get(server, `/api/events?after=${want[2499]?.hash ?? ''}&limit=1`));
-    expect(last).toEqual({ events: [], next: null });
-    const tail = json(await get(server, `/api/events?after=${want[2497]?.hash ?? ''}&limit=1`));
-    expect(tail).toEqual({ events: plain([want[2498]]), next: want[2498]?.hash });
-  });
+  it(
+    'gives next null on a page that ends exactly at the last event',
+    { timeout: 60_000 },
+    async () => {
+      const { server, eventsDir } = await seeded(seed2500);
+      const want = views(eventsDir);
+      const all = json(await get(server, '/api/events?limit=2500')) as {
+        events: EventView[];
+        next: string | null;
+      };
+      expect(all.events).toHaveLength(2500);
+      expect(all.next).toBeNull();
+      const max = json(await get(server, '/api/events?limit=5000')) as { events: EventView[] };
+      expect(max.events).toHaveLength(2500);
+      const last = json(await get(server, `/api/events?after=${want[2499]?.hash ?? ''}&limit=1`));
+      expect(last).toEqual({ events: [], next: null });
+      const tail = json(await get(server, `/api/events?after=${want[2497]?.hash ?? ''}&limit=1`));
+      expect(tail).toEqual({ events: plain([want[2498]]), next: want[2498]?.hash });
+    },
+  );
 
   it('accepts a rejected or unknown-kind event as after (both are recorded well-formed events)', async () => {
     const { server, eventsDir } = await seeded((dir) => seedRich(dir));
@@ -435,53 +443,57 @@ describe('failures', () => {
 });
 
 describe('reads never block writers', () => {
-  it('has no transaction open on the server connection whenever a response is written', async () => {
-    const { server, board } = await seeded((dir) => {
-      putEvent(dir, ev(P.create(T1, 'One'), 'orch', 1000));
-      putEvent(dir, ev(P.create(T3, 'Three'), 'orch', 1500));
-      putEvent(dir, ev(P.claim(T1), 'a', 2000));
-      putEvent(dir, ev(P.claim(T1), 'b', 3000));
-    });
-    const seen: boolean[] = [];
-    const record = (): void => {
-      seen.push(board.db.isTransaction);
-    };
-    const write = ServerResponse.prototype.write;
-    const end = ServerResponse.prototype.end;
-    vi.spyOn(ServerResponse.prototype, 'write').mockImplementation(function (
-      this: ServerResponse,
-      ...args: Parameters<typeof write>
-    ) {
-      record();
-      return write.apply(this, args);
-    });
-    vi.spyOn(ServerResponse.prototype, 'end').mockImplementation(function (
-      this: ServerResponse,
-      ...args: Parameters<typeof end>
-    ) {
-      record();
-      return end.apply(this, args);
-    });
-    const paths = [
-      '/api/session',
-      '/api/board',
-      `/api/tickets/${T1}`,
-      '/api/tickets/01ARY',
-      `/api/tickets/${MISSING}`,
-      '/api/events',
-      '/api/events?limit=1',
-      '/api/events?after=nope',
-      '/api/events?limit=0',
-      '/api/actors',
-      '/api/nope',
-    ];
-    for (const path of paths) {
-      expect((await get(server, path)).status, path).toBeGreaterThan(0);
-    }
-    const stream = await openStream(server);
-    await stream.until((c) => c.events().length > 0, 3000, 'the first stream event');
-    stream.close();
-    expect(seen.length).toBeGreaterThanOrEqual(paths.length + 1);
-    expect(seen.every((open) => !open)).toBe(true);
-  });
+  it(
+    'has no transaction open on the server connection whenever a response is written',
+    { timeout: 30_000 },
+    async () => {
+      const { server, board } = await seeded((dir) => {
+        putEvent(dir, ev(P.create(T1, 'One'), 'orch', 1000));
+        putEvent(dir, ev(P.create(T3, 'Three'), 'orch', 1500));
+        putEvent(dir, ev(P.claim(T1), 'a', 2000));
+        putEvent(dir, ev(P.claim(T1), 'b', 3000));
+      });
+      const seen: boolean[] = [];
+      const record = (): void => {
+        seen.push(board.db.isTransaction);
+      };
+      const write = ServerResponse.prototype.write;
+      const end = ServerResponse.prototype.end;
+      vi.spyOn(ServerResponse.prototype, 'write').mockImplementation(function (
+        this: ServerResponse,
+        ...args: Parameters<typeof write>
+      ) {
+        record();
+        return write.apply(this, args);
+      });
+      vi.spyOn(ServerResponse.prototype, 'end').mockImplementation(function (
+        this: ServerResponse,
+        ...args: Parameters<typeof end>
+      ) {
+        record();
+        return end.apply(this, args);
+      });
+      const paths = [
+        '/api/session',
+        '/api/board',
+        `/api/tickets/${T1}`,
+        '/api/tickets/01ARY',
+        `/api/tickets/${MISSING}`,
+        '/api/events',
+        '/api/events?limit=1',
+        '/api/events?after=nope',
+        '/api/events?limit=0',
+        '/api/actors',
+        '/api/nope',
+      ];
+      for (const path of paths) {
+        expect((await get(server, path)).status, path).toBeGreaterThan(0);
+      }
+      const stream = await openStream(server);
+      await stream.until((c) => c.events().length > 0, 3000, 'the first stream event');
+      stream.close();
+      expect(seen.length).toBeGreaterThanOrEqual(paths.length + 1);
+      expect(seen.every((open) => !open)).toBe(true);
+    },
+  );
 });

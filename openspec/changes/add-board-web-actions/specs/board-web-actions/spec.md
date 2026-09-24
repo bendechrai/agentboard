@@ -77,29 +77,37 @@ SHALL offer no override; a false positive is written with the CLI and
 - **THEN** the response is 400 with reason `secret-like` naming `pem-private-key`, the text is not in the response, and no event is written
 
 ### Requirement: Cross-site request forgery protection
-Every `POST` SHALL pass, in addition to the Host and token checks of every
-request, all of: a `Content-Type` of `application/json`; a body of at most
-64 KiB (otherwise 413 with reason `body-too-large`); an `Origin` header
-equal to `http://127.0.0.1:<port>` or `http://localhost:<port>` matching
-the `Host` header, or, only when the token was given as
-`Authorization: Bearer`, no `Origin` header; and an `X-Agentboard-CSRF`
-header equal to the server's CSRF token, 32 random bytes encoded as 43
-base64url characters, drawn at start-up, distinct from the access token,
-and returned only by `/api/session` of a writable server. Tokens SHALL be
-compared in constant time. A request failing any of these SHALL be
-answered with 403 and reason `csrf-failed` and SHALL write nothing.
+Every `POST` SHALL pass, in addition to the Host check and the
+`Authorization: Bearer` token check of every API request (the only form
+of the token; no cookie is accepted or set), all of: a `Content-Type` of
+`application/json`, optionally with a `charset` parameter; a body of at
+most 64 KiB (otherwise 413 with reason `body-too-large`); and, when an
+`Origin` header is present, an `Origin` equal to `http://127.0.0.1:<port>`
+or `http://localhost:<port>` naming the same host as the `Host` header. A
+request without an `Origin` header SHALL be accepted by this check. A
+request failing the content type or `Origin` rule SHALL be answered with
+403 and reason `csrf-failed`. A refused request SHALL write nothing. The
+server SHALL draw no CSRF token and require no CSRF header.
 
-#### Scenario: Cross-site form post
-- **WHEN** a request with the valid token cookie posts to `/api/actions/comment` with `Origin: https://attacker.example`
+#### Scenario: Cross-site post with the token
+- **WHEN** a request with a valid `Authorization: Bearer` token posts to `/api/actions/comment` with `Origin: https://attacker.example`
 - **THEN** the response is 403 with reason `csrf-failed` and no event is written
 
-#### Scenario: Missing CSRF header
-- **WHEN** a same-origin request with the valid cookie and `Content-Type: application/json` posts without `X-Agentboard-CSRF`
-- **THEN** the response is 403 with reason `csrf-failed`
+#### Scenario: Cross-site form post without the token
+- **WHEN** a request with no Authorization header, a `Cookie` header holding the token, `Content-Type: application/x-www-form-urlencoded` and `Origin: https://attacker.example` posts to `/api/actions/comment`
+- **THEN** the response is 401 with reason `unauthorized` and no event is written
 
 #### Scenario: Form encoding refused
-- **WHEN** an otherwise valid action is posted with `Content-Type: application/x-www-form-urlencoded`
+- **WHEN** an otherwise valid action with the bearer token and a same-origin `Origin` is posted with `Content-Type: application/x-www-form-urlencoded`
 - **THEN** the response is 403 with reason `csrf-failed`
+
+#### Scenario: Script without Origin
+- **WHEN** a client posts a valid comment with the bearer token, `Content-Type: application/json` and no `Origin` header
+- **THEN** the response is 200 and the comment is written
+
+#### Scenario: Body too large
+- **WHEN** an authenticated same-origin action is posted with a 65 KiB JSON body
+- **THEN** the response is 413 with reason `body-too-large` and no event is written
 
 ### Requirement: Action controls in the web app
 When `/api/session` reports `writable`, the ticket detail SHALL offer

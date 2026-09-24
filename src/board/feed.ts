@@ -313,19 +313,27 @@ export function watchBoard(board: Board, options: WatchBoardOptions): Promise<vo
     return { type: 'append', id, events, tickets, meta };
   };
 
-  /** The first examination: a full append, or resume from `since`. */
-  const first = (all: Effective[], next: FeedState): FeedMessage | null => {
-    const id = next.id;
-    if (options.since === undefined) {
+  /**
+   * The first message for a consumer at `since` (or at no position) that
+   * joins when the effective events are `all` (in fold order) and their
+   * position id is `id`: a full append, a resume, or a resync.
+   */
+  const startAt = (
+    all: readonly Effective[],
+    id: string,
+    since: string | undefined,
+  ): FeedMessage | null => {
+    if (since === undefined) {
       return appendOf(all, id);
     }
-    const position = parsePositionId(options.since);
+    const position = parsePositionId(since);
     if (position !== null) {
       let prefix = -1;
       if (position.head !== null) {
         const index = all.findIndex((p) => p.hash === position.head);
         prefix =
-          index >= 0 && effectiveDigest(all.slice(0, index + 1).map((p) => p.hash)) === position.digest
+          index >= 0 &&
+          effectiveDigest(all.slice(0, index + 1).map((p) => p.hash)) === position.digest
             ? index + 1
             : -1;
       } else if (position.digest === EMPTY_DIGEST) {
@@ -339,6 +347,10 @@ export function watchBoard(board: Board, options: WatchBoardOptions): Promise<vo
     return { type: 'resync', id, late: [], removed: [] };
   };
 
+  /** The first examination: a full append, or resume from `since`. */
+  const first = (all: Effective[], next: FeedState): FeedMessage | null =>
+    startAt(all, next.id, options.since);
+
   /** A later examination against the delivered state `prev`. */
   const later = (all: Effective[], prev: FeedState, next: FeedState): FeedMessage | null => {
     const fresh = all.filter((p) => !prev.delivered.has(p.hash));
@@ -349,7 +361,10 @@ export function watchBoard(board: Board, options: WatchBoardOptions): Promise<vo
       return null;
     }
     const { head } = prev;
-    if (removed.length === 0 && fresh.every((p) => head === null || comparePositions(p, head) > 0)) {
+    if (
+      removed.length === 0 &&
+      fresh.every((p) => head === null || comparePositions(p, head) > 0)
+    ) {
       return appendOf(fresh, next.id);
     }
     const late = fresh.filter((p) => head !== null && comparePositions(p, head) < 0);
@@ -359,15 +374,21 @@ export function watchBoard(board: Board, options: WatchBoardOptions): Promise<vo
   const listEffective =
     options.listEffective ?? ((d: Board['db']) => recordedPositions(d, { effectiveOnly: true }));
 
+  // True while an examination runs (a tick's or a join's): they never overlap.
+  let examining = false;
   const examine = (): void => {
+    examining = true;
+    try {
+      examineOnce();
+    } finally {
+      examining = false;
+    }
+  };
+
+  const examineOnce = (): void => {
     const report = catchUp(board);
     const current = changeMarker(db);
-    if (
-      state !== null &&
-      current === version &&
-      report.applied.length === 0 &&
-      !report.refolded
-    ) {
+    if (state !== null && current === version && report.applied.length === 0 && !report.refolded) {
       return;
     }
     const prev = state;
@@ -383,11 +404,46 @@ export function watchBoard(board: Board, options: WatchBoardOptions): Promise<vo
     });
     // The snapshot is committed: no transaction is open while the consumer runs.
     if (message !== null) {
-      options.onMessage(message);
+      // A consumer joining from inside onMessage joins after this message.
+      delivering = next;
+      try {
+        options.onMessage(message);
+      } finally {
+        delivering = null;
+      }
     }
     state = next;
     version = current;
   };
+
+  // The state a consumer joining now joins at (`joinBoardFeed`).
+  let delivering: FeedState | null = null;
+  joins.set(options, (since) => {
+    if (options.signal.aborted) {
+      return undefined;
+    }
+    // Bring the feed up to date with the board first, in this same turn
+    // (not from inside an examination: that one is already delivering).
+    if (!examining) {
+      try {
+        examine();
+      } catch (error) {
+        if (error instanceof BoardError && error.exitCode === 5 && error.reason === 'busy') {
+          options.onWarning?.(error.message);
+        } else if (options.onProblem !== undefined) {
+          options.onProblem(error);
+        } else {
+          throw error;
+        }
+      }
+    }
+    const at = delivering ?? state;
+    if (at === null) {
+      return undefined;
+    }
+    const all = [...at.delivered.values()];
+    return inSnapshot(db, () => startAt(all, at.id, since));
+  });
 
   const ticker: TickerOptions = {
     signal: options.signal,
@@ -400,7 +456,76 @@ export function watchBoard(board: Board, options: WatchBoardOptions): Promise<vo
     ...(options.timers === undefined ? {} : { timers: options.timers }),
     ...(options.watchDir === undefined ? {} : { watchDir: options.watchDir }),
   };
-  return runTicker(ticker);
+  return runTicker(ticker).finally(() => {
+    joins.delete(options);
+  });
+}
+
+/** How a consumer joins each running feed, by the options it was started with. */
+const joins = new WeakMap<
+  WatchBoardOptions,
+  (since: string | undefined) => FeedMessage | null | undefined
+>();
+
+/**
+ * The first message for a consumer joining the running feed that was
+ * started with `watchBoard(board, options)` (this exact options object),
+ * so that one feed can serve many consumers, each starting at its own
+ * position (board-feed: "Joining a running feed"; design.md: "One feed
+ * per server, fanned out to every client"; added by the add-board-web
+ * group 3 implementer, contract reworked in round 2 after the security
+ * review, finding B1).
+ *
+ * The position is compared with the board, not with what the feed has
+ * delivered so far. So, in the same synchronous turn and before anything
+ * else, the join brings the feed up to date: it runs one tick's
+ * examination (`catchUp(board)` then the examination `watchBoard`
+ * describes, sharing the feed's state, so the ticker's next tick finds
+ * nothing new), and a resulting message is delivered through the feed's
+ * `onMessage` to the consumers already joined, exactly as a tick would
+ * deliver it. Only then is the joiner's first message computed, from the
+ * resulting delivered effective events `D` (in fold order) and their
+ * position id `id`:
+ * - `since` undefined: an `append` of every event of `D` (an append with
+ *   no event, no ticket, meta null and `EMPTY_POSITION_ID` when `D` is
+ *   empty);
+ * - `since` resumes against `D` exactly as a feed's first tick resumes
+ *   against the effective events (see `watchBoard`): an `append` of the
+ *   events of `D` after its head, or null when there is none;
+ * - otherwise (unparsable, unknown head, digest mismatch): a `resync` with
+ *   `id`, no late event and nothing removed.
+ * So a consumer joining with the id of any snapshot of the board taken
+ * before the join (for example `loadSnapshot(...).id`, even one taken
+ * after a write the feed has not examined yet) gets an `append` of exactly
+ * the effective events after that snapshot, or null, and never a `resync`
+ * or an event the snapshot already held, unless the board changed so that
+ * a resync is due. No message of the feed falls between the returned
+ * message and the consumer's subscription made in the same turn.
+ *
+ * Called from inside that feed's `onMessage`, the join does not examine
+ * again (ticks never overlap): it joins after the message being
+ * delivered. When the join's examination throws, the error is handled as
+ * a tick failure (`onWarning` for busy, else `onProblem`, or rethrown when
+ * there is no `onProblem`), the feed's state is unchanged, and the first
+ * message is computed from the last successful state.
+ *
+ * An append carries the state of the tickets its events name and the meta
+ * (when one of them is a `board.meta`) as they are in the cache now, read
+ * in one read snapshot committed before this returns; event bodies are
+ * read through the feed's cache. No transaction is open while `onMessage`
+ * runs or when this returns. Returns undefined when that feed is not
+ * running, or has no successful examination yet (the consumer then waits
+ * for the feed's first message and joins from inside `onMessage`).
+ *
+ * @throws BoardError exit 5 `integrity` (a delivered event whose file is
+ *   no longer well-formed, or a named ticket without a cache row), and
+ *   the event reader's errors, from computing the joiner's message.
+ */
+export function joinBoardFeed(
+  options: WatchBoardOptions,
+  since?: string,
+): FeedMessage | null | undefined {
+  return joins.get(options)?.(since);
 }
 
 /** An effective event's hash and timestamp. */
