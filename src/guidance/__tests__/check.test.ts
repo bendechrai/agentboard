@@ -7,7 +7,7 @@
  * src/cli/__tests__/agents-cli.test.ts.
  */
 
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -29,7 +29,9 @@ import {
 } from '../installed-text.js';
 import {
   ENV,
+  IS_ROOT,
   OPENSPEC_FIXTURE,
+  chmodForTest,
   linkedWorktree,
   plainProject,
   readRel,
@@ -331,5 +333,51 @@ describe('renderGuidanceCheck', () => {
 
   it('says so when nothing was found', () => {
     expect(renderGuidanceCheck([], '/p')).toBe('no agentboard guidance found in /p\n');
+  });
+});
+
+describe('paths agents install would refuse', () => {
+  it('does not read or report a target that is a symlink out of the tree', () => {
+    const root = plainProject();
+    const outside = join(plainProject(), 'AGENTS.md');
+    writeFileSync(outside, `${renderAgentsBlock()}\n`);
+    symlinkSync(outside, join(root, AGENTS));
+    expect(check(root)).toEqual([]);
+  });
+
+  it('follows a symlink that stays inside the tree', () => {
+    const root = plainProject();
+    writeRel(root, 'docs/AGENTS.md', `${renderAgentsBlock()}\n`);
+    symlinkSync(join(root, 'docs', 'AGENTS.md'), join(root, AGENTS));
+    expect(check(root).map((e) => [e.target, e.state])).toEqual([['agents-md', 'current']]);
+  });
+
+  it('does not report a directory at a target path, and does not throw', () => {
+    const root = plainProject();
+    for (const rel of [SKILL, AGENTS, CONFIG, MCP]) {
+      mkdirSync(join(root, rel), { recursive: true });
+    }
+    expect(check(root)).toEqual([]);
+    expect(checkCommand(root, ENV).exitCode ?? 0).toBe(0);
+  });
+
+  it.skipIf(IS_ROOT)('reports an unreadable target as modified with a warning naming it', () => {
+    const root = installedProject();
+    chmodForTest(join(root, AGENTS), 0o000);
+    expect(entry(check(root), 'agents-md')).toEqual({
+      target: 'agents-md',
+      path: AGENTS,
+      state: 'modified',
+      installedVersion: null,
+      currentVersion: V,
+    });
+    const out = checkCommand(root, ENV);
+    expect(out.exitCode).toBe(1);
+    expect(out.warnings?.[0]).toMatch(
+      /^cannot read AGENTS\.md \((EACCES|EPERM)\); reported as modified$/,
+    );
+    expect(out.warnings?.at(-1)).toBe(
+      '1 of 4 guidance target(s) are not current; run agentboard agents install to rewrite them',
+    );
   });
 });

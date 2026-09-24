@@ -5,9 +5,19 @@
  * and a git repository with a linked worktree.
  */
 
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { onTestFinished } from 'vitest';
 
 import { cleanEnv, git, gitRepo, tempDir } from '../../store/__tests__/helpers.js';
 
@@ -90,4 +100,28 @@ export function linkedWorktree(): { main: string; worktree: string } {
   const worktree = join(dirname(main), 'wt');
   git(main, 'worktree', 'add', '-q', '-b', 'feature', worktree);
   return { main, worktree };
+}
+
+/**
+ * True when the tests run as root, where permission bits do not stop reads
+ * or writes (for example in the dev container), so the permission tests
+ * are skipped.
+ */
+export const IS_ROOT = process.getuid?.() === 0;
+
+/**
+ * Sets the mode of `path` for the current test and restores its previous
+ * mode when the test finishes (if it still exists). Only modes that still
+ * let the temporary directory be removed are used (a read-only file, or
+ * an empty read-only directory).
+ */
+export function chmodForTest(path: string, mode: number): void {
+  const previous = statSync(path).mode & 0o7777;
+  chmodSync(path, mode);
+  onTestFinished(() => {
+    // The temporary directory may already be gone.
+    if (existsSync(path)) {
+      chmodSync(path, previous);
+    }
+  });
 }

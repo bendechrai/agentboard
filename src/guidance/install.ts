@@ -133,8 +133,9 @@ export type InstallAction = 'created' | 'updated' | 'unchanged' | 'refused';
 
 /**
  * Why a target was refused. The first four are overridden by `--force`;
- * the last two are refused even with `--force`, because forcing would
- * destroy user content outside the owned region.
+ * the others are refused even with `--force`, because forcing would
+ * destroy user content outside the owned region, write outside the working
+ * tree, or cannot succeed.
  * - `foreign-file` (`claude`): `SKILL.md` exists and has no line containing
  *   `<!-- agentboard-guidance:`. With `--force` the file is overwritten
  *   whole.
@@ -157,6 +158,24 @@ export type InstallAction = 'created' | 'updated' | 'unchanged' | 'refused';
  * - `missing-file` (`openspec`): `openspec/config.yaml` does not exist; the
  *   message says to run `openspec init` first. agentboard never creates an
  *   OpenSpec config.
+ * - `outside-tree` (every target; orchestrator ruling, group 3 round 2):
+ *   the target path, with symlinks resolved (`realpathSync` of the file
+ *   when it exists, else of its nearest existing ancestor, with the rest of
+ *   the path appended), is not the working tree root or inside it. Checked
+ *   before anything is read, created or written, so nothing outside the
+ *   tree is ever touched (no parent directory is created either). A symlink
+ *   whose target stays inside the tree is followed normally: the file it
+ *   points to is read and written, and the link itself is kept.
+ * - `not-a-file` (every target): the target path (after following
+ *   symlinks) exists and is not a regular file (a directory, for example:
+ *   `EISDIR`), or a parent of it exists and is not a directory, so the
+ *   parents cannot be created (`ENOTDIR`, `EEXIST`).
+ * - `unwritable` (every target): reading the file, creating a parent
+ *   directory or writing the file failed with `EACCES` or `EPERM`. A
+ *   target that needs no write (`unchanged`) is not refused for a
+ *   read-only file.
+ *
+ * Filesystem errors other than those above still propagate (exit 5).
  */
 export type RefusalReason =
   | 'foreign-file'
@@ -164,7 +183,10 @@ export type RefusalReason =
   | 'not-a-list'
   | 'entry-differs'
   | 'malformed-file'
-  | 'missing-file';
+  | 'missing-file'
+  | 'outside-tree'
+  | 'not-a-file'
+  | 'unwritable';
 
 /** The outcome of one target. */
 export interface TargetOutcome {
@@ -179,7 +201,11 @@ export interface TargetOutcome {
   /**
    * One ASCII line. For a refusal it names the file (its relative path),
    * says why, and, for the four reasons `--force` overrides, says that
-   * `--force` overwrites it.
+   * `--force` overwrites it. For `outside-tree` it also names the resolved
+   * path outside the tree; for `not-a-file` and `unwritable` the error code
+   * (`EISDIR`, `ENOTDIR`, `EACCES`, `EPERM`). A refusal never ends the
+   * command early: the other targets are still processed and the command
+   * exits 1.
    */
   readonly message: string;
   /**
@@ -634,7 +660,11 @@ function selectTargets(
  *    agents-md, openspec, mcp-json`) with `--target`. Nothing is written.
  * 3. Each selected target is processed in `GUIDANCE_TARGETS` order. A
  *    refused target writes nothing and does not stop the others. A target
- *    either writes its whole change or nothing.
+ *    either writes its whole change or nothing. Before the per-target steps
+ *    below, every target is checked for `outside-tree`, then `not-a-file`;
+ *    `unwritable` applies whenever a read, mkdir or write fails with
+ *    `EACCES` or `EPERM` (see `RefusalReason`). None of the three is
+ *    overridden by `force`.
  *
  * `claude` (`SKILL_PATH`), wanted content `renderSkill(version)`:
  * - absent: parent directories created, file written: `created`;

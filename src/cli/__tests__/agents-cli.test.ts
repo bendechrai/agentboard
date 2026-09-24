@@ -8,13 +8,15 @@
  * library in src/guidance/__tests__/install.test.ts and check.test.ts.
  */
 
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import {
+  IS_ROOT,
   OPENSPEC_FIXTURE,
+  chmodForTest,
   commentLines,
   linkedWorktree,
   plainProject,
@@ -309,5 +311,42 @@ describe('init suggests agents install', () => {
     expect(out.code).toBe(0);
     expect(oneJson(out)).toMatchObject({ created: true });
     expect(out.stdout).not.toContain('agents install');
+  });
+});
+
+describe('filesystem problems exit 1 with a refusal, never 5', () => {
+  it('a directory at SKILL.md: install refuses it and installs the rest, check skips it', () => {
+    const root = plainProject();
+    mkdirSync(join(root, SKILL), { recursive: true });
+    const out = cli(['agents', 'install', '--target', 'claude', '--target', 'agents-md'], root);
+    expect(out.code).toBe(1);
+    expect(out.stderr).toMatch(/^agentboard: refused claude: .*SKILL\.md/m);
+    expect(existsSync(join(root, AGENTS))).toBe(true);
+    const check = cli(['agents', 'check'], root);
+    expect(check.code, check.stderr).toBe(0);
+  });
+
+  it.skipIf(IS_ROOT)('a read-only AGENTS.md is refused as unwritable', () => {
+    const root = plainProject();
+    writeRel(root, AGENTS, '# Ours\n');
+    chmodForTest(join(root, AGENTS), 0o444);
+    const out = cli(['agents', 'install', '--target', 'agents-md', '--json'], root);
+    expect(out.code).toBe(1);
+    expect(oneJson(out)).toMatchObject({
+      refused: 1,
+      targets: [{ target: 'agents-md', action: 'refused', refusal: 'unwritable' }],
+    });
+    expect(readRel(root, AGENTS)).toBe('# Ours\n');
+  });
+
+  it('a symlink out of the tree is refused as outside-tree, even with --force', () => {
+    const root = plainProject();
+    const outside = join(plainProject(), 'AGENTS.md');
+    writeFileSync(outside, 'theirs\n');
+    symlinkSync(outside, join(root, AGENTS));
+    const out = cli(['agents', 'install', '--target', 'agents-md', '--force'], root);
+    expect(out.code).toBe(1);
+    expect(out.stderr).toContain('refused agents-md');
+    expect(readRel(outside, '')).toBe('theirs\n');
   });
 });

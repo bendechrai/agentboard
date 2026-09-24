@@ -114,6 +114,19 @@ export interface CheckOptions {
  * - `mcp-json`: found when `.mcp.json` parses as an object whose
  *   `mcpServers` object has an `agentboard` key. `installedVersion` null.
  *   State: deep-equal to `MCP_ENTRY` `current`, else `modified`.
+ *
+ * Paths `agents install` would refuse (orchestrator ruling, group 3 round
+ * 2), for every target:
+ * - outside the tree (see `RefusalReason` `outside-tree`: the path with
+ *   symlinks resolved is not inside the working tree root): never read and
+ *   not reported, like a file agentboard does not own. A symlink that
+ *   stays inside the tree is followed normally.
+ * - not a regular file (a directory at the path): not reported, since
+ *   nothing agentboard installs can be there.
+ * - unreadable (`EACCES` or `EPERM` on read): reported as `modified` with
+ *   `installedVersion` null, since whether it holds guidance cannot be
+ *   known, so the command exits 1; `checkCommand` adds a warning naming it.
+ * Never throws for these (no exit 5).
  */
 export function checkGuidance(options: CheckOptions): GuidanceCheckEntry[] {
   const root = workingTreeRoot(options.cwd, options.env ?? process.env);
@@ -266,9 +279,11 @@ export function renderGuidanceCheck(entries: readonly GuidanceCheckEntry[], root
  * The `agents check` command (called by the registry): `checkGuidance`
  * with `cwd` and `env`; `json` is the entries array, `text` is
  * `renderGuidanceCheck`. When any entry is not `current`, `exitCode` is 1
- * and `warnings` holds one line, `<k> of <n> guidance target(s) are not
- * current; run agentboard agents install to rewrite them`. Otherwise exit 0
- * (also when nothing was found).
+ * and `warnings` holds, first, one line per unreadable target, `cannot read
+ * <path> (<code>); reported as modified` with `<code>` `EACCES` or `EPERM`,
+ * then one line, `<k> of <n> guidance target(s) are not current; run
+ * agentboard agents install to rewrite them`. Otherwise exit 0 (also when
+ * nothing was found).
  */
 export function checkCommand(cwd: string, env: Env): CommandOutput {
   const entries = checkGuidance({ cwd, env });

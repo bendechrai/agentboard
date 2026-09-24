@@ -10,7 +10,7 @@
  * src/cli/__tests__/agents-cli.test.ts.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -43,7 +43,9 @@ import {
 } from '../installed-text.js';
 import {
   ENV,
+  IS_ROOT,
   OPENSPEC_FIXTURE,
+  chmodForTest,
   commentLines,
   fileList,
   linkedWorktree,
@@ -488,6 +490,33 @@ describe('target openspec', () => {
     expect((parse(text) as { context: string }).context).toBe('Tech stack: TypeScript\n');
   });
 
+  it('carries a user comment above an old agentboard entry onto the new first entry', () => {
+    const root = plainProject();
+    const note = '# a note the user left about the old agentboard line';
+    const config = [
+      'schema: spec-driven',
+      'operations:',
+      '  apply:',
+      '    guidance:',
+      '      - first',
+      `      ${note}`,
+      '      - "agentboard: an old entry" # agentboard-guidance: v1',
+      '      - last',
+      '',
+    ].join('\n');
+    writeRel(root, CONFIG, config);
+    expect(only(root, 'openspec', { version: 2 }).action).toBe('updated');
+    const text = readRel(root, CONFIG);
+    expect(commentLines(text)).toEqual([note]);
+    const lines = text.split('\n');
+    const at = lines.findIndex((line) => line.trim() === note);
+    expect(lines[at - 1]?.trim()).toBe('- first');
+    expect(lines[at + 1], 'the comment sits right above the new first entry').toContain(
+      OPENSPEC_GUIDANCE.apply[0]?.slice(0, 40) ?? '',
+    );
+    expect(guidanceOf(text).apply).toEqual(['first', ...OPENSPEC_GUIDANCE.apply, 'last']);
+  });
+
   it('replaces old agentboard entries where the first one was', () => {
     const root = plainProject();
     const config = [
@@ -718,5 +747,164 @@ describe('renderInstall', () => {
         '',
       ].join('\n'),
     );
+  });
+});
+
+describe('containment: nothing outside the working tree is touched', () => {
+  it.each([
+    ['claude', SKILL],
+    ['agents-md', AGENTS],
+    ['openspec', CONFIG],
+    ['mcp-json', MCP],
+  ] as const)(
+    'refuses %s when its file is a symlink to a file outside the tree, even with --force',
+    (target, rel) => {
+      const root = plainProject();
+      const outside = join(plainProject(), 'elsewhere.txt');
+      writeFileSync(outside, 'outside content\n');
+      mkdirSync(join(root, rel, '..'), { recursive: true });
+      symlinkSync(outside, join(root, rel));
+      for (const force of [false, true]) {
+        const result = install(root, { targets: [target], force });
+        const out = outcome(result, target);
+        expect(out).toMatchObject({ action: 'refused', refusal: 'outside-tree' });
+        expect(out.message).toContain(rel);
+        expect(out.message).toContain(outside);
+        expect(result.refused).toBe(1);
+        expect(readRel(outside, '')).toBe('outside content\n');
+        expect(lstatSync(join(root, rel)).isSymbolicLink()).toBe(true);
+      }
+    },
+  );
+
+  it('refuses when a parent directory is a symlink out of the tree, creating nothing there', () => {
+    const root = plainProject();
+    const outsideDir = plainProject();
+    symlinkSync(outsideDir, join(root, '.claude'));
+    const out = only(root, 'claude', { force: true });
+    expect(out).toMatchObject({ action: 'refused', refusal: 'outside-tree' });
+    expect(readdirSync(outsideDir)).toEqual([]);
+  });
+
+  it('refuses a symlink whose target does not exist yet but lies outside the tree', () => {
+    const root = plainProject();
+    const outsideDir = plainProject();
+    const dangling = join(outsideDir, 'AGENTS.md');
+    symlinkSync(dangling, join(root, AGENTS));
+    const out = only(root, 'agents-md');
+    expect(out).toMatchObject({ action: 'refused', refusal: 'outside-tree' });
+    expect(existsSync(dangling)).toBe(false);
+  });
+
+  it('follows a symlink that stays inside the tree and keeps the link', () => {
+    const root = plainProject();
+    writeRel(root, 'docs/AGENTS.md', '# Shared agents file\n');
+    symlinkSync(join(root, 'docs', 'AGENTS.md'), join(root, AGENTS));
+    expect(only(root, 'agents-md').action).toBe('updated');
+    expect(lstatSync(join(root, AGENTS)).isSymbolicLink()).toBe(true);
+    expect(readRel(root, 'docs/AGENTS.md')).toBe(
+      `# Shared agents file\n\n${renderAgentsBlock()}\n`,
+    );
+    expect(only(root, 'agents-md').action).toBe('unchanged');
+  });
+
+  it('follows a relative symlinked directory inside the tree', () => {
+    const root = plainProject();
+    mkdirSync(join(root, 'config', 'claude'), { recursive: true });
+    symlinkSync(join('config', 'claude'), join(root, '.claude'));
+    expect(only(root, 'claude').action).toBe('created');
+    expect(readRel(root, 'config/claude/skills/agentboard/SKILL.md')).toBe(renderSkill());
+  });
+
+  it('still processes the other targets after an outside-tree refusal', () => {
+    const root = plainProject();
+    const outside = join(plainProject(), 'x.json');
+    writeFileSync(outside, '{}\n');
+    symlinkSync(outside, join(root, MCP));
+    const result = install(root, { targets: ['agents-md', 'mcp-json'] });
+    expect(result.targets.map((t) => [t.target, t.action, t.refusal])).toEqual([
+      ['agents-md', 'created', null],
+      ['mcp-json', 'refused', 'outside-tree'],
+    ]);
+    expect(readRel(outside, '')).toBe('{}\n');
+  });
+});
+
+describe('filesystem errors are refusals, not crashes', () => {
+  it.each([
+    ['claude', SKILL],
+    ['agents-md', AGENTS],
+    ['openspec', CONFIG],
+    ['mcp-json', MCP],
+  ] as const)(
+    'refuses %s as not-a-file when a directory is at its path, even with --force',
+    (target, rel) => {
+      const root = plainProject();
+      mkdirSync(join(root, rel), { recursive: true });
+      for (const force of [false, true]) {
+        const out = only(root, target, { force });
+        expect(out).toMatchObject({ action: 'refused', refusal: 'not-a-file' });
+        expect(out.message).toContain(rel);
+      }
+      expect(lstatSync(join(root, rel)).isDirectory()).toBe(true);
+    },
+  );
+
+  it('refuses as not-a-file when a parent of the target is a file', () => {
+    const root = plainProject();
+    writeRel(root, '.claude/skills', 'a file where a directory belongs\n');
+    const out = only(root, 'claude');
+    expect(out).toMatchObject({ action: 'refused', refusal: 'not-a-file' });
+    expect(readRel(root, '.claude/skills')).toBe('a file where a directory belongs\n');
+  });
+
+  it.skipIf(IS_ROOT)('refuses a read-only AGENTS.md as unwritable, even with --force', () => {
+    const root = plainProject();
+    writeRel(root, AGENTS, '# Ours\n');
+    chmodForTest(join(root, AGENTS), 0o444);
+    for (const force of [false, true]) {
+      const out = only(root, 'agents-md', { force });
+      expect(out).toMatchObject({ action: 'refused', refusal: 'unwritable' });
+      expect(out.message).toContain(AGENTS);
+      expect(out.message).toMatch(/EACCES|EPERM/);
+    }
+    expect(readRel(root, AGENTS)).toBe('# Ours\n');
+  });
+
+  it.skipIf(IS_ROOT)('refuses an unreadable file as unwritable', () => {
+    const root = plainProject();
+    writeRel(root, MCP, '{}\n');
+    chmodForTest(join(root, MCP), 0o000);
+    expect(only(root, 'mcp-json')).toMatchObject({ action: 'refused', refusal: 'unwritable' });
+  });
+
+  it.skipIf(IS_ROOT)('refuses as unwritable when a parent directory cannot be created', () => {
+    const root = plainProject();
+    mkdirSync(join(root, '.claude'));
+    chmodForTest(join(root, '.claude'), 0o555);
+    const out = only(root, 'claude');
+    expect(out).toMatchObject({ action: 'refused', refusal: 'unwritable' });
+    expect(existsSync(join(root, '.claude', 'skills'))).toBe(false);
+  });
+
+  it.skipIf(IS_ROOT)('does not refuse a read-only file that needs no write', () => {
+    const root = plainProject();
+    only(root, 'agents-md');
+    chmodForTest(join(root, AGENTS), 0o444);
+    expect(only(root, 'agents-md')).toMatchObject({ action: 'unchanged', refusal: null });
+  });
+
+  it.skipIf(IS_ROOT)('still processes the other targets and counts every refusal', () => {
+    const root = plainProject();
+    mkdirSync(join(root, SKILL), { recursive: true });
+    writeRel(root, AGENTS, '# Ours\n');
+    chmodForTest(join(root, AGENTS), 0o444);
+    const result = install(root, { targets: ['claude', 'agents-md', 'mcp-json'] });
+    expect(result.targets.map((t) => [t.target, t.action, t.refusal])).toEqual([
+      ['claude', 'refused', 'not-a-file'],
+      ['agents-md', 'refused', 'unwritable'],
+      ['mcp-json', 'created', null],
+    ]);
+    expect(result.refused).toBe(2);
   });
 });
