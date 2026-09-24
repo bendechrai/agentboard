@@ -10,7 +10,9 @@ import type { InboxEntry } from '../board/inbox.js';
 import type { ShowResult } from '../board/tickets.js';
 import { CACHE_SCHEMA_VERSION } from '../store/cache.js';
 import type { CheckResult, RebuildReport } from '../store/rebuild.js';
+import type { Card } from '../view/columns.js';
 import type { HealthReport } from '../view/health.js';
+import { relativeTime } from '../view/time.js';
 
 /** Re-exported from `src/board/text.ts` (defined there for layering). */
 export { asciiText };
@@ -27,12 +29,20 @@ export { asciiText };
  * command. Pure.
  */
 export function renderListLine(ticket: Ticket): string {
-  const markers = (ticket.adhoc === null ? '' : '[adhoc] ') + (ticket.closed ? '[closed] ' : '');
+  return listLine({ ...ticket, adhoc: ticket.adhoc !== null });
+}
+
+/** The fields of a `list` line. */
+type ListFields = Pick<Card, 'id' | 'status' | 'assignee' | 'adhoc' | 'closed' | 'title'>;
+
+/** The `list` line of `fields` (see `renderListLine`). */
+function listLine(fields: ListFields): string {
+  const markers = (fields.adhoc ? '[adhoc] ' : '') + (fields.closed ? '[closed] ' : '');
   return [
-    ticket.id,
-    ticket.status,
-    ticket.assignee === null ? '-' : asciiText(ticket.assignee),
-    `${markers}${asciiText(ticket.title)}`,
+    fields.id,
+    fields.status,
+    fields.assignee === null ? '-' : asciiText(fields.assignee),
+    `${markers}${asciiText(fields.title)}`,
   ].join('  ');
 }
 
@@ -303,6 +313,72 @@ export function renderCheck(doc: CheckDocument): string {
  * ```
  */
 export function renderHealth(report: HealthReport): string {
-  void report;
-  throw new Error('not implemented');
+  const { thresholds, staleClaims, stuckBlocked, unpromotedDecisions, closeMerged } = report;
+  const lines = [
+    `thresholds: stale after ${durationText(thresholds.staleAfter)}, blocked after ${durationText(thresholds.blockedAfter)}`,
+  ];
+  const section = <T extends { ticket: Card }>(
+    heading: string,
+    entries: readonly T[],
+    finding: (entry: T) => string,
+  ): void => {
+    lines.push(`${heading}: ${String(entries.length)}`);
+    for (const entry of entries) {
+      lines.push(`${listLine(entry.ticket)}  ${finding(entry)}`);
+    }
+  };
+  section(
+    'stale claims',
+    staleClaims,
+    (s) =>
+      `last active ${relativeTime(s.idleMs)} (${asciiText(s.since.kind)} by ${asciiText(s.since.actor)})`,
+  );
+  section('stuck in blocked', stuckBlocked, (s) => {
+    const comment =
+      s.latestComment === null
+        ? 'no comment'
+        : `latest comment by ${asciiText(s.latestComment.actor)}: ${asciiText(s.latestComment.text)}`;
+    return `blocked ${relativeTime(s.blockedMs)} from ${s.blockedFrom}; ${comment}`;
+  });
+  section('unpromoted decisions', unpromotedDecisions, (u) => decisionsText(u.decisions.length));
+  section('close-merged ready', closeMerged.ready, (c) => prsText(c.prs));
+  section(
+    'close-merged held by decision',
+    closeMerged.heldByDecision,
+    (c) => `${prsText(c.prs)}; ${decisionsText(c.decisions.length)}`,
+  );
+  section('close-merged missing pr', closeMerged.missingPr, () => 'no pr link');
+  const check = report.check;
+  lines.push(
+    `cache check: ${
+      check === null
+        ? 'not run'
+        : `${check.matches ? 'matches' : 'differs'} (${String(check.differingRows)} differing rows)`
+    }`,
+  );
+  return `${lines.join('\n')}\n`;
+}
+
+/** A threshold in the largest unit that divides it exactly: d, h, m, else ms. */
+function durationText(ms: number): string {
+  for (const [unit, scale] of [
+    ['d', 86_400_000],
+    ['h', 3_600_000],
+    ['m', 60_000],
+  ] as const) {
+    if (ms % scale === 0) {
+      return `${String(ms / scale)}${unit}`;
+    }
+  }
+  return `${String(ms)}ms`;
+}
+
+/** `1 open decision` or `<k> open decisions`, then `, no decision link`. */
+function decisionsText(k: number): string {
+  return `${String(k)} open decision${k === 1 ? '' : 's'}, no decision link`;
+}
+
+/** `pr <p1>, <p2>, ...`. */
+function prsText(prs: readonly (string | number)[]): string {
+  return `pr ${prs.map((pr) => asciiText(String(pr))).join(', ')}`;
 }

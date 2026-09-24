@@ -7,8 +7,19 @@
  */
 
 import type { Board } from '../store/board.js';
-import { type HealthCheck, type HealthReport, type HealthThresholds } from '../view/health.js';
-import type { EventCache } from './feed.js';
+import { comparePositions } from '../store/cursors.js';
+import { inSnapshot, loadState } from '../store/engine.js';
+import { recordedPositions } from '../store/folded.js';
+import { checkCache } from '../store/rebuild.js';
+import {
+  DEFAULT_THRESHOLDS,
+  healthReport,
+  type HealthCheck,
+  type HealthReport,
+  type HealthThresholds,
+} from '../view/health.js';
+import type { BoardModel, EventView } from '../view/types.js';
+import { createEventCache, type EventCache } from './feed.js';
 
 export type { HealthCheck, HealthReport, HealthThresholds };
 
@@ -82,7 +93,45 @@ export interface BoardHealthOptions {
  *   cannot take the write lock within the busy timeout.
  */
 export function boardHealth(board: Board, options?: BoardHealthOptions): HealthReport {
-  void board;
-  void options;
-  throw new Error('not implemented');
+  const now = options?.now ?? Date.now();
+  const thresholds: HealthThresholds = {
+    staleAfter: options?.thresholds?.staleAfter ?? DEFAULT_THRESHOLDS.staleAfter,
+    blockedAfter: options?.thresholds?.blockedAfter ?? DEFAULT_THRESHOLDS.blockedAfter,
+  };
+  const model = loadApplied(board, options?.cache ?? createEventCache());
+  let check: HealthCheck | null = null;
+  if (options?.check === true) {
+    // After the snapshot has been committed: checkCache takes the write lock.
+    const result = checkCache(board);
+    check = { ranAt: now, matches: result.ok, differingRows: result.differences.length };
+  }
+  return healthReport({ model, now, thresholds, late: null, check });
+}
+
+/**
+ * The tickets of `board` and its applied events in fold order, read in one
+ * read snapshot. Only the files of applied events are read, through
+ * `cache`, and each at most once (the hashes of `folded` are distinct).
+ */
+function loadApplied(board: Board, cache: EventCache): Pick<BoardModel, 'tickets' | 'events'> {
+  const { db, eventsDir } = board;
+  return inSnapshot(db, () => {
+    const { tickets } = loadState(db);
+    const events = recordedPositions(db, { effectiveOnly: true })
+      .sort(comparePositions)
+      .map((row): EventView => {
+        const event = cache.get(eventsDir, row.hash);
+        return {
+          hash: row.hash,
+          kind: event.kind,
+          ticket: 'ticket' in event && typeof event.ticket === 'string' ? event.ticket : null,
+          actor: event.actor,
+          ts: event.ts,
+          outcome: 'applied',
+          reason: null,
+          event,
+        };
+      });
+    return { tickets, events };
+  });
 }

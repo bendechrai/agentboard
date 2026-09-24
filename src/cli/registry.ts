@@ -42,6 +42,7 @@ import type { Board } from '../store/board.js';
 import { CACHE_FILE, CACHE_SCHEMA_VERSION } from '../store/cache.js';
 import { BoardError } from '../store/errors.js';
 import { checkCache, rebuild } from '../store/rebuild.js';
+import { parseDuration, type HealthThresholds } from '../view/health.js';
 import { helpOutput, type HelpSource } from '../guidance/help.js';
 import { checkCommand } from '../guidance/check.js';
 import { INIT_SUGGESTION, installCommand } from '../guidance/install.js';
@@ -431,11 +432,37 @@ function noCacheOutput(cachePath: string): CommandOutput {
  * findings are data. Needs no actor (`--as` is accepted and ignored).
  */
 function runHealth(ctx: RunContext, values: ArgValues): CommandOutput {
-  void ctx;
-  void values;
-  void boardHealth;
-  void renderHealth;
-  throw new Error('not implemented');
+  const thresholds: Partial<HealthThresholds> = {};
+  const staleAfter = durationFlag(values, 'stale-after');
+  if (staleAfter !== undefined) {
+    thresholds.staleAfter = staleAfter;
+  }
+  const blockedAfter = durationFlag(values, 'blocked-after');
+  if (blockedAfter !== undefined) {
+    thresholds.blockedAfter = blockedAfter;
+  }
+  const report = boardHealth(ctx.board(), { thresholds, check: bool(values, 'check') });
+  return { json: report, text: renderHealth(report) };
+}
+
+/**
+ * The duration flag `name` in milliseconds (`parseDuration`), or undefined
+ * when absent; a value it refuses is `BoardError(1, 'usage')`.
+ */
+function durationFlag(values: ArgValues, name: string): number | undefined {
+  const text = str(values, name);
+  if (text === undefined) {
+    return undefined;
+  }
+  const ms = parseDuration(text);
+  if (ms === null) {
+    throw new BoardError(
+      1,
+      'usage',
+      `invalid --${name} ${asciiText(text)}: a duration is <n>m, <n>h or <n>d with <n> a positive integer of at most 5 digits (for example 30m, 2h or 1d)`,
+    );
+  }
+  return ms;
 }
 
 /** `checklist tick` and `checklist untick`. */
