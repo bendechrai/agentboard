@@ -77,6 +77,9 @@ describe('every command prints exactly one JSON document with --json', () => {
       // serve runs a server; through the synchronous runCli it refuses
       // with one error document (it is tested in src/web/__tests__).
       serve: () => run(['serve', '--json'], root),
+      // top drives the terminal; through the synchronous runCli it refuses
+      // with one error document (it is tested in src/tui/__tests__).
+      top: () => run(['top', '--json'], root),
       rebuild: () => run(['rebuild', '--json'], root),
       sync: () => {
         git(join(root, '.board'), 'init', '-q');
@@ -109,7 +112,7 @@ describe('every command prints exactly one JSON document with --json', () => {
     for (const [name, step] of Object.entries(steps(root, state))) {
       const out = step();
       expect(out.code, `${name}: ${out.stderr}`).toBe(
-        name === 'mcp' || name === 'watch' || name === 'serve' ? 1 : 0,
+        ['mcp', 'watch', 'serve', 'top'].includes(name) ? 1 : 0,
       );
       docs[name] = oneJson(out);
     }
@@ -130,6 +133,7 @@ describe('every command prints exactly one JSON document with --json', () => {
     expect(docs.inbox).toMatchObject({ actor: 'watcher', advanced: true });
     expect((docs.inbox as { entries: unknown[] }).entries).toHaveLength(11);
     expect(docs.watch).toMatchObject({ error: { exitCode: 1, reason: 'streaming-command' } });
+    expect(docs.top).toMatchObject({ error: { exitCode: 1, reason: 'streaming-command' } });
     expect(docs.rebuild).toMatchObject({ folded: 11, rejected: 0 });
     expect(docs.sync).toMatchObject({ remote: null, pushed: false, warnings: [] });
     expect(docs['import-change']).toMatchObject({ source: 'openspec', ref: 'c', events: 1 });

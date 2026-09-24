@@ -102,6 +102,8 @@ export interface HostInput {
   on(event: 'data' | 'end', listener: (chunk?: unknown) => void): unknown;
   off(event: 'data' | 'end', listener: (chunk?: unknown) => void): unknown;
   pause(): unknown;
+  /** Present on a socket or TTY stream; lets the process exit while the stream is open. */
+  unref?(): unknown;
 }
 
 /** The output side of the process that `processTerminal` uses (`process.stdout`). */
@@ -141,7 +143,10 @@ export interface TerminalHost {
  *   nothing.
  * - `onData(listener)`: listens to `host.stdin` `data`, passing each
  *   chunk as a `Uint8Array` (a string chunk as its UTF-8 bytes); the
- *   remover removes that listener and calls `host.stdin.pause()`.
+ *   remover removes that listener, calls `host.stdin.pause()` and, when
+ *   it exists, `host.stdin.unref()`, so the process can exit once `top`
+ *   has stopped, whatever stdin is connected to (a paused pipe alone
+ *   keeps the process alive).
  * - `onEnd`: `host.stdin` `end`; `onResize`: `host.stdout` `resize`;
  *   `onExit`: `host.process` `exit`. Each remover removes exactly the
  *   listener it added.

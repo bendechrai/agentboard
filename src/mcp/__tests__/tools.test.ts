@@ -58,7 +58,7 @@ describe('tool names', () => {
     expect(TOOL_PREFIX).toBe('board_');
   });
 
-  it('excludes exactly init, watch, serve, rebuild, sync, mcp, version, help and the agents commands', () => {
+  it('excludes exactly init, watch, serve, top, rebuild, sync, mcp, version, help and the agents commands', () => {
     // agents install and agents check write or read host project files in
     // the caller's working tree and are run in a shell, like the other
     // setup commands (add-agent-guidance group 3).
@@ -72,6 +72,7 @@ describe('tool names', () => {
         'rebuild',
         'sync',
         'serve',
+        'top',
         'version',
         'watch',
       ].sort(),
@@ -97,7 +98,7 @@ describe('tool names', () => {
   });
 
   it('never lists a tool for an excluded command', () => {
-    for (const name of ['init', 'watch', 'serve', 'rebuild', 'sync', 'mcp', 'version']) {
+    for (const name of ['init', 'watch', 'serve', 'top', 'rebuild', 'sync', 'mcp', 'version']) {
       expect(findTool(`board_${name}`)).toBeUndefined();
     }
     expect(findTool('board_nope')).toBeUndefined();
