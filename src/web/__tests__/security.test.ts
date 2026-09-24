@@ -206,6 +206,8 @@ describe('securityHeaders', () => {
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
       'X-Frame-Options': 'DENY',
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Resource-Policy': 'same-origin',
     };
     expect(securityHeaders(false)).toEqual(page);
     expect(securityHeaders(true)).toEqual({ ...page, 'Cache-Control': 'no-store' });
@@ -257,6 +259,43 @@ describe('presentedTokens', () => {
     expect(presentedTokens(head('GET', '/api/board', { ...COOKIE, ...BEARER }), GUARD)).toEqual([
       'bearer',
     ]);
+  });
+
+  it('refuses more than one Authorization header, even when the first is valid', () => {
+    const valid = `Bearer ${TOKEN}`;
+    for (const values of [
+      [valid, valid],
+      [valid, `Bearer ${differsAt(0)}`],
+      [valid, 'Basic eDp5'],
+      [`Bearer ${differsAt(0)}`, valid],
+      [valid, valid, valid],
+    ]) {
+      const base = head('GET', '/api/board');
+      // node:http keeps only the first Authorization value in `headers`
+      // and every value in `headersDistinct`.
+      const repeated: RequestHead = {
+        ...base,
+        headers: { ...base.headers, authorization: values[0] },
+        headersDistinct: { ...base.headersDistinct, authorization: values },
+      };
+      expect(presentedTokens(repeated, GUARD), values.join(' | ')).toEqual([]);
+      refused(checkRequest(repeated, GUARD), 401, 'unauthorized', true);
+    }
+  });
+
+  it('accepts one Authorization header given in headersDistinct as a one-value array', () => {
+    const base = head('GET', '/api/board', BEARER);
+    expect(base.headersDistinct?.authorization).toEqual([`Bearer ${TOKEN}`]);
+    expect(presentedTokens(base, GUARD)).toEqual(['bearer']);
+    expect(checkRequest(base, GUARD).kind).toBe('route');
+  });
+
+  it('refuses a request whose headersDistinct is absent but headers has a valid bearer token', () => {
+    // headersDistinct is how the count is known; without it the request
+    // cannot prove it carried exactly one Authorization header.
+    const { headersDistinct: _dropped, ...rest } = head('GET', '/api/board', BEARER);
+    void _dropped;
+    expect(presentedTokens(rest, GUARD)).toEqual([]);
   });
 });
 

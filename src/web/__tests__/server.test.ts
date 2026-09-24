@@ -288,6 +288,48 @@ describe('scenario: Wrong token', () => {
   });
 });
 
+describe('scenario: Duplicate Authorization header (Access token)', () => {
+  it(
+    'answers a request with two Authorization headers, the first valid, with 401 and no board data',
+    { timeout: 30_000 },
+    async () => {
+      const { server, board } = await served();
+      newTicket(board, 'orch', { title: 'Secret plans', task: TASK });
+      const host = `Host: 127.0.0.1:${String(server.port)}`;
+      const valid = `Authorization: Bearer ${server.token}`;
+      for (const second of [
+        valid,
+        `Authorization: Bearer ${'x'.repeat(43)}`,
+        'Authorization: Basic eDp5',
+        'authorization: Bearer',
+      ]) {
+        for (const path of ['/api/board', '/api/session', '/api/stream']) {
+          const result = await rawRequest(server.port, rawGet(path, [host, valid, second]));
+          expect(result.status, `${path} | ${second}`).toBe(401);
+          expect(JSON.parse(result.body)).toMatchObject({ error: { reason: 'unauthorized' } });
+          expect(result.body).not.toContain('Secret plans');
+          expect(result.body).not.toContain(server.token);
+          expect(result.headers['cache-control']).toEqual(['no-store']);
+        }
+      }
+      // The same request with the one valid header is served.
+      const one = await rawRequest(server.port, rawGet('/api/board', [host, valid]));
+      expect(one.status).toBe(200);
+      expect(one.body).toContain('Secret plans');
+    },
+  );
+
+  it('does not let a duplicate Authorization header matter on the page and assets', async () => {
+    const { server } = await served();
+    const host = `Host: 127.0.0.1:${String(server.port)}`;
+    const valid = `Authorization: Bearer ${server.token}`;
+    for (const path of ['/', '/app.js']) {
+      const result = await rawRequest(server.port, rawGet(path, [host, valid, valid]));
+      expect(result.status, path).toBe(200);
+    }
+  });
+});
+
 describe('scenario: DNS rebinding (Host header check)', () => {
   it('answers a valid bearer token with Host attacker.example:<port> with 403 and no board data', async () => {
     const { server, board } = await served();
@@ -375,6 +417,8 @@ describe('malformed requests', () => {
       expect(result.headers['x-content-type-options']).toEqual(['nosniff']);
       expect(result.headers['referrer-policy']).toEqual(['no-referrer']);
       expect(result.headers['x-frame-options']).toEqual(['DENY']);
+      expect(result.headers['cross-origin-opener-policy']).toEqual(['same-origin']);
+      expect(result.headers['cross-origin-resource-policy']).toEqual(['same-origin']);
       expect(Object.keys(result.headers).filter((h) => h.startsWith('access-control-'))).toEqual(
         [],
       );
@@ -453,6 +497,40 @@ describe('scenario: Headers on every response', () => {
     const stream = await openStream(server);
     expect(stream.status).toBe(200);
     expectSecurityHeaders(stream.headers, true);
+    stream.close();
+  });
+});
+
+describe('Cross-Origin-Opener-Policy and Cross-Origin-Resource-Policy', () => {
+  it('sends COOP same-origin and CORP same-origin, once each, on the page, an asset, an API response and an error', async () => {
+    const { server } = await served();
+    const port = server.port;
+    const host = `Host: 127.0.0.1:${String(port)}`;
+    const auth = `Authorization: Bearer ${server.token}`;
+    const cases: [string, string, readonly string[], number][] = [
+      ['page', '/', [host], 200],
+      ['asset', '/app.js', [host], 200],
+      ['stylesheet', '/app.css', [host], 200],
+      ['api', '/api/board', [host, auth], 200],
+      ['api 404', '/api/nope', [host, auth], 404],
+      ['401', '/api/board', [host], 401],
+      ['403', '/api/board', ['Host: evil.example', auth], 403],
+      ['page 404', '/nope.js', [host], 404],
+    ];
+    for (const [name, path, lines, status] of cases) {
+      const result = await rawRequest(port, rawGet(path, lines));
+      expect(result.status, name).toBe(status);
+      expect(result.headers['cross-origin-opener-policy'], name).toEqual(['same-origin']);
+      expect(result.headers['cross-origin-resource-policy'], name).toEqual(['same-origin']);
+    }
+    const refused = await request(port, '/api/board', { method: 'POST', headers: bearer(server) });
+    expect(refused.status).toBe(405);
+    expect(refused.headers['cross-origin-opener-policy']).toBe('same-origin');
+    expect(refused.headers['cross-origin-resource-policy']).toBe('same-origin');
+    const stream = await openStream(server);
+    expect(stream.status).toBe(200);
+    expect(stream.headers['cross-origin-opener-policy']).toBe('same-origin');
+    expect(stream.headers['cross-origin-resource-policy']).toBe('same-origin');
     stream.close();
   });
 });

@@ -220,6 +220,8 @@ export function expectSecurityHeaders(headers: IncomingHttpHeaders, api: boolean
   expect(headers['x-content-type-options']).toBe('nosniff');
   expect(headers['referrer-policy']).toBe('no-referrer');
   expect(headers['x-frame-options']).toBe('DENY');
+  expect(headers['cross-origin-opener-policy']).toBe('same-origin');
+  expect(headers['cross-origin-resource-policy']).toBe('same-origin');
   if (api) {
     expect(headers['cache-control']).toBe('no-store');
   }
