@@ -43,7 +43,8 @@ another web site.
 ### Modified Capabilities
 - `board-web`: "Serve command" takes `--as`; "Read-only server" permits
   the action endpoints when writable; "JSON API" reports the actor and
-  `writable` true in the session of a writable server. Requires `add-board-web` to be archived first.
+  `writable` true in the session of a writable server. Each is the main
+  spec text as archived from `add-board-web`, plus write mode.
 - `board-cli`: "Actor is explicit" states the `serve` exception (explicit
   `--as` only, `AGENTBOARD_ACTOR` ignored).
 
