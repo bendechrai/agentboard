@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { TOKEN_KEY, TOKEN_PATTERN, takeToken, type TokenEnv } from '../token.js';
+import { TOKEN_KEY, TOKEN_PATTERN, discardToken, takeToken, type TokenEnv } from '../token.js';
 import { TOKEN } from './client-helpers.js';
 
 interface FakeEnv extends TokenEnv {
@@ -29,6 +29,9 @@ function env(hash: string, stored: Record<string, string> = {}, storageFails = f
         getItem: (key: string) => map.get(key) ?? null,
         setItem: (key: string, value: string) => {
           map.set(key, value);
+        },
+        removeItem: (key: string) => {
+          map.delete(key);
         },
       };
     },
@@ -79,7 +82,7 @@ describe('takeToken', () => {
     expect(e.replaced).toEqual([]);
   });
 
-  it('refuses a malformed fragment token, still clearing it, and stores nothing', () => {
+  it('refuses a malformed fragment token, clearing it and discarding any stored token', () => {
     for (const bad of [
       '',
       'short',
@@ -90,12 +93,25 @@ describe('takeToken', () => {
       const e = env(`#token=${bad}`, { [TOKEN_KEY]: TOKEN });
       expect(takeToken(e), bad).toBeNull();
       expect(e.replaced, bad).toEqual(['/']);
-      expect(e.stored.get(TOKEN_KEY), bad).toBe(TOKEN);
+      expect(e.stored.has(TOKEN_KEY), bad).toBe(false);
     }
   });
 
-  it('ignores a malformed stored value', () => {
-    expect(takeToken(env('', { [TOKEN_KEY]: 'garbage' }))).toBeNull();
+  it('discards a malformed stored value', () => {
+    const e = env('', { [TOKEN_KEY]: 'garbage' });
+    expect(takeToken(e)).toBeNull();
+    expect(e.stored.has(TOKEN_KEY)).toBe(false);
+  });
+
+  it('discardToken removes the stored token and survives missing storage', () => {
+    const e = env('', { [TOKEN_KEY]: TOKEN, other: 'kept' });
+    discardToken(e);
+    expect(e.stored.has(TOKEN_KEY)).toBe(false);
+    expect(e.stored.get('other')).toBe('kept');
+    expect(() => {
+      discardToken(env('', {}, true));
+    }).not.toThrow();
+    expect(takeToken(e)).toBeNull();
   });
 
   it('works without storage: uses the fragment, else has nothing', () => {

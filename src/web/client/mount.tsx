@@ -10,8 +10,10 @@ export const ROOT_ID = 'app';
 
 /**
  * Takes the token (`takeToken(tokenEnv)`, which also removes a `#token=`
- * fragment from the address bar) and renders `<App token={token}
- * deps={deps} />` into `root` with Preact's `render`, replacing its
+ * fragment from the address bar, and discards a stored token when there is
+ * no usable one) and renders `<App token={token} deps={deps}
+ * onUnauthorized={() => discardToken(tokenEnv)} />` into `root` with
+ * Preact's `render`, replacing its
  * content. With `root` null (no `#app` element) it does nothing, not even
  * take the token. `tokenEnv` defaults to `browserTokenEnv()`.
  */

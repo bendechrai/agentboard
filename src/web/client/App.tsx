@@ -15,7 +15,10 @@
  * DOM contract (relied on by the component tests):
  * - with no token, or once the client's phase is `unauthorized`, only an
  *   element with `role="alert"` and class `no-token` whose text includes
- *   `Open the URL printed by agentboard serve` (and no view);
+ *   `Open the URL printed by agentboard serve` (and no view). When the
+ *   phase becomes `unauthorized` (a 401 from the API or the stream; the
+ *   client has already stopped its stream), `props.onUnauthorized` is
+ *   called once, which `mount` wires to `discardToken`;
  * - a `nav` with the links `Board` (`#/board`), `Feed` (`#/feed`) and
  *   `Lanes` (`#/lanes`);
  * - the session's `boardDir` as text once loaded;
@@ -36,6 +39,8 @@ import type { ClientDeps } from './api.js';
 export interface AppProps {
   /** The access token (`takeToken`), or null when there is none. */
   token: string | null;
+  /** Called once when the token is refused with 401 (`mount` discards the stored token). */
+  onUnauthorized?: () => void;
   /** Replaces some of `defaultDeps()` (tests); every other dependency is the browser's. */
   deps?: Partial<ClientDeps>;
 }

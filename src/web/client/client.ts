@@ -20,7 +20,8 @@
  *   accepted (for example the server was restarted and drew a new one):
  *   the client stops (stream closed, timer cancelled) and its phase is
  *   `unauthorized`, which the app shows as the message to open the URL
- *   printed by `agentboard serve`.
+ *   printed by `agentboard serve`, discarding the stored token
+ *   (board-web: "Access token").
  * - Stream data that is not valid JSON is ignored, as are event types
  *   other than `append`, `resync` and `problem`.
  */

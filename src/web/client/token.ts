@@ -13,9 +13,12 @@
  *   address bar alone and the stored token is used.
  * - A token is valid when it is 43 base64url characters (`TOKEN_PATTERN`,
  *   32 random bytes as the server draws them). A fragment token that is not
- *   valid is removed from the address bar but neither stored nor used, and
- *   the result is null (the app then shows how to open the board). A
- *   stored value that is not valid is ignored.
+ *   valid is removed from the address bar and not used, and the result is
+ *   null (the app then shows how to open the board).
+ * - board-web "Access token": a page with no token, or whose token is
+ *   refused with 401, discards any stored token. So whenever `takeToken`
+ *   returns null it has removed `TOKEN_KEY`, and the app calls
+ *   `discardToken` on a 401 from the API or the stream.
  * - `sessionStorage` may be unavailable (its accessor or methods throw);
  *   that is treated as empty storage that keeps nothing.
  */
@@ -30,7 +33,7 @@ export const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 export interface TokenEnv {
   readonly location: { readonly hash: string; readonly pathname: string; readonly search: string };
   /** Returns the storage, or throws when it is unavailable. */
-  readonly storage: () => Pick<Storage, 'getItem' | 'setItem'>;
+  readonly storage: () => Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
   readonly history: Pick<History, 'replaceState'>;
 }
 
@@ -44,12 +47,19 @@ export function browserTokenEnv(): TokenEnv {
  * - when the fragment is `#token=<value>`: first
  *   `history.replaceState(null, '', pathname + search)`, removing the
  *   fragment from the address bar; then, when `<value>` matches
- *   `TOKEN_PATTERN`, stores it under `TOKEN_KEY` (ignoring a storage
- *   failure) and returns it, else returns null;
+ *   `TOKEN_PATTERN`, stores it under `TOKEN_KEY` and returns it, else
+ *   removes `TOKEN_KEY` and returns null;
  * - otherwise the stored value under `TOKEN_KEY` when it matches
- *   `TOKEN_PATTERN`, else null.
+ *   `TOKEN_PATTERN`; else removes `TOKEN_KEY` and returns null.
+ * Storage failures are ignored.
  */
 export function takeToken(env: TokenEnv): string | null {
+  void env;
+  throw new Error('not implemented');
+}
+
+/** Removes `TOKEN_KEY` from the storage, ignoring a storage failure. */
+export function discardToken(env: TokenEnv): void {
   void env;
   throw new Error('not implemented');
 }

@@ -255,14 +255,17 @@ describe('access token', () => {
     expect(api.requests).toEqual([]);
   });
 
-  it('shows the same message when the server refuses the token', async () => {
+  it('shows the same message when the server refuses the token, and reports it once', async () => {
     const api = new FakeApi(model(inputs()));
     api.token = 'another-token-another-token-another-token-x';
-    renderApp(api, new FakeClock(NOW));
+    const refused = vi.fn();
+    render(<App token={TOKEN} deps={fakeDeps(api, new FakeClock(NOW))} onUnauthorized={refused} />);
     const alert = await screen.findByRole('alert');
     expect(alert.classList.contains('no-token')).toBe(true);
     expect(alert.textContent).toContain('Open the URL printed by agentboard serve');
     expect(document.querySelector('section.column')).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(refused).toHaveBeenCalledTimes(1);
   });
 
   it('shows the message when the stream is refused after the load', async () => {
@@ -407,6 +410,61 @@ describe('bootstrap', () => {
       el.remove();
     }
   });
+
+  it('mount discards the stored token when the API refuses it with 401', async () => {
+    const api = new FakeApi(model(inputs()));
+    api.token = 'another-token-another-token-another-token-x';
+    vi.stubGlobal('fetch', api.fetch);
+    window.sessionStorage.setItem('agentboard-token', TOKEN);
+    const el = root();
+    try {
+      mount(el);
+      await waitFor(() => {
+        expect(el.querySelector('.no-token')?.textContent).toContain(
+          'Open the URL printed by agentboard serve',
+        );
+      });
+      await waitFor(() => {
+        expect(window.sessionStorage.getItem('agentboard-token')).toBeNull();
+      });
+      expect(el.querySelector('section.column')).toBeNull();
+    } finally {
+      preactRender(null, el);
+      el.remove();
+    }
+  });
+
+  it('mount discards the stored token and stops when the stream is refused with 401', async () => {
+    const api = new FakeApi(model(inputs()));
+    vi.stubGlobal('fetch', api.fetch);
+    setHash(`#token=${TOKEN}`);
+    const el = root();
+    try {
+      mount(el);
+      const stream = await streamOf(api);
+      await waitFor(() => {
+        expect(el.querySelector(`article.card[data-ticket="${T1}"]`)).not.toBeNull();
+      });
+      expect(window.sessionStorage.getItem('agentboard-token')).toBe(TOKEN);
+      api.token = 'another-token-another-token-another-token-x';
+      stream.end();
+      await waitFor(
+        () => {
+          expect(el.querySelector('.no-token')).not.toBeNull();
+        },
+        { timeout: 5000 },
+      );
+      await waitFor(() => {
+        expect(window.sessionStorage.getItem('agentboard-token')).toBeNull();
+      });
+      const streams = api.streams.length;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(api.streams.length).toBe(streams);
+    } finally {
+      preactRender(null, el);
+      el.remove();
+    }
+  }, 10_000);
 
   it('mount with a malformed token shows the message and requests nothing', async () => {
     const api = new FakeApi(model(inputs()));
