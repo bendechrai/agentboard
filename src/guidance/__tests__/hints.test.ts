@@ -62,6 +62,7 @@ const PINNED: Readonly<Record<string, number>> = {
   'needs-task-or-adhoc': 1,
   'no-cache': 5,
   'no-disposition': 1,
+  'no-targets': 1,
   'not-assignee': 4,
   'path-outside-tree': 1,
   'schema-mismatch': 5,

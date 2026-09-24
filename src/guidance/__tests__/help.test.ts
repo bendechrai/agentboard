@@ -83,7 +83,7 @@ function argLine(arg: ArgSpec, positional: boolean): RegExp {
 }
 
 /** Commands that never open a board. */
-const BOARDLESS = new Set(['init', 'version', 'help']);
+const BOARDLESS = new Set(['init', 'agents install', 'agents check', 'version', 'help']);
 
 /**
  * Commands that locate a board but cannot exit 5: `mcp` locates the board
@@ -135,7 +135,7 @@ describe('the help data of record in the registry', () => {
       awareness: ['inbox', 'watch'],
       planning: ['import-change', 'close-merged'],
       maintenance: ['rebuild', 'sync'],
-      setup: ['init', 'mcp', 'version', 'help'],
+      setup: ['init', 'mcp', 'agents install', 'agents check', 'version', 'help'],
     });
     expect(COMMAND_GROUPS).toEqual(['lifecycle', 'awareness', 'planning', 'maintenance', 'setup']);
     expect(GROUP_TITLES).toEqual({

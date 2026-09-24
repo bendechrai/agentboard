@@ -48,6 +48,8 @@ describe('the command registry', () => {
       'import-change',
       'close-merged',
       'mcp',
+      'agents install',
+      'agents check',
       'version',
       'help',
     ]);

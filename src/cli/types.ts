@@ -134,10 +134,12 @@ export interface CommandOutput {
   /**
    * The exit code of a command that ran to completion but whose result is a
    * failure the caller must see, while still printing its full output (the
-   * `json` document or `text`) on stdout. Only `rebuild --check` uses it,
-   * with 1 when the cache diverges from a fresh rebuild (board-cache:
-   * "Rebuild"). Absent means 0. Refusals are still thrown as `BoardError`,
-   * never reported here.
+   * `json` document or `text`) on stdout: `rebuild --check`, with 1 when
+   * the cache diverges from a fresh rebuild (board-cache: "Rebuild"); `agents
+   * install` when a target was refused while the others were processed; and
+   * `agents check` when a target is not current (board-agent-guidance).
+   * Absent means 0. Other refusals are still thrown as `BoardError`, never
+   * reported here.
    */
   readonly exitCode?: 1;
   /**
