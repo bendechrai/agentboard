@@ -27,22 +27,21 @@ full workflow, and docs/adr/ for design decisions.
   (`agentboard mcp`), the concurrency and crash property tests, and the
   documentation (README usage, ADRs 0002 to 0005, "Using agentboard in a
   project" in CONTRIBUTING.md) are merged into `staging`.
-- The `add-agent-guidance` OpenSpec change (generated help, `help agents`,
-  error hints, `agents install`/`agents check` for Claude Code skills,
-  `AGENTS.md`, OpenSpec config and `.mcp.json`, and the guide over MCP) is
-  complete once this documentation (group 5, `docs/guidance`) merges:
-  groups 1 (generated help and suggestions), 2 (`help agents` and error
-  hints), 3 (`agents install`, `agents check` and the `init` suggestion)
-  and 4 (the guide over MCP) are merged into `staging`.
+- The `add-agent-guidance` OpenSpec change is complete and archived as
+  `openspec/changes/archive/2026-09-24-add-agent-guidance/`; its
+  requirements are the main spec `openspec/specs/board-agent-guidance/`.
+  Built: generated help and suggestions, `help agents` with role
+  checklists, error hints on the CLI and MCP, `agents install` and
+  `agents check`, the `init` suggestion, and the guide over MCP
+  (instructions summary and `agentboard://guide` resources). There are no
+  open OpenSpec changes.
 
 ## What to do next
 
-1. Archive `add-agent-guidance` in its own PR once this documentation
-   merges.
-2. Run `agentboard agents install` in this repository and commit the
+1. Run `agentboard agents install` in this repository and commit the
    skill and OpenSpec guidance it writes (see CONTRIBUTING.md, "Using
    agentboard in a project").
-3. A human reviews `staging` and promotes it to `main` (a merge-commit PR
+2. A human reviews `staging` and promotes it to `main` (a merge-commit PR
    from `staging`), then publishes the npm package.
 
 Each task group uses the three-role loop from CONTRIBUTING.md
