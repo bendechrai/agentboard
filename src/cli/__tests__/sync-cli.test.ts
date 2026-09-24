@@ -8,7 +8,7 @@
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { git, gitRepo, tempDir } from '../../board/__tests__/helpers.js';
 import {
@@ -22,6 +22,9 @@ import {
   unmerged,
 } from '../../board/__tests__/sync-helpers.js';
 import { oneJson, spawnCli, written, type Run } from './cli-helpers.js';
+
+// Every test spawns the CLI and git several times; keep well clear of the 5 s default.
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
 const TASK3 = ['--task', 'openspec:add-board-core#3'];
 

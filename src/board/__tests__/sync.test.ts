@@ -5,15 +5,25 @@
  * repository on local disk.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { Board } from '../../store/board.js';
 import { catchUp, dumpCache } from '../../store/cache.js';
 import { rebuild } from '../../store/rebuild.js';
 import { P, T1, T2, T3, ev } from '../../store/__tests__/helpers.js';
+import { BoardError } from '../../store/errors.js';
 import { initBoard } from '../init.js';
 import { SYNC_IDENTITY, syncBoard, syncCommitMessage, type SyncResult } from '../sync.js';
 import { listTickets } from '../tickets.js';
@@ -40,6 +50,9 @@ import {
   unmerged,
   type Env,
 } from './sync-helpers.js';
+
+// Every test spawns several git processes; keep well clear of the 5 s default under load.
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
 const HEX40 = /^[0-9a-f]{40}$/;
 
@@ -301,9 +314,15 @@ describe('scenario: divergent clones converge', () => {
     const syncA = syncBoard(a, { env });
     expect(syncA).toMatchObject({ committedEvents: 3, pushed: true, arrived: [] });
 
+    expect(syncA.commit).toBe(revParse(aDir));
+
     const syncB = syncBoard(b, { env });
     expect(syncB).toMatchObject({ committedEvents: 2, pulled: true, pushed: true });
     expect(syncB.arrived).toEqual(fromA);
+    // B's commit was replayed onto A's by the rebase: commit names the replayed one.
+    expect(syncB.commit).toMatch(HEX40);
+    expect(syncB.commit).toBe(revParse(bDir));
+    expect(syncB.commit).toBe(revParse(remote, 'main'));
 
     const again = syncBoard(a, { env });
     expect(again).toMatchObject({ commit: null, pulled: true });
@@ -372,6 +391,178 @@ describe('scenario: divergent clones converge', () => {
         .map((t) => t.id)
         .sort(),
     ).toEqual(tickets.map((t) => t.id).sort());
+  });
+});
+
+describe('sync commits only its own paths', () => {
+  /** A board with one committed tracked file besides sync's own paths. */
+  function boardWithReadme(env: Env, remote?: string): { board: Board; dir: string } {
+    const { dir } = initMachine(env, remote);
+    const board = openTracked(dir);
+    syncBoard(board, { env });
+    writeFileSync(join(dir, 'README'), 'original\n');
+    git(dir, 'add', 'README');
+    git(dir, 'commit', '-q', '-m', 'add README');
+    if (remote !== undefined) {
+      git(dir, 'push', '-q', 'origin', 'main');
+    }
+    return { board, dir };
+  }
+
+  /** Stages a new stray file and a modification of README. */
+  function preStage(dir: string): void {
+    writeFileSync(join(dir, 'stray-notes.txt'), 'not for sync\n');
+    writeFileSync(join(dir, 'README'), 'changed by hand\n');
+    git(dir, 'add', 'stray-notes.txt', 'README');
+  }
+
+  function staged(dir: string): string[] {
+    return git(dir, 'diff', '--cached', '--name-only')
+      .split('\n')
+      .filter((line) => line !== '')
+      .sort();
+  }
+
+  it('leaves content a user pre-staged uncommitted and still staged', () => {
+    const env = syncEnv();
+    const { board, dir } = boardWithReadme(env);
+    const [hash] = addTickets(board, 1, 'orch');
+    preStage(dir);
+
+    const result = syncBoard(board, { env });
+
+    expect(result.commit).toBe(revParse(dir));
+    expect(result.committedEvents).toBe(1);
+    expect(git(dir, 'show', '--name-only', '--format=', 'HEAD').trim()).toBe(
+      `events/${String(hash)}.json`,
+    );
+    expect(treePaths(dir)).not.toContain('stray-notes.txt');
+    expect(git(dir, 'show', 'HEAD:README')).toBe('original\n');
+    expect(staged(dir)).toEqual(['README', 'stray-notes.txt']);
+    expect(readFileSync(join(dir, 'README'), 'utf8')).toBe('changed by hand\n');
+  });
+
+  it('makes no commit when only foreign content is staged', () => {
+    const env = syncEnv();
+    const { board, dir } = boardWithReadme(env);
+    const head = revParse(dir);
+    preStage(dir);
+
+    const result = syncBoard(board, { env });
+
+    expect(result.commit).toBeNull();
+    expect(revParse(dir)).toBe(head);
+    expect(staged(dir)).toEqual(['README', 'stray-notes.txt']);
+  });
+
+  it('never pushes pre-staged content to the remote', () => {
+    const env = syncEnv();
+    const remote = bareRemote();
+    const { board, dir } = boardWithReadme(env, remote);
+    addTickets(board, 1, 'orch');
+    preStage(dir);
+
+    // Whether the pull then refuses the dirty index (exit 3) or not, nothing
+    // foreign may be committed or reach the remote, and it stays staged.
+    try {
+      syncBoard(board, { env });
+    } catch (error) {
+      expect(error).toBeInstanceOf(BoardError);
+      expect((error as BoardError).exitCode).toBe(3);
+    }
+
+    expect(treePaths(dir)).not.toContain('stray-notes.txt');
+    expect(git(dir, 'show', 'HEAD:README')).toBe('original\n');
+    expect(treePaths(remote, 'main')).not.toContain('stray-notes.txt');
+    expect(git(remote, 'show', 'main:README')).toBe('original\n');
+    expect(staged(dir)).toEqual(['README', 'stray-notes.txt']);
+  });
+});
+
+describe('a rejected push is retried', () => {
+  /**
+   * Installs a pre-push hook in the board repository at `dir` that, on each
+   * of its first `times` runs, makes a commit in the clone at `competitor`
+   * and pushes it to the shared remote, so the push that triggered the hook
+   * is rejected (the remote moved after sync pulled). Later runs do
+   * nothing. Returns the path of the file counting the runs.
+   */
+  function competingHook(dir: string, competitor: string, times: number): string {
+    const counter = join(tempDir(), 'hook-runs');
+    const hook = join(git(dir, 'rev-parse', '--absolute-git-dir').trim(), 'hooks', 'pre-push');
+    mkdirSync(join(hook, '..'), { recursive: true });
+    writeFileSync(
+      hook,
+      [
+        '#!/bin/sh',
+        'unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR',
+        'cat >/dev/null',
+        `n=$(cat '${counter}' 2>/dev/null || echo 0)`,
+        'n=$((n + 1))',
+        `echo "$n" > '${counter}'`,
+        `if [ "$n" -le ${String(times)} ]; then`,
+        `  git -C '${competitor}' -c user.name=c -c user.email=c@example.invalid ` +
+          `-c commit.gpgsign=false commit -q --allow-empty -m "competing $n" || exit 1`,
+        `  git -C '${competitor}' push -q origin HEAD:main || exit 1`,
+        'fi',
+        'exit 0',
+        '',
+      ].join('\n'),
+    );
+    chmodSync(hook, 0o755);
+    return counter;
+  }
+
+  /** Machines A (pushed), B and C (clones); C has one committed, unpushed event. */
+  function threeMachines(env: Env): {
+    remote: string;
+    b: Board;
+    c: Board;
+    bDir: string;
+    cDir: string;
+    fromC: string;
+  } {
+    const { remote, b, bDir } = twoMachines(env);
+    const { dir: cDir } = cloneMachine(remote);
+    const c = openTracked(cDir);
+    const [fromC] = addTickets(c, 1, 'carol');
+    git(cDir, 'add', 'events');
+    git(cDir, 'commit', '-q', '-m', 'competing event');
+    return { remote, b, c, bDir, cDir, fromC: String(fromC) };
+  }
+
+  it('pulls what arrived, pushes again and converges', () => {
+    const env = syncEnv();
+    const { remote, b, c, bDir, cDir, fromC } = threeMachines(env);
+    const fromB = addTickets(b, 1, 'bob');
+    const counter = competingHook(bDir, cDir, 1);
+
+    const result = syncBoard(b, { env });
+
+    expect(readFileSync(counter, 'utf8').trim()).toBe('2');
+    expect(result).toMatchObject({ pulled: true, pushed: true, committedEvents: 1 });
+    expect(result.arrived).toEqual([fromC]);
+    expect(result.commit).toBe(revParse(bDir));
+    expect(revParse(remote, 'main')).toBe(revParse(bDir));
+    expect(listTickets(b)).toHaveLength(2);
+
+    const back = syncBoard(c, { env });
+    expect(back.arrived).toEqual(fromB);
+    expect(treeEvents(cDir)).toEqual(treeEvents(bDir));
+    expect(dumpCache(c.db)).toBe(dumpCache(b.db));
+  });
+
+  it('exits 3 sync-failed when the push is rejected a second time', () => {
+    const env = syncEnv();
+    const { remote, b, bDir, cDir } = threeMachines(env);
+    addTickets(b, 1, 'bob');
+    const counter = competingHook(bDir, cDir, 2);
+
+    expectBoardError(() => syncBoard(b, { env }), 3, 'sync-failed');
+
+    expect(readFileSync(counter, 'utf8').trim()).toBe('2');
+    expect(revParse(remote, 'main')).toBe(revParse(cDir));
+    expect(revParse(remote, 'main')).not.toBe(revParse(bDir));
   });
 });
 

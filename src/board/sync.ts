@@ -60,8 +60,12 @@ export interface SyncResult {
   /** Absolute path of the board directory (`board.dir`). */
   dir: string;
   /**
-   * Full hex id of the commit `sync` made, or null when nothing was staged
-   * (no empty commit is ever made).
+   * Full hex id of the commit on the branch that contains the events sync
+   * committed, as it is when sync returns: after any `pull --rebase` has
+   * replayed the local commit onto what arrived, this is the replayed
+   * commit, not the one made in step 2 (in the divergent clones scenario it
+   * equals the board repository's HEAD after sync). Null when sync
+   * committed nothing (no empty commit is ever made).
    */
   commit: string | null;
   /** Number of `events/*.json` files added by that commit (0 when `commit` is null). */
@@ -160,9 +164,16 @@ export interface SyncResult {
  *    `.gitignore` is missing or does not list them. Deletions are never
  *    staged (a missing committed event file already stopped sync at
  *    precondition 5).
- * 2. Commit only when something is staged: one commit, message
+ * 2. Commit only when something is staged under sync's own paths (the
+ *    same pathspec as step 1: `events` excluding `events/.tmp-*`, and
+ *    `.gitignore`): one commit, limited by that pathspec
+ *    (`git commit -- <pathspec>`), message
  *    `syncCommitMessage(<events/*.json paths added>)`, hooks skipped
- *    (`--no-verify`). `commit` and `committedEvents` report it.
+ *    (`--no-verify`). Anything else already staged in the board repository
+ *    (a stray file, a modification of another tracked file) is neither
+ *    committed nor pushed by sync and is still staged afterwards; when only
+ *    such content is staged, no commit is made. `committedEvents` counts
+ *    the event files of this commit.
  * 3. Remote: the remote of the branch's configured upstream when there is
  *    one; otherwise `origin` when it exists; otherwise the only remote.
  *    With no remote at all this is the no-remote path: stop here and return
@@ -188,10 +199,11 @@ export interface SyncResult {
  *      `BoardError(3, 'sync-failed')` with git's first error line; the
  *      local commit from step 2 is kept.
  * 5. Push: `git push <remote> <branch>`, with `-u` when the branch had no
- *    upstream (`upstreamSet: true`). A rejected push (the remote moved
- *    between pull and push) is retried once from step 4; a second
- *    rejection, or any other push failure, is `BoardError(3,
- *    'sync-failed')`.
+ *    upstream (`upstreamSet: true`). Push hooks are not skipped. A rejected
+ *    push (the remote moved between pull and push) is retried once from
+ *    step 4, so what arrived in between is pulled, reported in `arrived`
+ *    and folded; a second rejection, or any other push failure, is
+ *    `BoardError(3, 'sync-failed')`.
  * 6. Catch-up: `catchUp(board)`, so every arrived event is folded into the
  *    cache now (with a refold when one sorts before the last position).
  *
