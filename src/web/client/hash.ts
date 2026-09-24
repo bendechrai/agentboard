@@ -86,8 +86,53 @@ export const DEFAULT_ROUTE: BoardRoute = {
  * unrecognized is `DEFAULT_ROUTE` (a new object equal to it). Pure.
  */
 export function parseHash(hash: string): Route {
-  void hash;
-  throw new Error('not implemented');
+  const text = hash.startsWith('#') ? hash.slice(1) : hash;
+  if (!text.startsWith('/')) {
+    return { ...DEFAULT_ROUTE };
+  }
+  const mark = text.indexOf('?');
+  const path = mark < 0 ? text.slice(1) : text.slice(1, mark);
+  const query = new URLSearchParams(mark < 0 ? '' : text.slice(mark + 1));
+  const one = (name: string): string | null => {
+    const value = query.get(name);
+    return value === null || value === '' ? null : value;
+  };
+  if (path === 'board') {
+    return {
+      view: 'board',
+      change: one('change'),
+      assignee: one('assignee'),
+      closed: query.get('closed') === '1',
+    };
+  }
+  if (path === 'feed') {
+    const kinds = query.getAll('kind').filter((kind) => kind !== '');
+    return {
+      view: 'feed',
+      change: one('change'),
+      actor: one('actor'),
+      kinds: kinds.length === 0 ? null : kinds,
+    };
+  }
+  if (path === 'lanes') {
+    return { view: 'lanes' };
+  }
+  if (path.startsWith('ticket/') && path.length > 'ticket/'.length) {
+    const id = decodeSafely(path.slice('ticket/'.length));
+    if (id !== null && id !== '') {
+      return { view: 'ticket', id };
+    }
+  }
+  return { ...DEFAULT_ROUTE };
+}
+
+/** `decodeURIComponent`, or null for a malformed escape. */
+function decodeSafely(text: string): string | null {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -100,6 +145,35 @@ export function parseHash(hash: string): Route {
  * `#/lanes`, `#/ticket/<encodeURIComponent(id)>`. Pure.
  */
 export function formatHash(route: Route): string {
-  void route;
-  throw new Error('not implemented');
+  const query = new URLSearchParams();
+  switch (route.view) {
+    case 'board':
+      if (route.change !== null) {
+        query.append('change', route.change);
+      }
+      if (route.assignee !== null) {
+        query.append('assignee', route.assignee);
+      }
+      if (route.closed) {
+        query.append('closed', '1');
+      }
+      break;
+    case 'feed':
+      if (route.change !== null) {
+        query.append('change', route.change);
+      }
+      if (route.actor !== null) {
+        query.append('actor', route.actor);
+      }
+      for (const kind of route.kinds ?? []) {
+        query.append('kind', kind);
+      }
+      break;
+    case 'ticket':
+      return `#/ticket/${encodeURIComponent(route.id)}`;
+    case 'lanes':
+      return '#/lanes';
+  }
+  const text = query.toString();
+  return text === '' ? `#/${route.view}` : `#/${route.view}?${text}`;
 }

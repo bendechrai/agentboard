@@ -33,8 +33,16 @@
  */
 
 import type { JSX } from 'preact';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
-import type { ClientDeps } from './api.js';
+import { defaultDeps, type ClientDeps, type Connection } from './api.js';
+import { BoardClient, type ClientState } from './client.js';
+import { formatHash, parseHash, type Route } from './hash.js';
+import { BoardView } from './views/BoardView.js';
+import { FeedView } from './views/FeedView.js';
+import { LanesView } from './views/LanesView.js';
+import { ProblemBanner } from './views/ProblemBanner.js';
+import { TicketView } from './views/TicketView.js';
 
 export interface AppProps {
   /** The access token (`takeToken`), or null when there is none. */
@@ -45,7 +53,140 @@ export interface AppProps {
   deps?: Partial<ClientDeps>;
 }
 
+const NAV: readonly { label: string; route: Route }[] = [
+  { label: 'Board', route: { view: 'board', change: null, assignee: null, closed: false } },
+  { label: 'Feed', route: { view: 'feed', change: null, actor: null, kinds: null } },
+  { label: 'Lanes', route: { view: 'lanes' } },
+];
+
+function NoToken(): JSX.Element {
+  return (
+    <main class="app">
+      <div role="alert" class="no-token">
+        <h1>agentboard</h1>
+        <p>
+          This page needs the access token of the running server. Open the URL printed by agentboard
+          serve (it ends with <code>#token=...</code>) in this tab.
+        </p>
+      </div>
+    </main>
+  );
+}
+
 export function App(props: AppProps): JSX.Element {
-  void props;
-  throw new Error('not implemented');
+  const { token } = props;
+  const [route, setRoute] = useState<Route>(() => parseHash(window.location.hash));
+  const [state, setState] = useState<ClientState | null>(null);
+  const reported = useRef(false);
+  const onUnauthorized = useRef(props.onUnauthorized);
+  onUnauthorized.current = props.onUnauthorized;
+  const deps = useRef(props.deps);
+
+  const conn = useMemo<Connection | null>(
+    () => (token === null ? null : { deps: { ...defaultDeps(), ...deps.current }, token }),
+    [token],
+  );
+
+  useEffect(() => {
+    const follow = (): void => {
+      setRoute(parseHash(window.location.hash));
+    };
+    window.addEventListener('hashchange', follow);
+    return () => {
+      window.removeEventListener('hashchange', follow);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (conn === null) {
+      return undefined;
+    }
+    const client = new BoardClient(conn);
+    setState(client.getState());
+    const off = client.subscribe(setState);
+    void client.start();
+    return () => {
+      off();
+      client.stop();
+    };
+  }, [conn]);
+
+  const phase = state?.phase ?? 'loading';
+  useEffect(() => {
+    if (phase === 'unauthorized' && !reported.current) {
+      reported.current = true;
+      onUnauthorized.current?.();
+    }
+  }, [phase]);
+
+  if (conn === null || phase === 'unauthorized') {
+    return <NoToken />;
+  }
+
+  const navigate = (next: Route): void => {
+    const hash = formatHash(next);
+    if (window.location.hash !== hash) {
+      window.location.hash = hash;
+    }
+    setRoute(parseHash(hash));
+  };
+
+  return (
+    <div class="app">
+      <header class="top">
+        <h1 class="brand">agentboard</h1>
+        {state?.session ? <p class="board-dir">{state.session.boardDir}</p> : null}
+        {phase === 'ready' ? (
+          <p class={state?.connected === true ? 'live on' : 'live off'} role="status">
+            {state?.connected === true ? 'live' : 'reconnecting...'}
+          </p>
+        ) : null}
+        <nav aria-label="Views">
+          <ul>
+            {NAV.map((item) => (
+              <li key={item.label}>
+                <a
+                  href={formatHash(item.route)}
+                  aria-current={item.route.view === route.view ? 'page' : undefined}
+                >
+                  {item.label}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      </header>
+      {state?.problem ? <ProblemBanner problem={state.problem} /> : null}
+      <main class="content">{body(state, route, conn, navigate)}</main>
+    </div>
+  );
+}
+
+function body(
+  state: ClientState | null,
+  route: Route,
+  conn: Connection,
+  navigate: (route: Route) => void,
+): JSX.Element {
+  if (state?.phase === 'failed') {
+    return (
+      <div role="alert" class="error">
+        {state.error?.message ?? 'The board could not be loaded.'}
+      </div>
+    );
+  }
+  if (state?.phase !== 'ready' || state.model === null) {
+    return <p class="loading">Loading board...</p>;
+  }
+  const { model, now } = state;
+  switch (route.view) {
+    case 'board':
+      return <BoardView model={model} now={now} route={route} navigate={navigate} />;
+    case 'feed':
+      return <FeedView model={model} now={now} route={route} navigate={navigate} />;
+    case 'ticket':
+      return <TicketView id={route.id} model={model} conn={conn} now={now} />;
+    case 'lanes':
+      return <LanesView model={model} now={now} />;
+  }
 }

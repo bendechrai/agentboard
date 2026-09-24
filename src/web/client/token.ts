@@ -39,8 +39,27 @@ export interface TokenEnv {
 
 /** `window.location`, `window.sessionStorage` and `window.history`, read when called. */
 export function browserTokenEnv(): TokenEnv {
-  throw new Error('not implemented');
+  return {
+    location: window.location,
+    storage: () => window.sessionStorage,
+    history: window.history,
+  };
 }
+
+/** Runs `action` on the storage, ignoring a storage failure; null on failure. */
+function withStorage<T>(
+  env: TokenEnv,
+  action: (storage: ReturnType<TokenEnv['storage']>) => T,
+): T | null {
+  try {
+    return action(env.storage());
+  } catch {
+    return null;
+  }
+}
+
+/** The prefix of a token fragment. */
+const FRAGMENT_PREFIX = '#token=';
 
 /**
  * The token to use, or null when there is none:
@@ -54,12 +73,30 @@ export function browserTokenEnv(): TokenEnv {
  * Storage failures are ignored.
  */
 export function takeToken(env: TokenEnv): string | null {
-  void env;
-  throw new Error('not implemented');
+  const { hash, pathname, search } = env.location;
+  if (hash.startsWith(FRAGMENT_PREFIX)) {
+    env.history.replaceState(null, '', pathname + search);
+    const value = hash.slice(FRAGMENT_PREFIX.length);
+    if (TOKEN_PATTERN.test(value)) {
+      withStorage(env, (storage) => {
+        storage.setItem(TOKEN_KEY, value);
+      });
+      return value;
+    }
+    discardToken(env);
+    return null;
+  }
+  const stored = withStorage(env, (storage) => storage.getItem(TOKEN_KEY));
+  if (stored !== null && TOKEN_PATTERN.test(stored)) {
+    return stored;
+  }
+  discardToken(env);
+  return null;
 }
 
 /** Removes `TOKEN_KEY` from the storage, ignoring a storage failure. */
 export function discardToken(env: TokenEnv): void {
-  void env;
-  throw new Error('not implemented');
+  withStorage(env, (storage) => {
+    storage.removeItem(TOKEN_KEY);
+  });
 }

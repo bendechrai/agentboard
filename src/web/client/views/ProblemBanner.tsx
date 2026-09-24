@@ -18,6 +18,11 @@ export interface ProblemBannerProps {
 }
 
 export function ProblemBanner(props: ProblemBannerProps): JSX.Element {
-  void props;
-  throw new Error('not implemented');
+  const { message, hint } = props.problem.error;
+  return (
+    <div role="alert" class="problem">
+      <p class="problem-message">{message}</p>
+      {hint !== null ? <p class="problem-hint">{hint}</p> : null}
+    </div>
+  );
 }

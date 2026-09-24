@@ -18,15 +18,14 @@
  */
 
 import type { Connection } from './api.js';
-import type { SseEvent } from './sse.js';
+import { SseParser, type SseEvent } from './sse.js';
 
 /** The reconnection delay before the server has sent a `retry` field (as the server's `retry: 2000`). */
 export const STREAM_RETRY_MS = 2000;
 
 /** The stream path for a position id: `/api/stream?since=<encodeURIComponent(id)>`. */
 export function streamUrl(id: string): string {
-  void id;
-  throw new Error('not implemented');
+  return `/api/stream?since=${encodeURIComponent(id)}`;
 }
 
 /** What the stream reports. No handler is called after `close()`. */
@@ -66,8 +65,117 @@ export function openStream(
   since: string,
   handlers: StreamHandlers,
 ): StreamHandle {
-  void conn;
-  void since;
-  void handlers;
-  throw new Error('not implemented');
+  const { deps } = conn;
+  let closed = false;
+  /** The last event id received on this stream, '' before any. */
+  let lastId = '';
+  let retryMs = STREAM_RETRY_MS;
+  let controller: AbortController | null = null;
+  let timer: { handle: unknown } | null = null;
+
+  const dispatch = (events: readonly SseEvent[]): void => {
+    for (const event of events) {
+      if (closed) {
+        return;
+      }
+      handlers.onEvent(event);
+    }
+  };
+
+  const disconnected = (): void => {
+    if (closed) {
+      return;
+    }
+    handlers.onDisconnect();
+    if (closed) {
+      return;
+    }
+    const entry: { handle: unknown } = { handle: null };
+    entry.handle = deps.setTimeout(() => {
+      if (timer === entry) {
+        timer = null;
+      }
+      void connect();
+    }, retryMs);
+    timer = entry;
+  };
+
+  const connect = async (): Promise<void> => {
+    if (closed) {
+      return;
+    }
+    const abort = new AbortController();
+    controller = abort;
+    const headers: Record<string, string> = {
+      Accept: 'text/event-stream',
+      Authorization: `Bearer ${conn.token}`,
+    };
+    if (lastId !== '') {
+      headers['Last-Event-ID'] = lastId;
+    }
+    let response: Response;
+    try {
+      response = await deps.fetch(streamUrl(since), { headers, signal: abort.signal });
+    } catch {
+      disconnected();
+      return;
+    }
+    if (closed) {
+      return;
+    }
+    const body = response.body;
+    if (response.status === 401) {
+      closed = true;
+      void body?.cancel().catch(() => undefined);
+      handlers.onUnauthorized();
+      return;
+    }
+    if (!response.ok || body === null) {
+      void body?.cancel().catch(() => undefined);
+      disconnected();
+      return;
+    }
+    handlers.onOpen();
+    const parser = new SseParser(lastId);
+    const decoder = new TextDecoder();
+    const reader = body.getReader();
+    const take = (text: string): void => {
+      const events = parser.push(text);
+      lastId = parser.lastEventId;
+      retryMs = parser.retry ?? retryMs;
+      dispatch(events);
+    };
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (closed) {
+          return;
+        }
+        if (done) {
+          take(decoder.decode());
+          break;
+        }
+        take(decoder.decode(value, { stream: true }));
+      }
+    } catch {
+      // A failed read ends the connection like the end of the body.
+    }
+    disconnected();
+  };
+
+  void connect();
+
+  return {
+    close(): void {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      controller?.abort();
+      if (timer !== null) {
+        deps.clearTimeout(timer.handle);
+        timer = null;
+      }
+    },
+  };
 }

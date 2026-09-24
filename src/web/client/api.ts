@@ -119,7 +119,18 @@ export interface Connection {
  * `clearInterval`, `setTimeout` and `clearTimeout`.
  */
 export function defaultDeps(): ClientDeps {
-  throw new Error('not implemented');
+  return {
+    fetch: (input, init) => globalThis.fetch(input, init),
+    now: () => Date.now(),
+    setInterval: (callback, ms) => globalThis.setInterval(callback, ms),
+    clearInterval: (handle) => {
+      globalThis.clearInterval(handle as ReturnType<typeof globalThis.setInterval>);
+    },
+    setTimeout: (callback, ms) => globalThis.setTimeout(callback, ms),
+    clearTimeout: (handle) => {
+      globalThis.clearTimeout(handle as ReturnType<typeof globalThis.setTimeout>);
+    },
+  };
 }
 
 /**
@@ -127,8 +138,34 @@ export function defaultDeps(): ClientDeps {
  * `Authorization: Bearer <token>`.
  */
 export function apiHeaders(token: string): Record<string, string> {
-  void token;
-  throw new Error('not implemented');
+  return { Accept: 'application/json', Authorization: `Bearer ${token}` };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** True when `value` has the shape of an `ErrorDocument`. */
+export function isErrorDocument(value: unknown): value is ErrorDocument {
+  if (!isRecord(value) || !isRecord(value['error'])) {
+    return false;
+  }
+  const error = value['error'];
+  return (
+    typeof error['exitCode'] === 'number' &&
+    (error['reason'] === null || typeof error['reason'] === 'string') &&
+    typeof error['message'] === 'string' &&
+    (error['hint'] === null || typeof error['hint'] === 'string')
+  );
+}
+
+/** The error document of any failure: its own for an `ApiError` that has one. */
+export function errorDocumentOf(error: unknown): ErrorDocument {
+  if (error instanceof ApiError && error.document !== null) {
+    return error.document;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return { error: { exitCode: 1, reason: null, message, hint: null } };
 }
 
 /**
@@ -139,16 +176,46 @@ export function apiHeaders(token: string): Record<string, string> {
  * the body is not one; 401 for a missing or wrong token), status 0 when
  * `fetch` itself rejects.
  */
-export function getJson(conn: Connection, path: string): Promise<unknown> {
-  void conn;
-  void path;
-  throw new Error('not implemented');
+export async function getJson(conn: Connection, path: string): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await conn.deps.fetch(path, { headers: apiHeaders(conn.token) });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new ApiError(`GET ${path} failed: ${reason}`, 0, null);
+  }
+  let body: unknown = null;
+  let parsed = true;
+  try {
+    body = await response.json();
+  } catch {
+    parsed = false;
+  }
+  if (response.ok && parsed) {
+    return body;
+  }
+  const document = isErrorDocument(body) ? body : null;
+  const message =
+    document?.error.message ??
+    (response.ok
+      ? `GET ${path} answered ${String(response.status)} with a body that is not JSON`
+      : `GET ${path} answered ${String(response.status)}`);
+  throw new ApiError(message, response.status, document);
 }
 
 /** `GET /api/session`. Rejects as `getJson`. */
-export function loadSession(conn: Connection): Promise<Session> {
-  void conn;
-  throw new Error('not implemented');
+export async function loadSession(conn: Connection): Promise<Session> {
+  return (await getJson(conn, '/api/session')) as Session;
+}
+
+/** The events of a snapshot cut at `head` (see the module comment). */
+function cutAtHead(events: EventView[], head: string | null): EventView[] {
+  if (head === null) {
+    const first = events.findIndex((e) => e.outcome === 'applied');
+    return first < 0 ? events : events.slice(0, first);
+  }
+  const index = events.findIndex((e) => e.hash === head);
+  return index < 0 ? events : events.slice(0, index + 1);
 }
 
 /**
@@ -162,10 +229,31 @@ export function loadSession(conn: Connection): Promise<Session> {
  * `none`), `id` the board's id, and `late` the given list. Rejects as
  * `getJson` on the first failed request.
  */
-export function loadModel(conn: Connection, late: readonly string[]): Promise<BoardModel> {
-  void conn;
-  void late;
-  throw new Error('not implemented');
+export async function loadModel(conn: Connection, late: readonly string[]): Promise<BoardModel> {
+  const board = (await getJson(conn, '/api/board')) as BoardResponse;
+  const events: EventView[] = [];
+  let after: string | null = null;
+  do {
+    const path: string =
+      after === null ? '/api/events' : `/api/events?after=${encodeURIComponent(after)}`;
+    const page = (await getJson(conn, path)) as EventsPage;
+    events.push(...page.events);
+    after = page.next;
+  } while (after !== null);
+  const headPart = board.id.slice(0, Math.max(0, board.id.indexOf('.')));
+  const head = headPart === 'none' || headPart === '' ? null : headPart;
+  const tickets: Record<string, Ticket> = {};
+  for (const ticket of board.tickets) {
+    tickets[ticket.id] = ticket;
+  }
+  return {
+    tickets,
+    meta: board.meta,
+    events: cutAtHead(events, head),
+    head,
+    id: board.id,
+    late: [...late],
+  };
 }
 
 /**
@@ -175,8 +263,6 @@ export function loadModel(conn: Connection, late: readonly string[]): Promise<Bo
  * board-view-model: "Applying feed messages"). Rejects as `getJson` (for
  * example 404 with reason `unknown-ticket`).
  */
-export function loadTicketDetail(conn: Connection, id: string): Promise<TicketDetail> {
-  void conn;
-  void id;
-  throw new Error('not implemented');
+export async function loadTicketDetail(conn: Connection, id: string): Promise<TicketDetail> {
+  return (await getJson(conn, `/api/tickets/${encodeURIComponent(id)}`)) as TicketDetail;
 }

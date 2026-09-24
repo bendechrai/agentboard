@@ -18,7 +18,10 @@
 
 import type { JSX } from 'preact';
 
+import { agentLanes } from '../../../view/lanes.js';
+import { relativeTime } from '../../../view/time.js';
 import type { BoardModel } from '../../../view/types.js';
+import { CardView } from './CardView.js';
 
 export interface LanesViewProps {
   model: BoardModel;
@@ -26,6 +29,36 @@ export interface LanesViewProps {
 }
 
 export function LanesView(props: LanesViewProps): JSX.Element {
-  void props;
-  throw new Error('not implemented');
+  const lanes = agentLanes(props.model, props.now);
+  if (lanes.length === 0) {
+    return <p class="empty">No agent has written an event or holds a ticket yet.</p>;
+  }
+  return (
+    <div class="lanes">
+      {lanes.map((lane, index) => (
+        <section
+          key={lane.actor}
+          class="lane"
+          data-actor={lane.actor}
+          aria-labelledby={`lane-${String(index)}`}
+        >
+          <h2 id={`lane-${String(index)}`} class="lane-title">
+            {lane.actor}
+          </h2>
+          {lane.lastEvent !== null && lane.lastSeenMs !== null ? (
+            <p class="last-seen">
+              {`last seen ${relativeTime(lane.lastSeenMs)}`}
+              <span class="last-kind">{` (${lane.lastEvent.kind})`}</span>
+            </p>
+          ) : (
+            <p class="no-events">no events</p>
+          )}
+          {lane.tickets.length === 0 ? <p class="empty">No open tickets.</p> : null}
+          {lane.tickets.map((card) => (
+            <CardView key={card.id} card={card} />
+          ))}
+        </section>
+      ))}
+    </div>
+  );
 }

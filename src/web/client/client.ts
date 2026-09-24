@@ -26,8 +26,20 @@
  *   other than `append`, `resync` and `problem`.
  */
 
-import type { BoardModel } from '../../view/types.js';
-import type { ApiError, Connection, ErrorDocument, Session } from './api.js';
+import { applyFeedMessage } from '../../view/apply.js';
+import type { AppendMessage, BoardModel, ResyncMessage } from '../../view/types.js';
+import {
+  ApiError,
+  errorDocumentOf,
+  isErrorDocument,
+  loadModel,
+  loadSession,
+  type Connection,
+  type ErrorDocument,
+  type Session,
+} from './api.js';
+import type { SseEvent } from './sse.js';
+import { openStream, type StreamHandle } from './stream.js';
 
 /** How often the client refreshes `now`, re-rendering relative times: 10 seconds. */
 export const REFRESH_MS = 10_000;
@@ -58,16 +70,72 @@ export interface ClientState {
   connected: boolean;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isAppend(value: unknown): value is AppendMessage {
+  return (
+    isRecord(value) &&
+    value['type'] === 'append' &&
+    typeof value['id'] === 'string' &&
+    Array.isArray(value['events']) &&
+    Array.isArray(value['tickets'])
+  );
+}
+
+function isResync(value: unknown): value is ResyncMessage {
+  return (
+    isRecord(value) &&
+    value['type'] === 'resync' &&
+    typeof value['id'] === 'string' &&
+    Array.isArray(value['late']) &&
+    Array.isArray(value['removed'])
+  );
+}
+
+/** The parsed JSON of `data`, or undefined when it is not JSON. */
+function parseData(data: string): unknown {
+  try {
+    return JSON.parse(data) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/** True for a failure answered 401 (the token is not accepted). */
+function isUnauthorized(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401;
+}
+
 /** The client model: one per page. */
 export class BoardClient {
+  readonly #conn: Connection;
+  #state: ClientState;
+  readonly #listeners = new Set<(state: ClientState) => void>();
+  #started = false;
+  /** True once stopped (by `stop` or a 401): nothing more is requested or reported. */
+  #halted = false;
+  #stream: StreamHandle | null = null;
+  #timer: { handle: unknown } | null = null;
+
   /** Nothing is requested until `start`. */
   constructor(conn: Connection) {
-    void conn;
+    this.#conn = conn;
+    this.#state = {
+      phase: 'loading',
+      session: null,
+      model: null,
+      now: conn.deps.now(),
+      problem: null,
+      error: null,
+      connected: false,
+    };
   }
 
   /** The current state; the initial state is `loading` with `now` = `deps.now()`. */
   getState(): ClientState {
-    throw new Error('not implemented');
+    return this.#state;
   }
 
   /**
@@ -75,8 +143,13 @@ export class BoardClient {
    * returned function is called or the client is stopped.
    */
   subscribe(listener: (state: ClientState) => void): () => void {
-    void listener;
-    throw new Error('not implemented');
+    const entry = (state: ClientState): void => {
+      listener(state);
+    };
+    this.#listeners.add(entry);
+    return () => {
+      this.#listeners.delete(entry);
+    };
   }
 
   /**
@@ -103,8 +176,41 @@ export class BoardClient {
    * and opens a new stream at the new model's id; see the module comment
    * for a failed reload and for a 401.
    */
-  start(): Promise<void> {
-    throw new Error('not implemented');
+  async start(): Promise<void> {
+    if (this.#started || this.#halted) {
+      return;
+    }
+    this.#started = true;
+    let session: Session;
+    let model: BoardModel;
+    try {
+      [session, model] = await Promise.all([loadSession(this.#conn), loadModel(this.#conn, [])]);
+    } catch (error) {
+      if (this.#halted) {
+        return;
+      }
+      if (isUnauthorized(error)) {
+        this.#unauthorized();
+        return;
+      }
+      const failure =
+        error instanceof ApiError
+          ? error
+          : new ApiError(errorDocumentOf(error).error.message, 0, null);
+      this.#set({ phase: 'failed', error: failure });
+      return;
+    }
+    if (this.#halted) {
+      return;
+    }
+    this.#set({ phase: 'ready', session, model, now: this.#conn.deps.now() });
+    this.#open(model.id);
+    const deps = this.#conn.deps;
+    this.#timer = {
+      handle: deps.setInterval(() => {
+        this.#set({ now: deps.now() });
+      }, REFRESH_MS),
+    };
   }
 
   /**
@@ -113,6 +219,118 @@ export class BoardClient {
    * when it completes. Idempotent.
    */
   stop(): void {
-    throw new Error('not implemented');
+    this.#halt();
+    this.#listeners.clear();
+  }
+
+  /** Closes the stream and cancels the timer; nothing more happens afterwards. */
+  #halt(): void {
+    this.#halted = true;
+    this.#closeStream();
+    if (this.#timer !== null) {
+      this.#conn.deps.clearInterval(this.#timer.handle);
+      this.#timer = null;
+    }
+  }
+
+  #unauthorized(): void {
+    this.#halt();
+    this.#set({ phase: 'unauthorized', connected: false }, true);
+  }
+
+  /** Replaces the state and reports it (also after a halt when `force`). */
+  #set(change: Partial<ClientState>, force = false): void {
+    if (this.#halted && !force) {
+      return;
+    }
+    this.#state = { ...this.#state, ...change };
+    for (const listener of [...this.#listeners]) {
+      listener(this.#state);
+    }
+  }
+
+  #closeStream(): void {
+    this.#stream?.close();
+    this.#stream = null;
+  }
+
+  #open(since: string): void {
+    if (this.#halted) {
+      return;
+    }
+    this.#stream = openStream(this.#conn, since, {
+      onEvent: (event) => {
+        this.#onEvent(event);
+      },
+      onOpen: () => {
+        this.#set({ connected: true });
+      },
+      onDisconnect: () => {
+        this.#set({ connected: false });
+      },
+      onUnauthorized: () => {
+        this.#stream = null;
+        this.#unauthorized();
+      },
+    });
+  }
+
+  #onEvent(event: SseEvent): void {
+    const data = parseData(event.data);
+    const model = this.#state.model;
+    if (data === undefined || model === null) {
+      return;
+    }
+    switch (event.type) {
+      case 'append':
+        if (!isAppend(data)) {
+          return;
+        }
+        if (this.#state.problem !== null) {
+          void this.#reload([], model.id);
+          return;
+        }
+        this.#set({
+          model: applyFeedMessage(model, data).model,
+          now: this.#conn.deps.now(),
+        });
+        return;
+      case 'resync':
+        if (isResync(data)) {
+          void this.#reload(applyFeedMessage(model, data).late, model.id);
+        }
+        return;
+      case 'problem':
+        if (isErrorDocument(data)) {
+          this.#set({ problem: data });
+        }
+        return;
+    }
+  }
+
+  /** Reloads the snapshot; on failure keeps the model and resumes its stream at `keptId`. */
+  async #reload(late: string[], keptId: string): Promise<void> {
+    this.#closeStream();
+    this.#set({ connected: false });
+    let model: BoardModel;
+    try {
+      model = await loadModel(this.#conn, late);
+    } catch (error) {
+      if (this.#halted) {
+        return;
+      }
+      if (isUnauthorized(error)) {
+        this.#unauthorized();
+        return;
+      }
+      this.#set({ problem: errorDocumentOf(error) });
+      this.#open(keptId);
+      return;
+    }
+    if (this.#halted) {
+      return;
+    }
+    this.#set({ model, problem: null, now: this.#conn.deps.now() });
+    this.#open(model.id);
   }
 }

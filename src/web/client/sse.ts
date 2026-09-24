@@ -38,27 +38,114 @@ export interface SseEvent {
 
 /** An incremental parser of one event stream. */
 export class SseParser {
+  #lastEventId: string;
+  #retry: number | null = null;
+  /** Text received after the last complete line. */
+  #pending = '';
+  /** True when the previous chunk ended with `\r`, so a leading `\n` belongs to it. */
+  #afterCr = false;
+  /** True until the first character of the stream has been seen (for the BOM). */
+  #atStart = true;
+  #type = '';
+  #data = '';
+
   /**
    * `lastEventId` starts as given (a reconnecting reader passes the id it
    * last saw); `retry` starts null.
    */
   constructor(lastEventId = '') {
-    void lastEventId;
+    this.#lastEventId = lastEventId;
   }
 
   /** The latest valid `id` field so far, or the initial id. */
   get lastEventId(): string {
-    throw new Error('not implemented');
+    return this.#lastEventId;
   }
 
   /** The latest valid `retry` field in milliseconds, or null when none was received. */
   get retry(): number | null {
-    throw new Error('not implemented');
+    return this.#retry;
   }
 
   /** Parses the next chunk of text and returns the events it completes, in order. */
   push(chunk: string): SseEvent[] {
-    void chunk;
-    throw new Error('not implemented');
+    let text = chunk;
+    if (this.#atStart && text !== '') {
+      this.#atStart = false;
+      if (text.startsWith('\uFEFF')) {
+        text = text.slice(1);
+      }
+    }
+    if (this.#afterCr && text !== '') {
+      this.#afterCr = false;
+      if (text.startsWith('\n')) {
+        text = text.slice(1);
+      }
+    }
+    if (text !== '') {
+      this.#afterCr = text.endsWith('\r');
+    }
+    const events: SseEvent[] = [];
+    let buffer = this.#pending + text;
+    for (;;) {
+      const match = /\r\n|\r|\n/.exec(buffer);
+      if (match === null) {
+        break;
+      }
+      // A `\r` at the very end may be the first half of a `\r\n`: it still
+      // ends the line, and `#afterCr` drops the `\n` of the next chunk.
+      this.#line(buffer.slice(0, match.index), events);
+      buffer = buffer.slice(match.index + match[0].length);
+    }
+    this.#pending = buffer;
+    return events;
+  }
+
+  /** Interprets one line, dispatching into `events` on a blank line. */
+  #line(line: string, events: SseEvent[]): void {
+    if (line === '') {
+      this.#dispatch(events);
+      return;
+    }
+    if (line.startsWith(':')) {
+      return;
+    }
+    const colon = line.indexOf(':');
+    const field = colon < 0 ? line : line.slice(0, colon);
+    let value = colon < 0 ? '' : line.slice(colon + 1);
+    if (value.startsWith(' ')) {
+      value = value.slice(1);
+    }
+    switch (field) {
+      case 'event':
+        this.#type = value;
+        break;
+      case 'data':
+        this.#data += `${value}\n`;
+        break;
+      case 'id':
+        if (!value.includes('\u0000')) {
+          this.#lastEventId = value;
+        }
+        break;
+      case 'retry':
+        if (/^[0-9]+$/.test(value)) {
+          this.#retry = Number(value);
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  #dispatch(events: SseEvent[]): void {
+    const type = this.#type === '' ? 'message' : this.#type;
+    const data = this.#data;
+    this.#type = '';
+    this.#data = '';
+    if (data === '') {
+      return;
+    }
+    events.push({ type, data: data.slice(0, -1), lastEventId: this.#lastEventId });
   }
 }

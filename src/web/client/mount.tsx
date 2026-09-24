@@ -2,8 +2,11 @@
  * Mounting the app into the page (add-board-web task 4.2).
  */
 
+import { render } from 'preact';
+
 import type { ClientDeps } from './api.js';
-import type { TokenEnv } from './token.js';
+import { App } from './App.js';
+import { browserTokenEnv, discardToken, takeToken, type TokenEnv } from './token.js';
 
 /** The id of the element of `index.html` the app renders into. */
 export const ROOT_ID = 'app';
@@ -18,8 +21,20 @@ export const ROOT_ID = 'app';
  * take the token. `tokenEnv` defaults to `browserTokenEnv()`.
  */
 export function mount(root: Element | null, deps?: Partial<ClientDeps>, tokenEnv?: TokenEnv): void {
-  void root;
-  void deps;
-  void tokenEnv;
-  throw new Error('not implemented');
+  if (root === null) {
+    return;
+  }
+  const env = tokenEnv ?? browserTokenEnv();
+  const token = takeToken(env);
+  const onUnauthorized = (): void => {
+    discardToken(env);
+  };
+  render(
+    deps === undefined ? (
+      <App token={token} onUnauthorized={onUnauthorized} />
+    ) : (
+      <App token={token} onUnauthorized={onUnauthorized} deps={deps} />
+    ),
+    root,
+  );
 }
