@@ -32,7 +32,8 @@ import { STATUSES, type Status } from '../events/schema.js';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { CACHE_FILE } from '../store/cache.js';
+import type { Board } from '../store/board.js';
+import { CACHE_FILE, CACHE_SCHEMA_VERSION } from '../store/cache.js';
 import { BoardError } from '../store/errors.js';
 import { checkCache, rebuild } from '../store/rebuild.js';
 import { VERSION } from '../version.js';
@@ -262,27 +263,41 @@ function runRebuild(ctx: RunContext): CommandOutput {
 }
 
 /**
- * `rebuild --check`: compares the live cache, opened without catch-up, with
- * a fresh rebuild; never creates a missing cache file.
+ * `rebuild --check`: compares the live cache, opened for inspection only
+ * (no catch-up, never created, migrated or written), with a fresh rebuild.
  */
 function runCheck(ctx: RunContext): CommandOutput {
   const cachePath = join(ctx.boardDir(), CACHE_FILE);
   if (!existsSync(cachePath)) {
-    const doc: CheckDocument = {
-      ok: false,
-      noCache: true,
-      schemaMismatch: false,
-      differences: [],
-      report: null,
-    };
-    return {
-      json: doc,
-      text: renderCheck(doc),
-      exitCode: 1,
-      warnings: [`there is no cache file at ${cachePath}; run agentboard rebuild to create it`],
-    };
+    return noCacheOutput(cachePath);
   }
-  const result = checkCache(ctx.board({ catchUp: false }));
+  let board: Board;
+  try {
+    board = ctx.board({ catchUp: false, prepare: false });
+  } catch (error) {
+    if (error instanceof BoardError && error.reason === 'no-cache') {
+      return noCacheOutput(cachePath);
+    }
+    if (error instanceof BoardError && error.reason === 'schema-mismatch') {
+      const doc: CheckDocument = {
+        ok: false,
+        noCache: false,
+        schemaMismatch: true,
+        differences: [],
+        report: null,
+      };
+      return {
+        json: doc,
+        text: renderCheck(doc),
+        exitCode: 1,
+        warnings: [
+          `the cache file at ${cachePath} is not a cache of schema version ${String(CACHE_SCHEMA_VERSION)}; run agentboard rebuild to replace it`,
+        ],
+      };
+    }
+    throw error;
+  }
+  const result = checkCache(board);
   const doc: CheckDocument = { ...result, noCache: false, schemaMismatch: false };
   if (result.ok) {
     return { json: doc, text: renderCheck(doc) };
@@ -294,6 +309,23 @@ function runCheck(ctx: RunContext): CommandOutput {
     warnings: [
       `the cache differs from the event log in ${String(result.differences.length)} row(s); run agentboard rebuild to replace it`,
     ],
+  };
+}
+
+/** The `rebuild --check` output when there is no cache file at `cachePath`. */
+function noCacheOutput(cachePath: string): CommandOutput {
+  const doc: CheckDocument = {
+    ok: false,
+    noCache: true,
+    schemaMismatch: false,
+    differences: [],
+    report: null,
+  };
+  return {
+    json: doc,
+    text: renderCheck(doc),
+    exitCode: 1,
+    warnings: [`there is no cache file at ${cachePath}; run agentboard rebuild to create it`],
   };
 }
 

@@ -104,6 +104,7 @@ export function runCli(io: CliIo): ExitCode {
         if (board === null) {
           board = openBoard(findBoard({ cwd: io.cwd, env: io.env }).dir, {
             catchUp: options?.catchUp !== false,
+            prepare: options?.prepare !== false,
           });
           for (const path of board.opened?.reaped ?? []) {
             io.stderr(`agentboard: removed stale temporary file ${path}\n`);

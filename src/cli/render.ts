@@ -7,6 +7,7 @@ import type { Ticket } from '../events/fold.js';
 import { formatTaskRef } from '../events/schema.js';
 import { asciiText } from '../board/text.js';
 import type { ShowResult } from '../board/tickets.js';
+import { CACHE_SCHEMA_VERSION } from '../store/cache.js';
 import type { CheckResult, RebuildReport } from '../store/rebuild.js';
 
 /** Re-exported from `src/board/text.ts` (defined there for layering). */
@@ -192,7 +193,7 @@ export function renderCheck(doc: CheckDocument): string {
     return 'no-cache: there is no cache file\n';
   }
   if (doc.schemaMismatch) {
-    throw new Error('not implemented: renderCheck schema-mismatch');
+    return `schema-mismatch: the cache file is not a cache of schema version ${String(CACHE_SCHEMA_VERSION)}\n`;
   }
   if (doc.ok) {
     return `no divergence: ${renderCounts(doc.report)}\n`;

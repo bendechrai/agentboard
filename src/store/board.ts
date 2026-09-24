@@ -62,8 +62,12 @@ export interface OpenBoardOptions {
  * comes back with the same rows as before, as long as the event files are
  * unchanged. Opening a cache that already has the current schema, when
  * catch-up finds nothing to fold or reap, never takes the write lock, so a
- * reader is not blocked by a writer holding `BEGIN IMMEDIATE`.
+ * reader is not blocked by a writer holding `BEGIN IMMEDIATE`. With
+ * `prepare: false` the cache is only inspected (`openCache` with `prepare:
+ * false`) and catch-up never runs.
  *
+ * @throws BoardError exit 5, reason `no-cache` or `schema-mismatch`, from
+ *   `openCache` with `prepare: false`.
  * @throws BoardError exit 2, reason `board-not-found`, naming `dir`, when
  *   `boardExists(dir)` is false. Nothing is created in that case.
  */
@@ -73,7 +77,8 @@ export function openBoard(dir: string, options?: OpenBoardOptions): Board {
     throw new BoardError(2, 'board-not-found', `no board found at ${abs} (no events directory)`);
   }
   const cachePath = join(abs, CACHE_FILE);
-  const db = openCache(cachePath);
+  const prepare = options?.prepare !== false;
+  const db = openCache(cachePath, { prepare });
   let closed = false;
   const board: { -readonly [K in keyof Board]: Board[K] } = {
     dir: abs,
@@ -88,7 +93,7 @@ export function openBoard(dir: string, options?: OpenBoardOptions): Board {
       }
     },
   };
-  if (options?.catchUp !== false) {
+  if (prepare && options?.catchUp !== false) {
     try {
       board.opened = catchUp(board, { now: options?.now ?? Date.now() });
     } catch (error) {

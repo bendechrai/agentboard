@@ -92,11 +92,13 @@
  * rows and `rebuild --check` does not compare it.
  */
 
+import { existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 import { canonicalEncode } from '../events/canonical.js';
 import type { BoardState, Rejected, Ticket, UnknownReport } from '../events/fold.js';
 import type { Board } from './board.js';
+import { BoardError } from './errors.js';
 import {
   catchUpLocked,
   catchUpUnlocked,
@@ -174,8 +176,9 @@ export interface OpenCacheOptions {
  * temporary database of `checkCache`).
  */
 export function openCache(path: string, options?: OpenCacheOptions): DatabaseSync {
-  // prepare: false is not implemented yet (task group 4, ruling 05f4334).
-  void options;
+  if (options?.prepare === false) {
+    return inspectCache(path);
+  }
   const deadline = Date.now() + BUSY_TIMEOUT_MS;
   const db = new DatabaseSync(path);
   try {
@@ -208,6 +211,54 @@ export function openCache(path: string, options?: OpenCacheOptions): DatabaseSyn
     throw error;
   }
   return db;
+}
+
+/** SQLITE_NOTADB and SQLITE_CORRUPT: the file is not a (valid) database. */
+function isNotADatabase(error: unknown): boolean {
+  if (!(error instanceof Error) || !('errcode' in error) || typeof error.errcode !== 'number') {
+    return false;
+  }
+  const primary = error.errcode & 0xff;
+  return primary === 26 || primary === 11;
+}
+
+/**
+ * `openCache(path, { prepare: false })`: opens an existing cache without
+ * writing to the file. Only per-connection pragmas are set and the schema
+ * version is read (retried on SQLITE_BUSY like any open).
+ */
+function inspectCache(path: string): DatabaseSync {
+  if (!existsSync(path)) {
+    throw new BoardError(5, 'no-cache', `there is no cache file at ${path}`);
+  }
+  const deadline = Date.now() + BUSY_TIMEOUT_MS;
+  const db = new DatabaseSync(path);
+  let stored: string | null;
+  try {
+    db.exec(`PRAGMA busy_timeout = ${String(BUSY_TIMEOUT_MS)}`);
+    db.exec('PRAGMA foreign_keys = ON');
+    stored = retryBusy(() => inSnapshot(db, () => storedSchemaVersion(db)), deadline);
+  } catch (error) {
+    db.close();
+    if (isNotADatabase(error)) {
+      throw schemaMismatch(path, null);
+    }
+    throw error;
+  }
+  if (stored !== String(CACHE_SCHEMA_VERSION)) {
+    db.close();
+    throw schemaMismatch(path, stored);
+  }
+  return db;
+}
+
+function schemaMismatch(path: string, stored: string | null): BoardError {
+  const found = stored === null ? '' : ` (it has schema version ${stored})`;
+  return new BoardError(
+    5,
+    'schema-mismatch',
+    `the cache file at ${path} is not a cache of schema version ${String(CACHE_SCHEMA_VERSION)}${found}`,
+  );
 }
 
 /** `meta.schema_version`, or null when there is no such row or no meta table. */
