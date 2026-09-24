@@ -274,6 +274,25 @@ describe('the drift guard: every example parses to its own command', () => {
     expect(parsed.command.name).toBe(name);
   });
 
+  it('covers the agents install --mcp-command example (add-mcp-command 1.1)', () => {
+    const line = 'agentboard agents install --mcp-command agentboard';
+    expect(command('agents install').examples.map((e) => e.command)).toContain(line);
+    expect(examples).toContainEqual(['agents install', line]);
+    const parsed = parseArgs(splitCommandLine(line).slice(1));
+    expect(parsed.command.name).toBe('agents install');
+    expect(parsed.values['mcp-command']).toBe('agentboard');
+  });
+
+  it('lists the --mcp-command usage errors among the agents install exit codes', () => {
+    const usage = command('agents install').exitCodes.find(
+      (e) => e.code === 1 && e.reason === 'usage',
+    );
+    expect(usage?.meaning).toContain('--mcp-command');
+    expect(synopsis(command('agents install'))).toBe(
+      'agentboard agents install [--target <target>]... [--mcp-command <mcp-command>] [--force] [--json]',
+    );
+  });
+
   it('the splitter handles the quoting the examples use', () => {
     expect(splitCommandLine('agentboard comment 01J9K3 "a b" --as x')).toEqual([
       'agentboard',

@@ -8,6 +8,11 @@
  * and its `--force` override, and refusals not stopping other targets.
  * The CLI surface (exit codes, stdout and stderr) is in
  * src/cli/__tests__/agents-cli.test.ts.
+ *
+ * `--mcp-command` (add-mcp-command tasks 1.1 and 1.2; board-agent-guidance:
+ * "Managed MCP entry"): the flag selecting `mcp-json` next to explicit or
+ * detected targets, usage errors, the local entry written as given, and the
+ * reinstall rules for both managed shapes and for unrecognised entries.
  */
 
 import { existsSync, lstatSync, mkdirSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -18,6 +23,7 @@ import { isScalar, isSeq, parse, parseDocument } from 'yaml';
 
 import { expectBoardError } from '../../board/__tests__/helpers.js';
 import { git } from '../../store/__tests__/helpers.js';
+import { checkGuidance } from '../check.js';
 import {
   GUIDANCE_TARGETS,
   INIT_SUGGESTION,
@@ -1003,5 +1009,379 @@ describe('symlink cycles are refused as not-a-file (round 3)', () => {
       ['mcp-json', 'refused', 'not-a-file'],
     ]);
     expect(result.refused).toBe(2);
+  });
+});
+
+/** The local managed entry `--mcp-command <command>` writes. */
+function local(command: string): { command: string; args: string[] } {
+  return { command, args: ['mcp'] };
+}
+
+/** `.mcp.json` text holding only `mcpServers.agentboard` = `entry`. */
+function mcpWith(entry: unknown): string {
+  return mcpFile({ mcpServers: { agentboard: entry } });
+}
+
+describe('--mcp-command: target selection (add-mcp-command 1.1)', () => {
+  it('scenario: writes the local entry in a project with no .mcp.json and names --mcp-command as the reason', () => {
+    const root = plainProject();
+    const result = install(root, { mcpCommand: 'agentboard' });
+    expect(result.autoDetected).toBe(true);
+    expect(result.refused).toBe(0);
+    expect(result.targets).toEqual([
+      {
+        target: 'mcp-json',
+        path: MCP,
+        reason: 'requested with --mcp-command',
+        action: 'created',
+        refusal: null,
+        message: expect.any(String) as unknown,
+        manual: [],
+      },
+    ]);
+    expect(readRel(root, MCP)).toBe(mcpWith(local('agentboard')));
+    expect(JSON.parse(readRel(root, MCP))).toEqual({
+      mcpServers: { agentboard: { command: 'agentboard', args: ['mcp'] } },
+    });
+    expect(fileList(root)).toEqual([MCP]);
+    const text = renderInstall(result);
+    expect(text).toContain('selected mcp-json: requested with --mcp-command\n');
+    expect(text).toContain(`created mcp-json ${MCP}\n`);
+  });
+
+  it('adds mcp-json to the auto-detected targets', () => {
+    const root = plainProject();
+    mkdirSync(join(root, '.claude'));
+    writeRel(root, CONFIG, OPENSPEC_FIXTURE);
+    const result = install(root, { mcpCommand: 'agentboard' });
+    expect(result.autoDetected).toBe(true);
+    expect(result.targets.map((t) => [t.target, t.reason, t.action])).toEqual([
+      ['claude', '.claude/ exists', 'created'],
+      ['openspec', 'openspec/config.yaml exists', 'updated'],
+      ['mcp-json', 'requested with --mcp-command', 'created'],
+    ]);
+    expect(existsSync(join(root, AGENTS))).toBe(false);
+    expect(readRel(root, MCP)).toBe(mcpWith(local('agentboard')));
+    const text = renderInstall(result);
+    expect(text).toContain('selected claude: .claude/ exists\n');
+    expect(text).toContain('selected openspec: openspec/config.yaml exists\n');
+    expect(text).toContain('selected mcp-json: requested with --mcp-command\n');
+  });
+
+  it('adds mcp-json to an explicit --target claude, selecting both', () => {
+    const root = plainProject();
+    const result = install(root, { targets: ['claude'], mcpCommand: 'agentboard' });
+    expect(result.autoDetected).toBe(false);
+    expect(result.targets.map((t) => [t.target, t.reason, t.action])).toEqual([
+      ['claude', 'requested with --target', 'created'],
+      ['mcp-json', 'requested with --mcp-command', 'created'],
+    ]);
+    expect(readRel(root, SKILL)).toBe(renderSkill());
+    expect(readRel(root, MCP)).toBe(mcpWith(local('agentboard')));
+    const text = renderInstall(result);
+    expect(text).toContain('selected mcp-json: requested with --mcp-command\n');
+    expect(text).not.toContain('selected claude');
+    expect(text).toBe(
+      [
+        'selected mcp-json: requested with --mcp-command',
+        `created claude ${SKILL}`,
+        `created mcp-json ${MCP}`,
+        `agents install: 2 created, 0 updated, 0 unchanged, 0 refused (guidance v${String(V)}) in ${root}`,
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('processes mcp-json once when --target mcp-json is given too, naming --mcp-command', () => {
+    const root = plainProject();
+    const result = install(root, {
+      targets: ['mcp-json', 'claude', 'mcp-json'],
+      mcpCommand: 'agentboard',
+    });
+    expect(result.targets.map((t) => [t.target, t.reason])).toEqual([
+      ['claude', 'requested with --target'],
+      ['mcp-json', 'requested with --mcp-command'],
+    ]);
+    expect(readRel(root, MCP)).toBe(mcpWith(local('agentboard')));
+  });
+
+  it('leaves the output of runs without --mcp-command unchanged', () => {
+    const root = plainProject();
+    const result = install(root, { targets: ['mcp-json'] });
+    expect(result.targets.map((t) => t.reason)).toEqual(['requested with --target']);
+    expect(renderInstall(result)).not.toContain('selected');
+    expect(readRel(root, MCP)).toBe(mcpWith(MCP_ENTRY));
+  });
+
+  it.each([
+    ['empty', ''],
+    ['a line feed inside', 'agent\nboard'],
+    ['a trailing line feed', 'agentboard\n'],
+    ['only a line feed', '\n'],
+    ['a CRLF line break', 'agentboard\r\n'],
+  ])('refuses a value that is %s as a usage error, writing nothing', (_label, value) => {
+    const root = plainProject();
+    const err = expectBoardError(() => install(root, { mcpCommand: value }), 1, 'usage');
+    expect(err.message).toContain('--mcp-command');
+    expect(fileList(root)).toEqual([]);
+  });
+
+  it('refuses a bad value before any target is written, also with targets detected or given', () => {
+    const root = plainProject();
+    mkdirSync(join(root, '.claude'));
+    writeRel(root, AGENTS, '# Agents\n');
+    writeRel(root, MCP, mcpWith(MCP_ENTRY));
+    const before = snapshot(root);
+    expectBoardError(() => install(root, { mcpCommand: '' }), 1, 'usage');
+    expectBoardError(
+      () => install(root, { targets: [...GUIDANCE_TARGETS], mcpCommand: 'a\nb', force: true }),
+      1,
+      'usage',
+    );
+    expect(snapshot(root)).toEqual(before);
+  });
+
+  it.each([
+    ['an absolute path', '/opt/agentboard/bin/agentboard'],
+    ['a path with spaces', '/Users/me/My Tools/agent board/bin/agentboard'],
+    ['a Windows path with spaces', 'C:\\Program Files\\agentboard\\agentboard.cmd'],
+    ['a relative path', './node_modules/.bin/agentboard'],
+    ['a value with surrounding spaces', ' agentboard '],
+  ])('writes %s exactly as given', (_label, command) => {
+    const root = plainProject();
+    expect(only(root, 'mcp-json', { mcpCommand: command }).action).toBe('created');
+    expect(readRel(root, MCP)).toBe(mcpWith(local(command)));
+    const parsed = JSON.parse(readRel(root, MCP)) as {
+      mcpServers: { agentboard: { command: string; args: string[] } };
+    };
+    expect(parsed.mcpServers.agentboard.command).toBe(command);
+    expect(parsed.mcpServers.agentboard.args).toEqual(['mcp']);
+  });
+
+  it('adds the local entry after the existing servers, keeping every other key and value', () => {
+    const root = plainProject();
+    const original = {
+      before: true,
+      mcpServers: { other: { command: 'other-mcp', args: ['--x'], env: { A: '1' } } },
+      after: [1, { b: null }],
+    };
+    writeRel(root, MCP, mcpFile(original));
+    expect(only(root, 'mcp-json', { mcpCommand: 'agentboard' }).action).toBe('updated');
+    expect(readRel(root, MCP)).toBe(
+      mcpFile({
+        before: true,
+        mcpServers: { ...original.mcpServers, agentboard: local('agentboard') },
+        after: original.after,
+      }),
+    );
+  });
+
+  it('does not change the other targets: the skill, block and entries are the same text', () => {
+    const withFlag = plainProject();
+    const without = plainProject();
+    for (const root of [withFlag, without]) {
+      writeRel(root, CONFIG, OPENSPEC_FIXTURE);
+    }
+    install(withFlag, { targets: ['claude', 'agents-md', 'openspec'], mcpCommand: 'agentboard' });
+    install(without, { targets: ['claude', 'agents-md', 'openspec'] });
+    for (const rel of [SKILL, AGENTS, CONFIG]) {
+      expect(readRel(withFlag, rel)).toBe(readRel(without, rel));
+    }
+  });
+});
+
+describe('--mcp-command: managed entries on reinstall (add-mcp-command 1.2)', () => {
+  it('scenario: reinstall without --mcp-command keeps a local command, and check reports it current', () => {
+    const root = plainProject();
+    writeRel(root, MCP, mcpWith(local('agentboard')));
+    const before = snapshot(root);
+    const out = only(root, 'mcp-json');
+    expect(out).toMatchObject({ action: 'unchanged', refusal: null });
+    expect(snapshot(root)).toEqual(before);
+    expect(renderInstall(install(root, { targets: ['mcp-json'] }))).toContain(
+      `unchanged mcp-json ${MCP} (up to date)\n`,
+    );
+    expect(checkGuidance({ cwd: root, env: ENV })).toEqual([
+      { target: 'mcp-json', path: MCP, state: 'current', installedVersion: null, currentVersion: V },
+    ]);
+  });
+
+  it('reinstall without --mcp-command keeps a local command whatever its executable', () => {
+    const root = plainProject();
+    writeRel(root, MCP, mcpWith(local('/opt/My Tools/agentboard')));
+    const before = snapshot(root);
+    expect(only(root, 'mcp-json', { force: true }).action).toBe('unchanged');
+    expect(snapshot(root)).toEqual(before);
+  });
+
+  it('recognises a local entry whatever its key order and keeps its bytes', () => {
+    const root = plainProject();
+    const text = '{"mcpServers":{"agentboard":{"args":["mcp"],"command":"agentboard"}}}';
+    writeRel(root, MCP, text);
+    expect(only(root, 'mcp-json').action).toBe('unchanged');
+    expect(only(root, 'mcp-json', { mcpCommand: 'agentboard' }).action).toBe('unchanged');
+    expect(readRel(root, MCP)).toBe(text);
+  });
+
+  it('reinstall without --mcp-command keeps the npx entry', () => {
+    const root = plainProject();
+    writeRel(root, MCP, mcpWith(MCP_ENTRY));
+    const before = snapshot(root);
+    expect(only(root, 'mcp-json').action).toBe('unchanged');
+    expect(snapshot(root)).toEqual(before);
+  });
+
+  it('leaves the file unchanged when --mcp-command names the executable already present', () => {
+    const root = plainProject();
+    const content = mcpFile({
+      mcpServers: { other: { command: 'o' }, agentboard: local('agentboard') },
+      z: 1,
+    });
+    writeRel(root, MCP, content);
+    const before = snapshot(root);
+    const result = install(root, { mcpCommand: 'agentboard' });
+    expect(result.targets.map((t) => [t.target, t.action, t.refusal])).toEqual([
+      ['mcp-json', 'unchanged', null],
+    ]);
+    expect(snapshot(root)).toEqual(before);
+    expect(renderInstall(result)).toContain(`unchanged mcp-json ${MCP} (up to date)\n`);
+  });
+
+  it('scenario: switching from the npx entry to a local command updates it without --force', () => {
+    const root = plainProject();
+    writeRel(
+      root,
+      MCP,
+      mcpFile({ mcpServers: { agentboard: MCP_ENTRY, other: { command: 'o' } }, z: [1] }),
+    );
+    const out = only(root, 'mcp-json', { mcpCommand: '/opt/agentboard/bin/agentboard' });
+    expect(out).toMatchObject({ action: 'updated', refusal: null });
+    expect(readRel(root, MCP)).toBe(
+      mcpFile({
+        mcpServers: {
+          agentboard: { command: '/opt/agentboard/bin/agentboard', args: ['mcp'] },
+          other: { command: 'o' },
+        },
+        z: [1],
+      }),
+    );
+  });
+
+  it('switches from one local command to another without --force, in place', () => {
+    const root = plainProject();
+    writeRel(
+      root,
+      MCP,
+      mcpFile({ mcpServers: { first: { command: 'f' }, agentboard: local('agentboard') } }),
+    );
+    expect(only(root, 'mcp-json', { mcpCommand: '/usr/local/bin/agentboard' }).action).toBe(
+      'updated',
+    );
+    expect(readRel(root, MCP)).toBe(
+      mcpFile({
+        mcpServers: { first: { command: 'f' }, agentboard: local('/usr/local/bin/agentboard') },
+      }),
+    );
+  });
+
+  it('replaces the npx entry when --mcp-command npx asks for npx mcp', () => {
+    const root = plainProject();
+    writeRel(root, MCP, mcpWith(MCP_ENTRY));
+    expect(only(root, 'mcp-json', { mcpCommand: 'npx' }).action).toBe('updated');
+    expect(readRel(root, MCP)).toBe(mcpWith(local('npx')));
+  });
+
+  it('scenario: an entry with an extra key is still refused with --mcp-command, leaving the file unchanged', () => {
+    const root = plainProject();
+    const content = mcpWith({ command: 'agentboard', args: ['mcp'], env: { X: '1' } });
+    writeRel(root, MCP, content);
+    const result = install(root, { mcpCommand: 'agentboard' });
+    expect(result.refused).toBe(1);
+    const out = outcome(result, 'mcp-json');
+    expect(out).toMatchObject({ action: 'refused', refusal: 'entry-differs' });
+    expect(out.message).toContain(MCP);
+    expect(out.message).toContain('--force');
+    expect(readRel(root, MCP)).toBe(content);
+  });
+
+  it('with --force replaces an unrecognised entry by the requested local entry, in place', () => {
+    const root = plainProject();
+    writeRel(
+      root,
+      MCP,
+      mcpFile({
+        mcpServers: {
+          agentboard: { command: 'agentboard', args: ['mcp'], env: { X: '1' } },
+          other: { command: 'o' },
+        },
+      }),
+    );
+    expect(only(root, 'mcp-json', { mcpCommand: 'agentboard', force: true }).action).toBe(
+      'updated',
+    );
+    expect(readRel(root, MCP)).toBe(
+      mcpFile({ mcpServers: { agentboard: local('agentboard'), other: { command: 'o' } } }),
+    );
+  });
+
+  it('with --force and no --mcp-command replaces an unrecognised entry by the npx entry', () => {
+    const root = plainProject();
+    writeRel(root, MCP, mcpWith({ command: 'agentboard', args: ['mcp', '--as', 'impl'] }));
+    expect(only(root, 'mcp-json', { force: true }).action).toBe('updated');
+    expect(readRel(root, MCP)).toBe(mcpWith(MCP_ENTRY));
+  });
+
+  it.each([
+    ['an extra key', { command: 'agentboard', args: ['mcp'], env: {} }],
+    ['other arguments', { command: 'agentboard', args: ['mcp', '--as', 'impl'] }],
+    ['arguments before mcp', { command: 'agentboard', args: ['--verbose', 'mcp'] }],
+    ['a differently cased argument', { command: 'agentboard', args: ['MCP'] }],
+    ['no arguments', { command: 'agentboard', args: [] }],
+    ['no args key', { command: 'agentboard' }],
+    ['args as a string', { command: 'agentboard', args: 'mcp' }],
+    ['an empty command', { command: '', args: ['mcp'] }],
+    ['a non-string command', { command: 7, args: ['mcp'] }],
+    ['no command key', { args: ['mcp'] }],
+    ['the npx entry with --as', { command: 'npx', args: [...MCP_ENTRY.args, '--as', 'me'] }],
+    ['the npx entry with an extra key', { ...MCP_ENTRY, cwd: '.' }],
+    ['a string', 'agentboard mcp'],
+    ['null', null],
+    ['an array', ['agentboard', 'mcp']],
+  ])('refuses an entry with %s as entry-differs, with or without --mcp-command', (_label, entry) => {
+    const root = plainProject();
+    const content = mcpWith(entry);
+    writeRel(root, MCP, content);
+    expect(only(root, 'mcp-json')).toMatchObject({ action: 'refused', refusal: 'entry-differs' });
+    expect(only(root, 'mcp-json', { mcpCommand: 'agentboard' })).toMatchObject({
+      action: 'refused',
+      refusal: 'entry-differs',
+    });
+    expect(readRel(root, MCP)).toBe(content);
+    expect(only(root, 'mcp-json', { mcpCommand: 'agentboard', force: true }).action).toBe(
+      'updated',
+    );
+    expect(readRel(root, MCP)).toBe(mcpWith(local('agentboard')));
+  });
+
+  it('a refused entry does not stop the other targets selected with it', () => {
+    const root = plainProject();
+    mkdirSync(join(root, '.claude'));
+    writeRel(root, MCP, mcpWith({ command: 'agentboard', args: ['mcp'], env: { X: '1' } }));
+    const result = install(root, { mcpCommand: 'agentboard' });
+    expect(result.targets.map((t) => [t.target, t.action])).toEqual([
+      ['claude', 'created'],
+      ['mcp-json', 'refused'],
+    ]);
+    expect(result.refused).toBe(1);
+  });
+
+  it('still refuses a malformed .mcp.json with --mcp-command, even with --force', () => {
+    const root = plainProject();
+    writeRel(root, MCP, '{"mcpServers": []}\n');
+    expect(only(root, 'mcp-json', { mcpCommand: 'agentboard', force: true })).toMatchObject({
+      action: 'refused',
+      refusal: 'malformed-file',
+    });
+    expect(readRel(root, MCP)).toBe('{"mcpServers": []}\n');
   });
 });

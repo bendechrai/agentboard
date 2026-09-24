@@ -7,8 +7,8 @@ passing with coverage at or above 90 percent.
 
 ## 1. Configurable MCP command
 
-- [ ] 1.1 Add `--mcp-command <executable>` to `agents install` (registry flag, description, example, exit codes; the flag selects the `mcp-json` target; an empty value or one containing a newline is a usage error) and write `{command: <executable>, args: ["mcp"]}` for `mcp-json` when it is given, and verify with tests for a fresh install, the flag selecting the target alongside auto-detected ones, usage errors, and the help drift guard
-- [ ] 1.2 Recognise both managed entry shapes in `agents install` and `agents check` (reinstall without the flag leaves a managed entry unchanged; with the flag a managed entry naming another executable is updated without `--force`; unrecognised entries are still refused as `entry-differs` unless `--force`; check reports either shape as `current`) and verify with tests for each rule, including an entry with extra keys or other arguments
+- [x] 1.1 Add `--mcp-command <executable>` to `agents install` (registry flag, description, example, exit codes; the flag selects the `mcp-json` target; an empty value or one containing a newline is a usage error) and write `{command: <executable>, args: ["mcp"]}` for `mcp-json` when it is given, and verify with tests for a fresh install, the flag selecting the target alongside auto-detected ones, usage errors, and the help drift guard
+- [x] 1.2 Recognise both managed entry shapes in `agents install` and `agents check` (reinstall without the flag leaves a managed entry unchanged; with the flag a managed entry naming another executable is updated without `--force`; unrecognised entries are still refused as `entry-differs` unless `--force`; check reports either shape as `current`) and verify with tests for each rule, including an entry with extra keys or other arguments
 
 ## 2. Documentation
 

@@ -1,6 +1,7 @@
 /**
  * `agentboard agents check` (board-agent-guidance: "Checking installed
- * guidance"; add-agent-guidance task 3.3).
+ * guidance"; add-agent-guidance task 3.3; "Managed MCP entry",
+ * add-mcp-command task 1.2).
  *
  * Inspects the guidance installed in the current working tree and reports
  * each target found as `current`, `stale` or `modified`, so a host project
@@ -20,7 +21,6 @@ import type { CommandOutput, Env } from '../cli/types.js';
 import { GUIDANCE_TARGETS, TARGET_FILES, workingTreeRoot, type GuidanceTarget } from './install.js';
 import {
   GUIDANCE_VERSION,
-  MCP_ENTRY,
   MCP_SERVER_NAME,
   OPENSPEC_GUIDANCE,
   OPENSPEC_OPERATIONS,
@@ -34,7 +34,7 @@ import {
   errorCode,
   hasSkillMarker,
   isJsonObject,
-  jsonEqual,
+  isManagedMcpEntry,
   openSpecCommentVersion,
   openSpecItems,
   parseConfig,
@@ -52,7 +52,7 @@ import {
  * - `modified`: its managed region was edited by hand (the recorded version
  *   is the running one but the text differs, or the version is unreadable,
  *   or the markers are malformed), or, for `mcp-json`, which carries no
- *   version, the entry differs from `MCP_ENTRY`.
+ *   version, the entry is not a managed entry (`isManagedMcpEntry`).
  */
 export type GuidanceState = 'current' | 'stale' | 'modified';
 
@@ -110,7 +110,11 @@ export interface CheckOptions {
  *   `OPENSPEC_GUIDANCE[op]` in order `current`; else `modified`.
  * - `mcp-json`: found when `.mcp.json` parses as an object whose
  *   `mcpServers` object has an `agentboard` key. `installedVersion` null.
- *   State: deep-equal to `MCP_ENTRY` `current`, else `modified`.
+ *   State (add-mcp-command; board-agent-guidance: "Managed MCP entry"):
+ *   `current` when the entry is a managed entry of either shape
+ *   (`isManagedMcpEntry`: the default `npx` entry, or exactly `{command:
+ *   <non-empty string>, args: ["mcp"]}`), else `modified` (extra keys such
+ *   as `env`, other arguments). Never `stale`.
  *
  * Paths `agents install` would refuse (orchestrator ruling, group 3 round
  * 2), for every target:
@@ -293,7 +297,7 @@ function checkMcpJson(path: string): Found | null {
   return {
     target: 'mcp-json',
     installedVersion: null,
-    state: jsonEqual(servers[MCP_SERVER_NAME], MCP_ENTRY) ? 'current' : 'modified',
+    state: isManagedMcpEntry(servers[MCP_SERVER_NAME]) ? 'current' : 'modified',
   };
 }
 

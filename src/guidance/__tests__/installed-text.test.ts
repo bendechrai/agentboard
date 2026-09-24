@@ -18,6 +18,7 @@ import {
   GUIDANCE_VERSION,
   GUIDE_COMMAND,
   MCP_ENTRY,
+  MCP_LOCAL_ARGS,
   MCP_SERVER_NAME,
   OPENSPEC_GUIDANCE,
   OPENSPEC_OPERATIONS,
@@ -25,6 +26,7 @@ import {
   SKILL_DESCRIPTION,
   blockStart,
   manualOpenSpecLines,
+  mcpEntry,
   openSpecVersionComment,
   renderAgentsBlock,
   renderSkill,
@@ -261,5 +263,37 @@ describe('the MCP server entry', () => {
     expect(MCP_SERVER_NAME).toBe('agentboard');
     expect(MCP_ENTRY).toEqual({ command: 'npx', args: ['-y', '@bendechrai/agentboard', 'mcp'] });
     expect(MCP_ENTRY.args).not.toContain('--as');
+  });
+});
+
+describe('mcpEntry (add-mcp-command 1.1)', () => {
+  it('is a copy of the npx entry without a command', () => {
+    const entry = mcpEntry();
+    expect(entry).toEqual(MCP_ENTRY);
+    expect(entry).not.toBe(MCP_ENTRY);
+    expect(entry.args).not.toBe(MCP_ENTRY.args);
+    expect(Object.keys(entry)).toEqual(['command', 'args']);
+  });
+
+  it('is the local entry with a command', () => {
+    const entry = mcpEntry('agentboard');
+    expect(entry).toEqual({ command: 'agentboard', args: ['mcp'] });
+    expect(Object.keys(entry)).toEqual(['command', 'args']);
+    expect(entry.args).toEqual(MCP_LOCAL_ARGS);
+    expect(entry.args).not.toBe(MCP_LOCAL_ARGS);
+    expect(JSON.stringify(entry)).toBe('{"command":"agentboard","args":["mcp"]}');
+  });
+
+  it.each([
+    '/opt/agentboard/bin/agentboard',
+    '/Users/me/My Tools/agent board/agentboard',
+    ' agentboard ',
+    'C:\\Program Files\\agentboard\\agentboard.cmd',
+  ])('keeps the command %j exactly as given', (command) => {
+    expect(mcpEntry(command)).toEqual({ command, args: ['mcp'] });
+  });
+
+  it('has exactly mcp as the local arguments', () => {
+    expect(MCP_LOCAL_ARGS).toEqual(['mcp']);
   });
 });
