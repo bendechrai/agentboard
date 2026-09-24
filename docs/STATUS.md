@@ -30,14 +30,22 @@ full workflow, and docs/adr/ for design decisions.
 - The `add-agent-guidance` OpenSpec change (generated help, `help agents`,
   error hints, `agents install`/`agents check` for Claude Code skills,
   `AGENTS.md`, OpenSpec config and `.mcp.json`, and the guide over MCP) is
-  proposed; its task group 1 is in progress. It depends on
-  `add-board-core` groups 3 and 9, both merged.
+  in progress. Groups 1 (generated help and suggestions), 2 (`help
+  agents` and error hints) and 4 (the guide over MCP) are merged into
+  `staging`. Group 3 (`agents install`, `agents check` and the `init`
+  suggestion) is in final review on `guidance/agents-install`. Group 5
+  (documentation: README.md, the "Using agentboard in a project" steps in
+  CONTRIBUTING.md) is on `docs/guidance`; it documents group 3 as built
+  on its branch, so it merges after group 3.
 
 ## What to do next
 
-1. Continue `add-agent-guidance` (group 1 is in progress), one task group
-   at a time, then archive it.
-2. A human reviews `staging` and promotes it to `main` (a merge-commit PR
+1. Finish `add-agent-guidance`: merge group 3 (`guidance/agents-install`),
+   then group 5 (`docs/guidance`), then archive the change in its own PR.
+2. Run `agentboard agents install` in this repository and commit the
+   skill and OpenSpec guidance it writes (see CONTRIBUTING.md, "Using
+   agentboard in a project").
+3. A human reviews `staging` and promotes it to `main` (a merge-commit PR
    from `staging`), then publishes the npm package.
 
 Each task group uses the three-role loop from CONTRIBUTING.md

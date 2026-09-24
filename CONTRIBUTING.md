@@ -190,6 +190,20 @@ board). See README.md for the full command reference.
   It creates `.board/` (its own git repository) and adds `.board/` to the
   project's `.gitignore`; commit that `.gitignore` entry. Linked worktrees
   find the main checkout's board on their own, so worktrees need no setup.
+- Recommended: run `agentboard agents install` at the root of a working
+  tree on a feature branch, and commit what it writes through a PR like
+  any other change. In this repository it detects `.claude/` and
+  `openspec/config.yaml`, so it installs the Claude Code skill
+  `.claude/skills/agentboard/SKILL.md` and the `agentboard:` apply and
+  archive guidance in `openspec/config.yaml`; add `--target agents-md` for
+  agents that read `AGENTS.md`. Run `agentboard agents check` (exit 0 when
+  current) after upgrading agentboard, and `agents install` again when it
+  reports `stale`; never edit the managed regions by hand (`agents check`
+  reports that as `modified`). See README.md, "Installing agent guidance
+  into a project".
+- Agents new to the board start with `agentboard help agents --role
+  <role>` (or, over MCP, the `agentboard://guide/<role>` resource), and
+  `agentboard help <command>` for any command's arguments.
 - The board never enters the host repository's history, so `make hooks`
   and the pre-push checks are unaffected: nothing under `.board/` is
   staged, linted or tested. Board history is synced separately with
