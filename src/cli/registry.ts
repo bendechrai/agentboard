@@ -6,8 +6,8 @@
  * (`parseArgs`) is driven by it, and task group 9 generates the MCP tools
  * from it.
  *
- * This group registers the ticket lifecycle commands plus `version` and the
- * `mcp` placeholder. `inbox`, `watch`, `rebuild`, `sync`, `import-change`
+ * Groups 3 and 5 register the ticket lifecycle commands, `inbox`, `watch`,
+ * `version` and the `mcp` placeholder. `rebuild`, `sync`, `import-change`
  * and `close-merged` are added by the task groups that implement them.
  */
 
@@ -22,15 +22,17 @@ import {
   setChecklistItem,
   type LinkTarget,
 } from '../board/actions.js';
+import { readInbox } from '../board/inbox.js';
 import { initBoard } from '../board/init.js';
 import { TASK_RULE } from '../board/text.js';
 import { parseTaskFilter, taskRefFromArgs, type TaskFilter } from '../board/resolve.js';
 import { listTickets, newTicket, showRaw, showTicket } from '../board/tickets.js';
 import type { WriteOutcome } from '../board/types.js';
+import { watchInbox } from '../board/watch.js';
 import { STATUSES, type Status } from '../events/schema.js';
 import { BoardError } from '../store/errors.js';
 import { VERSION } from '../version.js';
-import { asciiText, renderListLine, renderShow } from './render.js';
+import { asciiText, renderInboxLine, renderListLine, renderShow } from './render.js';
 import type {
   ArgSpec,
   ArgValues,
@@ -189,7 +191,10 @@ function status(text: string): Status {
   return found;
 }
 
-/** The actor of a writing command (resolved by `runCli`; empty only if misused). */
+/**
+ * The actor of a writing or cursor-tracking command (resolved by `runCli`;
+ * empty only if misused).
+ */
 function actorOf(ctx: RunContext): string {
   return ctx.actor ?? '';
 }
@@ -257,7 +262,8 @@ function checklistRun(done: boolean): CommandSpec['run'] {
 /**
  * Every command of this version, in this order: `init`, `new`, `show`,
  * `list`, `claim`, `release`, `move`, `comment`, `handoff`, `link`,
- * `checklist tick`, `checklist untick`, `close`, `mcp`, `version`.
+ * `checklist tick`, `checklist untick`, `close`, `inbox`, `watch`, `mcp`,
+ * `version`.
  *
  * `run` of each command calls the named operation and returns its result
  * as the `--json` document, with this human rendering:
@@ -270,6 +276,14 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   `checklist tick|untick`); text: the `list` line of the resulting
  *   ticket, preceded by `already claimed by <actor>` for a claim that
  *   wrote nothing, and followed, for a tick, by the reminder `message`.
+ * - `inbox`: `InboxResult` (`readInbox` with `--peek` and `--since`); text:
+ *   one `renderInboxLine` per entry, nothing when there is none. Tracks a
+ *   cursor, so it requires an actor.
+ * - `watch`: streams (`stream` calls `watchInbox` with the stop signal and
+ *   prints each entry as one line, see `runCliAsync`); its `run` throws
+ *   `BoardError(1, 'streaming-command')` saying that watch streams and runs
+ *   only from the agentboard executable. Tracks a cursor, so it requires an
+ *   actor.
  * - `version`: `{ version }`; text: the version.
  * - `mcp`: always `BoardError(1, 'not-implemented')`, with a message saying
  *   `agentboard mcp` is not implemented yet (it arrives with task group 9).
@@ -532,6 +546,57 @@ export const COMMANDS: readonly CommandSpec[] = [
         ),
       );
     },
+  },
+  {
+    name: 'inbox',
+    summary: 'List new board events for an actor and acknowledge them',
+    positionals: [],
+    flags: [
+      flag('since', 'string', 'List events after this event hash, without acknowledging'),
+      flag('peek', 'boolean', 'List without acknowledging (the cursor does not advance)'),
+    ],
+    exclusive: [],
+    writes: false,
+    tracksCursor: true,
+    operation: 'readInbox',
+    run: (ctx, values) => {
+      const result = readInbox(ctx.board(), actorOf(ctx), {
+        peek: bool(values, 'peek'),
+        since: str(values, 'since'),
+      });
+      return {
+        json: result,
+        text: result.entries.map((entry) => `${renderInboxLine(entry)}\n`).join(''),
+      };
+    },
+  },
+  {
+    name: 'watch',
+    summary: 'Stream new board events for an actor without acknowledging them',
+    positionals: [],
+    flags: [],
+    exclusive: [],
+    writes: false,
+    tracksCursor: true,
+    operation: 'watchInbox',
+    run: () => {
+      throw new BoardError(
+        1,
+        'streaming-command',
+        'agentboard watch streams its output and runs only from the agentboard executable',
+      );
+    },
+    stream: (ctx, _values, io) =>
+      watchInbox(ctx.board(), actorOf(ctx), {
+        signal: io.signal,
+        onEntries: (entries) => {
+          io.stdout(
+            entries
+              .map((entry) => `${io.json ? JSON.stringify(entry) : renderInboxLine(entry)}\n`)
+              .join(''),
+          );
+        },
+      }),
   },
   {
     name: 'mcp',

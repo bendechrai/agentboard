@@ -6,6 +6,7 @@
 import type { Ticket } from '../events/fold.js';
 import { formatTaskRef } from '../events/schema.js';
 import { asciiText } from '../board/text.js';
+import type { InboxEntry } from '../board/inbox.js';
 import type { ShowResult } from '../board/tickets.js';
 
 /** Re-exported from `src/board/text.ts` (defined there for layering). */
@@ -97,4 +98,18 @@ function closedText(t: Ticket): string {
   return 'decision' in t.disposition
     ? `yes (decision: ${asciiText(t.disposition.decision)})`
     : 'yes (no decision)';
+}
+
+/**
+ * The human line of one inbox entry (`inbox` and `watch`), without a
+ * newline: fields separated by two spaces,
+ * `<ticket id or ->  <kind>  <from>`, then `to <to>`, `status <status>` and
+ * `note <note>`, each only when the entry's field is not null, in that
+ * order; `from`, `to` and `note` pass through `asciiText`. Example:
+ * `01ARYZ6S41TSV4RRFFQ69G5FAV  ticket.handoff  impl  to reviewer  status review  note done`.
+ * Pure.
+ */
+export function renderInboxLine(entry: InboxEntry): string {
+  void entry;
+  throw new Error('not implemented');
 }

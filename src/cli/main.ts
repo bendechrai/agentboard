@@ -23,6 +23,18 @@ export interface CliIo {
   stderr(text: string): void;
 }
 
+/** `CliIo` for `runCliAsync`, which can also run streaming commands. */
+export interface AsyncCliIo extends CliIo {
+  /**
+   * Called once, only when a streaming command is about to start
+   * streaming (after parsing, actor resolution and nothing else), and
+   * returns the signal that stops it. `src/cli.ts` installs its SIGINT and
+   * SIGTERM handlers here, so every other command keeps Node's default
+   * signal behaviour.
+   */
+  stopSignal(): AbortSignal;
+}
+
 /** The `--json` document printed on stdout when a command fails. */
 export interface ErrorDocument {
   error: {
@@ -59,7 +71,8 @@ export function errorDocument(error: unknown): ErrorDocument {
  * Runs one CLI invocation and returns its exit code.
  *
  * 1. `parseArgs(io.argv)`.
- * 2. For a writing command, `resolveActor(values.as, io.env)`.
+ * 2. For a writing command or one that tracks a cursor
+ *    (`CommandSpec.tracksCursor`), `resolveActor(values.as, io.env)`.
  * 3. `command.run(ctx, values)` with a context whose `board()` finds and
  *    opens the board lazily (`findBoard` with `io.cwd` and `io.env`, then
  *    `openBoard`); the board is closed before returning. After opening, one
@@ -119,4 +132,31 @@ export function runCli(io: CliIo): ExitCode {
     // `board` is assigned inside the closure above.
     (board as Board | null)?.close();
   }
+}
+
+/**
+ * `runCli` for the executable (`src/cli.ts`): identical to `runCli`, with
+ * the same output and exit codes, for every command without `stream`.
+ *
+ * For a streaming command (`watch`): steps 1 and 2 of `runCli` (parse,
+ * resolve the actor; failures exit 1 before any board lookup), then
+ * `io.stopSignal()`, then `command.stream(ctx, values, { stdout:
+ * io.stdout, json, signal })` with the same lazily opened board as `runCli`
+ * (stale temporary and corrupt file diagnostics on stderr likewise). When
+ * the stream resolves (the signal aborted), the board is closed and the
+ * result is 0: SIGINT and SIGTERM are the normal way to stop `watch`. When
+ * it rejects (or opening the board fails), stderr receives `agentboard:
+ * <message>` and, with `--json`, stdout receives the `errorDocument` as one
+ * more line after any lines already streamed; the result is
+ * `exitCodeFor(error)`.
+ *
+ * Output of `watch`: one line per entry, `renderInboxLine(entry)` without
+ * `--json`, and with `--json` `JSON.stringify(entry)` of the `InboxEntry`
+ * (newline-delimited JSON, one document per line). This is the single
+ * exception to "exactly one JSON document on stdout": a stream has no end
+ * at which to print one.
+ */
+export function runCliAsync(io: AsyncCliIo): Promise<ExitCode> {
+  void io;
+  return Promise.reject(new Error('not implemented'));
 }

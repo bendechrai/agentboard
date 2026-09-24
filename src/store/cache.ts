@@ -90,6 +90,14 @@
  * The `cursors` table is the one non-derivable table (board-cache: losing
  * cursors only causes redelivery, never a skipped event): `rebuild` keeps its
  * rows and `rebuild --check` does not compare it.
+ *
+ * Cursor seen sets (task group 5, `src/store/cursors.ts`) are stored in one
+ * more table, `cursor_seen (actor, hash, wall)`, documented there. It is
+ * part of the cursors and is treated exactly like `cursors`: kept by
+ * `rebuild`, not covered by `dumpCache` or `rebuild --check`, dropped with
+ * every other table when the schema version differs. `openCache` creates it
+ * with `CREATE TABLE IF NOT EXISTS` on every open, so a version 1 cache made
+ * before group 5 gains it without a version change.
  */
 
 import { DatabaseSync } from 'node:sqlite';
@@ -129,6 +137,10 @@ export const BUSY_TIMEOUT_MS = 5000;
  *
  * `path` may be `':memory:'` (journal mode is then `memory`; used for the
  * temporary database of `checkCache`).
+ *
+ * On every open, whatever the stored version, it also ensures the
+ * `cursor_seen` table exists (`CREATE TABLE IF NOT EXISTS`, see
+ * `src/store/cursors.ts`); recreating the schema drops it too.
  */
 export function openCache(path: string): DatabaseSync {
   const db = new DatabaseSync(path);
@@ -293,6 +305,13 @@ export interface CatchUpOptions {
  * the busy retry, then `BoardError(5, 'busy')`), redo the work above under
  * the lock, and `COMMIT` (rolled back on error). A call that finds nothing
  * new changes no rows.
+ *
+ * Late events (task group 5): after the derived rows are up to date, the
+ * well-formed events this call newly recorded are passed to
+ * `resetLateCursors` (`src/store/cursors.ts`) in the same transaction, so an
+ * event that arrives behind an actor's cursor and outside its seen-set
+ * window moves that cursor back and is delivered by the next `inbox`. The
+ * report does not list them; `rebuild` does.
  */
 export function catchUp(board: Board, options?: CatchUpOptions): CatchUpReport {
   const now = options?.now ?? Date.now();
