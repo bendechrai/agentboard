@@ -108,6 +108,69 @@ describe('agentboard mcp start-up', () => {
   }, 30_000);
 });
 
+describe('agentboard mcp and SIGTERM', () => {
+  it('exits 0 with empty stderr and only protocol messages on stdout after initialize', async () => {
+    const { root } = boardProject();
+    const child = spawn(process.execPath, [requireBuiltCli(), 'mcp'], {
+      cwd: root,
+      env: Object.fromEntries(
+        Object.entries(cliEnv()).filter((e): e is [string, string] => e[1] !== undefined),
+      ),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve) => {
+        child.on('close', (code, signal) => {
+          resolve({ code, signal });
+        });
+      },
+    );
+    // A server that ignores SIGTERM, or does not exit once it has stopped,
+    // is killed here and fails the test (code null).
+    const timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
+    child.stdin.write(
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'raw', version: '0' },
+        },
+      })}\n`,
+    );
+    const deadline = Date.now() + 15_000;
+    while (!stdout.includes('\n') && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    child.stdin.write(
+      `${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`,
+    );
+    // stdin stays open: only the signal may end the session.
+    child.kill('SIGTERM');
+    const { code, signal } = await exited;
+    clearTimeout(timer);
+    expect({ code, signal }, stderr).toEqual({ code: 0, signal: null });
+    expect(stderr).toBe('');
+    const lines = stdout.trimEnd().split('\n');
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0] ?? '')).toMatchObject({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { serverInfo: { name: 'agentboard' } },
+    });
+  }, 30_000);
+});
+
 describe('agentboard mcp over stdio', () => {
   it('scenario: lists exactly the spec tools (needs task group 5 for inbox)', async () => {
     const { root } = boardProject();

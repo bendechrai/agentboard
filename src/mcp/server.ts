@@ -7,16 +7,30 @@
  * Board: discovery (`findBoard` with the server's `cwd` and `env`) runs
  * once, at start-up, and fixes the board directory for the server's
  * lifetime; no board there means the server never serves and exits 2.
- * Each tool call then opens that directory with `openBoard` (so the cache
- * catches up with every event file written since, by any process, exactly
- * as a CLI invocation does) and closes it when the call ends. Holding one
- * connection open for the whole session was rejected: reads (`show`,
- * `list`) do not catch up by themselves, so a long-lived handle would serve
- * a stale view of events other processes wrote.
+ * Each tool call then opens that directory with `openBoard` and closes it
+ * when the call ends, exactly as one CLI invocation does.
  *
- * Every write therefore runs through the same `runCommand` single
- * `BEGIN IMMEDIATE` transaction as the CLI, so MCP and CLI writers race
- * safely (board-concurrency).
+ * Freshness, precisely: a writing tool is kept fresh by the store, not by
+ * the open. `runCommand` runs catch-up inside its own `BEGIN IMMEDIATE`
+ * transaction, before it validates, so every event file written since, by
+ * any process, is folded under the write lock; `inbox` and the other
+ * commands that call `catchUp` themselves are fresh the same way. The
+ * cache-only reads (`show`, `list`) do not catch up by themselves: for
+ * them it is the catch-up that `openBoard` runs at each call's open that
+ * folds what other processes wrote. So a handle held for the whole session
+ * would still write correctly, and would only serve stale reads.
+ *
+ * The per-call open exists for three reasons: it gives each read that
+ * catch-up; it gives each call its own open diagnostics (reaped temporary
+ * files and corrupt event files, printed to stderr for the call that met
+ * them); and it bounds the lifetime of the SQLite handle to one call, so
+ * no connection is held between calls (a cache file deleted or replaced
+ * between calls is reopened, not written through a stale handle, and a
+ * board removed after start-up is reported as exit 2 by the next call).
+ *
+ * Every write runs through the same `runCommand` single `BEGIN IMMEDIATE`
+ * transaction as the CLI, so MCP and CLI writers race safely
+ * (board-concurrency).
  *
  * Output discipline: stdout carries only MCP protocol messages. Every
  * diagnostic (reaped temporary files, corrupt event files reported by the
@@ -283,9 +297,24 @@ export interface McpIo extends McpServerOptions {
  * and a newline, nothing is written to `stdout`, and the result is the
  * error's exit code (`exitCodeFor`: 2 when there is no board) before any
  * request is read. Otherwise it connects over the SDK's stdio server
- * transport on `stdin` and `stdout` and serves until `stdin` ends (the
- * client went away) or `signal` aborts, then closes the server and
- * resolves 0.
+ * transport on `stdin` and `stdout` and serves until `stdin` ends or
+ * closes (the client went away), `stdout` emits an error (a broken pipe),
+ * `stdin` emits an error, or `signal` aborts, then closes the server (the
+ * transport stops listening on `stdin`) and resolves 0.
+ *
+ * A `stdin` error is a shutdown, not a crash: it never escapes as an
+ * uncaught exception or a rejection. It writes exactly one diagnostic line
+ * to stderr, `agentboard: ` followed by a message naming stdin and
+ * including the error's message (for example `agentboard: stdin error:
+ * <message>`) and a newline, however many times the stream reports errors
+ * or closes afterwards, and still resolves 0: the session ended because
+ * the client's side of the pipe failed, and every answer already sent
+ * stands. Nothing but protocol messages is ever written to `stdout`.
+ *
+ * Under the CLI (`src/cli.ts`), SIGINT and SIGTERM abort `signal`, so a
+ * signal after an initialize exchange ends the process with exit code 0,
+ * nothing on stderr and only protocol messages on stdout; nothing left
+ * behind keeps the event loop alive.
  */
 export async function serveMcp(io: McpIo): Promise<ExitCode> {
   let server: BoardMcpServer;
@@ -304,8 +333,20 @@ export async function serveMcp(io: McpIo): Promise<ExitCode> {
   const onEnd = (): void => {
     stop();
   };
+  // A failed stdin is the same shutdown, with one diagnostic line however
+  // many errors the stream reports.
+  let reported = false;
+  const onStdinError = (error: unknown): void => {
+    if (!reported) {
+      reported = true;
+      const message = error instanceof Error ? error.message : String(error);
+      io.stderr(`agentboard: stdin error: ${message}\n`);
+    }
+    stop();
+  };
   stdin.once('end', onEnd);
   stdin.once('close', onEnd);
+  stdin.on('error', onStdinError);
   stdout.on('error', onEnd);
   signal?.addEventListener('abort', onEnd, { once: true });
   try {
@@ -321,6 +362,9 @@ export async function serveMcp(io: McpIo): Promise<ExitCode> {
     stdout.off('error', onEnd);
     signal?.removeEventListener('abort', onEnd);
     await server.close();
+    // `onStdinError` stays attached: an error stdin reports after shutdown
+    // must not escape as uncaught, and it prints nothing more.
   }
   return 0;
 }
+
