@@ -74,6 +74,13 @@ describe('every command prints exactly one JSON document with --json', () => {
         git(join(root, '.board'), 'init', '-q');
         return run(['sync', '--json'], root);
       },
+      'import-change': () => {
+        mkdirSync(join(root, 'openspec', 'changes', 'c'), { recursive: true });
+        writeFileSync(join(root, 'openspec', 'changes', 'c', 'tasks.md'), '## 1. G\n- [ ] 1.1 t\n');
+        return run(['import-change', 'c', ...AS, '--json'], root);
+      },
+      // No ticket is merged with a PR link (the linked one was closed from blocked), so gh never runs.
+      'close-merged': () => run(['close-merged', ...AS, '--json'], root),
       mcp: () => run(['mcp', '--json'], root),
       version: () => run(['version', '--json'], root),
     };
@@ -109,9 +116,11 @@ describe('every command prints exactly one JSON document with --json', () => {
     expect(docs.close).toMatchObject({ ticket: { closed: true } });
     expect(docs.rebuild).toMatchObject({ folded: 11, rejected: 0 });
     expect(docs.sync).toMatchObject({ remote: null, pushed: false, warnings: [] });
+    expect(docs['import-change']).toMatchObject({ source: 'openspec', ref: 'c', events: 1 });
+    expect(docs['close-merged']).toEqual({ closed: [], unmerged: [], skipped: [] });
     expect(docs.mcp).toMatchObject({ error: { exitCode: 1, reason: 'not-implemented' } });
     expect(docs.version).toEqual({ version });
-    expect(count(boardDir)).toBe(11);
+    expect(count(boardDir)).toBe(12);
   });
 });
 

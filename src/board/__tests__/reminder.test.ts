@@ -87,6 +87,21 @@ describe('taskReminder for other tickets', () => {
     expect(r.message).toContain('no tasks-file reminder is available for source speckit');
   });
 
+  it('gives no reminder, and does not throw, for an openspec ref that is not one path segment', () => {
+    const r = taskReminder(
+      hostWithTasks(),
+      ticket({ source: 'openspec', ref: 'a/b', item: '1' }),
+      0,
+    );
+    expect(r).toEqual({
+      source: 'openspec',
+      path: null,
+      line: null,
+      message:
+        'no tasks-file reminder is available: a/b does not name a tasks file of source openspec',
+    });
+  });
+
   it('says an ad hoc ticket has no task reference', () => {
     const r = taskReminder(hostWithTasks(), ticket(null, 'hotfix'), 0);
     expect(r).toMatchObject({ source: null, path: null, line: null });
@@ -95,6 +110,19 @@ describe('taskReminder for other tickets', () => {
 });
 
 describe('checklist tick reminder (scenario: tick reminds about tasks.md)', () => {
+  it('ticks a ticket whose openspec ref has several segments, with no reminder', () => {
+    const { board } = setup();
+    const t = create(board, {
+      task: { source: 'openspec', ref: 'a/b', item: '1' },
+      checklist: ['x', 'y'],
+    });
+    const out = setChecklistItem(board, 'impl', { id: t.id, index: 1, done: true });
+    expect(out.ticket.checklist.map((c) => c.done)).toEqual([false, true]);
+    expect(out.hash).not.toBeNull();
+    expect(out.reminder).toMatchObject({ source: 'openspec', path: null, line: null });
+    expect(out.reminder?.message).toContain('no tasks-file reminder is available');
+  });
+
   it("uses the board's parent as the host project root", () => {
     const { board, root } = setup();
     mkdirSync(join(root, 'openspec', 'changes', 'add-board-core'), { recursive: true });

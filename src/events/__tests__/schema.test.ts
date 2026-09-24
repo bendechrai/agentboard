@@ -70,12 +70,13 @@ describe('constants', () => {
     expect([...STATUSES]).toEqual(['todo', 'tests', 'implementing', 'review', 'merged', 'blocked']);
   });
 
-  it('lists the eleven known kinds', () => {
+  it('lists the twelve known kinds', () => {
     expect([...KNOWN_KINDS].sort()).toEqual(
       [
         'board.meta',
         'ticket.assign',
         'ticket.checklist',
+        'ticket.checklist.add',
         'ticket.claim',
         'ticket.close',
         'ticket.comment',
@@ -188,6 +189,20 @@ describe('validateEvent: well-formed events of every kind', () => {
     ['ticket.close noDecision', ev('ticket.close', { noDecision: true })],
     ['ticket.checklist', ev('ticket.checklist', { index: 0, done: true })],
     ['ticket.checklist negative index', ev('ticket.checklist', { index: -1, done: false })],
+    [
+      'ticket.checklist.add one item',
+      ev('ticket.checklist.add', { items: [{ text: '7.4 A new task', done: false }] }),
+    ],
+    [
+      'ticket.checklist.add several items',
+      ev('ticket.checklist.add', {
+        items: [
+          { text: 'a', done: true },
+          { text: 'b', done: false },
+          { text: 'a', done: true },
+        ],
+      }),
+    ],
     ['board.meta', ev('board.meta', { key: 'columns', value: ['todo', 'doing'] })],
     ['board.meta null value', ev('board.meta', { key: 'x', value: null })],
   ];
@@ -258,6 +273,7 @@ describe('validateEvent: unknown kinds', () => {
       ['ticket.link', { pr: 1 }],
       ['ticket.close', { noDecision: true }],
       ['ticket.checklist', { index: 0, done: true }],
+      ['ticket.checklist.add', { items: [{ text: 'a', done: false }] }],
     ];
     expect(validBodies.map(([k]) => k).sort()).toEqual(
       KNOWN_KINDS.filter((k) => k !== 'board.meta').sort(),
@@ -541,6 +557,48 @@ describe('validateEvent: malformed bodies, one per required field and rule', () 
       'checklist: extra body field',
       withBody('ticket.checklist', checklist, { text: 'x' }),
       'body.text',
+    ],
+    // ticket.checklist.add
+    ['checklist.add: missing items', ev('ticket.checklist.add', {}), 'body.items'],
+    ['checklist.add: items not an array', ev('ticket.checklist.add', { items: 'a' }), 'body.items'],
+    ['checklist.add: items an object', ev('ticket.checklist.add', { items: {} }), 'body.items'],
+    ['checklist.add: empty items', ev('ticket.checklist.add', { items: [] }), 'body.items'],
+    ['checklist.add: item a string', ev('ticket.checklist.add', { items: ['a'] }), 'body.items.0'],
+    ['checklist.add: item null', ev('ticket.checklist.add', { items: [null] }), 'body.items.0'],
+    [
+      'checklist.add: item missing text',
+      ev('ticket.checklist.add', { items: [{ done: false }] }),
+      'body.items.0.text',
+    ],
+    [
+      'checklist.add: item empty text',
+      ev('ticket.checklist.add', { items: [{ text: '', done: false }] }),
+      'body.items.0.text',
+    ],
+    [
+      'checklist.add: item text not a string',
+      ev('ticket.checklist.add', { items: [{ text: 1, done: false }] }),
+      'body.items.0.text',
+    ],
+    [
+      'checklist.add: item missing done',
+      ev('ticket.checklist.add', { items: [{ text: 'a', done: true }, { text: 'b' }] }),
+      'body.items.1.done',
+    ],
+    [
+      'checklist.add: item done not boolean',
+      ev('ticket.checklist.add', { items: [{ text: 'a', done: 'yes' }] }),
+      'body.items.0.done',
+    ],
+    [
+      'checklist.add: extra item field',
+      ev('ticket.checklist.add', { items: [{ text: 'a', done: false, index: 3 }] }),
+      'body.items.0.index',
+    ],
+    [
+      'checklist.add: extra body field',
+      ev('ticket.checklist.add', { items: [{ text: 'a', done: false }], at: 0 }),
+      'body.at',
     ],
     // board.meta
     ['meta: missing key', withBody('board.meta', meta, {}, ['key']), 'body.key'],

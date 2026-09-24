@@ -7,9 +7,9 @@
  * from it.
  *
  * Task group 3 registered the ticket lifecycle commands plus `version` and
- * the `mcp` placeholder; task group 4 adds `rebuild` and task group 6 adds
- * `sync`. `inbox`, `watch`, `import-change` and `close-merged` are added by
- * the task groups that implement them.
+ * the `mcp` placeholder; task group 4 adds `rebuild`, task group 6 adds
+ * `sync` and task group 7 adds `import-change` and `close-merged`. `inbox`
+ * and `watch` are added by the task group that implements them.
  */
 
 import {
@@ -23,7 +23,9 @@ import {
   setChecklistItem,
   type LinkTarget,
 } from '../board/actions.js';
+import { importChange, parseImportTarget } from '../board/import.js';
 import { initBoard } from '../board/init.js';
+import { closeMerged } from '../board/merged.js';
 import { syncBoard } from '../board/sync.js';
 import { TASK_RULE } from '../board/text.js';
 import { parseTaskFilter, taskRefFromArgs, type TaskFilter } from '../board/resolve.js';
@@ -345,9 +347,9 @@ function checklistRun(done: boolean): CommandSpec['run'] {
 /**
  * Every command of this version, in this order: `init`, `new`, `show`,
  * `list`, `claim`, `release`, `move`, `comment`, `handoff`, `link`,
- * `checklist tick`, `checklist untick`, `close`, `rebuild`, `sync`, `mcp`,
- * `version` (the board-cli order, in which `rebuild` follows `inbox` and
- * `watch` and precedes `sync`).
+ * `checklist tick`, `checklist untick`, `close`, `rebuild`, `sync`,
+ * `import-change`, `close-merged`, `mcp`, `version` (the board-cli order, in
+ * which `rebuild` follows `inbox` and `watch` and precedes `sync`).
  *
  * `run` of each command calls the named operation and returns its result
  * as the `--json` document, with this human rendering:
@@ -392,6 +394,19 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  * - `sync`: `SyncResult` (`syncBoard` with `ctx.env`; writes no event, so
  *   no actor is needed); text: its `message` and a newline; `warnings`:
  *   the result's `warnings`, printed to stderr by `runCli`.
+ * - `import-change <name>`: `ImportResult`; `name` goes through
+ *   `parseImportTarget` (a plain name is an OpenSpec change,
+ *   `<source>:<ref>` names another source). Text: one line per unit,
+ *   `<action> ` followed by the `list` line of its ticket (`created`,
+ *   `updated` or `unchanged`), then
+ *   `imported <source>:<ref>: <c> created, <u> updated, <n> unchanged, <e> events`.
+ * - `close-merged`: `CloseMergedResult` (with `cwd` and `env` from the
+ *   context and the default `gh` runner). Text: for each closed ticket
+ *   `closed ` plus its `list` line plus ` (decision <path>)` or
+ *   ` (no decision)`; for each unmerged one `unmerged ` plus its `list`
+ *   line plus ` (PR <pr> is <state>)`; for each skipped one `skipped `
+ *   plus its `list` line plus ` (<reason>)`; then
+ *   `close-merged: <c> closed, <u> unmerged, <s> skipped`.
  * - `version`: `{ version }`; text: the version.
  * - `mcp`: always `BoardError(1, 'not-implemented')`, with a message saying
  *   `agentboard mcp` is not implemented yet (it arrives with task group 9).
@@ -682,6 +697,61 @@ export const COMMANDS: readonly CommandSpec[] = [
     run: (ctx) => {
       const result = syncBoard(ctx.board(), { env: ctx.env });
       return { json: result, text: `${result.message}\n`, warnings: result.warnings };
+    },
+  },
+  {
+    name: 'import-change',
+    summary: 'Create or update one ticket per task group of a planning change',
+    positionals: [
+      positional('name', 'string', 'OpenSpec change name, or <source>:<ref> for another source'),
+    ],
+    flags: [],
+    exclusive: [],
+    writes: true,
+    operation: 'importChange',
+    run: (ctx, values) => {
+      const target = parseImportTarget(req(values, 'name'));
+      const result = importChange(ctx.board(), actorOf(ctx), target);
+      const count = (action: string): number =>
+        result.tickets.filter((t) => t.action === action).length;
+      const lines = result.tickets.map((t) => `${t.action} ${renderListLine(t.ticket)}`);
+      lines.push(
+        `imported ${asciiText(result.source)}:${asciiText(result.ref)}: ` +
+          `${String(count('created'))} created, ${String(count('updated'))} updated, ` +
+          `${String(count('unchanged'))} unchanged, ${String(result.events)} events`,
+      );
+      return { json: result, text: `${lines.join('\n')}\n` };
+    },
+  },
+  {
+    name: 'close-merged',
+    summary: 'Close merged tickets whose pull request is merged',
+    positionals: [],
+    flags: [],
+    exclusive: [],
+    writes: true,
+    operation: 'closeMerged',
+    run: (ctx) => {
+      const result = closeMerged(ctx.board(), actorOf(ctx), { cwd: ctx.cwd, env: ctx.env });
+      const lines = [
+        ...result.closed.map(
+          (c) =>
+            `closed ${renderListLine(c.ticket)} (${
+              'decision' in c.disposition
+                ? `decision ${asciiText(c.disposition.decision)}`
+                : 'no decision'
+            })`,
+        ),
+        ...result.unmerged.map(
+          (u) =>
+            `unmerged ${renderListLine(u.ticket)} ` +
+            `(PR ${asciiText(String(u.pr))} is ${asciiText(u.state)})`,
+        ),
+        ...result.skipped.map((k) => `skipped ${renderListLine(k.ticket)} (${k.reason})`),
+        `close-merged: ${String(result.closed.length)} closed, ` +
+          `${String(result.unmerged.length)} unmerged, ${String(result.skipped.length)} skipped`,
+      ];
+      return { json: result, text: `${lines.join('\n')}\n` };
     },
   },
   {

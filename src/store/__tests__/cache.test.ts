@@ -907,3 +907,60 @@ describe('readTicket and readState read one snapshot', () => {
     }
   });
 });
+
+describe('ticket.checklist.add through the cache', () => {
+  const ADD = (items: { text: string; done: boolean }[]) =>
+    ({ kind: 'ticket.checklist.add', ticket: T1, body: { items } }) as const;
+
+  it('matches a full rebuild after the add is written by runCommand', () => {
+    const dir = tempBoard();
+    const board = openB(dir);
+    runCommand(board, 'orch', () => ({ ok: true, event: P.create(T1) }));
+    runCommand(board, 'orch', () => ({
+      ok: true,
+      event: ADD([
+        { text: 'three', done: false },
+        { text: 'four', done: true },
+      ]),
+    }));
+    runCommand(board, 'impl', () => ({
+      ok: true,
+      event: { kind: 'ticket.checklist', ticket: T1, body: { index: 2, done: true } },
+    }));
+    const live = readTicket(board.db, T1);
+    expect(live?.checklist).toEqual([
+      { text: 'one', done: false },
+      { text: 'two', done: false },
+      { text: 'three', done: true },
+      { text: 'four', done: true },
+    ]);
+    expect(live?.version).toBe(3);
+    const check = checkCache(board);
+    expect(check.differences).toEqual([]);
+    expect(check.ok).toBe(true);
+    expect(dumpCache(board.db)).toBe(freshDump(join(dir, 'events')));
+  });
+
+  it('matches a full rebuild after the add arrives as a file and is caught up', () => {
+    const dir = tempBoard();
+    const events = join(dir, 'events');
+    const board = openB(dir);
+    runCommand(board, 'orch', () => ({ ok: true, event: P.create(T1) }));
+    // Written by another process (or synced in): folded by the next catch-up.
+    putEvent(events, ev(ADD([{ text: 'synced', done: true }]), 'other', 1_900_000_000_000));
+    catchUp(board);
+    expect(readTicket(board.db, T1)?.checklist.at(-1)).toEqual({ text: 'synced', done: true });
+    expect(checkCache(board).ok).toBe(true);
+    expect(dumpCache(board.db)).toBe(freshDump(events));
+  });
+
+  it('keeps an add for a missing ticket out of the rows, as a rebuild does', () => {
+    const dir = tempBoard();
+    const events = join(dir, 'events');
+    putEvent(events, ev({ ...ADD([{ text: 'x', done: false }]), ticket: MISSING }, 'orch', 1000));
+    const board = openB(dir);
+    expect(readState(board.db).tickets).toEqual({});
+    expect(checkCache(board).ok).toBe(true);
+    expect(dumpCache(board.db)).toBe(freshDump(events));
+  });
+});

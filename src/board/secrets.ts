@@ -61,14 +61,28 @@ const PATTERNS: Record<SecretPatternName, RegExp> = {
  * Checks every string of `texts` with `secretPatternsIn`. When
  * `allowSecretLike` is true, or nothing matches, returns normally.
  * Otherwise throws `BoardError(1, 'secret-like', message)`, where the
- * message names every matching pattern name, says the board is not a
- * secret store, and names `--allow-secret-like` as the bypass. The message
- * never contains any part of the matched text (nor of the text checked).
+ * message names every matching pattern name and says the board is not a
+ * secret store. When `bypassFlag` is true (the default: the calling
+ * command has `--allow-secret-like`) the message is exactly
+ * `refused: the text matches the secret pattern(s) <names>; the board is
+ * not a secret store (pass --allow-secret-like if this is not a secret)`;
+ * when false (the command has no such flag, e.g. `import-change`) it is the
+ * same without the parenthesised hint:
+ * `refused: the text matches the secret pattern(s) <names>; the board is
+ * not a secret store`. `<names>` is the matching pattern names in
+ * `SECRET_PATTERN_NAMES` order, joined with `, `. The message never
+ * contains any part of the matched text (nor of the text checked).
  *
  * Used by `newTicket` (title, description, labels, checklist lines and ad
- * hoc reason), `commentTicket` (text) and `handoffTicket` (note).
+ * hoc reason), `commentTicket` (text) and `handoffTicket` (note), all with
+ * a bypass flag, and by `importChange` (unit titles and task lines) with
+ * `allowSecretLike` false and `bypassFlag` false.
  */
-export function refuseSecretLike(texts: readonly string[], allowSecretLike: boolean): void {
+export function refuseSecretLike(
+  texts: readonly string[],
+  allowSecretLike: boolean,
+  bypassFlag = true,
+): void {
   if (allowSecretLike) {
     return;
   }
@@ -85,7 +99,7 @@ export function refuseSecretLike(texts: readonly string[], allowSecretLike: bool
   throw new BoardError(
     1,
     'secret-like',
-    `refused: the text matches the secret pattern(s) ${names}; the board is not a secret ` +
-      'store (pass --allow-secret-like if this is not a secret)',
+    `refused: the text matches the secret pattern(s) ${names}; the board is not a secret store` +
+      (bypassFlag ? ' (pass --allow-secret-like if this is not a secret)' : ''),
   );
 }

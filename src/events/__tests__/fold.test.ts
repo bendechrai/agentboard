@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { canonicalEncode, type JsonValue } from '../canonical.js';
 import {
+  applyEvent,
   compareFoldOrder,
   fold,
   isTransitionAllowed,
@@ -13,6 +14,7 @@ import type { Hlc } from '../hlc.js';
 import type {
   Status,
   TaskRef,
+  TicketChecklistAddItem,
   TicketCloseBody,
   TicketCreateBody,
   TicketLinkBody,
@@ -135,6 +137,20 @@ const E = {
         actor: s.actor,
         ts: s.ts,
         body: { index, done },
+      },
+    };
+  },
+  checklistAdd(ticket: string, items: TicketChecklistAddItem[], o: Opts = {}): FoldInput {
+    const s = stamp(o);
+    return {
+      hash: s.hash,
+      event: {
+        v: 1,
+        kind: 'ticket.checklist.add',
+        ticket,
+        actor: s.actor,
+        ts: s.ts,
+        body: { items },
       },
     };
   },
@@ -407,6 +423,7 @@ describe('fold: unknown-ticket', () => {
     ['ticket.link', () => E.link(NEVER_CREATED, { pr: 1 })],
     ['ticket.close', () => E.close(NEVER_CREATED, { noDecision: true })],
     ['ticket.checklist', () => E.checklist(NEVER_CREATED, 0, true)],
+    ['ticket.checklist.add', () => E.checklistAdd(NEVER_CREATED, [{ text: 'a', done: false }])],
   ];
 
   it.each(orphans)(
@@ -488,6 +505,7 @@ describe('fold: version and updatedAt', () => {
       E.handoff(T1, 'impl2', 'implementing', 'go'),
       E.link(T1, { pr: 4 }),
       E.checklist(T1, 0, true),
+      E.checklistAdd(T1, [{ text: 'b', done: false }]),
       E.move(T1, 'review'),
       E.move(T1, 'merged'),
       E.close(T1, { noDecision: true }),
@@ -495,8 +513,8 @@ describe('fold: version and updatedAt', () => {
     const result = fold(events);
     expect(result.rejected).toEqual([]);
     const t = ticketOf(result, T1);
-    expect(t.version).toBe(12);
-    expect(t.updatedAt).toEqual(tsOf(events[11] as FoldInput));
+    expect(t.version).toBe(13);
+    expect(t.updatedAt).toEqual(tsOf(events[12] as FoldInput));
   });
 
   it('does not count unknown kinds or board.meta', () => {
@@ -987,6 +1005,119 @@ describe('fold: checklist', () => {
     const c = E.create(T1);
     const ck = E.checklist(T1, 0, true);
     expect(fold([ck, c]).rejected.map((r) => r.reason)).toEqual(['checklist-index']);
+  });
+});
+
+describe('fold: checklist.add', () => {
+  const create = (): FoldInput =>
+    E.create(T1, { title: 'x', task: TASK, checklist: ['1.1 a', '1.2 b'] });
+
+  // Build the create first: each builder call gets a later wall (see `stamp`).
+  it('appends the items after the existing lines, in order, copying done flags', () => {
+    const c = create();
+    const tick = E.checklist(T1, 0, true);
+    const add = E.checklistAdd(T1, [
+      { text: '1.3 c', done: false },
+      { text: '1.4 d', done: true },
+    ]);
+    const result = fold([c, tick, add]);
+    expect(result.rejected).toEqual([]);
+    expect(ticketOf(result, T1).checklist).toEqual([
+      { text: '1.1 a', done: true },
+      { text: '1.2 b', done: false },
+      { text: '1.3 c', done: false },
+      { text: '1.4 d', done: true },
+    ]);
+  });
+
+  it('counts one version for the whole event and sets updatedAt', () => {
+    const c = create();
+    const add = E.checklistAdd(T1, [
+      { text: 'c', done: false },
+      { text: 'd', done: false },
+      { text: 'e', done: true },
+    ]);
+    const t = ticketOf(fold([c, add]), T1);
+    expect(t.version).toBe(2);
+    expect(t.updatedAt).toEqual(tsOf(add));
+  });
+
+  it('applies several adds in fold order, not input order', () => {
+    const first = E.checklistAdd(T1, [{ text: 'first', done: false }], { wall: 900_000 });
+    const second = E.checklistAdd(T1, [{ text: 'second', done: true }], { wall: 900_010 });
+    const c = create();
+    const a = ticketOf(fold([c, first, second]), T1);
+    const b = ticketOf(fold([second, c, first]), T1);
+    expect(a.checklist.map((i) => i.text)).toEqual(['1.1 a', '1.2 b', 'first', 'second']);
+    expect(canonicalEncode(b)).toEqual(canonicalEncode(a));
+    expect(a.version).toBe(3);
+  });
+
+  it('adds to a ticket created without a checklist, and appended lines can be ticked', () => {
+    const c = E.create(T1);
+    const add = E.checklistAdd(T1, [{ text: 'only', done: false }]);
+    const tick = E.checklist(T1, 0, true);
+    const result = fold([c, add, tick]);
+    expect(result.rejected).toEqual([]);
+    expect(ticketOf(result, T1).checklist).toEqual([{ text: 'only', done: true }]);
+  });
+
+  it('keeps duplicate texts as separate lines', () => {
+    const c = create();
+    const add = E.checklistAdd(T1, [{ text: '1.1 a', done: false }]);
+    expect(ticketOf(fold([c, add]), T1).checklist.map((i) => i.text)).toEqual([
+      '1.1 a',
+      '1.2 b',
+      '1.1 a',
+    ]);
+  });
+
+  it('is accepted on a closed ticket, like a comment', () => {
+    const events = [
+      ...reach(T1, 'merged'),
+      E.close(T1, { noDecision: true }),
+      E.checklistAdd(T1, [{ text: 'late', done: false }]),
+    ];
+    const result = fold(events);
+    expect(result.rejected).toEqual([]);
+    expect(ticketOf(result, T1).checklist).toEqual([{ text: 'late', done: false }]);
+  });
+
+  it('is rejected with unknown-ticket before its create and not re-applied later', () => {
+    const early = E.checklistAdd(T1, [{ text: 'early', done: false }], { wall: 50 });
+    const c = E.create(T1, undefined, { wall: 100 });
+    const result = fold([c, early]);
+    expect(result.rejected).toEqual([
+      { hash: early.hash, kind: 'ticket.checklist.add', ticket: T1, reason: 'unknown-ticket' },
+    ]);
+    expect(ticketOf(result, T1).checklist).toEqual([]);
+    expect(ticketOf(result, T1).version).toBe(1);
+  });
+
+  it('applyEvent appends to the given state and reports applied', () => {
+    const state = fold([create()]).state;
+    const add = E.checklistAdd(T1, [{ text: '1.3 c', done: true }]);
+    expect(applyEvent(state, add)).toEqual({ status: 'applied' });
+    const t = state.tickets[T1];
+    expect(t?.checklist.at(-1)).toEqual({ text: '1.3 c', done: true });
+    expect(t?.version).toBe(2);
+    expect(t?.updatedAt).toEqual(tsOf(add));
+  });
+
+  it('applyEvent rejects an add for a missing ticket without changing the state', () => {
+    const state = fold([create()]).state;
+    const before = canonicalEncode(state);
+    const add = E.checklistAdd(T2, [{ text: 'x', done: false }]);
+    expect(applyEvent(state, add)).toEqual({
+      status: 'rejected',
+      rejected: {
+        hash: add.hash,
+        kind: 'ticket.checklist.add',
+        ticket: T2,
+        reason: 'unknown-ticket',
+      },
+    });
+    expect(canonicalEncode(state)).toEqual(before);
   });
 });
 
