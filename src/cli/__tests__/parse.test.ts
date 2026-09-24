@@ -263,14 +263,24 @@ describe('parseArgs: command selection', () => {
     expect(parsed.json).toBe(false);
   });
 
-  it.each([[[]], [['nope']], [['checklist']], [['checklist', 'toggle', 'x', '1']], [['--json']]])(
-    'refuses %j with a usage error listing the commands',
+  // add-agent-guidance: an unknown command names the token, suggests close
+  // commands and points to `agentboard help` (which lists them all) instead
+  // of listing every command; an empty argv is the overview (help-cli.test.ts).
+  it.each([[['nope']], [['checklist']], [['checklist', 'toggle', 'x', '1']], [['--json']]])(
+    'refuses %j with a usage error pointing to agentboard help',
     (argv) => {
       const err = expectBoardError(() => parseArgs(argv), 1, 'usage');
-      expect(err.message).toContain('checklist tick');
-      expect(err.message).toContain('version');
+      expect(err.message).toMatch(/^unknown command /);
+      expect(err.message).toContain("run 'agentboard help' to list the commands");
     },
   );
+
+  it('suggests both checklist commands for checklist without a known second word', () => {
+    for (const argv of [['checklist'], ['checklist', 'toggle', 'x', '1']]) {
+      const err = expectBoardError(() => parseArgs(argv), 1, 'usage');
+      expect(err.message).toContain('did you mean checklist tick or checklist untick?');
+    }
+  });
 });
 
 describe('parseArgs: flags and positionals', () => {

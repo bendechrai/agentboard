@@ -7,7 +7,7 @@
  * separation through the built CLI are in src/cli/__tests__/help-cli.test.ts.
  */
 
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import { expectBoardError } from '../../board/__tests__/helpers.js';
 import { parseArgs } from '../../cli/parse.js';
@@ -495,8 +495,14 @@ describe('commandHelpDocument', () => {
 });
 
 describe('renderOverview', () => {
-  const text = renderOverview(HELP_SOURCE);
-  const ls = lines(text);
+  // Rendered in beforeAll, not at collection, so a failing renderer fails
+  // these tests rather than the whole file.
+  let text = '';
+  let ls: string[] = [];
+  beforeAll(() => {
+    text = renderOverview(HELP_SOURCE);
+    ls = lines(text);
+  });
 
   it('is ASCII with no trailing spaces and ends with one newline', () => {
     expect(text.endsWith('\n')).toBe(true);
