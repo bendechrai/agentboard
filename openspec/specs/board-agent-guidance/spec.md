@@ -100,7 +100,8 @@ SHALL carry it as a `hint` field alongside `exitCode`, `reason` and
 - **THEN** each has a non-empty hint template
 
 ### Requirement: Installing guidance into a host project
-`agentboard agents install [--target <t>]... [--force]` SHALL write agent
+`agentboard agents install [--target <t>]... [--mcp-command <executable>]
+[--force]` SHALL write agent
 guidance into the root of the current working tree (the output of
 `git rev-parse --show-toplevel`, or the current directory outside git),
 where `<t>` is one of:
@@ -115,7 +116,8 @@ where `<t>` is one of:
   `tasks.md` in the implementing PR; archive: no open tickets may remain
   for the change, run `close-merged` first);
 - `mcp-json`: an `agentboard` entry under `mcpServers` in `.mcp.json`
-  running `npx -y @bendechrai/agentboard mcp`.
+  running `npx -y @bendechrai/agentboard mcp`, or, when `--mcp-command
+  <executable>` is given, `{"command": "<executable>", "args": ["mcp"]}`.
 The `claude` and `agents-md` text SHALL state the rules an agent must never
 break (always pass an actor; claim before working; hand off or block with a
 comment before stopping; never mark completion on the board instead of in
@@ -125,7 +127,11 @@ direct the agent to `agentboard help agents` for everything else. With no
 `agents-md` when `AGENTS.md` exists and `openspec` when
 `openspec/config.yaml` exists, SHALL never auto-select `mcp-json`, and SHALL
 report each selected target and the reason; when nothing is selected it
-SHALL exit 1 listing the targets. The command SHALL NOT require a board and
+SHALL exit 1 listing the targets. Giving `--mcp-command` SHALL select the
+`mcp-json` target in addition to the explicit or auto-detected ones, and
+the output SHALL name `--mcp-command` as the reason. An empty
+`--mcp-command` value or one containing a newline SHALL exit 1 with reason
+`usage` and write nothing. The command SHALL NOT require a board and
 SHALL NOT run git commands that modify anything. `init` SHALL end its
 output with a line suggesting `agentboard agents install`.
 
@@ -141,6 +147,10 @@ output with a line suggesting `agentboard agents install`.
 - **WHEN** `agents install` runs twice with the same targets and version
 - **THEN** the second run changes no file byte and reports each target as up to date
 
+#### Scenario: Local MCP command
+- **WHEN** `agentboard agents install --mcp-command agentboard` runs in a project with no `.mcp.json`
+- **THEN** `.mcp.json` contains `mcpServers.agentboard` equal to `{"command": "agentboard", "args": ["mcp"]}` and the output names `mcp-json` as selected by `--mcp-command`
+
 ### Requirement: Installed guidance never clobbers user content
 Each target SHALL own only its marked region: the whole of `SKILL.md` only
 when it carries the `<!-- agentboard-guidance: v<N> -->` marker; the text
@@ -153,8 +163,8 @@ are rewritten through a YAML or JSON serializer, every key, value, entry,
 comment and their order outside the owned entries SHALL be preserved, while
 insignificant formatting (indentation, quoting style) MAY be normalized. A `SKILL.md` at the target path without the marker, a
 malformed marker pair in `AGENTS.md`, a non-list value at a `guidance` key,
-or an existing `mcpServers.agentboard` entry that differs from the managed
-one SHALL cause that target to be refused with exit 1 and a message naming
+or an existing `mcpServers.agentboard` entry that is not a managed entry
+(see "Managed MCP entry") SHALL cause that target to be refused with exit 1 and a message naming
 the file, unless `--force` is given, and other targets SHALL still be
 processed.
 
@@ -197,3 +207,27 @@ MCP InvalidParams error the SDK uses for an unknown resource.
 #### Scenario: Client reads the guide
 - **WHEN** an MCP client reads the resource `agentboard://guide`
 - **THEN** its text is identical to the stdout of `agentboard help agents` for the same version
+
+### Requirement: Managed MCP entry
+An `mcpServers.agentboard` entry in `.mcp.json` SHALL be a managed entry
+when it is exactly the default `npx` entry, or exactly
+`{"command": <non-empty string>, "args": ["mcp"]}` with no other keys.
+`agents install` SHALL leave an existing managed entry unchanged when
+`--mcp-command` is not given, SHALL leave it unchanged when it already runs
+the given executable, and SHALL replace it with the requested entry,
+without `--force`, when `--mcp-command` names a different executable.
+`agents check` SHALL report a managed entry of either shape as `current`
+and any other entry as `modified`; `installedVersion` stays null for this
+target.
+
+#### Scenario: Reinstall keeps a local command
+- **WHEN** `.mcp.json` has `mcpServers.agentboard` equal to `{"command": "agentboard", "args": ["mcp"]}` and `agentboard agents install --target mcp-json` runs without `--mcp-command`
+- **THEN** the file is unchanged, the target is reported unchanged, and `agents check` reports it `current`
+
+#### Scenario: Switching the command
+- **WHEN** `.mcp.json` has the default `npx` entry and `agentboard agents install --mcp-command /opt/agentboard/bin/agentboard` runs
+- **THEN** the entry becomes `{"command": "/opt/agentboard/bin/agentboard", "args": ["mcp"]}` and the target is reported updated, without `--force`
+
+#### Scenario: Unrecognised entry is still refused
+- **WHEN** `mcpServers.agentboard` is `{"command": "agentboard", "args": ["mcp"], "env": {"X": "1"}}` and `agentboard agents install --mcp-command agentboard` runs
+- **THEN** the target is refused as `entry-differs`, the file is unchanged, and the command exits 1
