@@ -1328,7 +1328,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'mcp',
     summary: 'Serve the board as MCP tools over stdio',
     description:
-      'Serves the board as MCP tools over stdio, one tool per board command (not init, watch, rebuild, sync, mcp, version or help), for agents that prefer tools to the shell. Runs until the client disconnects or the process gets SIGINT or SIGTERM. --as sets the default actor for tool calls that pass no as of their own, before AGENTBOARD_ACTOR. Nothing but protocol messages is written to stdout.',
+      'Serves the board as MCP tools over stdio, one tool per board command (not init, watch, rebuild, sync, mcp, version or help), for agents that prefer tools to the shell. Runs until the client disconnects or the process gets SIGINT or SIGTERM. --as sets the default actor for tool calls that pass no as of their own, before AGENTBOARD_ACTOR. Nothing but protocol messages is written to stdout. It exits 2 when no board is found from this directory.',
     group: 'setup',
     examples: [
       { command: 'agentboard mcp', summary: 'Serve the board over MCP on stdio' },
@@ -1340,7 +1340,6 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       { code: 0, meaning: 'The client disconnected or the server was stopped by a signal' },
       EXIT_USAGE,
-      EXIT_NO_BOARD,
     ],
     positionals: [],
     flags: [],

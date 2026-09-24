@@ -4,12 +4,19 @@
  */
 
 import { BoardError } from '../store/errors.js';
-import { COMMANDS, GLOBAL_FLAGS } from './registry.js';
+import { unknownCommandMessage, unknownFlagMessage } from '../guidance/suggest.js';
+import { COMMANDS, GLOBAL_FLAGS, JSON_FLAG } from './registry.js';
 import { asciiText } from './render.js';
 import type { ArgSpec, ArgValue, ArgValues, CommandSpec, Env } from './types.js';
 
 /** The environment variable naming the actor when `--as` is not given. */
 export const ACTOR_ENV = 'AGENTBOARD_ACTOR';
+
+/** The command that help requests become. */
+const HELP_COMMAND = 'help';
+
+/** The arguments that request help (`--help`, `-h`). */
+const HELP_FLAGS: ReadonlySet<string> = new Set(['--help', '-h']);
 
 /** Result of `parseArgs`. */
 export interface ParsedCommand {
@@ -38,6 +45,9 @@ export interface ParsedCommand {
  *     lone `--` both are ordinary positionals. `help --help` is
  *     `help help`.
  *   An unknown command followed by `--help` is still an unknown command.
+ *   Only when `commands` has a `help` command: the MCP server validates a
+ *   tool call with `parseArgs(argv, [command])`, so there a string value
+ *   such as `-h` stays a value.
  * - The command is the longest command name whose words equal the leading
  *   arguments (`checklist tick 01ABCD 2` is `checklist tick`). No match is
  *   `BoardError(1, 'usage')` with `unknownCommandMessage(argv, commands)`
@@ -75,8 +85,26 @@ export function parseArgs(
   argv: readonly string[],
   commands: readonly CommandSpec[] = COMMANDS,
 ): ParsedCommand {
+  const helpCommand = commands.find((c) => c.name === HELP_COMMAND);
+  const [first] = argv;
+  if (helpCommand !== undefined && (first === undefined || HELP_FLAGS.has(first))) {
+    return parseArgs([HELP_COMMAND, ...argv.slice(1)], commands);
+  }
   const command = selectCommand(argv, commands);
-  const rest = argv.slice(command.name.split(' ').length);
+  const words = command.name.split(' ');
+  const rest = argv.slice(words.length);
+  if (helpCommand !== undefined) {
+    const end = rest.indexOf('--');
+    const options = end < 0 ? rest : rest.slice(0, end);
+    if (options.some((arg) => HELP_FLAGS.has(arg))) {
+      const [topic, subtopic] = words;
+      return {
+        command: helpCommand,
+        values: { topic, ...(subtopic === undefined ? {} : { subtopic }) },
+        json: options.includes(`--${JSON_FLAG.name}`),
+      };
+    }
+  }
   const flags = new Map<string, ArgSpec>();
   for (const spec of [...command.flags, ...GLOBAL_FLAGS]) {
     flags.set(spec.name, spec);
@@ -101,7 +129,7 @@ export function parseArgs(
     const inline = eq < 0 ? undefined : arg.slice(eq + 1);
     const spec = flags.get(name);
     if (spec === undefined) {
-      throw usage(`unknown flag --${asciiText(name)} for ${command.name}`);
+      throw usage(unknownFlagMessage(name, command, [...command.flags, ...GLOBAL_FLAGS]));
     }
     if (spec.type === 'boolean') {
       if (inline !== undefined) {
@@ -194,10 +222,10 @@ function selectCommand(argv: readonly string[], commands: readonly CommandSpec[]
     }
   }
   if (best === undefined) {
-    const given =
-      argv.length === 0 ? 'no command given' : `unknown command ${asciiText(argv[0] ?? '')}`;
     throw usage(
-      `${given}; usage: agentboard <command> [arguments]; commands: ${commands.map((c) => c.name).join(', ')}`,
+      argv.length === 0
+        ? "no command given; run 'agentboard help' to list the commands"
+        : unknownCommandMessage(argv, commands),
     );
   }
   return best;

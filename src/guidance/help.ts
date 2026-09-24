@@ -21,6 +21,9 @@ import type {
   ExclusiveGroup,
   ExitCodeSpec,
 } from '../cli/types.js';
+import { COMMAND_GROUPS } from '../cli/types.js';
+import { BoardError } from '../store/errors.js';
+import { unknownCommandMessage } from './suggest.js';
 
 /** The last line of the overview, exactly. */
 export const AGENTS_LINE = "Agents: run 'agentboard help agents' before first use.";
@@ -91,8 +94,29 @@ export interface CommandHelpDocument {
  * Pure.
  */
 export function synopsis(command: CommandSpec): string {
-  void command;
-  throw new Error('not implemented');
+  const parts = ['agentboard', command.name];
+  for (const arg of command.positionals) {
+    parts.push(arg.required ? `<${arg.name}>` : `[<${arg.name}>]`);
+  }
+  const grouped = new Set(command.exclusive.flatMap((group) => group.alternatives.flat()));
+  for (const flag of command.flags) {
+    if (grouped.has(flag.name)) {
+      continue;
+    }
+    const text = flagForm(flag);
+    parts.push(`${flag.required ? text : `[${text}]`}${flag.repeatable ? '...' : ''}`);
+  }
+  for (const group of command.exclusive) {
+    const alternatives = group.alternatives
+      .map((alternative) => alternative.map((name) => flagForm(flagNamed(command, name))).join(' '))
+      .join(' | ');
+    parts.push(group.required ? `(${alternatives})` : `[${alternatives}]`);
+  }
+  if (needsActor(command)) {
+    parts.push('--as <actor>');
+  }
+  parts.push('[--json]');
+  return parts.join(' ');
 }
 
 /**
@@ -129,16 +153,88 @@ export function synopsis(command: CommandSpec): string {
  * Every line has no trailing spaces; the text ends with one newline. Pure.
  */
 export function renderCommandHelp(source: HelpSource, command: CommandSpec): string {
-  void source;
-  void command;
-  throw new Error('not implemented');
+  const actor = needsActor(command);
+  const sections: string[][] = [
+    [`Usage: ${synopsis(command)}`],
+    [command.summary],
+    wrap(command.description, WRAP_COLUMNS),
+  ];
+  if (command.positionals.length > 0) {
+    sections.push([
+      'Arguments:',
+      ...argumentLines(
+        command.positionals.map((arg) => [`<${arg.name}>`, typeText(arg), arg.summary]),
+      ),
+    ]);
+  }
+  if (command.flags.length > 0) {
+    sections.push([
+      'Flags:',
+      ...argumentLines(command.flags.map((flag) => [flagForm(flag), typeText(flag), flag.summary])),
+      ...command.exclusive.map(
+        (group) =>
+          `${group.required ? 'Exactly one of: ' : 'At most one of: '}${group.alternatives
+            .map((alternative) => alternative.map((name) => `--${name}`).join(' with '))
+            .join(' | ')}`,
+      ),
+    ]);
+  }
+  sections.push([
+    'Global flags:',
+    ...argumentLines(
+      source.globalFlags.map((flag) => {
+        if (flag.name !== ACTOR) {
+          return [flagForm(flag), typeText(flag), flag.summary];
+        }
+        return actor
+          ? [
+              ACTOR_FORM,
+              `${typeText({ ...flag, required: true })} (or set AGENTBOARD_ACTOR)`,
+              flag.summary,
+            ]
+          : [
+              ACTOR_FORM,
+              typeText({ ...flag, required: false }),
+              'Accepted and ignored by this command',
+            ];
+      }),
+    ),
+  ]);
+  sections.push([
+    'Exit codes:',
+    ...columns(
+      command.exitCodes.map((exit) => [
+        exit.reason === undefined ? String(exit.code) : `${String(exit.code)} ${exit.reason}`,
+        exit.meaning,
+      ]),
+    ),
+  ]);
+  sections.push([
+    'Examples:',
+    ...command.examples.flatMap((example) => [`  ${example.command}`, `    ${example.summary}`]),
+  ]);
+  return `${sections.map((lines) => lines.map((line) => line.trimEnd()).join('\n')).join('\n\n')}\n`;
 }
 
 /** The `--json` document of one command's help (see `CommandHelpDocument`). Pure. */
 export function commandHelpDocument(source: HelpSource, command: CommandSpec): CommandHelpDocument {
-  void source;
-  void command;
-  throw new Error('not implemented');
+  return {
+    name: command.name,
+    group: command.group,
+    summary: command.summary,
+    description: command.description,
+    synopsis: synopsis(command),
+    positionals: command.positionals,
+    flags: command.flags,
+    globalFlags: source.globalFlags,
+    exclusive: command.exclusive,
+    writes: command.writes,
+    tracksCursor: command.tracksCursor === true,
+    needsActor: needsActor(command),
+    operation: command.operation,
+    examples: command.examples,
+    exitCodes: command.exitCodes,
+  };
 }
 
 /**
@@ -160,8 +256,29 @@ export function commandHelpDocument(source: HelpSource, command: CommandSpec): C
  * Every line has no trailing spaces; the text ends with one newline. Pure.
  */
 export function renderOverview(source: HelpSource): string {
-  void source;
-  throw new Error('not implemented');
+  const width = Math.max(0, ...source.commands.map((command) => command.name.length)) + 2;
+  const lines = [
+    `agentboard ${source.version}: a local, offline ticket board for coding agents working on one project`,
+    '',
+    'Usage: agentboard <command> [arguments] [--as <actor>] [--json]',
+    '',
+  ];
+  for (const group of COMMAND_GROUPS) {
+    const commands = source.commands.filter((command) => command.group === group);
+    if (commands.length === 0) {
+      continue;
+    }
+    lines.push(`${GROUP_TITLES[group]}:`);
+    for (const command of commands) {
+      lines.push(`  ${command.name.padEnd(width)}${command.summary}`.trimEnd());
+    }
+    lines.push('');
+  }
+  lines.push(
+    "Run 'agentboard help <command>' or 'agentboard <command> --help' for its arguments, exit codes and examples.",
+    AGENTS_LINE,
+  );
+  return `${lines.join('\n')}\n`;
 }
 
 /**
@@ -169,8 +286,7 @@ export function renderOverview(source: HelpSource): string {
  * command, in registry order. Pure.
  */
 export function overviewDocument(source: HelpSource): CommandHelpDocument[] {
-  void source;
-  throw new Error('not implemented');
+  return source.commands.map((command) => commandHelpDocument(source, command));
 }
 
 /**
@@ -190,7 +306,84 @@ export function overviewDocument(source: HelpSource): CommandHelpDocument[] {
  * actor.
  */
 export function helpOutput(source: HelpSource, topic: readonly string[]): CommandOutput {
-  void source;
-  void topic;
-  throw new Error('not implemented');
+  if (topic.length === 0) {
+    return { json: overviewDocument(source), text: renderOverview(source) };
+  }
+  const name = topic.join(' ');
+  const command = source.commands.find((candidate) => candidate.name === name);
+  if (command === undefined) {
+    throw new BoardError(1, 'usage', unknownCommandMessage(topic, source.commands));
+  }
+  return { json: commandHelpDocument(source, command), text: renderCommandHelp(source, command) };
+}
+
+/** The column at which command help wraps the description. */
+const WRAP_COLUMNS = 78;
+
+/** The name of the global actor flag, and its form in help. */
+const ACTOR = 'as';
+const ACTOR_FORM = '--as <actor>';
+
+/** True when `command` requires an actor (`--as` or `AGENTBOARD_ACTOR`). */
+function needsActor(command: CommandSpec): boolean {
+  return command.writes || command.tracksCursor === true;
+}
+
+/** `--name` for a boolean flag, `--as <actor>`, else `--name <name>`. */
+function flagForm(flag: ArgSpec): string {
+  if (flag.type === 'boolean') {
+    return `--${flag.name}`;
+  }
+  return flag.name === ACTOR ? ACTOR_FORM : `--${flag.name} <${flag.name}>`;
+}
+
+/**
+ * The flag of `command` named `name`; a name an exclusive group lists but
+ * the command does not declare is shown as a boolean flag.
+ */
+function flagNamed(command: CommandSpec, name: string): ArgSpec {
+  return (
+    command.flags.find((flag) => flag.name === name) ?? {
+      name,
+      type: 'boolean',
+      required: false,
+      repeatable: false,
+      summary: '',
+    }
+  );
+}
+
+/** `<type>, required` or `<type>, optional`, plus `, repeatable`. */
+function typeText(arg: ArgSpec): string {
+  return `${arg.type}, ${arg.required ? 'required' : 'optional'}${arg.repeatable ? ', repeatable' : ''}`;
+}
+
+/** Argument lines: form, type and summary, in aligned columns. */
+function argumentLines(rows: readonly (readonly [string, string, string])[]): string[] {
+  const formWidth = Math.max(...rows.map(([form]) => form.length)) + 2;
+  return columns(rows.map(([form, type, summary]) => [form.padEnd(formWidth) + type, summary]));
+}
+
+/** Two-column lines, indented by two spaces, the second column aligned. */
+function columns(rows: readonly (readonly [string, string])[]): string[] {
+  const width = Math.max(...rows.map(([head]) => head.length)) + 2;
+  return rows.map(([head, text]) => `  ${head.padEnd(width)}${text}`.trimEnd());
+}
+
+/** `text` split at single spaces into lines of at most `limit` columns (a longer word stands alone). */
+function wrap(text: string, limit: number): string[] {
+  const lines: string[] = [];
+  let line = '';
+  for (const word of text.split(' ')) {
+    if (line === '') {
+      line = word;
+    } else if (line.length + 1 + word.length <= limit) {
+      line += ` ${word}`;
+    } else {
+      lines.push(line);
+      line = word;
+    }
+  }
+  lines.push(line);
+  return lines;
 }
