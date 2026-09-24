@@ -65,9 +65,24 @@ not a timestamp alone.
 board's remote, and push. Because event files are add-only and named by
 content, two clones that each added events SHALL merge without conflict, and
 after both have synced, `rebuild` on each SHALL produce byte-identical
-canonical dumps. If git reports a conflict on any path other than an event
-file, `sync` SHALL stop, leave the repository in the conflicted state for a
-human, and exit 3.
+canonical dumps. If git reports a conflict on any path, `sync` SHALL stop,
+leave the repository in the conflicted state for a human, and exit 3 naming
+the paths. `sync` SHALL stage only new files under `events/` (never temporary
+files, never deletions) and `.board/.gitignore`, so the cache and its WAL and
+SHM files are never committed even if `.gitignore` is emptied. It SHALL
+commit with the fixed identity `agentboard <agentboard@localhost>`, never the
+user's git identity, and only when something is staged. When event files
+that are recorded in the board's git history are missing from the working
+tree, `sync` SHALL stage nothing and exit 5 with reason `integrity`, naming
+the missing files and how to restore them. When the board directory is not
+itself the top level of a git repository, `sync` SHALL exit 2. When the host
+project's git repository tracks any path under `.board`, `sync` SHALL warn
+on stderr (and in its JSON output) without failing. After pulling, `sync`
+SHALL fold the arrived events and report them.
+
+#### Scenario: Deleted event file is not synced
+- **WHEN** a committed event file is deleted from `.board/events` and `sync` runs
+- **THEN** nothing is staged or pushed and the command exits 5 naming the file
 
 #### Scenario: Divergent clones converge
 - **WHEN** clone A adds three events and clone B adds two events, both run `sync`, and A runs `sync` again
