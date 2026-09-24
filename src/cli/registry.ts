@@ -842,8 +842,8 @@ export const COMMANDS: readonly CommandSpec[] = [
     run: () => {
       throw new BoardError(
         1,
-        'not-implemented',
-        'agentboard mcp is not implemented yet; the MCP server arrives with task group 9',
+        'streaming-command',
+        'agentboard mcp serves MCP over stdio and runs only from the agentboard executable',
       );
     },
   },

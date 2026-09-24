@@ -20,8 +20,11 @@
  * Tool order is registry order, so `tools/list` is stable.
  */
 
-import { COMMANDS } from '../cli/registry.js';
-import type { ArgValues, CommandSpec } from '../cli/types.js';
+import { parseArgs } from '../cli/parse.js';
+import { ACTOR_FLAG, COMMANDS } from '../cli/registry.js';
+import { asciiText } from '../cli/render.js';
+import type { ArgSpec, ArgValues, CommandSpec } from '../cli/types.js';
+import { BoardError } from '../store/errors.js';
 
 /** Prefix of every tool name. */
 export const TOOL_PREFIX = 'board_';
@@ -100,8 +103,7 @@ export interface ToolDefinition {
  * `import-change` is `board_import_change`). Pure.
  */
 export function toolName(commandName: string): string {
-  void commandName;
-  throw new Error('not implemented');
+  return `${TOOL_PREFIX}${commandName.replace(/[ -]/g, '_')}`;
 }
 
 /**
@@ -117,20 +119,48 @@ export function toolName(commandName: string): string {
  * ASCII. Pure.
  */
 export function toolDescription(command: CommandSpec): string {
-  void command;
-  throw new Error('not implemented');
+  const sentences = command.exclusive.map(
+    (group) =>
+      `Give ${group.required ? 'exactly' : 'at most'} one of: ${group.alternatives
+        .map((alt) => alt.join(' with '))
+        .join(' | ')}.`,
+  );
+  return [command.summary, ...sentences].join('. ');
 }
 
 /** The input schema of a command's tool (see `ToolInputSchema`). Pure. */
 export function toolInputSchema(command: CommandSpec): ToolInputSchema {
-  void command;
-  throw new Error('not implemented');
+  const properties: Record<string, ToolProperty> = {};
+  const args = [...command.positionals, ...command.flags];
+  for (const arg of args) {
+    properties[arg.name] = toolProperty(arg);
+  }
+  properties[ACTOR_FLAG.name] = toolProperty(ACTOR_FLAG);
+  const grouped = new Set(command.exclusive.flatMap((group) => group.alternatives.flat()));
+  return {
+    type: 'object',
+    properties,
+    required: args.filter((arg) => arg.required && !grouped.has(arg.name)).map((arg) => arg.name),
+    additionalProperties: false,
+  };
+}
+
+/** The JSON Schema property of one argument. */
+function toolProperty(arg: ArgSpec): ToolProperty {
+  return arg.repeatable
+    ? { type: 'array', items: { type: 'string' }, description: arg.summary }
+    : { type: arg.type, description: arg.summary };
 }
 
 /** The tool of one command (whether or not it is excluded). Pure. */
 export function toolDefinition(command: CommandSpec): ToolDefinition {
-  void command;
-  throw new Error('not implemented');
+  return {
+    name: toolName(command.name),
+    description: toolDescription(command),
+    inputSchema: toolInputSchema(command),
+    annotations: { readOnlyHint: !command.writes && command.tracksCursor !== true },
+    command,
+  };
 }
 
 /**
@@ -138,8 +168,7 @@ export function toolDefinition(command: CommandSpec): ToolDefinition {
  * is not in `EXCLUDED_COMMANDS`, in registry order. Pure.
  */
 export function toolDefinitions(commands: readonly CommandSpec[] = COMMANDS): ToolDefinition[] {
-  void commands;
-  throw new Error('not implemented');
+  return commands.filter((c) => !EXCLUDED_COMMANDS.includes(c.name)).map(toolDefinition);
 }
 
 /** The tool named exactly `name` among `toolDefinitions(commands)`, or undefined. */
@@ -147,9 +176,7 @@ export function findTool(
   name: string,
   commands: readonly CommandSpec[] = COMMANDS,
 ): ToolDefinition | undefined {
-  void name;
-  void commands;
-  throw new Error('not implemented');
+  return toolDefinitions(commands).find((tool) => tool.name === name);
 }
 
 /**
@@ -185,7 +212,107 @@ export function findTool(
  *   missing required exclusive group.
  */
 export function toolArguments(command: CommandSpec, args: unknown): ArgValues {
-  void command;
-  void args;
-  throw new Error('not implemented');
+  const given = argumentObject(args);
+  const specs = new Map<string, ArgSpec>();
+  for (const arg of [...command.positionals, ...command.flags, ACTOR_FLAG]) {
+    specs.set(arg.name, arg);
+  }
+  const values = new Map<string, string | number | true | readonly string[]>();
+  for (const [key, value] of Object.entries(given)) {
+    const spec = specs.get(key);
+    if (spec === undefined) {
+      throw usage(`unknown argument ${asciiText(key)} for ${toolName(command.name)}`);
+    }
+    const checked = argumentValue(spec, value);
+    if (checked !== null) {
+      values.set(key, checked);
+    }
+  }
+  const empty = values.get(ACTOR_FLAG.name);
+  if (empty === '') {
+    values.delete(ACTOR_FLAG.name);
+  }
+
+  const argv: string[] = [...command.name.split(' ')];
+  for (const spec of [...command.flags, ACTOR_FLAG]) {
+    const value = values.get(spec.name);
+    if (value === undefined) {
+      continue;
+    }
+    if (value === true) {
+      argv.push(`--${spec.name}`);
+    } else if (Array.isArray(value)) {
+      for (const item of value as readonly string[]) {
+        argv.push(`--${spec.name}`, item);
+      }
+    } else {
+      argv.push(`--${spec.name}`, String(value));
+    }
+  }
+  // Positionals are positional: one that is absent ends the list, and
+  // (as on a command line) no later one can be given without it.
+  argv.push('--');
+  const present = command.positionals.filter((spec) => values.has(spec.name));
+  command.positionals.forEach((spec, index) => {
+    const value = values.get(spec.name);
+    if (value !== undefined) {
+      argv.push(String(value));
+    } else if (spec.required || present.some((p) => command.positionals.indexOf(p) > index)) {
+      throw usage(`${command.name} needs the argument <${spec.name}>`);
+    }
+  });
+  return parseArgs(argv, [command]).values;
+}
+
+/** `args` as a plain object (`{}` for undefined or null), else a usage error. */
+function argumentObject(args: unknown): Record<string, unknown> {
+  if (args === undefined || args === null) {
+    return {};
+  }
+  if (typeof args !== 'object' || Array.isArray(args)) {
+    throw usage('tool arguments must be a JSON object');
+  }
+  const proto: unknown = Object.getPrototypeOf(args);
+  if (proto !== Object.prototype && proto !== null) {
+    throw usage('tool arguments must be a JSON object');
+  }
+  return args as Record<string, unknown>;
+}
+
+/**
+ * One argument checked against its spec: the value to pass on, or null
+ * when it is the same as absent (`false`, an empty array).
+ */
+function argumentValue(
+  spec: ArgSpec,
+  value: unknown,
+): string | number | true | readonly string[] | null {
+  const name = spec.name;
+  if (spec.repeatable) {
+    if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) {
+      throw usage(`${name} must be an array of strings`);
+    }
+    return value.length === 0 ? null : (value as string[]);
+  }
+  switch (spec.type) {
+    case 'string':
+      if (typeof value !== 'string') {
+        throw usage(`${name} must be a string`);
+      }
+      return value;
+    case 'integer':
+      if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+        throw usage(`${name} must be an integer`);
+      }
+      return value;
+    case 'boolean':
+      if (typeof value !== 'boolean') {
+        throw usage(`${name} must be a boolean`);
+      }
+      return value ? true : null;
+  }
+}
+
+function usage(message: string): BoardError {
+  return new BoardError(1, 'usage', message);
 }

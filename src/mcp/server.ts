@@ -38,10 +38,17 @@
 
 import type { Readable, Writable } from 'node:stream';
 
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
+import { LazyBoard, commandActor, errorDocument, exitCodeFor, runContext } from '../cli/main.js';
 import type { Env } from '../cli/types.js';
-import type { ExitCode } from '../store/errors.js';
+import { BoardError, type ExitCode } from '../store/errors.js';
+import { findBoard } from '../store/locate.js';
+import { VERSION } from '../version.js';
+import { findTool, toolArguments, toolDefinitions } from './tools.js';
 
 /** The MCP server name announced at initialization. */
 export const SERVER_NAME = 'agentboard';
@@ -156,8 +163,107 @@ export interface BoardMcpServer {
  *   whose message names the path looked at, when there is no board.
  */
 export function createMcpServer(options: McpServerOptions): BoardMcpServer {
-  void options;
-  throw new Error('not implemented');
+  const boardDir = findBoard({ cwd: options.cwd, env: options.env }).dir;
+  const mcp = new McpServer(
+    { name: SERVER_NAME, version: VERSION },
+    { capabilities: { tools: {} } },
+  );
+  const callTool = (name: string, args: unknown): ToolCallResult =>
+    runTool(options, boardDir, name, args);
+  mcp.server.setRequestHandler(ListToolsRequestSchema, () => ({
+    tools: toolDefinitions().map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: {
+        type: tool.inputSchema.type,
+        properties: { ...tool.inputSchema.properties },
+        required: [...tool.inputSchema.required],
+        additionalProperties: tool.inputSchema.additionalProperties,
+      },
+      annotations: { ...tool.annotations },
+    })),
+  }));
+  // Spread: the SDK's result type has an index signature, which an
+  // interface does not implicitly satisfy.
+  mcp.server.setRequestHandler(CallToolRequestSchema, (request) => ({
+    ...callTool(request.params.name, request.params.arguments),
+  }));
+  let closed = false;
+  return {
+    boardDir,
+    callTool,
+    connect: (transport) => mcp.connect(transport),
+    close: async () => {
+      if (!closed) {
+        closed = true;
+        await mcp.close();
+      }
+    },
+  };
+}
+
+/** Steps 1 to 6 of `BoardMcpServer.callTool`. Never throws. */
+function runTool(
+  options: McpServerOptions,
+  boardDir: string,
+  name: string,
+  args: unknown,
+): ToolCallResult {
+  const opened = new LazyBoard(
+    () => boardDir,
+    (text) => {
+      options.stderr(text);
+    },
+  );
+  try {
+    const tool = findTool(name);
+    if (tool === undefined) {
+      throw new BoardError(1, 'usage', `unknown tool ${JSON.stringify(name)}`);
+    }
+    const { command } = tool;
+    const values = toolArguments(command, args);
+    const given = values.as;
+    const actor = commandActor(
+      command,
+      typeof given === 'string' && given !== '' ? given : options.actor,
+      options.env,
+    );
+    const output = command.run(runContext(options.cwd, options.env, actor, opened), values);
+    const warnings = output.warnings ?? [];
+    for (const line of warnings) {
+      options.stderr(`agentboard: ${line}\n`);
+    }
+    if (output.exitCode !== undefined) {
+      return toolError({ exitCode: output.exitCode, reason: null, message: warnings.join('; ') });
+    }
+    const json: unknown = output.json;
+    return {
+      content: [{ type: 'text', text: JSON.stringify(json) }],
+      structuredContent: isObject(json) ? json : { items: json },
+    };
+  } catch (error) {
+    const { error: content } = errorDocument(error);
+    if (content.exitCode === 5) {
+      options.stderr(`agentboard: ${content.message}\n`);
+    }
+    return toolError(content);
+  } finally {
+    opened.close();
+  }
+}
+
+/** A JSON object (not an array, not null). */
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** The failed `ToolCallResult` for `content`. */
+function toolError(content: ToolErrorContent): ToolCallResult {
+  return {
+    content: [{ type: 'text', text: content.message }],
+    structuredContent: { ...content },
+    isError: true,
+  };
 }
 
 /** The process surroundings of `serveMcp`. */
@@ -181,7 +287,40 @@ export interface McpIo extends McpServerOptions {
  * client went away) or `signal` aborts, then closes the server and
  * resolves 0.
  */
-export function serveMcp(io: McpIo): Promise<ExitCode> {
-  void io;
-  return Promise.reject(new Error('not implemented'));
+export async function serveMcp(io: McpIo): Promise<ExitCode> {
+  let server: BoardMcpServer;
+  try {
+    server = createMcpServer(io);
+  } catch (error) {
+    io.stderr(`agentboard: ${error instanceof Error ? error.message : String(error)}\n`);
+    return exitCodeFor(error);
+  }
+  const { stdin, stdout, signal } = io;
+  let stop = (): void => undefined;
+  const stopped = new Promise<void>((resolve) => {
+    stop = resolve;
+  });
+  // A client that goes away ends stdin; a broken stdout pipe means the same.
+  const onEnd = (): void => {
+    stop();
+  };
+  stdin.once('end', onEnd);
+  stdin.once('close', onEnd);
+  stdout.on('error', onEnd);
+  signal?.addEventListener('abort', onEnd, { once: true });
+  try {
+    if (signal?.aborted !== true) {
+      await server.connect(new StdioServerTransport(stdin, stdout));
+      await stopped;
+      // Let the answers to requests read just before the end go out.
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  } finally {
+    stdin.off('end', onEnd);
+    stdin.off('close', onEnd);
+    stdout.off('error', onEnd);
+    signal?.removeEventListener('abort', onEnd);
+    await server.close();
+  }
+  return 0;
 }
