@@ -4,6 +4,7 @@
  */
 
 import { watch, type FSWatcher } from 'node:fs';
+import type { DatabaseSync } from 'node:sqlite';
 
 import type { Board } from '../store/board.js';
 import { catchUp } from '../store/cache.js';
@@ -24,6 +25,16 @@ export const WATCH_POLL_MS = 2000;
  * becomes one tick.
  */
 const FS_SETTLE_MS = 25;
+
+/**
+ * The watch's change marker: `PRAGMA data_version` (moves when another
+ * connection commits) and `total_changes()` (moves when this connection
+ * changes rows, including commits by other callers sharing the `Board`).
+ */
+function changeMarker(db: DatabaseSync): string {
+  const row = db.prepare('SELECT total_changes() AS n').get();
+  return `${String(dataVersion(db))}:${String(row?.n)}`;
+}
 
 /** Options of `watchInbox`. */
 export interface WatchOptions {
@@ -66,11 +77,21 @@ export interface WatchOptions {
  * `readInbox(board, actor, { peek: true })` lists them), in fold order.
  *
  * Later ticks do bounded work. The watch remembers every effective event
- * it has examined (passed on or not), and the connection's
- * `PRAGMA data_version` as of its last examination. A later tick runs
- * catch-up; when that catch-up folded nothing and no other connection has
- * committed since (`data_version` unchanged), the tick ends there, reading
- * no event file and no `folded` row. Otherwise it lists the effective
+ * it has examined (passed on or not), and, as of its last examination, a
+ * change marker made of two parts: the connection's `PRAGMA data_version`
+ * (which moves when another connection commits) and the connection's own
+ * change counter, SQLite's `total_changes()` (which moves when anything,
+ * including another caller sharing this `Board` in the same process,
+ * commits a change on this connection; `data_version` never moves for a
+ * connection's own commits). A later tick runs catch-up; when that
+ * catch-up folded nothing and neither part of the marker has changed, the
+ * tick ends there, reading no event file and no `folded` row. A catch-up
+ * that finds nothing new changes no rows, so it does not move the marker.
+ * An event written, or a late event folded, through the watch's own
+ * `Board` (for example `commentTicket(board, ...)` or `readInbox(board,
+ * ...)` catching up, between two ticks) is therefore passed on at the next
+ * tick, like one committed by another process. Otherwise it lists the
+ * effective
  * events it has not examined yet (from `folded`, without reading files):
  * exactly the events newly folded as applied or newly turned effective,
  * whether they sort after everything examined so far or behind it (a late
@@ -123,14 +144,16 @@ export function watchInbox(board: Board, actor: string, options: WatchOptions): 
   const { signal, onEntries } = options;
   const read = options.readEventFile ?? readEventFile;
   const { db } = board;
-  // Every effective event examined so far, and `data_version` at the time.
+  // Every effective event examined so far, and the change marker at the
+  // time: `data_version` (other connections' commits) and `total_changes()`
+  // (this connection's own changes, which `data_version` never counts).
   const examined = new Set<string>();
-  let version: number | null = null;
+  let version: string | null = null;
 
   /** One tick's examination; the watch state changes only if it succeeds. */
   const examine = (): void => {
     const report = catchUp(board);
-    const current = dataVersion(db);
+    const current = changeMarker(db);
     if (
       version !== null &&
       current === version &&
