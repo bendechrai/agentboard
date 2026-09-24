@@ -2,7 +2,9 @@
  * Library entry point for agentboard.
  */
 
-export const version = '0.0.1';
+import { VERSION } from './version.js';
+
+export const version = VERSION;
 
 export * from './events/canonical.js';
 export * from './events/ulid.js';

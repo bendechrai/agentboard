@@ -11,7 +11,21 @@
  * dynamically).
  */
 
-import { runCli } from './cli/main.js';
+// Installed before the CLI module (and with it node:sqlite) is loaded.
+// Removing the default listeners also removes Node's own printing, so every
+// other warning is printed here in Node's format.
+process.removeAllListeners('warning');
+process.on('warning', (warning) => {
+  if (warning.name === 'ExperimentalWarning' && /sqlite/i.test(warning.message)) {
+    return;
+  }
+  const code = 'code' in warning && typeof warning.code === 'string' ? `[${warning.code}] ` : '';
+  process.stderr.write(
+    `(node:${String(process.pid)}) ${code}${warning.name}: ${warning.message}\n`,
+  );
+});
+
+const { runCli } = await import('./cli/main.js');
 
 process.exitCode = runCli({
   argv: process.argv.slice(2),

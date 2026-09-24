@@ -116,6 +116,27 @@ export function inImmediate<T>(db: DatabaseSync, fn: () => T): T {
   }
 }
 
+/**
+ * Runs `fn` inside one deferred read transaction (`BEGIN` ... `COMMIT`)
+ * unless the connection is already in a transaction, in which case `fn`
+ * runs inside the caller's. A deferred `BEGIN` takes no lock until the
+ * first read, and a WAL reader never waits for the write lock.
+ */
+export function inSnapshot<T>(db: DatabaseSync, fn: () => T): T {
+  if (db.isTransaction) {
+    return fn();
+  }
+  db.exec('BEGIN');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    rollback(db);
+    throw error;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Column helpers
 

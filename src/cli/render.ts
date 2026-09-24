@@ -4,8 +4,8 @@
  */
 
 import type { Ticket } from '../events/fold.js';
+import { formatTaskRef } from '../events/schema.js';
 import type { ShowResult } from '../board/tickets.js';
-import { notImplemented } from '../board/stub.js';
 
 /** Length of the id prefix shown by `list`. */
 export const LIST_ID_PREFIX = 10;
@@ -18,7 +18,18 @@ export const LIST_ID_PREFIX = 10;
  * output is unambiguous and one line. Pure.
  */
 export function asciiText(text: string): string {
-  throw notImplemented(text);
+  let out = '';
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code === 0x5c) {
+      out += '\\\\';
+    } else if (code < 0x20 || code >= 0x7f) {
+      out += `\\u${code.toString(16).toUpperCase().padStart(4, '0')}`;
+    } else {
+      out += text[i] ?? '';
+    }
+  }
+  return out;
 }
 
 /**
@@ -30,7 +41,13 @@ export function asciiText(text: string): string {
  * `asciiText`. Example: `01ARYZ6S41  todo  -  [adhoc] Fix thing`. Pure.
  */
 export function renderListLine(ticket: Ticket): string {
-  throw notImplemented(ticket);
+  const markers = (ticket.adhoc === null ? '' : '[adhoc] ') + (ticket.closed ? '[closed] ' : '');
+  return [
+    ticket.id.slice(0, LIST_ID_PREFIX),
+    ticket.status,
+    ticket.assignee === null ? '-' : asciiText(ticket.assignee),
+    `${markers}${asciiText(ticket.title)}`,
+  ].join('  ');
 }
 
 /**
@@ -56,5 +73,46 @@ export function renderListLine(ticket: Ticket): string {
  * Pure.
  */
 export function renderShow(show: ShowResult): string {
-  throw notImplemented(show);
+  const t = show.ticket;
+  const orDash = (text: string | null): string => (text === null ? '-' : asciiText(text));
+  const lines = [
+    `id: ${t.id}`,
+    `title: ${asciiText(t.title)}`,
+    `status: ${t.status}${t.blockedFrom === null ? '' : ` (from ${t.blockedFrom})`}`,
+    `assignee: ${orDash(t.assignee)}`,
+  ];
+  if (t.task !== null) {
+    lines.push(`task: ${asciiText(formatTaskRef(t.task))}`);
+  } else if (t.adhoc !== null) {
+    lines.push(`adhoc: ${asciiText(t.adhoc)}`);
+  } else {
+    lines.push('task: -');
+  }
+  lines.push(
+    `labels: ${t.labels.length === 0 ? '-' : t.labels.map(asciiText).join(', ')}`,
+    `description: ${orDash(t.description)}`,
+    'checklist:',
+    ...t.checklist.map(
+      (item, i) => `  [${item.done ? 'x' : ' '}] ${String(i)} ${asciiText(item.text)}`,
+    ),
+    'links:',
+    ...t.links.map((l) =>
+      l.type === 'pr' ? `  pr ${asciiText(String(l.pr))}` : `  decision ${asciiText(l.path)}`,
+    ),
+    'comments:',
+    ...t.comments.map((c) => `  ${asciiText(c.actor)}: ${asciiText(c.text)}`),
+    `closed: ${closedText(t)}`,
+    `events: ${String(show.events)}`,
+    ...show.unknown.map((u) => `unknown: ${asciiText(u.kind)} ${u.hash}`),
+  );
+  return `${lines.join('\n')}\n`;
+}
+
+function closedText(t: Ticket): string {
+  if (!t.closed || t.disposition === null) {
+    return 'no';
+  }
+  return 'decision' in t.disposition
+    ? `yes (decision: ${asciiText(t.disposition.decision)})`
+    : 'yes (no decision)';
 }

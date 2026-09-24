@@ -11,8 +11,33 @@
  * and `close-merged` are added by the task groups that implement them.
  */
 
-import { notImplemented } from '../board/stub.js';
-import type { ArgSpec, CommandSpec, ExclusiveGroup } from './types.js';
+import {
+  claimTicket,
+  closeTicket,
+  commentTicket,
+  handoffTicket,
+  linkTicket,
+  moveTicket,
+  releaseTicket,
+  setChecklistItem,
+  type LinkTarget,
+} from '../board/actions.js';
+import { initBoard } from '../board/init.js';
+import { parseTaskFilter, taskRefFromArgs, type TaskFilter } from '../board/resolve.js';
+import { listTickets, newTicket, showRaw, showTicket } from '../board/tickets.js';
+import type { WriteOutcome } from '../board/types.js';
+import { STATUSES, type Status } from '../events/schema.js';
+import { BoardError } from '../store/errors.js';
+import { VERSION } from '../version.js';
+import { asciiText, renderListLine, renderShow } from './render.js';
+import type {
+  ArgSpec,
+  ArgValues,
+  CommandOutput,
+  CommandSpec,
+  ExclusiveGroup,
+  RunContext,
+} from './types.js';
 
 /** `--json`, accepted by every command. */
 export const JSON_FLAG: ArgSpec = {
@@ -134,10 +159,105 @@ const CLOSE_GROUP: ExclusiveGroup = {
   message: CLOSE_RULE,
 };
 
-/** Placeholder `run` of the stubs. */
-const stubRun: CommandSpec['run'] = (ctx, values) => {
-  throw notImplemented(ctx, values);
-};
+/** A string argument, or undefined when absent. */
+function str(values: ArgValues, name: string): string | undefined {
+  const value = values[name];
+  return typeof value === 'string' ? value : undefined;
+}
+
+/** A required string argument (the parser guarantees it is present). */
+function req(values: ArgValues, name: string): string {
+  return str(values, name) ?? '';
+}
+
+/** A repeatable string flag; empty when absent. */
+function list(values: ArgValues, name: string): readonly string[] {
+  const value = values[name];
+  return Array.isArray(value) ? (value as readonly string[]) : [];
+}
+
+/** A boolean flag. */
+function bool(values: ArgValues, name: string): boolean {
+  return values[name] === true;
+}
+
+/** A status argument; anything but one of `STATUSES` is a usage error. */
+function status(text: string): Status {
+  const found = STATUSES.find((s) => s === text);
+  if (found === undefined) {
+    throw new BoardError(
+      1,
+      'usage',
+      `unknown status ${asciiText(text)}; expected one of ${STATUSES.join(', ')}`,
+    );
+  }
+  return found;
+}
+
+/** The actor of a writing command (resolved by `runCli`; empty only if misused). */
+function actorOf(ctx: RunContext): string {
+  return ctx.actor ?? '';
+}
+
+/** The `--json` document and human text of a writing command. */
+function written(outcome: WriteOutcome, before = '', after = ''): CommandOutput {
+  const line = renderListLine(outcome.ticket);
+  return { json: outcome, text: `${before}${line}\n${after}` };
+}
+
+/** The target of `link`. */
+function linkTarget(values: ArgValues): LinkTarget {
+  const pr = str(values, 'pr');
+  if (pr !== undefined) {
+    const number = Number(pr);
+    return { pr: /^[0-9]+$/.test(pr) && Number.isSafeInteger(number) ? number : pr };
+  }
+  const decision = str(values, 'decision');
+  if (decision !== undefined) {
+    return { decision };
+  }
+  const task = taskRefFromArgs({
+    task: str(values, 'task'),
+    change: str(values, 'change'),
+    group: str(values, 'group'),
+  });
+  if (task === undefined) {
+    throw new BoardError(1, 'usage', LINK_GROUP.message);
+  }
+  return { task };
+}
+
+/** The task filter of `list` (`--task`, or `--change` as `openspec:<name>`). */
+function listTaskFilter(values: ArgValues): TaskFilter | undefined {
+  const task = str(values, 'task');
+  if (task !== undefined) {
+    return parseTaskFilter(task);
+  }
+  const change = str(values, 'change');
+  if (change === undefined) {
+    return undefined;
+  }
+  if (change === '' || change.includes('#')) {
+    throw new BoardError(
+      1,
+      'malformed-task-ref',
+      `malformed change name ${asciiText(change)}: it must be non-empty and contain no #`,
+    );
+  }
+  return { source: 'openspec', ref: change };
+}
+
+/** `checklist tick` and `checklist untick`. */
+function checklistRun(done: boolean): CommandSpec['run'] {
+  return (ctx, values) => {
+    const out = setChecklistItem(ctx.board(), actorOf(ctx), {
+      id: req(values, 'id'),
+      index: Number(values.index),
+      done,
+    });
+    return written(out, '', out.reminder === null ? '' : `${out.reminder.message}\n`);
+  };
+}
 
 /**
  * Every command of this version, in this order: `init`, `new`, `show`,
@@ -177,7 +297,10 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [],
     writes: false,
     operation: 'initBoard',
-    run: stubRun,
+    run: (ctx) => {
+      const result = initBoard({ cwd: ctx.cwd, env: ctx.env });
+      return { json: result, text: `${result.message}\n` };
+    },
   },
   {
     name: 'new',
@@ -194,7 +317,23 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [NEW_TASK_GROUP],
     writes: true,
     operation: 'newTicket',
-    run: stubRun,
+    run: (ctx, values) => {
+      const task = taskRefFromArgs({
+        task: str(values, 'task'),
+        change: str(values, 'change'),
+        group: str(values, 'group'),
+      });
+      const out = newTicket(ctx.board(), actorOf(ctx), {
+        title: req(values, 'title'),
+        description: str(values, 'description'),
+        labels: list(values, 'label'),
+        task,
+        adhoc: str(values, 'adhoc'),
+        checklist: list(values, 'checklist'),
+        allowSecretLike: bool(values, 'allow-secret-like'),
+      });
+      return written(out, `created ${out.ticket.id}\n`);
+    },
   },
   {
     name: 'show',
@@ -204,7 +343,15 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [],
     writes: false,
     operation: 'showTicket',
-    run: stubRun,
+    run: (ctx, values) => {
+      const id = req(values, 'id');
+      if (bool(values, 'raw')) {
+        const raw = showRaw(ctx.board(), id);
+        return { json: raw, text: raw.map((r) => `${r.text}\n`).join('') };
+      }
+      const shown = showTicket(ctx.board(), id);
+      return { json: shown, text: renderShow(shown) };
+    },
   },
   {
     name: 'list',
@@ -221,7 +368,18 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [LIST_TASK_GROUP],
     writes: false,
     operation: 'listTickets',
-    run: stubRun,
+    run: (ctx, values) => {
+      const given = str(values, 'status');
+      const task = listTaskFilter(values);
+      const tickets = listTickets(ctx.board(), {
+        status: given === undefined ? undefined : status(given),
+        assignee: str(values, 'assignee'),
+        task,
+        labels: list(values, 'label'),
+        closed: bool(values, 'closed'),
+      });
+      return { json: tickets, text: tickets.map((t) => `${renderListLine(t)}\n`).join('') };
+    },
   },
   {
     name: 'claim',
@@ -231,7 +389,11 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [],
     writes: true,
     operation: 'claimTicket',
-    run: stubRun,
+    run: (ctx, values) => {
+      const actor = actorOf(ctx);
+      const out = claimTicket(ctx.board(), actor, { id: req(values, 'id') });
+      return written(out, out.hash === null ? `already claimed by ${asciiText(actor)}\n` : '');
+    },
   },
   {
     name: 'release',
@@ -241,7 +403,8 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [],
     writes: true,
     operation: 'releaseTicket',
-    run: stubRun,
+    run: (ctx, values) =>
+      written(releaseTicket(ctx.board(), actorOf(ctx), { id: req(values, 'id') })),
   },
   {
     name: 'move',
@@ -251,7 +414,15 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [],
     writes: true,
     operation: 'moveTicket',
-    run: stubRun,
+    run: (ctx, values) => {
+      const to = str(values, 'status');
+      return written(
+        moveTicket(ctx.board(), actorOf(ctx), {
+          id: req(values, 'id'),
+          to: to === undefined ? undefined : status(to),
+        }),
+      );
+    },
   },
   {
     name: 'comment',
@@ -261,7 +432,14 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [],
     writes: true,
     operation: 'commentTicket',
-    run: stubRun,
+    run: (ctx, values) =>
+      written(
+        commentTicket(ctx.board(), actorOf(ctx), {
+          id: req(values, 'id'),
+          text: req(values, 'text'),
+          allowSecretLike: bool(values, 'allow-secret-like'),
+        }),
+      ),
   },
   {
     name: 'handoff',
@@ -278,7 +456,18 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [],
     writes: true,
     operation: 'handoffTicket',
-    run: stubRun,
+    run: (ctx, values) => {
+      const to = status(req(values, 'status'));
+      return written(
+        handoffTicket(ctx.board(), actorOf(ctx), {
+          id: req(values, 'id'),
+          to: req(values, 'to'),
+          status: to,
+          note: req(values, 'note'),
+          allowSecretLike: bool(values, 'allow-secret-like'),
+        }),
+      );
+    },
   },
   {
     name: 'link',
@@ -292,7 +481,17 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [LINK_GROUP],
     writes: true,
     operation: 'linkTicket',
-    run: stubRun,
+    run: (ctx, values) => {
+      const target = linkTarget(values);
+      return written(
+        linkTicket(ctx.board(), actorOf(ctx), {
+          id: req(values, 'id'),
+          target,
+          cwd: ctx.cwd,
+          env: ctx.env,
+        }),
+      );
+    },
   },
   {
     name: 'checklist tick',
@@ -302,7 +501,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [],
     writes: true,
     operation: 'setChecklistItem',
-    run: stubRun,
+    run: checklistRun(true),
   },
   {
     name: 'checklist untick',
@@ -312,7 +511,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [],
     writes: true,
     operation: 'setChecklistItem',
-    run: stubRun,
+    run: checklistRun(false),
   },
   {
     name: 'close',
@@ -325,7 +524,19 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [CLOSE_GROUP],
     writes: true,
     operation: 'closeTicket',
-    run: stubRun,
+    run: (ctx, values) => {
+      const id = req(values, 'id');
+      const path = str(values, 'decision-recorded-in');
+      return written(
+        closeTicket(
+          ctx.board(),
+          actorOf(ctx),
+          path === undefined
+            ? { id, noDecision: true }
+            : { id, decisionRecordedIn: path, cwd: ctx.cwd, env: ctx.env },
+        ),
+      );
+    },
   },
   {
     name: 'mcp',
@@ -335,7 +546,13 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [],
     writes: false,
     operation: null,
-    run: stubRun,
+    run: () => {
+      throw new BoardError(
+        1,
+        'not-implemented',
+        'agentboard mcp is not implemented yet; the MCP server arrives with task group 9',
+      );
+    },
   },
   {
     name: 'version',
@@ -345,7 +562,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [],
     writes: false,
     operation: null,
-    run: stubRun,
+    run: () => ({ json: { version: VERSION }, text: `${VERSION}\n` }),
   },
 ];
 

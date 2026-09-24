@@ -3,8 +3,12 @@
  * "Git sync model").
  */
 
-import type { LocateOptions } from '../store/locate.js';
-import { notImplemented } from './stub.js';
+import { execFileSync } from 'node:child_process';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+import { BoardError } from '../store/errors.js';
+import { boardExists, locateBoard, type LocateOptions } from '../store/locate.js';
 
 /**
  * Lines of the `.gitignore` that `init` writes inside the board directory,
@@ -67,5 +71,67 @@ export interface InitResult {
  *   `git` executable cannot be run; in that case nothing is created.
  */
 export function initBoard(options?: LocateOptions): InitResult {
-  throw notImplemented(options);
+  const { dir, source } = locateBoard(options);
+  if (boardExists(dir)) {
+    return {
+      dir,
+      created: false,
+      hostGitignore: null,
+      message: `board already exists at ${dir}; nothing changed`,
+    };
+  }
+  const env = { ...(options?.env ?? process.env) };
+  const git = (cwd: string, ...args: string[]): void => {
+    execFileSync('git', args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  };
+  try {
+    git(options?.cwd ?? process.cwd(), '--version');
+  } catch {
+    throw new BoardError(
+      1,
+      'git-missing',
+      'agentboard init needs git (the board is a git repository of its own), but git could not be run',
+    );
+  }
+  // The events directory is created last: it is what makes the board exist,
+  // so an interrupted init is completed by running init again.
+  mkdirSync(dir, { recursive: true });
+  if (!existsSync(join(dir, '.git'))) {
+    git(dir, 'init', '-q');
+  }
+  writeIfMissing(join(dir, '.gitignore'), BOARD_GITIGNORE_LINES.map((l) => `${l}\n`).join(''));
+  mkdirSync(join(dir, 'events'), { recursive: true });
+  writeIfMissing(join(dir, 'events', '.gitkeep'), '');
+  const hostGitignore = source === 'env' ? null : ignoreBoardInHost(dirname(dir));
+  return { dir, created: true, hostGitignore, message: `created the board at ${dir}` };
+}
+
+/** Writes `content` to `path` unless a file is already there. */
+function writeIfMissing(path: string, content: string): void {
+  if (!existsSync(path)) {
+    writeFileSync(path, content);
+  }
+}
+
+/** Lines of a host `.gitignore` that already ignore the board directory. */
+const HOST_ENTRIES = new Set(['.board/', '.board', '/.board/', '/.board']);
+
+/**
+ * Adds `HOST_GITIGNORE_ENTRY` to `<hostRoot>/.gitignore` unless a line
+ * already ignores the board; returns the file's path when it was created or
+ * appended to, else null.
+ */
+function ignoreBoardInHost(hostRoot: string): string | null {
+  const path = join(hostRoot, '.gitignore');
+  if (!existsSync(path)) {
+    writeFileSync(path, `${HOST_GITIGNORE_ENTRY}\n`);
+    return path;
+  }
+  const content = readFileSync(path, 'utf8');
+  if (content.split('\n').some((line) => HOST_ENTRIES.has(line.trim()))) {
+    return null;
+  }
+  const separator = content === '' || content.endsWith('\n') ? '' : '\n';
+  appendFileSync(path, `${separator}${HOST_GITIGNORE_ENTRY}\n`);
+  return path;
 }

@@ -3,7 +3,7 @@
  * design.md: "Secret refusal"). A guard rail, not a scanner.
  */
 
-import { notImplemented } from './stub.js';
+import { BoardError } from '../store/errors.js';
 
 /**
  * Names of the secret patterns, in the order they are checked and
@@ -44,8 +44,16 @@ export type SecretPatternName = (typeof SECRET_PATTERN_NAMES)[number];
  * the matched text. Pure.
  */
 export function secretPatternsIn(text: string): SecretPatternName[] {
-  throw notImplemented(text);
+  return SECRET_PATTERN_NAMES.filter((name) => PATTERNS[name].test(text));
 }
+
+/** The expression of each pattern, as documented on `SECRET_PATTERN_NAMES`. */
+const PATTERNS: Record<SecretPatternName, RegExp> = {
+  'pem-private-key': /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/,
+  'aws-access-key-id': /(?<![0-9A-Za-z])(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Za-z])/,
+  'github-token': /gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22}/,
+  'generic-secret-assignment': /(?:token|secret|password|key) *[:=] *["']?[A-Za-z0-9+/_-]{32}/i,
+};
 
 /**
  * Refuses secret-looking free text before an event is written.
@@ -61,5 +69,23 @@ export function secretPatternsIn(text: string): SecretPatternName[] {
  * hoc reason), `commentTicket` (text) and `handoffTicket` (note).
  */
 export function refuseSecretLike(texts: readonly string[], allowSecretLike: boolean): void {
-  throw notImplemented(texts, allowSecretLike);
+  if (allowSecretLike) {
+    return;
+  }
+  const found = new Set<SecretPatternName>();
+  for (const text of texts) {
+    for (const name of secretPatternsIn(text)) {
+      found.add(name);
+    }
+  }
+  if (found.size === 0) {
+    return;
+  }
+  const names = SECRET_PATTERN_NAMES.filter((name) => found.has(name)).join(', ');
+  throw new BoardError(
+    1,
+    'secret-like',
+    `refused: the text matches the secret pattern(s) ${names}; the board is not a secret ` +
+      'store (pass --allow-secret-like if this is not a secret)',
+  );
 }

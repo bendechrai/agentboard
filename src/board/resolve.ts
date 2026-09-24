@@ -4,8 +4,9 @@
  */
 
 import type { BoardState } from '../events/fold.js';
-import type { TaskRef } from '../events/schema.js';
-import { notImplemented } from './stub.js';
+import { TASK_SOURCE_PATTERN, parseTaskRef, type TaskRef } from '../events/schema.js';
+import { asciiText } from '../cli/render.js';
+import { BoardError } from '../store/errors.js';
 
 /** Shortest accepted id prefix. */
 export const MIN_PREFIX_LENGTH = 6;
@@ -25,7 +26,32 @@ export const MIN_PREFIX_LENGTH = 6;
  *   matching full id, in ascending order.
  */
 export function resolveTicketId(state: BoardState, text: string): string {
-  throw notImplemented(state, text);
+  const wanted = text.toUpperCase();
+  if (Object.hasOwn(state.tickets, wanted)) {
+    return wanted;
+  }
+  if (wanted.length < MIN_PREFIX_LENGTH) {
+    throw new BoardError(
+      1,
+      'id-too-short',
+      `ticket id prefix ${asciiText(text)} is too short: give at least ${String(MIN_PREFIX_LENGTH)} characters`,
+    );
+  }
+  const matches = Object.keys(state.tickets)
+    .filter((id) => id.startsWith(wanted))
+    .sort();
+  const [only, ...more] = matches;
+  if (only === undefined) {
+    throw new BoardError(4, 'unknown-ticket', `no ticket matches ${asciiText(text)}`);
+  }
+  if (more.length > 0) {
+    throw new BoardError(
+      1,
+      'ambiguous-id',
+      `ticket id prefix ${asciiText(text)} is ambiguous; it matches ${matches.join(', ')}`,
+    );
+  }
+  return only;
 }
 
 /** The text form of a task reference, shown in every task reference error. */
@@ -59,7 +85,42 @@ export interface TaskArgs {
  * - `task` together with `change` or `group`: `BoardError(1, 'usage')`.
  */
 export function taskRefFromArgs(args: TaskArgs): TaskRef | undefined {
-  throw notImplemented(args);
+  const { task, change, group } = args;
+  if (task !== undefined) {
+    if (change !== undefined || group !== undefined) {
+      throw new BoardError(1, 'usage', 'give either --task or --change with --group, not both');
+    }
+    const ref = parseTaskRef(task);
+    if (ref === null) {
+      throw new BoardError(
+        1,
+        'malformed-task-ref',
+        `malformed task reference ${asciiText(task)}: expected ${TASK_REF_FORM}, for example openspec:add-board-core#3`,
+      );
+    }
+    return ref;
+  }
+  if (change === undefined && group === undefined) {
+    return undefined;
+  }
+  if (change === undefined || group === undefined) {
+    throw new BoardError(1, 'usage', '--change and --group must be given together');
+  }
+  if (change === '' || change.includes('#')) {
+    throw new BoardError(
+      1,
+      'malformed-task-ref',
+      `malformed change name ${asciiText(change)}: it must be non-empty and contain no #`,
+    );
+  }
+  if (!/^[1-9][0-9]*$/.test(group)) {
+    throw new BoardError(
+      1,
+      'malformed-task-ref',
+      `malformed group ${asciiText(group)}: it must be a positive decimal number such as 3`,
+    );
+  }
+  return { source: 'openspec', ref: change, item: group };
 }
 
 /**
@@ -80,5 +141,22 @@ export interface TaskFilter {
  * `<source>:<ref>[#<item>]`. Pure.
  */
 export function parseTaskFilter(text: string): TaskFilter {
-  throw notImplemented(text);
+  if (text.includes('#')) {
+    const ref = parseTaskRef(text);
+    if (ref !== null) {
+      return ref;
+    }
+  } else {
+    const colon = text.indexOf(':');
+    const source = text.slice(0, colon);
+    const ref = text.slice(colon + 1);
+    if (colon >= 0 && TASK_SOURCE_PATTERN.test(source) && ref !== '') {
+      return { source, ref };
+    }
+  }
+  throw new BoardError(
+    1,
+    'malformed-task-ref',
+    `malformed task filter ${asciiText(text)}: expected <source>:<ref>[#<item>]`,
+  );
 }

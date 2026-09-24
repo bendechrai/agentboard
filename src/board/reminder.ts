@@ -8,8 +8,11 @@
  * this function's results.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { asciiText } from '../cli/render.js';
 import type { Ticket } from '../events/fold.js';
-import { notImplemented } from './stub.js';
 
 /**
  * What `checklist tick` tells the actor about the planning tool's own
@@ -51,5 +54,65 @@ export interface TaskReminder {
  * build a ticket's checklist. Reads the file only; never writes.
  */
 export function taskReminder(hostRoot: string, ticket: Ticket, index: number): TaskReminder {
-  throw notImplemented(hostRoot, ticket, index);
+  const task = ticket.task;
+  if (task === null) {
+    return {
+      source: null,
+      path: null,
+      line: null,
+      message: 'this ticket has no task reference (ad hoc), so there is no tasks file to update',
+    };
+  }
+  if (task.source !== 'openspec') {
+    return {
+      source: task.source,
+      path: null,
+      line: null,
+      message: `no tasks-file reminder is available for source ${asciiText(task.source)}`,
+    };
+  }
+  const path = `openspec/changes/${task.ref}/tasks.md`;
+  const line = findTaskLine(join(hostRoot, ...path.split('/')), task.item, index);
+  const where = line === null ? asciiText(path) : `${asciiText(path)}:${String(line)}`;
+  return {
+    source: task.source,
+    path,
+    line,
+    message:
+      `reminder: tick the task line in ${where} in the implementing PR ` +
+      '(the board never marks a task complete; tasks.md is the record)',
+  };
+}
+
+/**
+ * The 1-based line of the `index`-th task line of group `item` in the tasks
+ * file at `file`, or null when the file cannot be read or there is no such
+ * line.
+ */
+function findTaskLine(file: string, item: string, index: number): number | null {
+  let lines: string[];
+  try {
+    lines = readFileSync(file, 'utf8').split('\n');
+  } catch {
+    return null;
+  }
+  const heading = `## ${item}. `;
+  const start = lines.findIndex((l) => l.startsWith(heading));
+  if (start < 0 || index < 0) {
+    return null;
+  }
+  let seen = 0;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    if (line.startsWith('## ')) {
+      break;
+    }
+    if (/^- \[[ xX]\] /.test(line)) {
+      if (seen === index) {
+        return i + 1;
+      }
+      seen += 1;
+    }
+  }
+  return null;
 }

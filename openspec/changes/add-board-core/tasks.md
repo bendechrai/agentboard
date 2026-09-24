@@ -26,12 +26,12 @@ branch is reviewed and merged, and its decisions are in a spec delta or ADR.
 
 ## 3. CLI core commands
 
-- [ ] 3.1 Implement the command registry (`src/cli/registry.ts`: every command's arguments, flags, summary and writing flag, defined once) and the argument parser driven by it, actor resolution (`--as` or AGENTBOARD_ACTOR), `--json` plumbing, exit code mapping and `version`, and verify with tests that a missing actor exits 1 and that every command's `--json` stdout parses as one document
-- [ ] 3.2 Implement `init`, `new`, `show` (including `--raw`) and `list` with filters and prefix id resolution, and verify with tests for idempotent init, host gitignore update, ambiguous-prefix refusal, closed-ticket exclusion, each filter, `--task` parsing and malformed-reference refusal, and `--change --group` producing the same task reference as `--task openspec:<name>#<n>`
-- [ ] 3.3 Implement `claim`, `release`, `move`, `comment`, `handoff`, `link`, `checklist tick/untick` and verify with tests for every state machine transition (allowed and refused), claim on assigned, release by non-assignee, handoff atomicity and the tasks.md reminder on tick
-- [ ] 3.4 Implement `close` with the decision disposition rule, the missing-path check and the DECISION: comment guard, and verify with tests for each refusal and for a successful close from merged and from blocked
-- [ ] 3.5 Implement secret-pattern refusal for `new`, `comment` and `handoff` and verify with tests for each pattern name and the `--allow-secret-like` bypass, asserting the matched text is never echoed
-- [ ] 3.6 Implement the `mcp` placeholder that exits 1 with the not-implemented message and verify with a test
+- [x] 3.1 Implement the command registry (`src/cli/registry.ts`: every command's arguments, flags, summary and writing flag, defined once) and the argument parser driven by it, actor resolution (`--as` or AGENTBOARD_ACTOR), `--json` plumbing, exit code mapping and `version`, and verify with tests that a missing actor exits 1 and that every command's `--json` stdout parses as one document
+- [x] 3.2 Implement `init`, `new`, `show` (including `--raw`) and `list` with filters and prefix id resolution, and verify with tests for idempotent init, host gitignore update, ambiguous-prefix refusal, closed-ticket exclusion, each filter, `--task` parsing and malformed-reference refusal, and `--change --group` producing the same task reference as `--task openspec:<name>#<n>`
+- [x] 3.3 Implement `claim`, `release`, `move`, `comment`, `handoff`, `link`, `checklist tick/untick` and verify with tests for every state machine transition (allowed and refused), claim on assigned, release by non-assignee, handoff atomicity and the tasks.md reminder on tick
+- [x] 3.4 Implement `close` with the decision disposition rule, the missing-path check and the DECISION: comment guard, and verify with tests for each refusal and for a successful close from merged and from blocked
+- [x] 3.5 Implement secret-pattern refusal for `new`, `comment` and `handoff` and verify with tests for each pattern name and the `--allow-secret-like` bypass, asserting the matched text is never echoed
+- [x] 3.6 Implement the `mcp` placeholder that exits 1 with the not-implemented message and verify with a test
 
 ## 4. Concurrency and crash properties
 

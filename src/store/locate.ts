@@ -5,7 +5,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 import { BoardError } from './errors.js';
 
@@ -73,7 +73,12 @@ export function locateBoard(options?: LocateOptions): BoardLocation {
   }
   const commonDir = gitCommonDir(cwd, env);
   if (commonDir !== null) {
-    return { dir: join(dirname(resolve(cwd, commonDir)), BOARD_DIR_NAME), source: 'git' };
+    const hostRoot = dirname(resolve(cwd, commonDir));
+    if (basename(hostRoot) === BOARD_DIR_NAME && boardExists(hostRoot)) {
+      // Inside the board's own repository: that directory is the board.
+      return { dir: hostRoot, source: 'git' };
+    }
+    return { dir: join(hostRoot, BOARD_DIR_NAME), source: 'git' };
   }
   return { dir: resolve(cwd, BOARD_DIR_NAME), source: 'cwd' };
 }

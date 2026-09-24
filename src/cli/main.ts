@@ -5,9 +5,11 @@
  * process with captured streams.
  */
 
-import type { ExitCode } from '../store/errors.js';
-import { notImplemented } from '../board/stub.js';
-import type { Env } from './types.js';
+import { openBoard, type Board } from '../store/board.js';
+import { BoardError, type ExitCode } from '../store/errors.js';
+import { findBoard } from '../store/locate.js';
+import { parseArgs, resolveActor, type ParsedCommand } from './parse.js';
+import type { Env, RunContext } from './types.js';
 
 /** The process surroundings `runCli` uses; nothing else is read or written. */
 export interface CliIo {
@@ -36,7 +38,7 @@ export interface ErrorDocument {
  * error (an unexpected IO or SQLite failure) is 5. Pure.
  */
 export function exitCodeFor(error: unknown): Exclude<ExitCode, 0> {
-  throw notImplemented(error);
+  return error instanceof BoardError ? error.exitCode : 5;
 }
 
 /**
@@ -44,7 +46,13 @@ export function exitCodeFor(error: unknown): Exclude<ExitCode, 0> {
  * `BoardError` reason (null for other errors) and the error message. Pure.
  */
 export function errorDocument(error: unknown): ErrorDocument {
-  throw notImplemented(error);
+  return {
+    error: {
+      exitCode: exitCodeFor(error),
+      reason: error instanceof BoardError ? error.reason : null,
+      message: error instanceof Error ? error.message : String(error),
+    },
+  };
 }
 
 /**
@@ -71,5 +79,44 @@ export function errorDocument(error: unknown): ErrorDocument {
  * to stdout, and stdout carries at most one JSON document.
  */
 export function runCli(io: CliIo): ExitCode {
-  throw notImplemented(io);
+  let parsed: ParsedCommand | null = null;
+  let board: Board | null = null;
+  try {
+    parsed = parseArgs(io.argv);
+    const { command, values } = parsed;
+    const given = values.as;
+    const actor = command.writes
+      ? resolveActor(typeof given === 'string' ? given : undefined, io.env)
+      : null;
+    const ctx: RunContext = {
+      cwd: io.cwd,
+      env: io.env,
+      actor,
+      board(): Board {
+        if (board === null) {
+          board = openBoard(findBoard({ cwd: io.cwd, env: io.env }).dir);
+          for (const path of board.opened?.reaped ?? []) {
+            io.stderr(`agentboard: removed stale temporary file ${path}\n`);
+          }
+          for (const file of board.opened?.corrupt ?? []) {
+            io.stderr(`agentboard: ${file.message}\n`);
+          }
+        }
+        return board;
+      },
+    };
+    const output = command.run(ctx, values);
+    io.stdout(parsed.json ? `${JSON.stringify(output.json)}\n` : output.text);
+    return 0;
+  } catch (error) {
+    const doc = errorDocument(error);
+    io.stderr(`agentboard: ${doc.error.message}\n`);
+    if (parsed?.json ?? io.argv.includes('--json')) {
+      io.stdout(`${JSON.stringify(doc)}\n`);
+    }
+    return doc.error.exitCode;
+  } finally {
+    // `board` is assigned inside the closure above.
+    (board as Board | null)?.close();
+  }
 }

@@ -102,6 +102,7 @@ import {
   catchUpUnlocked,
   inImmediate,
   loadState,
+  inSnapshot,
   loadTicket,
   stmt,
   tableRows,
@@ -318,7 +319,7 @@ export function catchUp(board: Board, options?: CatchUpOptions): CatchUpReport {
  * `version` always agrees with the comment list.
  */
 export function readTicket(db: DatabaseSync, id: string): Ticket | null {
-  return loadTicket(db, id);
+  return inSnapshot(db, () => loadTicket(db, id));
 }
 
 /**
@@ -332,7 +333,7 @@ export function readTicket(db: DatabaseSync, id: string): Ticket | null {
  * when already inside a transaction).
  */
 export function readState(db: DatabaseSync): BoardState {
-  return loadState(db);
+  return inSnapshot(db, () => loadState(db));
 }
 
 /** Tables covered by the canonical dump, in dump key order. */

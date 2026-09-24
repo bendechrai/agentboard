@@ -20,12 +20,56 @@
  * - throws `BoardError(1, 'missing-actor')` when `actor` is empty.
  */
 
+import { existsSync } from 'node:fs';
+import { dirname } from 'node:path';
+
+import type { Ticket } from '../events/fold.js';
 import type { TaskRef, Status } from '../events/schema.js';
+import { asciiText } from '../cli/render.js';
 import type { Board } from '../store/board.js';
-import type { TreePathOptions } from './paths.js';
-import type { TaskReminder } from './reminder.js';
-import { notImplemented } from './stub.js';
+import { BoardError } from '../store/errors.js';
+import { runCommand, type ProposedEvent } from '../store/transaction.js';
+import { requireActor, resolveTicket, ticketOf } from './lookup.js';
+import { treePath, type TreePathOptions } from './paths.js';
+import { taskReminder, type TaskReminder } from './reminder.js';
+import { refuseSecretLike } from './secrets.js';
 import type { WriteOptions, WriteOutcome } from './types.js';
+
+/**
+ * Runs one writing command on the ticket named by `id`: resolves it inside
+ * the command transaction and writes the event `build` proposes for it.
+ * `build` may throw to refuse (the transaction is rolled back).
+ */
+function writeTicketEvent(
+  board: Board,
+  actor: string,
+  id: string,
+  build: (ticket: Ticket) => ProposedEvent,
+  options: WriteOptions | undefined,
+): WriteOutcome {
+  requireActor(actor);
+  const result = runCommand(
+    board,
+    actor,
+    () => ({ ok: true, event: build(resolveTicket(board.db, id)) }),
+    options,
+  );
+  return { hash: result.hash, ticket: ticketOf(result.ticket) };
+}
+
+/**
+ * Thrown inside the claim transaction when the actor already holds the
+ * ticket, so the transaction is rolled back and `claimTicket` reports the
+ * ticket as read in it without writing an event. Never escapes this module.
+ */
+class AlreadyHeld extends Error {
+  readonly ticket: Ticket;
+
+  constructor(ticket: Ticket) {
+    super(`ticket ${ticket.id} is already held by its claimant`);
+    this.ticket = ticket;
+  }
+}
 
 /**
  * `claim`: writes `ticket.claim`, assigning the ticket to `actor`.
@@ -42,7 +86,25 @@ export function claimTicket(
   input: { id: string },
   options?: WriteOptions,
 ): WriteOutcome {
-  throw notImplemented(board, actor, input, options);
+  try {
+    return writeTicketEvent(
+      board,
+      actor,
+      input.id,
+      (ticket) => {
+        if (ticket.assignee === actor) {
+          throw new AlreadyHeld(ticket);
+        }
+        return { kind: 'ticket.claim', ticket: ticket.id, body: {} };
+      },
+      options,
+    );
+  } catch (error) {
+    if (error instanceof AlreadyHeld) {
+      return { hash: null, ticket: error.ticket };
+    }
+    throw error;
+  }
 }
 
 /**
@@ -56,7 +118,13 @@ export function releaseTicket(
   input: { id: string },
   options?: WriteOptions,
 ): WriteOutcome {
-  throw notImplemented(board, actor, input, options);
+  return writeTicketEvent(
+    board,
+    actor,
+    input.id,
+    (ticket) => ({ kind: 'ticket.release', ticket: ticket.id, body: {} }),
+    options,
+  );
 }
 
 /**
@@ -77,7 +145,23 @@ export function moveTicket(
   input: { id: string; to?: Status | undefined },
   options?: WriteOptions,
 ): WriteOutcome {
-  throw notImplemented(board, actor, input, options);
+  return writeTicketEvent(
+    board,
+    actor,
+    input.id,
+    (ticket) => {
+      const to = input.to ?? (ticket.status === 'blocked' ? ticket.blockedFrom : null);
+      if (to === null) {
+        throw new BoardError(
+          1,
+          'missing-status',
+          `a target status is required: ticket ${ticket.id} is ${ticket.status}, not blocked`,
+        );
+      }
+      return { kind: 'ticket.move', ticket: ticket.id, body: { to } };
+    },
+    options,
+  );
 }
 
 /**
@@ -92,7 +176,18 @@ export function commentTicket(
   input: { id: string; text: string; allowSecretLike?: boolean | undefined },
   options?: WriteOptions,
 ): WriteOutcome {
-  throw notImplemented(board, actor, input, options);
+  requireActor(actor);
+  if (input.text === '') {
+    throw new BoardError(1, 'usage', 'the comment text must not be empty');
+  }
+  refuseSecretLike([input.text], input.allowSecretLike === true);
+  return writeTicketEvent(
+    board,
+    actor,
+    input.id,
+    (ticket) => ({ kind: 'ticket.comment', ticket: ticket.id, body: { text: input.text } }),
+    options,
+  );
 }
 
 /** Input of `handoffTicket`. */
@@ -120,7 +215,25 @@ export function handoffTicket(
   input: HandoffInput,
   options?: WriteOptions,
 ): WriteOutcome {
-  throw notImplemented(board, actor, input, options);
+  requireActor(actor);
+  if (input.to === '') {
+    throw new BoardError(1, 'usage', 'handoff needs a non-empty --to');
+  }
+  if (input.note === '') {
+    throw new BoardError(1, 'usage', 'handoff needs a non-empty --note');
+  }
+  refuseSecretLike([input.note], input.allowSecretLike === true);
+  return writeTicketEvent(
+    board,
+    actor,
+    input.id,
+    (ticket) => ({
+      kind: 'ticket.handoff',
+      ticket: ticket.id,
+      body: { to: input.to, status: input.status, note: input.note },
+    }),
+    options,
+  );
 }
 
 /**
@@ -145,7 +258,15 @@ export function linkTicket(
   input: { id: string; target: LinkTarget } & TreePathOptions,
   options?: WriteOptions,
 ): WriteOutcome {
-  throw notImplemented(board, actor, input, options);
+  requireActor(actor);
+  const target = linkBody(input.target, input);
+  return writeTicketEvent(
+    board,
+    actor,
+    input.id,
+    (ticket) => ({ kind: 'ticket.link', ticket: ticket.id, body: target }),
+    options,
+  );
 }
 
 /** Result of `setChecklistItem`; also the `checklist tick|untick --json` document. */
@@ -171,13 +292,26 @@ export function setChecklistItem(
   input: { id: string; index: number; done: boolean },
   options?: WriteOptions,
 ): ChecklistOutcome {
-  throw notImplemented(board, actor, input, options);
+  const outcome = writeTicketEvent(
+    board,
+    actor,
+    input.id,
+    (ticket) => ({
+      kind: 'ticket.checklist',
+      ticket: ticket.id,
+      body: { index: input.index, done: input.done },
+    }),
+    options,
+  );
+  const reminder = input.done
+    ? taskReminder(dirname(board.dir), outcome.ticket, input.index)
+    : null;
+  return { ...outcome, reminder };
 }
 
 /** How a ticket is closed: `--decision-recorded-in <path>` or `--no-decision`. */
 export type CloseInput =
-  | ({ id: string; decisionRecordedIn: string } & TreePathOptions)
-  | { id: string; noDecision: true };
+  ({ id: string; decisionRecordedIn: string } & TreePathOptions) | { id: string; noDecision: true };
 
 /** The comment prefix that marks a decision (board-openspec-integration). */
 export const DECISION_PREFIX = 'DECISION:';
@@ -197,7 +331,19 @@ export const RETRACTED_PREFIX = 'RETRACTED:';
 export function openDecisions(
   comments: readonly { actor: string; text: string }[],
 ): { actor: string; text: string }[] {
-  throw notImplemented(comments);
+  const lastRetraction = new Map<string, number>();
+  comments.forEach((comment, index) => {
+    if (comment.text.startsWith(RETRACTED_PREFIX)) {
+      lastRetraction.set(comment.actor, index);
+    }
+  });
+  return comments
+    .filter(
+      (comment, index) =>
+        comment.text.startsWith(DECISION_PREFIX) &&
+        (lastRetraction.get(comment.actor) ?? -1) < index,
+    )
+    .map((comment) => ({ actor: comment.actor, text: comment.text }));
 }
 
 /**
@@ -224,5 +370,60 @@ export function closeTicket(
   input: CloseInput,
   options?: WriteOptions,
 ): WriteOutcome {
-  throw notImplemented(board, actor, input, options);
+  requireActor(actor);
+  let body: { decision: string } | { noDecision: true } = { noDecision: true };
+  if ('decisionRecordedIn' in input) {
+    const path = treePath(input.decisionRecordedIn, input);
+    if (!existsSync(path.absolute)) {
+      throw new BoardError(
+        1,
+        'decision-path-missing',
+        `the decision record ${asciiText(input.decisionRecordedIn)} does not exist`,
+      );
+    }
+    body = { decision: path.recorded };
+  }
+  return writeTicketEvent(
+    board,
+    actor,
+    input.id,
+    (ticket) => {
+      const open = 'noDecision' in body ? openDecisions(ticket.comments) : [];
+      if (open.length > 0) {
+        const quoted = open.map((c) => `  ${asciiText(c.actor)}: "${asciiText(c.text)}"`);
+        throw new BoardError(
+          1,
+          'unpromoted-decision',
+          [
+            `ticket ${ticket.id} cannot be closed with --no-decision; it has decision comments:`,
+            ...quoted,
+            'A decision made in a ticket must be recorded in a spec delta or ADR and named ' +
+              'with --decision-recorded-in <path>, or retracted with a RETRACTED: comment ' +
+              'by the same actor.',
+          ].join('\n'),
+        );
+      }
+      return { kind: 'ticket.close', ticket: ticket.id, body };
+    },
+    options,
+  );
+}
+
+/** The `ticket.link` body for a target, after the checks `linkTicket` documents. */
+function linkBody(target: LinkTarget, where: TreePathOptions): LinkTarget {
+  if ('task' in target) {
+    return { task: { ...target.task } };
+  }
+  if ('pr' in target) {
+    const pr = target.pr;
+    if (typeof pr === 'string' ? pr === '' : !(Number.isSafeInteger(pr) && pr > 0)) {
+      throw new BoardError(
+        1,
+        'usage',
+        'a pr link needs a non-empty URL or a positive whole PR number',
+      );
+    }
+    return { pr };
+  }
+  return { decision: treePath(target.decision, where).recorded };
 }

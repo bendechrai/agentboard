@@ -5,8 +5,13 @@
  * recorded path means the same thing in every worktree and clone.
  */
 
+import { execFileSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
+
+import { asciiText } from '../cli/render.js';
 import type { Env } from '../cli/types.js';
-import { notImplemented } from './stub.js';
+import { BoardError } from '../store/errors.js';
 
 /** Where a path argument is resolved from. */
 export interface TreePathOptions {
@@ -44,5 +49,34 @@ export interface TreePath {
  * @throws BoardError exit 1 `usage` when `text` is empty.
  */
 export function treePath(text: string, options?: TreePathOptions): TreePath {
-  throw notImplemented(text, options);
+  if (text === '') {
+    throw new BoardError(1, 'usage', 'the path must not be empty');
+  }
+  const cwd = realpathSync(options?.cwd ?? process.cwd());
+  const root = realpathSync(worktreeRoot(cwd, options?.env ?? process.env) ?? cwd);
+  const absolute = resolve(cwd, text);
+  const rel = relative(root, absolute);
+  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new BoardError(
+      1,
+      'path-outside-tree',
+      `path ${asciiText(text)} is outside the working tree ${asciiText(root)}`,
+    );
+  }
+  return { absolute, recorded: rel.split(sep).join('/') };
+}
+
+/** `git rev-parse --show-toplevel` in `cwd`, or null when it fails. */
+function worktreeRoot(cwd: string, env: Env): string | null {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd,
+      env: { ...env },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).replace(/\r?\n$/, '');
+    return out === '' ? null : out;
+  } catch {
+    return null;
+  }
 }
