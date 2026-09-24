@@ -43,7 +43,7 @@ import { BoardError } from '../store/errors.js';
 import { checkCache, rebuild } from '../store/rebuild.js';
 import { helpOutput, type HelpSource } from '../guidance/help.js';
 import { checkCommand } from '../guidance/check.js';
-import { installCommand } from '../guidance/install.js';
+import { INIT_SUGGESTION, installCommand } from '../guidance/install.js';
 import { VERSION } from '../version.js';
 import {
   asciiText,
@@ -552,7 +552,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     operation: 'initBoard',
     run: (ctx) => {
       const result = initBoard({ cwd: ctx.cwd, env: ctx.env });
-      return { json: result, text: `${result.message}\n` };
+      return { json: result, text: `${result.message}\n${INIT_SUGGESTION}\n` };
     },
   },
   {

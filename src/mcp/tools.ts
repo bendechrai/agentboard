@@ -32,8 +32,10 @@ export const TOOL_PREFIX = 'board_';
 /**
  * The commands that are not exposed as tools (board-cli: "MCP server"):
  * setup, streaming or maintenance commands run by a human or an
- * orchestrator in a shell, and `help` (tools/list already describes every
- * tool; board-agent-guidance ruling 0412c1c).
+ * orchestrator in a shell, `help` (tools/list already describes every
+ * tool; board-agent-guidance ruling 0412c1c), and `agents install` and
+ * `agents check`, which write or read host project files in the caller's
+ * working tree (board-agent-guidance: "Help is not an MCP tool").
  */
 export const EXCLUDED_COMMANDS: readonly string[] = [
   'init',
@@ -43,6 +45,8 @@ export const EXCLUDED_COMMANDS: readonly string[] = [
   'mcp',
   'version',
   'help',
+  'agents install',
+  'agents check',
 ];
 
 /** JSON Schema of one tool input property. */

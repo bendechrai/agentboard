@@ -11,13 +11,42 @@
  * --show-toplevel`); it never stages or commits what it writes.
  */
 
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+import { Pair, Scalar, YAMLMap, YAMLSeq, isMap, isScalar, isSeq, type Document } from 'yaml';
+
 import type { CommandOutput, Env } from '../cli/types.js';
+import { BoardError } from '../store/errors.js';
 import {
   AGENTS_MD_PATH,
+  GUIDANCE_VERSION,
+  MCP_ENTRY,
   MCP_JSON_PATH,
+  MCP_SERVER_NAME,
   OPENSPEC_CONFIG_PATH,
+  OPENSPEC_GUIDANCE,
+  OPENSPEC_OPERATIONS,
   SKILL_PATH,
+  manualOpenSpecLines,
+  openSpecVersionComment,
+  renderAgentsBlock,
+  renderSkill,
+  type OpenSpecOperation,
 } from './installed-text.js';
+import {
+  agentsMarkers,
+  hasSkillMarker,
+  isAgentboardItem,
+  isJsonObject,
+  jsonEqual,
+  openSpecItems,
+  parseConfig,
+  parseMcpJson,
+  readBytes,
+  readText,
+} from './markers.js';
 
 /**
  * The installation targets, in the order they are always processed and
@@ -183,9 +212,30 @@ export interface InstallResult {
  * `rev-parse`.
  */
 export function workingTreeRoot(cwd: string, env: Env): string {
-  void cwd;
-  void env;
-  throw new Error('not implemented');
+  let root = cwd;
+  try {
+    const out = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd,
+      env: { ...env },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).replace(/\r?\n$/, '');
+    if (out !== '') {
+      root = out;
+    }
+  } catch {
+    // Not a git repository, or git is missing: the current directory.
+  }
+  return realpathSync(root);
+}
+
+/** The kind of what is at `path`: a directory, a file, or nothing. */
+function kindOf(path: string): 'dir' | 'file' | null {
+  try {
+    return statSync(path).isDirectory() ? 'dir' : 'file';
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -199,8 +249,374 @@ export function workingTreeRoot(cwd: string, env: Env): string {
  * array.
  */
 export function detectTargets(root: string): TargetSelection[] {
-  void root;
-  throw new Error('not implemented');
+  const selected: TargetSelection[] = [];
+  if (kindOf(join(root, '.claude')) === 'dir') {
+    selected.push({ target: 'claude', reason: '.claude/ exists' });
+  }
+  if (kindOf(join(root, AGENTS_MD_PATH)) !== null) {
+    selected.push({ target: 'agents-md', reason: `${AGENTS_MD_PATH} exists` });
+  }
+  if (kindOf(join(root, OPENSPEC_CONFIG_PATH)) !== null) {
+    selected.push({ target: 'openspec', reason: `${OPENSPEC_CONFIG_PATH} exists` });
+  }
+  return selected;
+}
+
+/** What a target handler did: a `TargetOutcome` without its selection fields. */
+interface Handled {
+  readonly action: InstallAction;
+  readonly refusal: RefusalReason | null;
+  readonly message: string;
+  readonly manual: readonly string[];
+}
+
+/** The four refusal reasons that `--force` overrides. */
+const FORCEABLE: readonly RefusalReason[] = [
+  'foreign-file',
+  'malformed-marker',
+  'not-a-list',
+  'entry-differs',
+];
+
+function done(action: Exclude<InstallAction, 'refused'>, message: string): Handled {
+  return { action, refusal: null, message, manual: [] };
+}
+
+function refuse(reason: RefusalReason, message: string, manual: readonly string[] = []): Handled {
+  const suffix = FORCEABLE.includes(reason) ? '; --force overwrites it' : '';
+  return { action: 'refused', refusal: reason, message: `${message}${suffix}`, manual };
+}
+
+/** Writes `content` to `path` (creating parent directories) with `encoding`. */
+function write(path: string, content: string, encoding: BufferEncoding = 'utf8'): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, content, encoding);
+}
+
+/** The `claude` target: the whole of `SKILL.md`. */
+function installSkill(root: string, version: number, force: boolean): Handled {
+  const path = join(root, SKILL_PATH);
+  const wanted = renderSkill(version);
+  const existing = readBytes(path);
+  if (existing === null) {
+    write(path, wanted);
+    return done('created', `wrote the Claude Code skill ${SKILL_PATH}`);
+  }
+  if (!hasSkillMarker(existing) && !force) {
+    return refuse(
+      'foreign-file',
+      `${SKILL_PATH} exists without the agentboard-guidance marker, so it is not agentboard's to overwrite`,
+    );
+  }
+  if (existing === wanted) {
+    return done('unchanged', `${SKILL_PATH} is up to date`);
+  }
+  write(path, wanted);
+  return done('updated', `rewrote the Claude Code skill ${SKILL_PATH}`);
+}
+
+/**
+ * `text` (bytes as latin1) with `block` appended as a new paragraph: a line
+ * break when the text does not end with one, then an empty line (both only
+ * for a non-empty text), then the block and a line break.
+ */
+function appendBlock(text: string, block: string): string {
+  if (text === '') {
+    return `${block}\n`;
+  }
+  return `${text}${text.endsWith('\n') ? '' : '\n'}\n${block}\n`;
+}
+
+/** The `agents-md` target: the managed block of `AGENTS.md`. */
+function installAgentsMd(root: string, version: number, force: boolean): Handled {
+  const path = join(root, AGENTS_MD_PATH);
+  const block = renderAgentsBlock(version);
+  const existing = readBytes(path);
+  if (existing === null) {
+    write(path, `${block}\n`, 'latin1');
+    return done('created', `wrote ${AGENTS_MD_PATH} with the agentboard block`);
+  }
+  const markers = agentsMarkers(existing);
+  if (markers.kind === 'none') {
+    write(path, appendBlock(existing, block), 'latin1');
+    return done('updated', `appended the agentboard block to ${AGENTS_MD_PATH}`);
+  }
+  if (markers.kind === 'pair') {
+    if (existing.slice(markers.start, markers.end) === block) {
+      return done('unchanged', `${AGENTS_MD_PATH} is up to date`);
+    }
+    write(
+      path,
+      `${existing.slice(0, markers.start)}${block}${existing.slice(markers.end)}`,
+      'latin1',
+    );
+    return done('updated', `replaced the agentboard block in ${AGENTS_MD_PATH}`);
+  }
+  if (!force) {
+    return refuse(
+      'malformed-marker',
+      `${AGENTS_MD_PATH} has agentboard markers that are not one well-formed start and end pair; fix them by hand`,
+    );
+  }
+  let kept = '';
+  let from = 0;
+  for (const line of markers.lines) {
+    kept += existing.slice(from, line.start);
+    from = line.end;
+  }
+  kept += existing.slice(from);
+  write(path, appendBlock(kept, block), 'latin1');
+  return done(
+    'updated',
+    `removed the malformed agentboard markers from ${AGENTS_MD_PATH} and appended a fresh block`,
+  );
+}
+
+/** True when a YAML node counts as absent (missing, or a null value). */
+function absent(node: unknown): boolean {
+  return node === undefined || node === null || (isScalar(node) && node.value === null);
+}
+
+/** The dotted key paths of the OpenSpec guidance whose value is of the wrong kind. */
+function wrongKinds(doc: Document): string[] {
+  const wrong: string[] = [];
+  const operations: unknown = isMap(doc.contents) ? doc.contents.get('operations', true) : null;
+  if (!absent(operations) && !isMap(operations)) {
+    return ['operations'];
+  }
+  for (const op of OPENSPEC_OPERATIONS) {
+    const opNode: unknown = isMap(operations) ? operations.get(op, true) : null;
+    if (!absent(opNode) && !isMap(opNode)) {
+      wrong.push(`operations.${op}`);
+      continue;
+    }
+    const guidance: unknown = isMap(opNode) ? opNode.get('guidance', true) : null;
+    if (!absent(guidance) && !isSeq(guidance)) {
+      wrong.push(`operations.${op}.guidance`);
+    }
+  }
+  return wrong;
+}
+
+/** Copies the comments of `from` (a replaced node) onto `to`. */
+function keepComments(from: unknown, to: YAMLMap | YAMLSeq): void {
+  if (isScalar(from) || isMap(from) || isSeq(from)) {
+    to.commentBefore = from.commentBefore ?? null;
+    to.comment = from.comment ?? null;
+    to.spaceBefore = from.spaceBefore ?? false;
+  }
+}
+
+/**
+ * The map under `key` of `parent`, created when absent or (only reached
+ * with `--force`) of the wrong kind.
+ */
+function childMap(parent: YAMLMap, key: string): YAMLMap {
+  const node: unknown = parent.get(key, true);
+  if (isMap(node)) {
+    return node;
+  }
+  const map = new YAMLMap();
+  keepComments(node, map);
+  parent.set(key, map);
+  return map;
+}
+
+/**
+ * The top-level `operations` map of `doc`. When the key is added, it goes
+ * last, after the comments that trail the document (which the `yaml`
+ * package keeps as the document comment), so the original text stays a
+ * prefix of the new one.
+ */
+function operationsMap(doc: Document): YAMLMap {
+  let top: YAMLMap;
+  if (isMap(doc.contents)) {
+    top = doc.contents;
+  } else {
+    top = new YAMLMap();
+    doc.contents = top;
+  }
+  if (top.has('operations')) {
+    return childMap(top, 'operations');
+  }
+  const key = new Scalar('operations');
+  if (doc.comment !== null && doc.comment !== '') {
+    key.commentBefore = doc.comment;
+    key.spaceBefore = true;
+    doc.comment = null;
+  }
+  const map = new YAMLMap();
+  top.items.push(new Pair(key, map));
+  return map;
+}
+
+/** The wanted agentboard items of `op`, each with its version comment. */
+function wantedItems(op: OpenSpecOperation, version: number): Scalar[] {
+  return OPENSPEC_GUIDANCE[op].map((entry) => {
+    const item = new Scalar(entry);
+    item.type = Scalar.QUOTE_DOUBLE;
+    item.comment = ` ${openSpecVersionComment(version)}`;
+    return item;
+  });
+}
+
+/**
+ * Puts the wanted items of `op` into `seq`: every agentboard item is
+ * removed and the wanted ones go where the first was (or last). Comment
+ * lines above a removed item move to the first wanted item.
+ */
+function replaceItems(seq: YAMLSeq, op: OpenSpecOperation, version: number): void {
+  const wanted = wantedItems(op, version);
+  const first = seq.items.findIndex(isAgentboardItem);
+  const removed = seq.items.filter(isAgentboardItem);
+  const users = seq.items.filter((item) => !isAgentboardItem(item));
+  const before = removed
+    .map((item) => (isScalar(item) ? item.commentBefore : null))
+    .filter((c): c is string => typeof c === 'string' && c !== '');
+  const head = wanted[0];
+  if (head !== undefined && before.length > 0) {
+    head.commentBefore = before.join('\n');
+  }
+  const at = first === -1 ? users.length : first;
+  seq.items = [...users.slice(0, at), ...wanted, ...users.slice(at)];
+}
+
+/** The `openspec` target: the `agentboard:` guidance entries of `openspec/config.yaml`. */
+function installOpenSpec(root: string, version: number, force: boolean): Handled {
+  const path = join(root, OPENSPEC_CONFIG_PATH);
+  const text = readText(path);
+  if (text === null) {
+    return refuse(
+      'missing-file',
+      `${OPENSPEC_CONFIG_PATH} does not exist; run openspec init first (agentboard never creates it)`,
+    );
+  }
+  const parsed = parseConfig(text);
+  if (!parsed.ok) {
+    return refuse('malformed-file', `${OPENSPEC_CONFIG_PATH} cannot be edited: ${parsed.why}`);
+  }
+  const doc = parsed.doc;
+  const comment = openSpecVersionComment(version);
+  const items = openSpecItems(doc);
+  const stale = OPENSPEC_OPERATIONS.filter((op) => {
+    const have = items[op];
+    const want = OPENSPEC_GUIDANCE[op];
+    return !(
+      have.length === want.length &&
+      have.every((item, i) => item.value === want[i] && item.comment === comment)
+    );
+  });
+  if (stale.length === 0) {
+    return done('unchanged', `${OPENSPEC_CONFIG_PATH} is up to date`);
+  }
+  const wrong = wrongKinds(doc);
+  if (wrong.length > 0 && !force) {
+    return refuse(
+      'not-a-list',
+      `${wrong.join(', ')} in ${OPENSPEC_CONFIG_PATH} is not the map or list OpenSpec expects (operations.<op>.guidance must be a list); add the lines below by hand`,
+      manualOpenSpecLines(version),
+    );
+  }
+  const operations = operationsMap(doc);
+  for (const op of stale) {
+    const opMap = childMap(operations, op);
+    const node: unknown = opMap.get('guidance', true);
+    let seq: YAMLSeq;
+    if (isSeq(node)) {
+      seq = node;
+    } else {
+      seq = new YAMLSeq();
+      keepComments(node, seq);
+      opMap.set('guidance', seq);
+    }
+    replaceItems(seq, op, version);
+  }
+  writeFileSync(path, doc.toString({ lineWidth: 0 }), 'utf8');
+  return done('updated', `wrote the agentboard guidance entries in ${OPENSPEC_CONFIG_PATH}`);
+}
+
+/** The `mcp-json` target: the `mcpServers.agentboard` key of `.mcp.json`. */
+function installMcpJson(root: string, force: boolean): Handled {
+  const path = join(root, MCP_JSON_PATH);
+  const text = readText(path);
+  const serialize = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`;
+  const entry = { command: MCP_ENTRY.command, args: [...MCP_ENTRY.args] };
+  if (text === null) {
+    write(path, serialize({ mcpServers: { [MCP_SERVER_NAME]: entry } }));
+    return done('created', `wrote ${MCP_JSON_PATH} with the agentboard MCP server`);
+  }
+  const config = parseMcpJson(text);
+  const servers = config?.mcpServers;
+  if (config === null || (servers !== undefined && !isJsonObject(servers))) {
+    return refuse(
+      'malformed-file',
+      `${MCP_JSON_PATH} cannot be edited: it is not a JSON object with an mcpServers object`,
+    );
+  }
+  const map = servers ?? {};
+  if (Object.hasOwn(map, MCP_SERVER_NAME)) {
+    if (jsonEqual(map[MCP_SERVER_NAME], MCP_ENTRY)) {
+      return done('unchanged', `${MCP_JSON_PATH} is up to date`);
+    }
+    if (!force) {
+      return refuse(
+        'entry-differs',
+        `${MCP_JSON_PATH} already has an mcpServers.agentboard entry that differs from the managed one`,
+      );
+    }
+  }
+  map[MCP_SERVER_NAME] = entry;
+  config.mcpServers = map;
+  writeFileSync(path, serialize(config), 'utf8');
+  return done('updated', `wrote the agentboard MCP server into ${MCP_JSON_PATH}`);
+}
+
+/** Runs the handler of `target`. */
+function installTarget(
+  target: GuidanceTarget,
+  root: string,
+  version: number,
+  force: boolean,
+): Handled {
+  switch (target) {
+    case 'claude':
+      return installSkill(root, version, force);
+    case 'agents-md':
+      return installAgentsMd(root, version, force);
+    case 'openspec':
+      return installOpenSpec(root, version, force);
+    case 'mcp-json':
+      return installMcpJson(root, force);
+  }
+}
+
+/** The selected targets of `options`, in `GUIDANCE_TARGETS` order. */
+function selectTargets(
+  root: string,
+  given: readonly string[],
+): { selections: TargetSelection[]; autoDetected: boolean } {
+  const all = GUIDANCE_TARGETS.join(', ');
+  if (given.length === 0) {
+    const selections = detectTargets(root);
+    if (selections.length === 0) {
+      throw new BoardError(
+        1,
+        'no-targets',
+        `nothing to install detected in ${root} (no .claude/, ${AGENTS_MD_PATH} or ${OPENSPEC_CONFIG_PATH}); choose targets with --target: ${all}`,
+      );
+    }
+    return { selections, autoDetected: true };
+  }
+  for (const t of given) {
+    if (!(GUIDANCE_TARGETS as readonly string[]).includes(t)) {
+      throw new BoardError(1, 'usage', `unknown target ${t}; expected one of ${all}`);
+    }
+  }
+  const selections = GUIDANCE_TARGETS.filter((t) => given.includes(t)).map((target) => ({
+    target,
+    reason: 'requested with --target',
+  }));
+  return { selections, autoDetected: false };
 }
 
 /**
@@ -290,8 +706,23 @@ export function detectTargets(root: string): TargetSelection[] {
  * @throws BoardError exit 1 `usage` (unknown target) or `no-targets`.
  */
 export function installGuidance(options: InstallOptions): InstallResult {
-  void options;
-  throw new Error('not implemented');
+  const root = workingTreeRoot(options.cwd, options.env ?? process.env);
+  const version = options.version ?? GUIDANCE_VERSION;
+  const force = options.force ?? false;
+  const { selections, autoDetected } = selectTargets(root, options.targets ?? []);
+  const targets: TargetOutcome[] = selections.map(({ target, reason }) => ({
+    target,
+    path: TARGET_FILES[target],
+    reason,
+    ...installTarget(target, root, version, force),
+  }));
+  return {
+    root,
+    version,
+    autoDetected,
+    targets,
+    refused: targets.filter((t) => t.action === 'refused').length,
+  };
 }
 
 /**
@@ -306,8 +737,28 @@ export function installGuidance(options: InstallOptions): InstallResult {
  * Pure.
  */
 export function renderInstall(result: InstallResult): string {
-  void result;
-  throw new Error('not implemented');
+  const lines: string[] = [];
+  if (result.autoDetected) {
+    for (const t of result.targets) {
+      lines.push(`selected ${t.target}: ${t.reason}`);
+    }
+  }
+  for (const t of result.targets) {
+    const head = `${t.action} ${t.target} ${t.path}`;
+    if (t.action === 'unchanged') {
+      lines.push(`${head} (up to date)`);
+    } else if (t.action === 'refused') {
+      lines.push(`${head}: ${t.message}`, ...t.manual.map((line) => `    ${line}`));
+    } else {
+      lines.push(head);
+    }
+  }
+  const count = (action: InstallAction): string =>
+    String(result.targets.filter((t) => t.action === action).length);
+  lines.push(
+    `agents install: ${count('created')} created, ${count('updated')} updated, ${count('unchanged')} unchanged, ${count('refused')} refused (guidance v${String(result.version)}) in ${result.root}`,
+  );
+  return `${lines.join('\n')}\n`;
 }
 
 /**
@@ -325,9 +776,15 @@ export function installCommand(
   targets: readonly string[],
   force: boolean,
 ): CommandOutput {
-  void cwd;
-  void env;
-  void targets;
-  void force;
-  throw new Error('not implemented');
+  const result = installGuidance({ cwd, env, targets, force });
+  const refused = result.targets.filter((t) => t.action === 'refused');
+  const output: CommandOutput = { json: result, text: renderInstall(result) };
+  if (refused.length === 0) {
+    return output;
+  }
+  return {
+    ...output,
+    exitCode: 1,
+    warnings: refused.map((t) => `refused ${t.target}: ${t.message}`),
+  };
 }

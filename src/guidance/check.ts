@@ -16,8 +16,37 @@
  * managed region whose version cannot be read at all is `modified`.
  */
 
+import { join } from 'node:path';
+
 import type { CommandOutput, Env } from '../cli/types.js';
-import type { GuidanceTarget } from './install.js';
+import { TARGET_FILES, workingTreeRoot, type GuidanceTarget } from './install.js';
+import {
+  AGENTS_MD_PATH,
+  GUIDANCE_VERSION,
+  MCP_ENTRY,
+  MCP_JSON_PATH,
+  MCP_SERVER_NAME,
+  OPENSPEC_CONFIG_PATH,
+  OPENSPEC_GUIDANCE,
+  OPENSPEC_OPERATIONS,
+  OPENSPEC_PREFIX,
+  SKILL_PATH,
+  renderAgentsBlock,
+  renderSkill,
+} from './installed-text.js';
+import {
+  agentsMarkers,
+  hasSkillMarker,
+  isJsonObject,
+  jsonEqual,
+  openSpecCommentVersion,
+  openSpecItems,
+  parseConfig,
+  parseMcpJson,
+  readBytes,
+  readText,
+  skillVersion,
+} from './markers.js';
 
 /**
  * - `current`: the target is exactly what `agents install` would write now.
@@ -87,8 +116,132 @@ export interface CheckOptions {
  *   State: deep-equal to `MCP_ENTRY` `current`, else `modified`.
  */
 export function checkGuidance(options: CheckOptions): GuidanceCheckEntry[] {
-  void options;
-  throw new Error('not implemented');
+  const root = workingTreeRoot(options.cwd, options.env ?? process.env);
+  const v = options.version ?? GUIDANCE_VERSION;
+  const found = [
+    checkSkill(root, v),
+    checkAgentsMd(root, v),
+    checkOpenSpec(root, v),
+    checkMcpJson(root),
+  ];
+  return found
+    .filter((f): f is Found => f !== null)
+    .map((f) => ({
+      target: f.target,
+      path: TARGET_FILES[f.target],
+      state: f.state,
+      installedVersion: f.installedVersion,
+      currentVersion: v,
+    }));
+}
+
+/** A target found by one of the checks below. */
+interface Found {
+  readonly target: GuidanceTarget;
+  readonly state: GuidanceState;
+  readonly installedVersion: number | null;
+}
+
+/**
+ * The state of a versioned target recorded as `installed` (null when
+ * unreadable) against the running version `v`; `matches` says whether its
+ * managed text is exactly what `v` renders.
+ */
+function versionedState(
+  installed: number | null,
+  v: number,
+  matches: () => boolean,
+): GuidanceState {
+  if (installed === null) {
+    return 'modified';
+  }
+  if (installed !== v) {
+    return 'stale';
+  }
+  return matches() ? 'current' : 'modified';
+}
+
+function checkSkill(root: string, v: number): Found | null {
+  const text = readBytes(join(root, SKILL_PATH));
+  if (text === null || !hasSkillMarker(text)) {
+    return null;
+  }
+  const installed = skillVersion(text);
+  return {
+    target: 'claude',
+    installedVersion: installed,
+    state: versionedState(installed, v, () => text === renderSkill(v)),
+  };
+}
+
+function checkAgentsMd(root: string, v: number): Found | null {
+  const text = readBytes(join(root, AGENTS_MD_PATH));
+  if (text === null) {
+    return null;
+  }
+  const markers = agentsMarkers(text);
+  switch (markers.kind) {
+    case 'none':
+      return null;
+    case 'malformed':
+      return { target: 'agents-md', state: 'modified', installedVersion: markers.version };
+    case 'pair':
+      return {
+        target: 'agents-md',
+        installedVersion: markers.version,
+        state: versionedState(
+          markers.version,
+          v,
+          () => text.slice(markers.start, markers.end) === renderAgentsBlock(v),
+        ),
+      };
+  }
+}
+
+function checkOpenSpec(root: string, v: number): Found | null {
+  const text = readText(join(root, OPENSPEC_CONFIG_PATH));
+  if (text === null) {
+    return null;
+  }
+  const parsed = parseConfig(text);
+  if (!parsed.ok) {
+    return text.includes(OPENSPEC_PREFIX)
+      ? { target: 'openspec', state: 'modified', installedVersion: null }
+      : null;
+  }
+  const items = openSpecItems(parsed.doc);
+  const all = OPENSPEC_OPERATIONS.flatMap((op) => items[op]);
+  if (all.length === 0) {
+    return null;
+  }
+  const versions = new Set(all.map((item) => openSpecCommentVersion(item.comment)));
+  const [only] = versions;
+  const installed = versions.size === 1 && only !== undefined ? only : null;
+  return {
+    target: 'openspec',
+    installedVersion: installed,
+    state: versionedState(installed, v, () =>
+      OPENSPEC_OPERATIONS.every((op) => {
+        const want = OPENSPEC_GUIDANCE[op];
+        const have = items[op];
+        return have.length === want.length && have.every((item, i) => item.value === want[i]);
+      }),
+    ),
+  };
+}
+
+function checkMcpJson(root: string): Found | null {
+  const text = readText(join(root, MCP_JSON_PATH));
+  const config = text === null ? null : parseMcpJson(text);
+  const servers = config?.mcpServers;
+  if (!isJsonObject(servers) || !Object.hasOwn(servers, MCP_SERVER_NAME)) {
+    return null;
+  }
+  return {
+    target: 'mcp-json',
+    installedVersion: null,
+    state: jsonEqual(servers[MCP_SERVER_NAME], MCP_ENTRY) ? 'current' : 'modified',
+  };
 }
 
 /**
@@ -98,9 +251,15 @@ export function checkGuidance(options: CheckOptions): GuidanceCheckEntry[] {
  * is empty, exactly `no agentboard guidance found in <root>`. Pure.
  */
 export function renderGuidanceCheck(entries: readonly GuidanceCheckEntry[], root: string): string {
-  void entries;
-  void root;
-  throw new Error('not implemented');
+  if (entries.length === 0) {
+    return `no agentboard guidance found in ${root}\n`;
+  }
+  return entries
+    .map((e) => {
+      const installed = e.installedVersion === null ? 'unknown' : `v${String(e.installedVersion)}`;
+      return `${e.state} ${e.target} ${e.path} (installed ${installed}, current v${String(e.currentVersion)})\n`;
+    })
+    .join('');
 }
 
 /**
@@ -112,7 +271,20 @@ export function renderGuidanceCheck(entries: readonly GuidanceCheckEntry[], root
  * (also when nothing was found).
  */
 export function checkCommand(cwd: string, env: Env): CommandOutput {
-  void cwd;
-  void env;
-  throw new Error('not implemented');
+  const entries = checkGuidance({ cwd, env });
+  const output: CommandOutput = {
+    json: entries,
+    text: renderGuidanceCheck(entries, workingTreeRoot(cwd, env)),
+  };
+  const notCurrent = entries.filter((e) => e.state !== 'current').length;
+  if (notCurrent === 0) {
+    return output;
+  }
+  return {
+    ...output,
+    exitCode: 1,
+    warnings: [
+      `${String(notCurrent)} of ${String(entries.length)} guidance target(s) are not current; run agentboard agents install to rewrite them`,
+    ],
+  };
 }
