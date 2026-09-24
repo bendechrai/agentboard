@@ -168,13 +168,15 @@ export function advanceCursor(cursor: Cursor, delivered: readonly CursorPosition
  * Moves back every cursor that an event slipped behind unseen.
  * Called, under the write lock, by whatever changes `folded` (catch-up and
  * `rebuild`), after the derived rows are up to date, with `arrived`: every
- * well-formed event it recorded for the first time (applied, rejected or
- * unknown kind), plus every event already recorded whose `folded` flag went
- * from 0 to 1 in a refold (a previously rejected event made effective by a
+ * event that became effective in that call, that is every event it
+ * recorded for the first time as applied (`folded` 1), plus every event
+ * already recorded whose `folded` flag went from 0 to 1 in a refold (a previously rejected event made effective by a
  * late event, for example a comment rejected as `unknown-ticket` until its
  * ticket's late `ticket.create` arrived); in any order. The command
  * transaction's own event never needs it, since it sorts after every folded
- * event.
+ * event. Events recorded as rejected, unknown kind or malformed are not
+ * passed: they are not effective, and if a later arrival makes one
+ * effective, that refold passes it then.
  *
  * Board-concurrency ("Inbox never misses an event"): whenever an event
  * becomes effective at a position behind an actor's cursor and outside its

@@ -307,7 +307,7 @@ export interface CatchUpOptions {
  * new changes no rows.
  *
  * Late events (task group 5): after the derived rows are up to date, the
- * well-formed events this call newly recorded, plus (after a refold) every
+ * events this call newly recorded as applied, plus (after a refold) every
  * event already recorded whose `folded` flag went from 0 to 1, are passed to
  * `resetLateCursors` (`src/store/cursors.ts`) in the same transaction, so an
  * event that becomes effective behind an actor's cursor and outside its
