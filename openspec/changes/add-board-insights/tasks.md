@@ -19,7 +19,7 @@ percent.
 
 ## 2. The `health` command (`board/health-command`)
 
-- [ ] 2.1 Implement `boardHealth` in `src/board/health.ts` (ticket state from the cache, event bodies only from the applied events of open tickets, one read snapshot, `--check` through `checkCache`) and the `health` registry entry (group `awareness`, flags, description, examples, exit codes, human rendering). Verify: tests for the three "Health command" scenarios, a malformed duration (exit 1 `usage` with its hint), an injected reader counting that no event file of a closed ticket is read, the help drift guard, and the MCP tool list including `board_health` with its three optional properties
+- [ ] 2.1 Implement `boardHealth` in `src/board/health.ts` (ticket state from the cache, event bodies from the applied events' files, each read once, one read snapshot, `--check` through `checkCache`) and the `health` registry entry (group `awareness`, flags, description, examples, exit codes, human rendering). Verify: tests for the three "Health command" scenarios, a malformed duration (exit 1 `usage` with its hint), an injected reader counting that no event file of a closed ticket is read, the help drift guard, and the MCP tool list including `board_health` with its three optional properties
 - [ ] 2.2 Add `agentboard health` to the orchestrator checklist of the agent guide (before archiving a change, and when choosing what to dispatch). Verify: the guide tests (every `agentboard ` line parses, at most 150 lines, ASCII) pass with the new line
 
 ## 3. Insight views (`web/insights`)
