@@ -5,7 +5,7 @@
  * repository on local disk.
  */
 
-import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -88,6 +88,27 @@ describe('agentboard sync (built CLI)', () => {
       arrived: [],
       warnings: [],
     });
+  });
+
+  it('scenario: exits 5 naming a deleted committed event file, staging nothing', () => {
+    const env = syncEnv();
+    const { root, dir } = initMachine(env);
+    newTicket(root, env, 'one');
+    expect(sync(root, env).code).toBe(0);
+    const [name] = treeEvents(dir);
+    rmSync(join(dir, 'events', String(name)));
+    const head = revParse(dir);
+
+    const out = sync(root, env);
+    expect(out.code).toBe(5);
+    expect(out.stdout).toBe('');
+    expect(out.stderr).toContain(`events/${String(name)}`);
+
+    const json = sync(root, env, true);
+    expect(json.code).toBe(5);
+    expect(oneJson(json)).toMatchObject({ error: { exitCode: 5, reason: 'integrity' } });
+    expect(revParse(dir)).toBe(head);
+    expect(git(dir, 'diff', '--cached', '--name-only')).toBe('');
   });
 
   it('exits 2 where there is no board', () => {

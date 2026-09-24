@@ -150,18 +150,41 @@ describe('sync with no remote', () => {
     expect(commitCount(dir)).toBe(2);
   });
 
-  it('never stages the deletion of an event file', () => {
+  it('scenario: a deleted committed event file is not synced; exit 5 naming it', () => {
     const env = syncEnv();
     const { dir } = initMachine(env);
     const board = openTracked(dir);
     const [hash] = addTickets(board, 1, 'orch');
     syncBoard(board, { env });
+    const head = revParse(dir);
     rmSync(join(board.eventsDir, `${String(hash)}.json`));
+    addTickets(board, 1, 'orch');
 
-    const result = syncBoard(board, { env });
+    const err = expectBoardError(() => syncBoard(board, { env }), 5, 'integrity');
 
-    expect(result.commit).toBeNull();
+    expect(err.message).toContain(`events/${String(hash)}.json`);
+    expect(err.message).toContain('checkout');
+    expect(revParse(dir)).toBe(head);
+    expect(git(dir, 'diff', '--cached', '--name-only')).toBe('');
     expect(treeEvents(dir)).toEqual([`${String(hash)}.json`]);
+  });
+
+  it('pushes nothing when a committed event file is missing', () => {
+    const env = syncEnv();
+    const remote = bareRemote();
+    const { dir } = initMachine(env, remote);
+    const board = openTracked(dir);
+    const [hash] = addTickets(board, 1, 'orch');
+    syncBoard(board, { env });
+    const pushed = revParse(remote, 'main');
+    rmSync(join(board.eventsDir, `${String(hash)}.json`));
+    addTickets(board, 1, 'orch');
+
+    expectBoardError(() => syncBoard(board, { env }), 5, 'integrity');
+
+    expect(revParse(remote, 'main')).toBe(pushed);
+    expect(revParse(dir)).toBe(pushed);
+    expect(git(dir, 'diff', '--cached', '--name-only')).toBe('');
   });
 
   it('syncs the board repository even when GIT_DIR points at the host repository', () => {

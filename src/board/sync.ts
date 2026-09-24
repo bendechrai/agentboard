@@ -140,14 +140,22 @@ export interface SyncResult {
  *    (`git rebase --abort`) first. Nothing is staged or committed.
  * 4. HEAD is on a branch (possibly unborn), else
  *    `BoardError(3, 'detached-head')`.
+ * 5. Every event file recorded in HEAD's tree (`events/<hash>.json`) is
+ *    present in `events/` (board-concurrency scenario "Deleted event file
+ *    is not synced"). Otherwise nothing is staged, committed, pulled or
+ *    pushed and `BoardError(5, 'integrity')` is thrown, naming every missing
+ *    file (as `events/<name>`) and how to restore them
+ *    (`git -C <board dir> checkout -- events/<name>`). Event files are
+ *    add-only, so a deletion is never propagated.
  *
  * Steps:
  * 1. Stage: `git add --ignore-removal` of `events` (excluding temporary
  *    files, `events/.tmp-*`) and of `.gitignore` when it exists. Nothing
  *    else in the board directory is ever staged, so `cache.sqlite`,
  *    `cache.sqlite-wal` and `cache.sqlite-shm` are never committed even when
- *    `.gitignore` is missing or does not list them. Deletions are not
- *    staged: event files are add-only.
+ *    `.gitignore` is missing or does not list them. Deletions are never
+ *    staged (a missing committed event file already stopped sync at
+ *    precondition 5).
  * 2. Commit only when something is staged: one commit, message
  *    `syncCommitMessage(<events/*.json paths added>)`, hooks skipped
  *    (`--no-verify`). `commit` and `committedEvents` report it.
