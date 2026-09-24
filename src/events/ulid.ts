@@ -11,9 +11,15 @@
  * This module only ever produces and accepts the canonical form: uppercase,
  * no `I`, `L`, `O` or `U`, first character `0` to `7`. Lowercase input is not
  * a ULID here (callers that accept user-typed prefixes normalise first).
+ *
+ * Browser-safe (add-board-web task 1.1): this module imports no `node:`
+ * module. Its default random source is the global Web Crypto
+ * `crypto.getRandomValues` (present in Node 22 and every browser), looked
+ * up on `globalThis.crypto` each time random bytes are needed (not
+ * captured at module load), so the pure fold that reaches this module
+ * through `schema.ts` can be bundled for the browser. The bytes contract
+ * is unchanged: 10 random bytes per fresh random part.
  */
-
-import { getRandomValues } from 'node:crypto';
 
 /** Crockford base32 alphabet, in digit order. */
 const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
@@ -72,7 +78,7 @@ function encodeRandom(value: bigint): string {
 }
 
 function defaultRandom(byteLength: number): Uint8Array {
-  return getRandomValues(new Uint8Array(byteLength));
+  return globalThis.crypto.getRandomValues(new Uint8Array(byteLength));
 }
 
 /**
@@ -89,7 +95,8 @@ function defaultRandom(byteLength: number): Uint8Array {
  *   random part plus one, as an 80-bit unsigned integer; `random` is not
  *   called.
  *
- * @param random defaults to `crypto.getRandomValues` over 10 bytes.
+ * @param random defaults to the global Web Crypto
+ *   `globalThis.crypto.getRandomValues` over a new 10-byte `Uint8Array`.
  * @throws RangeError when `now` is not an integer in `[0, ULID_MAX_TIME]`.
  * @throws Error when incrementing the random part would overflow 80 bits;
  *   the generator's state is left unchanged.

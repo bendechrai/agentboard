@@ -23,6 +23,7 @@
 import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
+import { openDecisions } from '../events/decisions.js';
 import type { Ticket } from '../events/fold.js';
 import type { TaskRef, Status } from '../events/schema.js';
 import { asciiText } from './text.js';
@@ -34,6 +35,11 @@ import { treePath, type TreePathOptions } from './paths.js';
 import { taskReminder, type TaskReminder } from './reminder.js';
 import { refuseSecretLike } from './secrets.js';
 import type { WriteOptions, WriteOutcome } from './types.js';
+
+// openDecisions and the decision prefixes live in the pure module
+// src/events/decisions.ts; the same bindings are re-exported here so the
+// library API is unchanged.
+export { DECISION_PREFIX, RETRACTED_PREFIX, openDecisions } from '../events/decisions.js';
 
 /**
  * Runs one writing command on the ticket named by `id`: resolves it inside
@@ -312,39 +318,6 @@ export function setChecklistItem(
 /** How a ticket is closed: `--decision-recorded-in <path>` or `--no-decision`. */
 export type CloseInput =
   ({ id: string; decisionRecordedIn: string } & TreePathOptions) | { id: string; noDecision: true };
-
-/** The comment prefix that marks a decision (board-openspec-integration). */
-export const DECISION_PREFIX = 'DECISION:';
-
-/** The comment prefix that retracts the same actor's earlier decisions. */
-export const RETRACTED_PREFIX = 'RETRACTED:';
-
-/**
- * The comments of a ticket that still block a `--no-decision` close: every
- * comment (handoff notes included) whose text starts with
- * `DECISION_PREFIX` (case-sensitive, at the very start of the text) and
- * that is not followed, later in the comment list, by a comment by the
- * same actor starting with `RETRACTED_PREFIX`. One `RETRACTED:` comment
- * retracts every earlier `DECISION:` comment by its actor. Returned in
- * comment order. Pure.
- */
-export function openDecisions(
-  comments: readonly { actor: string; text: string }[],
-): { actor: string; text: string }[] {
-  const lastRetraction = new Map<string, number>();
-  comments.forEach((comment, index) => {
-    if (comment.text.startsWith(RETRACTED_PREFIX)) {
-      lastRetraction.set(comment.actor, index);
-    }
-  });
-  return comments
-    .filter(
-      (comment, index) =>
-        comment.text.startsWith(DECISION_PREFIX) &&
-        (lastRetraction.get(comment.actor) ?? -1) < index,
-    )
-    .map((comment) => ({ actor: comment.actor, text: comment.text }));
-}
 
 /**
  * `close`: writes `ticket.close` with the disposition.

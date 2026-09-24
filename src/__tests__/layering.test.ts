@@ -1,5 +1,6 @@
-import { readFileSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { isBuiltin } from 'node:module';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -54,6 +55,184 @@ describe('layering', () => {
       for (const spec of specifiers(readFileSync(join(BOARD, name), 'utf8'))) {
         if (/(^|\/)cli(\/|\.js$)/.test(spec)) {
           offenders.push(`${name}: ${spec}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+// add-board-web tasks 1.1 and 1.2 (board-view-model: "Pure view-model
+// layer", scenario "No Node-only import"): the view-model and the pure
+// fold must be bundleable for the browser.
+
+const SRC = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * Module specifiers that survive compilation: every import, re-export,
+ * side-effect import and dynamic import except whole-statement type-only
+ * ones (`import type ...`, `export type ... from`), which are erased.
+ */
+function valueSpecifiers(source: string): string[] {
+  const found: string[] = [];
+  const patterns = [
+    /\bimport\s+(?!type\b)[^'";]*?\bfrom\s*['"]([^'"]+)['"]/g,
+    /\bexport\s+(?!type\b)[^'";]*?\bfrom\s*['"]([^'"]+)['"]/g,
+    /\bimport\s*['"]([^'"]+)['"]/g,
+    /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      found.push(match[1] ?? '');
+    }
+  }
+  return found;
+}
+
+/** True for a specifier naming a Node built-in: any `node:` specifier or a bare built-in name. */
+function isNodeOnly(spec: string): boolean {
+  return spec.startsWith('node:') || isBuiltin(spec);
+}
+
+/** Every `.ts` module under `dir`, recursively, excluding `__tests__` directories. */
+function modulesUnder(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name !== '__tests__') {
+        out.push(...modulesUnder(path));
+      }
+    } else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts')) {
+      out.push(path);
+    }
+  }
+  return out;
+}
+
+interface Walk {
+  /** Every module reached, as paths relative to src. */
+  reached: string[];
+  /** `<module>: <specifier>` for each Node-only or unresolvable import. */
+  offenders: string[];
+}
+
+/** Follows value imports from `entries`, resolving relative `.js` specifiers to `.ts` files. */
+function walk(entries: string[]): Walk {
+  const seen = new Set<string>();
+  const offenders: string[] = [];
+  const queue = [...entries];
+  for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
+    if (seen.has(file)) {
+      continue;
+    }
+    seen.add(file);
+    const name = relative(SRC, file);
+    for (const spec of valueSpecifiers(readFileSync(file, 'utf8'))) {
+      if (isNodeOnly(spec)) {
+        offenders.push(`${name}: ${spec}`);
+      } else if (spec.startsWith('.')) {
+        const target = resolve(dirname(file), spec.replace(/\.js$/, '.ts'));
+        if (existsSync(target)) {
+          queue.push(target);
+        } else {
+          offenders.push(`${name}: ${spec} (unresolved)`);
+        }
+      }
+    }
+  }
+  return { reached: [...seen].map((f) => relative(SRC, f)).sort(), offenders };
+}
+
+describe('layering: browser-safe modules', () => {
+  it('follows value imports and skips type-only ones', () => {
+    const sample = [
+      "import { a, type B } from './value.js';",
+      "import type { C } from './type-only.js';",
+      "import type D from './type-default.js';",
+      "export { e } from './reexport.js';",
+      "export * from './star.js';",
+      "export type { F } from './type-reexport.js';",
+      "import './side.js';",
+      "const g = await import('./dyn.js');",
+      "import {\n  h,\n} from 'node:fs';",
+      "import typeScript from './named-type.js';",
+      "import { type I } from './inline-type.js';",
+      '/** Prose: `import type` is exempt, and an export type is too. */',
+      "import type { J } from './after-prose.js';",
+    ].join('\n');
+    expect(valueSpecifiers(sample).sort()).toEqual(
+      [
+        './value.js',
+        './reexport.js',
+        './star.js',
+        './side.js',
+        './dyn.js',
+        'node:fs',
+        './named-type.js',
+        './inline-type.js',
+      ].sort(),
+    );
+    expect(isNodeOnly('node:crypto')).toBe(true);
+    expect(isNodeOnly('crypto')).toBe(true);
+    expect(isNodeOnly('fs/promises')).toBe(true);
+    expect(isNodeOnly('./crypto.js')).toBe(false);
+    expect(isNodeOnly('preact')).toBe(false);
+  });
+
+  it('finds a Node-only import reached transitively', () => {
+    const result = walk([join(SRC, 'events', 'canonical.ts')]);
+    expect(result.offenders).toContain('events/canonical.ts: node:crypto');
+  });
+
+  it('reaches src/events/ulid.ts from src/events/fold.ts through schema.ts', () => {
+    const { reached } = walk([join(SRC, 'events', 'fold.ts')]);
+    expect(reached).toEqual(
+      expect.arrayContaining([
+        'events/fold.ts',
+        'events/schema.ts',
+        'events/ulid.ts',
+        'events/hlc.ts',
+      ]),
+    );
+  });
+
+  it('no module reachable from src/events/fold.ts or src/events/decisions.ts imports a node: specifier', () => {
+    const entries = [join(SRC, 'events', 'fold.ts'), join(SRC, 'events', 'decisions.ts')];
+    expect(walk(entries).offenders).toEqual([]);
+  });
+
+  it('src/view holds the view-model modules', () => {
+    const names = modulesUnder(join(SRC, 'view')).map((f) => relative(SRC, f));
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'view/types.ts',
+        'view/columns.ts',
+        'view/feed.ts',
+        'view/describe.ts',
+        'view/conversation.ts',
+        'view/lanes.ts',
+        'view/time.ts',
+      ]),
+    );
+  });
+
+  it('no module reachable from any module under src/view imports a node: specifier', () => {
+    expect(walk(modulesUnder(join(SRC, 'view'))).offenders).toEqual([]);
+  });
+
+  it('no module under src/view reads a clock or draws random numbers', () => {
+    const offenders: string[] = [];
+    for (const file of modulesUnder(join(SRC, 'view'))) {
+      const source = readFileSync(file, 'utf8');
+      for (const pattern of [
+        /\bDate\.now\s*\(/,
+        /\bnew\s+Date\s*\(/,
+        /\bMath\.random\s*\(/,
+        /\bperformance\.now\s*\(/,
+      ]) {
+        if (pattern.test(source)) {
+          offenders.push(`${relative(SRC, file)}: ${String(pattern)}`);
         }
       }
     }
