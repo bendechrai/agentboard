@@ -4,7 +4,7 @@
  * `EventView` list (with outcomes) and tickets a snapshot would give.
  */
 
-import type { JsonValue } from '../../events/canonical.js';
+import type { JsonValue } from '../../events/json.js';
 import {
   applyEvent,
   compareFoldOrder,
