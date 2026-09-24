@@ -18,10 +18,12 @@ import { describe, expect, it } from 'vitest';
 
 import { canonicalEncode, sha256Hex } from '../../events/canonical.js';
 import { compareFoldOrder, type FoldInput } from '../../events/fold.js';
+import type { Hlc } from '../../events/hlc.js';
 import type { BoardEvent } from '../../events/schema.js';
 import type { Board } from '../../store/board.js';
 import { BoardError } from '../../store/errors.js';
 import { readEventFile, type ReadOutcome } from '../../store/eventfile.js';
+import { recordedPositions } from '../../store/folded.js';
 import { P, T1, T2, ev, eventNames, foldDir, seedRich } from '../../store/__tests__/helpers.js';
 import type { EventView, FeedMessage } from '../../view/types.js';
 import { commentTicket, moveTicket } from '../actions.js';
@@ -659,6 +661,44 @@ describe('watchBoard: bounded work and no cursor (board-feed: "Board-wide change
   );
 
   it(
+    'scenario Idle ticks read nothing: no folded listing while nothing is written',
+    { timeout: 10_000 },
+    async () => {
+      const { board, root } = setup();
+      const ticket = create(board);
+      let listings = 0;
+      const listEffective = (db: Board['db']): { hash: string; ts: Hlc }[] => {
+        listings += 1;
+        return recordedPositions(db, { effectiveOnly: true }).map(({ hash, ts }) => ({ hash, ts }));
+      };
+      // Polls every 20 ms, so each pause below spans about a dozen ticks.
+      const feed = start(board, { listEffective });
+      try {
+        await until(() => feed.messages.length === 1, 2000, 'the first append');
+        const afterFirst = listings;
+        expect(afterFirst).toBeGreaterThanOrEqual(1);
+        // About a dozen polls with nothing written: no folded listing.
+        await pause(250);
+        expect(listings).toBe(afterFirst);
+        // A write from another connection: the changed tick lists again.
+        const writer = openTracked(join(root, '.board'));
+        const c = commentTicket(writer, 'impl', { id: ticket.id, text: 'new' });
+        await until(() => appended(feed.messages).includes(c.hash ?? ''), 2000, 'the comment');
+        expect(listings).toBeGreaterThan(afterFirst);
+        const afterChange = listings;
+        await pause(250);
+        expect(listings).toBe(afterChange);
+        // A write on the feed's own connection is a change too.
+        const own = commentTicket(board, 'impl', { id: ticket.id, text: 'own' });
+        await until(() => appended(feed.messages).includes(own.hash ?? ''), 2000, 'own comment');
+        expect(listings).toBeGreaterThan(afterChange);
+      } finally {
+        await feed.stop();
+      }
+    },
+  );
+
+  it(
     'scenario Event written by another process (in process): no cursor row changes and no event is written',
     { timeout: 10_000 },
     async () => {
@@ -773,6 +813,54 @@ describe('watchBoard: tick failures', () => {
         expect(settled.done).toBe(false);
       } finally {
         await feed.stop();
+      }
+    },
+  );
+
+  it(
+    'an onMessage that throws is a tick failure: the state does not advance and the message is delivered again',
+    { timeout: 10_000 },
+    async () => {
+      const { dir, eventsDir } = boardDir();
+      put(eventsDir, ev(P.create(T1), 'orch', 1000));
+      const board = openTracked(dir);
+      const boom = new Error('consumer failed');
+      const delivered: FeedMessage[] = [];
+      const problems: unknown[] = [];
+      let throwOnce = false;
+      const controller = new AbortController();
+      const done = watchBoard(board, {
+        signal: controller.signal,
+        pollMs: 20,
+        fsWatch: false,
+        onProblem: (error) => problems.push(error),
+        onMessage: (m) => {
+          delivered.push(m);
+          if (throwOnce) {
+            throwOnce = false;
+            throw boom;
+          }
+        },
+      });
+      try {
+        await until(() => delivered.length === 1, 2000, 'the first append');
+        throwOnce = true;
+        const c = put(eventsDir, ev(P.comment(T1, 'x'), 'impl', 2000));
+        await until(() => delivered.length === 3, 2000, 'the redelivered append');
+        expect(problems).toEqual([boom]);
+        // The same message twice: the failed delivery did not advance the state.
+        expect(delivered[1]).toMatchObject({ type: 'append', events: [view(c)] });
+        expect(delivered[2]).toEqual(delivered[1]);
+        await pause(100);
+        expect(delivered).toHaveLength(3);
+        // Once delivered, the next event is appended alone.
+        const d = put(eventsDir, ev(P.comment(T1, 'y'), 'impl', 3000));
+        await until(() => delivered.length === 4, 2000, 'the next append');
+        expect(delivered[3]).toMatchObject({ type: 'append', events: [view(d)] });
+        expect(delivered[3]?.id).toBe(expectedId(eventsDir));
+      } finally {
+        controller.abort();
+        await done;
       }
     },
   );
