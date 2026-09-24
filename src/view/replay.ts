@@ -9,7 +9,14 @@
  * appears at its fold position, not when it arrived.
  */
 
-import type { BoardState, FoldInput, RejectionReason } from '../events/fold.js';
+import {
+  applyEvent,
+  type ApplyOutcome,
+  type BoardState,
+  type FoldInput,
+  type RejectionReason,
+} from '../events/fold.js';
+import type { JsonValue } from '../events/json.js';
 import type { EventOutcome } from './types.js';
 
 /** A checkpoint is kept after every this many events (500). */
@@ -57,8 +64,16 @@ export interface ReplayState {
  * `events` is not modified.
  */
 export function replayCheckpoints(events: readonly FoldInput[]): ReplayCheckpoint[] {
-  void events;
-  throw new Error('not implemented');
+  const checkpoints: ReplayCheckpoint[] = [];
+  const state = emptyState();
+  events.forEach((input, index) => {
+    applyEvent(state, input);
+    const count = index + 1;
+    if (count % CHECKPOINT_INTERVAL === 0) {
+      checkpoints.push({ count, state: cloneState(state) });
+    }
+  });
+  return checkpoints;
 }
 
 /**
@@ -70,7 +85,8 @@ export function replayCheckpoints(events: readonly FoldInput[]): ReplayCheckpoin
  *
  * When `checkpoints` (from `replayCheckpoints` of the same list) is given,
  * folding starts from a copy of the checkpoint with the greatest `count`
- * not above `index + 1`, so a seek takes at most 499 fold steps; the
+ * not above `index` (the event at `index` is always folded, to give its
+ * outcome), so a seek takes at most 500 fold steps; the
  * result is deep-equal to the one computed without checkpoints. Neither
  * `events` nor `checkpoints` is modified, and the result shares no object
  * with them.
@@ -83,8 +99,69 @@ export function replayState(
   index: number,
   checkpoints?: readonly ReplayCheckpoint[],
 ): ReplayState {
-  void events;
-  void index;
-  void checkpoints;
-  throw new Error('not implemented');
+  if (!Number.isInteger(index) || index < 0 || index >= events.length) {
+    throw new RangeError(`replay index ${String(index)} is outside 0..${String(events.length - 1)}`);
+  }
+  const count = index + 1;
+  // Start at or before `index`, so the event at `index` is folded here and
+  // its outcome is known.
+  let start: ReplayCheckpoint | null = null;
+  for (const checkpoint of checkpoints ?? []) {
+    if (checkpoint.count <= index && (start === null || checkpoint.count > start.count)) {
+      start = checkpoint;
+    }
+  }
+  const state = start === null ? emptyState() : cloneState(start.state);
+  let outcome: ApplyOutcome = { status: 'applied' };
+  for (let i = start === null ? 0 : start.count; i < count; i += 1) {
+    const input = events[i];
+    if (input !== undefined) {
+      outcome = applyEvent(state, input);
+    }
+  }
+  // The fold shares `board.meta` values with the events it applied, so the
+  // result is a copy.
+  return {
+    index,
+    state: cloneState(state),
+    outcome: outcome.status,
+    reason: outcome.status === 'rejected' ? outcome.rejected.reason : null,
+  };
+}
+
+/** An empty board, as `fold` starts from (a null-prototype `meta`). */
+function emptyState(): BoardState {
+  return { tickets: {}, meta: Object.create(null) as Record<string, JsonValue> };
+}
+
+/** A deep copy of `state` sharing no object with it; `meta` keeps its null prototype. */
+function cloneState(state: BoardState): BoardState {
+  return { tickets: cloneData(state.tickets), meta: cloneData(state.meta) };
+}
+
+/**
+ * A deep copy of plain data (arrays, objects, primitives). Each object copy
+ * keeps its original's prototype, and keys are defined rather than
+ * assigned, so a `__proto__` key stays an ordinary entry.
+ */
+function cloneData<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return (value as unknown[]).map((item) => cloneData(item)) as T;
+  }
+  if (typeof value !== 'object' || value === null) {
+    return value;
+  }
+  const copy = Object.create(Object.getPrototypeOf(value) as object | null) as Record<
+    string,
+    unknown
+  >;
+  for (const [key, item] of Object.entries(value)) {
+    Object.defineProperty(copy, key, {
+      value: cloneData(item),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return copy as T;
 }

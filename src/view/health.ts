@@ -8,11 +8,13 @@
  * the wall is in the future (clock skew between machines).
  */
 
-import type { TicketComment } from '../events/fold.js';
+import { openDecisions } from '../events/decisions.js';
+import type { Ticket, TicketComment } from '../events/fold.js';
 import type { Hlc } from '../events/hlc.js';
-import type { Status } from '../events/schema.js';
-import type { Card } from './columns.js';
-import type { BoardModel } from './types.js';
+import { isKnownEvent, type Status } from '../events/schema.js';
+import { ticketCard, type Card } from './columns.js';
+import { compareStrings } from './order.js';
+import type { BoardModel, EventView } from './types.js';
 
 /** Thresholds of the health checks, in milliseconds. */
 export interface HealthThresholds {
@@ -51,9 +53,21 @@ export const DEFAULT_THRESHOLDS: Readonly<HealthThresholds> = Object.freeze({
  * web panel shows the input as invalid and keeps the report unchanged.
  */
 export function parseDuration(text: string): number | null {
-  void text;
-  throw new Error('not implemented');
+  const match = DURATION.exec(text);
+  if (match === null) {
+    return null;
+  }
+  const [, digits = '', unit = ''] = match;
+  const n = Number(digits);
+  const scale = UNIT_MS[unit];
+  return n > 0 && scale !== undefined ? n * scale : null;
 }
+
+/** The whole text of a duration: 1 to 5 ASCII digits and a lowercase unit. */
+const DURATION = /^([0-9]{1,5})([mhd])$/;
+
+/** Milliseconds per duration unit. */
+const UNIT_MS: Readonly<Record<string, number>> = { m: 60_000, h: 3_600_000, d: 86_400_000 };
 
 /** A reference to the event a finding measured its age from. */
 export interface HealthEventRef {
@@ -227,6 +241,168 @@ export interface HealthReport {
  * finding types for each check's exact definition.
  */
 export function healthReport(input: HealthInput): HealthReport {
-  void input;
-  throw new Error('not implemented');
+  const { model, now, thresholds } = input;
+  const applied = appliedByTicket(model.events);
+  const open = Object.values(model.tickets)
+    .filter((ticket) => !ticket.closed)
+    .sort((a, b) => compareStrings(a.id, b.id));
+
+  const staleClaims: StaleClaim[] = [];
+  const stuckBlocked: StuckBlocked[] = [];
+  const unpromotedDecisions: UnpromotedDecision[] = [];
+  const closeMerged: CloseMergedReport = { ready: [], heldByDecision: [], missingPr: [] };
+
+  for (const ticket of open) {
+    const events = applied.get(ticket.id) ?? [];
+    const stale = staleClaim(ticket, events, now);
+    if (stale !== null && stale.idleMs >= thresholds.staleAfter) {
+      staleClaims.push(stale);
+    }
+    const stuck = stuckInBlocked(ticket, events, now);
+    if (stuck !== null && stuck.blockedMs >= thresholds.blockedAfter) {
+      stuckBlocked.push(stuck);
+    }
+    const decisions = openDecisions(ticket.comments);
+    const decisionLinked = ticket.links.some((link) => link.type === 'decision');
+    if (decisions.length > 0 && !decisionLinked) {
+      unpromotedDecisions.push({ ticket: ticketCard(ticket, now), decisions });
+    }
+    if (ticket.status === 'merged') {
+      const candidate: CloseMergedCandidate = {
+        ticket: ticketCard(ticket, now),
+        prs: ticket.links.flatMap((link) => (link.type === 'pr' ? [link.pr] : [])),
+        decisions: openDecisions(ticket.comments),
+        decisionLinked,
+      };
+      if (candidate.prs.length === 0) {
+        closeMerged.missingPr.push(candidate);
+      } else if (decisions.length > 0 && !decisionLinked) {
+        closeMerged.heldByDecision.push(candidate);
+      } else {
+        closeMerged.ready.push(candidate);
+      }
+    }
+  }
+
+  // `open` is in ascending id order and the sorts are stable, so equal ages
+  // stay in ascending id order.
+  staleClaims.sort((a, b) => b.idleMs - a.idleMs);
+  stuckBlocked.sort((a, b) => b.blockedMs - a.blockedMs);
+
+  return {
+    now,
+    thresholds: { staleAfter: thresholds.staleAfter, blockedAfter: thresholds.blockedAfter },
+    staleClaims,
+    stuckBlocked,
+    unpromotedDecisions,
+    closeMerged,
+    late: input.late == null ? null : input.late.map((arrival) => ({ ...arrival })),
+    check: input.check == null ? null : { ...input.check },
+  };
+}
+
+/** The applied events of each ticket, in fold order, keyed by ticket id. */
+function appliedByTicket(events: readonly EventView[]): Map<string, EventView[]> {
+  const byTicket = new Map<string, EventView[]>();
+  for (const view of events) {
+    if (view.outcome === 'applied' && view.ticket !== null) {
+      const list = byTicket.get(view.ticket) ?? [];
+      list.push(view);
+      byTicket.set(view.ticket, list);
+    }
+  }
+  return byTicket;
+}
+
+/** Kinds whose applied event sets the assignee (a release clears it). */
+const ASSIGNING_KINDS: ReadonlySet<string> = new Set([
+  'ticket.claim',
+  'ticket.handoff',
+  'ticket.assign',
+]);
+
+/**
+ * The stale-claim finding of an open ticket not in `merged` with an
+ * assignee, whatever its idle time; null otherwise, or when no applied event
+ * of the ticket bears on the assignee. `events` are the ticket's applied
+ * events in fold order.
+ */
+function staleClaim(ticket: Ticket, events: readonly EventView[], now: number): StaleClaim | null {
+  const assignee = ticket.assignee;
+  if (assignee === null || ticket.status === 'merged') {
+    return null;
+  }
+  // The later in fold order of the assignee's own latest event and the
+  // latest assigning event is simply the last event matching either.
+  let since: EventView | null = null;
+  for (const view of events) {
+    if (view.actor === assignee || ASSIGNING_KINDS.has(view.kind)) {
+      since = view;
+    }
+  }
+  if (since === null) {
+    return null;
+  }
+  return {
+    ticket: ticketCard(ticket, now),
+    assignee,
+    since: eventRef(since),
+    idleMs: age(now, since.ts),
+  };
+}
+
+/**
+ * The stuck-in-blocked finding of an open ticket in `blocked`, whatever its
+ * age; null otherwise, or when its entry into `blocked` is not among
+ * `events` (the ticket's applied events in fold order).
+ */
+function stuckInBlocked(
+  ticket: Ticket,
+  events: readonly EventView[],
+  now: number,
+): StuckBlocked | null {
+  if (ticket.status !== 'blocked' || ticket.blockedFrom === null) {
+    return null;
+  }
+  let status: Status = 'todo';
+  let entry: EventView | null = null;
+  for (const view of events) {
+    const { event } = view;
+    if (!isKnownEvent(event)) {
+      continue;
+    }
+    let next: Status = status;
+    if (event.kind === 'ticket.move') {
+      next = event.body.to;
+    } else if (event.kind === 'ticket.handoff') {
+      next = event.body.status;
+    }
+    if (next === 'blocked' && status !== 'blocked') {
+      entry = view;
+    }
+    status = next;
+  }
+  if (entry === null) {
+    return null;
+  }
+  const latest = ticket.comments.at(-1);
+  return {
+    ticket: ticketCard(ticket, now),
+    blockedFrom: ticket.blockedFrom,
+    since: eventRef(entry),
+    blockedMs: age(now, entry.ts),
+    latestComment:
+      latest === undefined
+        ? null
+        : { actor: latest.actor, ts: { ...latest.ts }, text: latest.text, hash: latest.hash },
+  };
+}
+
+function eventRef(view: EventView): HealthEventRef {
+  return { hash: view.hash, kind: view.kind, actor: view.actor, ts: { ...view.ts } };
+}
+
+/** `now - ts.wall`, or 0 when the wall is in the future. */
+function age(now: number, ts: Hlc): number {
+  return Math.max(0, now - ts.wall);
 }

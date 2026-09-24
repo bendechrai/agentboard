@@ -4,7 +4,8 @@
  */
 
 import type { Hlc } from '../events/hlc.js';
-import type { Status } from '../events/schema.js';
+import { isKnownEvent, type Status, type TaskRef } from '../events/schema.js';
+import { compareStrings } from './order.js';
 import type { EventView } from './types.js';
 
 /** Filters for `handoffGraph`; every filter given must match (AND). */
@@ -72,7 +73,94 @@ export interface HandoffGraph {
  * `events` is not modified.
  */
 export function handoffGraph(events: readonly EventView[], filter: GraphFilter = {}): HandoffGraph {
-  void events;
-  void filter;
-  throw new Error('not implemented');
+  const matchesChange = changeMatcher(events, filter.change);
+  const edges = new Map<string, GraphEdge>();
+  for (const view of events) {
+    const { event } = view;
+    if (
+      view.outcome !== 'applied' ||
+      !isKnownEvent(event) ||
+      event.kind !== 'ticket.handoff' ||
+      (filter.since !== undefined && event.ts.wall < filter.since) ||
+      !matchesChange(event.ticket)
+    ) {
+      continue;
+    }
+    const from = event.actor;
+    const to = event.body.to;
+    const latest: HandoffRef = {
+      hash: view.hash,
+      ticket: event.ticket,
+      ts: { ...event.ts },
+      status: event.body.status,
+      note: event.body.note,
+    };
+    // JSON of the pair: unambiguous whatever characters the actors contain.
+    const key = JSON.stringify([from, to]);
+    const edge = edges.get(key);
+    if (edge === undefined) {
+      edges.set(key, { from, to, count: 1, latest });
+    } else {
+      edge.count += 1;
+      edge.latest = latest;
+    }
+  }
+
+  const nodes = new Map<string, GraphNode>();
+  const node = (actor: string): GraphNode => {
+    let found = nodes.get(actor);
+    if (found === undefined) {
+      found = { actor, sent: 0, received: 0 };
+      nodes.set(actor, found);
+    }
+    return found;
+  };
+  for (const edge of edges.values()) {
+    node(edge.from).sent += edge.count;
+    node(edge.to).received += edge.count;
+  }
+  return {
+    nodes: [...nodes.values()].sort((a, b) => compareStrings(a.actor, b.actor)),
+    edges: [...edges.values()].sort(
+      (a, b) => compareStrings(a.from, b.from) || compareStrings(a.to, b.to),
+    ),
+  };
+}
+
+/**
+ * The predicate on ticket ids for `GraphFilter.change` (every ticket passes
+ * when it is absent): the text is split at its first `:` into source and
+ * ref, and a ticket matches when its current task, derived from the applied
+ * events of `events`, has that source and ref. Text with no `:` matches no
+ * ticket.
+ */
+function changeMatcher(
+  events: readonly EventView[],
+  change: string | undefined,
+): (ticket: string) => boolean {
+  if (change === undefined) {
+    return () => true;
+  }
+  const colon = change.indexOf(':');
+  if (colon < 0) {
+    return () => false;
+  }
+  const source = change.slice(0, colon);
+  const ref = change.slice(colon + 1);
+  const tasks = new Map<string, TaskRef | null>();
+  for (const view of events) {
+    const { event } = view;
+    if (view.outcome !== 'applied' || !isKnownEvent(event)) {
+      continue;
+    }
+    if (event.kind === 'ticket.create') {
+      tasks.set(event.ticket, event.body.task ?? null);
+    } else if (event.kind === 'ticket.link' && 'task' in event.body) {
+      tasks.set(event.ticket, event.body.task);
+    }
+  }
+  return (ticket) => {
+    const task = tasks.get(ticket) ?? null;
+    return task !== null && task.source === source && task.ref === ref;
+  };
 }
