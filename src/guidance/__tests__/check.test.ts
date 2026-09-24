@@ -34,7 +34,9 @@ import {
   chmodForTest,
   linkedWorktree,
   plainProject,
+  prefixSibling,
   readRel,
+  symlinkCycle,
   writeRel,
 } from './guidance-helpers.js';
 
@@ -380,4 +382,25 @@ describe('paths agents install would refuse', () => {
       '1 of 4 guidance target(s) are not current; run agentboard agents install to rewrite them',
     );
   });
+});
+
+describe('the containment boundary and symlink cycles (round 3)', () => {
+  it('does not read or report a file linked into a sibling whose path starts with the root path', () => {
+    const { root, sibling } = prefixSibling();
+    writeFileSync(join(sibling, 'AGENTS.md'), `${renderAgentsBlock()}\n`);
+    symlinkSync(join(sibling, 'AGENTS.md'), join(root, AGENTS));
+    expect(check(root)).toEqual([]);
+  });
+
+  it.each(['two-node', 'self-dir'] as const)(
+    'reports nothing for a %s cycle and exits 0, never throwing',
+    (kind) => {
+      const root = plainProject();
+      symlinkCycle(root, AGENTS, kind);
+      expect(check(root)).toEqual([]);
+      const out = checkCommand(root, ENV);
+      expect(out.exitCode ?? 0).toBe(0);
+      expect(out.json).toEqual([]);
+    },
+  );
 });

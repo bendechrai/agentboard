@@ -50,9 +50,11 @@ import {
   fileList,
   linkedWorktree,
   plainProject,
+  prefixSibling,
   readRel,
   repo,
   snapshot,
+  symlinkCycle,
   writeRel,
 } from './guidance-helpers.js';
 
@@ -904,6 +906,101 @@ describe('filesystem errors are refusals, not crashes', () => {
       ['claude', 'refused', 'not-a-file'],
       ['agents-md', 'refused', 'unwritable'],
       ['mcp-json', 'created', null],
+    ]);
+    expect(result.refused).toBe(2);
+  });
+});
+
+describe('the containment boundary (round 3)', () => {
+  it.each([
+    ['claude', SKILL],
+    ['agents-md', AGENTS],
+    ['openspec', CONFIG],
+    ['mcp-json', MCP],
+  ] as const)(
+    'refuses %s linked into a sibling whose path starts with the root path',
+    (target, rel) => {
+      const { root, sibling } = prefixSibling();
+      const theirs = join(sibling, 'theirs.txt');
+      writeFileSync(theirs, 'sibling content\n');
+      mkdirSync(join(root, rel, '..'), { recursive: true });
+      symlinkSync(theirs, join(root, rel));
+      for (const force of [false, true]) {
+        const out = only(root, target, { force });
+        expect(out).toMatchObject({ action: 'refused', refusal: 'outside-tree' });
+        expect(out.message).toContain(theirs);
+      }
+      expect(readRel(sibling, 'theirs.txt')).toBe('sibling content\n');
+      expect(readdirSync(sibling)).toEqual(['theirs.txt']);
+    },
+  );
+
+  it('refuses a parent directory linked into a prefix sibling, creating nothing there', () => {
+    const { root, sibling } = prefixSibling();
+    symlinkSync(sibling, join(root, '.claude'));
+    expect(only(root, 'claude', { force: true })).toMatchObject({
+      action: 'refused',
+      refusal: 'outside-tree',
+    });
+    expect(readdirSync(sibling)).toEqual([]);
+  });
+
+  it('refuses a dangling link into a prefix sibling without creating it', () => {
+    const { root, sibling } = prefixSibling();
+    symlinkSync(join(sibling, 'AGENTS.md'), join(root, AGENTS));
+    expect(only(root, 'agents-md')).toMatchObject({ action: 'refused', refusal: 'outside-tree' });
+    expect(readdirSync(sibling)).toEqual([]);
+  });
+
+  it('refuses a target that resolves to the root itself as not-a-file, writing nothing', () => {
+    const root = plainProject();
+    symlinkSync('.', join(root, AGENTS));
+    const before = fileList(root);
+    for (const force of [false, true]) {
+      expect(only(root, 'agents-md', { force })).toMatchObject({
+        action: 'refused',
+        refusal: 'not-a-file',
+      });
+    }
+    expect(fileList(root)).toEqual(before);
+    expect(lstatSync(join(root, AGENTS)).isSymbolicLink()).toBe(true);
+  });
+});
+
+describe('symlink cycles are refused as not-a-file (round 3)', () => {
+  it.each(['two-node', 'self-dir'] as const)(
+    'refuses a %s cycle at AGENTS.md, naming ELOOP, even with --force',
+    (kind) => {
+      const root = plainProject();
+      symlinkCycle(root, AGENTS, kind);
+      for (const force of [false, true]) {
+        const out = only(root, 'agents-md', { force });
+        expect(out).toMatchObject({ action: 'refused', refusal: 'not-a-file' });
+        expect(out.message).toContain(AGENTS);
+        expect(out.message).toContain('ELOOP');
+      }
+      expect(lstatSync(join(root, AGENTS)).isSymbolicLink()).toBe(true);
+    },
+  );
+
+  it('refuses a cycle above the target path', () => {
+    const root = plainProject();
+    symlinkSync('.claude-b', join(root, '.claude'));
+    symlinkSync('.claude', join(root, '.claude-b'));
+    const out = only(root, 'claude');
+    expect(out).toMatchObject({ action: 'refused', refusal: 'not-a-file' });
+    expect(out.message).toContain('ELOOP');
+  });
+
+  it('still processes the other targets and counts the refusal', () => {
+    const root = plainProject();
+    symlinkCycle(root, AGENTS, 'self-dir');
+    symlinkCycle(root, MCP, 'two-node');
+    const result = install(root, { targets: ['claude', 'agents-md', 'mcp-json'] });
+    expect(result.targets.map((t) => [t.target, t.action, t.refusal])).toEqual([
+      ['claude', 'created', null],
+      ['agents-md', 'refused', 'not-a-file'],
+      ['mcp-json', 'refused', 'not-a-file'],
     ]);
     expect(result.refused).toBe(2);
   });

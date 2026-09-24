@@ -62,8 +62,15 @@ function resolvePath(path: string, links = 0): string {
  *   being a directory);
  * - `outside-tree`: `resolved` is not the root or inside it;
  * - `not-a-file`: something that is not a regular file is at the path
- *   (`EISDIR` for a directory), or an ancestor is not a directory
- *   (`ENOTDIR`).
+ *   (`EISDIR` for a directory, including a path resolving to the root
+ *   itself), an ancestor is not a directory (`ENOTDIR`), or resolution
+ *   meets a symlink cycle at the path or an ancestor (`ELOOP`, when
+ *   `MAX_LINKS` links were followed without reaching a real path; round 3
+ *   ruling: never reported as `ok`).
+ *
+ * Inside the tree means equal to `root` or starting with `root` plus the
+ * path separator, so a sibling whose path only shares the root's leading
+ * characters (`<root>-evil`) is `outside-tree`.
  */
 export type TargetPath =
   | { readonly kind: 'ok'; readonly path: string }

@@ -8,13 +8,16 @@
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  readlinkSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { onTestFinished } from 'vitest';
@@ -53,7 +56,10 @@ export function writeRel(root: string, rel: string, content: string): void {
   writeFileSync(path, content);
 }
 
-/** Every file below `root` (outside `.git`), relative path to content and mtime. */
+/**
+ * Every file below `root` (outside `.git`), relative path to content and
+ * mtime; a symlink is recorded by its target text, never followed.
+ */
 export function snapshot(root: string): Map<string, { content: string; mtimeMs: number }> {
   const files = new Map<string, { content: string; mtimeMs: number }>();
   const walk = (dir: string): void => {
@@ -62,7 +68,13 @@ export function snapshot(root: string): Map<string, { content: string; mtimeMs: 
         continue;
       }
       const path = join(dir, entry.name);
-      if (entry.isDirectory()) {
+      if (entry.isSymbolicLink()) {
+        // Recorded, not followed: its target may be a directory or a cycle.
+        files.set(relative(root, path), {
+          content: `symlink to ${readlinkSync(path)}`,
+          mtimeMs: lstatSync(path).mtimeMs,
+        });
+      } else if (entry.isDirectory()) {
         walk(path);
       } else {
         files.set(relative(root, path), {
@@ -124,4 +136,34 @@ export function chmodForTest(path: string, mode: number): void {
       chmodSync(path, previous);
     }
   });
+}
+
+/**
+ * A project root `<temp>/proj` and a sibling `<temp>/proj-evil` whose path
+ * starts with the root's path as a string but is not inside it.
+ */
+export function prefixSibling(): { root: string; sibling: string } {
+  const parent = tempDir();
+  const root = join(parent, 'proj');
+  const sibling = join(parent, 'proj-evil');
+  mkdirSync(root);
+  mkdirSync(sibling);
+  return { root, sibling };
+}
+
+/**
+ * Symlink cycles at `<root>/<rel>`: `two-node` links `rel` and `rel.b` to
+ * each other; `self-dir` links `<root>/loop` to `.` and `rel` to the
+ * dangling `loop/loop/loop/loop/<rel>`, which resolves back to itself.
+ */
+export function symlinkCycle(root: string, rel: string, kind: 'two-node' | 'self-dir'): void {
+  const path = join(root, rel);
+  mkdirSync(dirname(path), { recursive: true });
+  if (kind === 'two-node') {
+    symlinkSync(`${basename(path)}.b`, path);
+    symlinkSync(basename(path), `${path}.b`);
+  } else {
+    symlinkSync('.', join(root, 'loop'));
+    symlinkSync(join(relative(dirname(path), root) || '.', 'loop/loop/loop/loop', rel), path);
+  }
 }

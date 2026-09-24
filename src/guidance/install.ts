@@ -164,7 +164,12 @@ export type InstallAction = 'created' | 'updated' | 'unchanged' | 'refused';
  * - `outside-tree` (every target; orchestrator ruling, group 3 round 2):
  *   the target path, with symlinks resolved (`realpathSync` of the file
  *   when it exists, else of its nearest existing ancestor, with the rest of
- *   the path appended), is not the working tree root or inside it. Checked
+ *   the path appended), is not the working tree root or inside it. Inside
+ *   means below the root at a path-separator boundary: for the root
+ *   `/tmp/x/proj`, a sibling `/tmp/x/proj-evil/AGENTS.md` whose path merely
+ *   starts with the root's characters is outside. A target path that
+ *   resolves to the root itself is not a file there, so it is refused as
+ *   `not-a-file` (never written). Checked
  *   before anything is read, created or written, so nothing outside the
  *   tree is ever touched (no parent directory is created either). A symlink
  *   whose target stays inside the tree is followed normally: the file it
@@ -172,7 +177,11 @@ export type InstallAction = 'created' | 'updated' | 'unchanged' | 'refused';
  * - `not-a-file` (every target): the target path (after following
  *   symlinks) exists and is not a regular file (a directory, for example:
  *   `EISDIR`), or a parent of it exists and is not a directory, so the
- *   parents cannot be created (`ENOTDIR`, `EEXIST`).
+ *   parents cannot be created (`ENOTDIR`, `EEXIST`), or resolving the path
+ *   meets a symlink cycle at the path or at any ancestor, including a
+ *   dangling multi-segment target through a self-referential directory
+ *   (`ELOOP`: more than 40 links followed, or `ELOOP` from a read, mkdir
+ *   or write; round 3 ruling). The message names the code.
  * - `unwritable` (every target): reading the file, creating a parent
  *   directory or writing the file failed with `EACCES` or `EPERM`. A
  *   target that needs no write (`unchanged`) is not refused for a
@@ -618,8 +627,8 @@ function runHandler(
 /**
  * Installs `target` after checking its path (`outside-tree`, then
  * `not-a-file`), turning a permission error on a read, mkdir or write into
- * `unwritable` and a path that turns out not to hold a file into
- * `not-a-file`. Other errors propagate.
+ * `unwritable` and a path that turns out not to hold a file, or a symlink
+ * cycle (`ELOOP`), into `not-a-file`. Other errors propagate.
  */
 function installTarget(
   target: GuidanceTarget,

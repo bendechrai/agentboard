@@ -20,6 +20,7 @@ import {
   commentLines,
   linkedWorktree,
   plainProject,
+  symlinkCycle,
   readRel,
   repo,
   snapshot,
@@ -348,5 +349,29 @@ describe('filesystem problems exit 1 with a refusal, never 5', () => {
     expect(out.code).toBe(1);
     expect(out.stderr).toContain('refused agents-md');
     expect(readRel(outside, '')).toBe('theirs\n');
+  });
+});
+
+describe('symlink cycles through the built CLI (round 3)', () => {
+  it('install exits 1 refusing the cycle and installs the rest; check exits 0', () => {
+    const root = plainProject();
+    symlinkCycle(root, AGENTS, 'two-node');
+    const out = cli(['agents', 'install', '--target', 'agents-md', '--target', 'claude'], root);
+    expect(out.code, out.stderr).toBe(1);
+    expect(out.stderr).toMatch(/^agentboard: refused agents-md: .*ELOOP/m);
+    expect(existsSync(join(root, SKILL))).toBe(true);
+    const check = cli(['agents', 'check'], root);
+    expect(check.code, check.stderr).toBe(0);
+  });
+
+  it('install exits 1, not 5, for a self-referential directory cycle', () => {
+    const root = plainProject();
+    symlinkCycle(root, AGENTS, 'self-dir');
+    const out = cli(['agents', 'install', '--target', 'agents-md', '--json'], root);
+    expect(out.code, out.stderr).toBe(1);
+    expect(oneJson(out)).toMatchObject({
+      refused: 1,
+      targets: [{ target: 'agents-md', action: 'refused', refusal: 'not-a-file' }],
+    });
   });
 });
