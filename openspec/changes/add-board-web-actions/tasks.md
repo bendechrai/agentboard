@@ -1,8 +1,8 @@
 # Tasks
 
-Depends on `add-board-web` (all groups). Archive after `add-board-web`:
-its `board-web` delta modifies requirements that change adds (OpenSpec
-refuses to archive it earlier). Independent of `add-board-insights` and
+Depends on `add-board-web` (all groups), which is archived; this change's
+`board-web` and `board-cli` deltas restate the main spec text as archived
+from it, plus write mode. Independent of `add-board-insights` and
 `add-board-tui`. Every group is delivered by a test author, an
 implementer and a reviewer in turn (see CONTRIBUTING.md), on one branch
 per group named `<area>/<group-slug>` and cut from `origin/staging`; the

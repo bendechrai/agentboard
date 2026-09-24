@@ -44,8 +44,8 @@ between agents.
 
 ### Modified Capabilities
 - `board-cli`: "Command surface" gains `health`; "MCP server" lists
-  `board_health`. The text of both assumes `add-board-web` is archived
-  first.
+  `board_health`. The text of both is the main spec as archived from
+  `add-board-web`, plus `health`; it does not assume `add-board-tui`.
 
 ## Non-Goals
 

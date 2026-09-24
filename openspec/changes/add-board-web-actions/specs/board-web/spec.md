@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Serve command
-`agentboard serve [--port <n>] [--open] [--as <actor>]` SHALL start a local HTTP server
+`agentboard serve [--port <port>] [--open] [--as <actor>]` SHALL start a local HTTP server
 for the board found by the usual discovery rules and run until SIGINT or
 SIGTERM, then close every connection and exit 0. Without `--port` the port
 SHALL be chosen by the operating system (port 0); `--port` SHALL accept an

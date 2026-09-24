@@ -41,16 +41,16 @@ full workflow, and docs/adr/ for design decisions.
   `agents install --mcp-command <executable>` writes a local MCP command
   (for example `agentboard` after `npm link`) instead of the `npx` entry,
   and both entry shapes are managed.
-- The `add-board-web` OpenSpec change is complete once its group 5
-  (`web/smoke-docs`) merges: `agentboard serve`, a read-only local web
-  app (loopback, per-run token handed over in the URL fragment and sent as
-  a bearer header, Host check, no CORS, no cookies, COOP and CORP), the
-  JSON API and SSE stream, the board-wide change feed (`board-feed`, on
-  the tick machinery shared with `watch`), the pure view-model layer
-  (`board-view-model`), the Preact front end bundled into `dist/web/`, an
-  end-to-end smoke test on the built CLI, the README section "Watching the
-  board in a browser" and ADRs 0006 and 0007. It still has to be archived
-  (its own PR) so its deltas become main specs.
+- The `add-board-web` OpenSpec change is complete and archived as
+  `openspec/changes/archive/2026-09-24-add-board-web/`: `agentboard
+  serve`, a read-only local web app (loopback, per-run token handed over
+  in the URL fragment and sent as a bearer header, Host check, no CORS, no
+  cookies, COOP and CORP), the JSON API and SSE stream, the board-wide
+  change feed, the pure view-model layer, the Preact front end bundled
+  into `dist/web/`, an end-to-end smoke test, the README section "Watching
+  the board in a browser" and ADRs 0006 and 0007. Its requirements are the
+  main specs `board-web`, `board-feed` and `board-view-model`, plus
+  changes to `board-cli`.
 - Three more observability changes under `openspec/changes/` build on it:
   `add-board-insights` and `add-board-tui` (in progress), then
   `add-board-web-actions`.
@@ -64,10 +64,7 @@ full workflow, and docs/adr/ for design decisions.
 1. A human reviews `staging` and promotes it to `main` (a merge-commit PR
    from `staging`) when ready. Publishing to npm is deferred: agentboard
    is used locally through `npm link`.
-2. Archive `add-board-web` in its own PR once group 5 has merged (see
-   CONTRIBUTING.md, "OpenSpec"), before archiving any later change,
-   because their spec deltas are written against it.
-3. Finish the observability changes in progress, then the last one
+2. Finish the observability changes in progress, then the last one
    (each change's `tasks.md` states its dependencies; archive them in
    this order):
    1. `add-board-insights`: health panel and `agentboard health` (also the
