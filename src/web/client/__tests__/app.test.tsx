@@ -393,6 +393,82 @@ describe('bootstrap', () => {
     }
   });
 
+  it('reads the #token= fragment only at load, never on a later hashchange', async () => {
+    const other = 'B'.repeat(43);
+    const api = new FakeApi(model(inputs()));
+    vi.stubGlobal('fetch', api.fetch);
+    setHash(`#token=${TOKEN}`);
+    const el = root();
+    try {
+      mount(el);
+      await waitFor(() => {
+        expect(el.querySelector(`article.card[data-ticket="${T1}"]`)).not.toBeNull();
+      });
+      await streamOf(api);
+      act(() => {
+        setHash('#/lanes');
+      });
+      await waitFor(() => {
+        expect(el.querySelectorAll('section.lane').length).toBeGreaterThan(0);
+      });
+
+      act(() => {
+        setHash(`#token=${other}`);
+      });
+      // The fragment is not a route: the view falls back to the board.
+      await waitFor(() => {
+        expect(el.querySelectorAll('section.column')).toHaveLength(6);
+      });
+      expect(window.sessionStorage.getItem('agentboard-token')).toBe(TOKEN);
+
+      act(() => {
+        setHash(`#/ticket/${T1}`);
+      });
+      await waitFor(() => {
+        expect(el.querySelector(`article.ticket[data-ticket="${T1}"]`)).not.toBeNull();
+      });
+      expect(el.querySelector('.no-token')).toBeNull();
+      expect(window.sessionStorage.getItem('agentboard-token')).toBe(TOKEN);
+      expect(api.requests.some((r) => r.url.startsWith('/api/tickets/'))).toBe(true);
+      for (const { url, init } of api.requests) {
+        expect(url).not.toContain(other);
+        expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${TOKEN}`);
+      }
+    } finally {
+      preactRender(null, el);
+      el.remove();
+    }
+  });
+
+  it('App ignores a #token= fragment set after it loaded', async () => {
+    const other = 'B'.repeat(43);
+    const api = new FakeApi(model(inputs()));
+    window.sessionStorage.setItem('agentboard-token', TOKEN);
+    await loaded(api);
+    act(() => {
+      setHash('#/lanes');
+    });
+    await waitFor(() => {
+      expect(document.querySelectorAll('section.lane').length).toBeGreaterThan(0);
+    });
+    act(() => {
+      setHash(`#token=${other}`);
+    });
+    await waitFor(() => {
+      expect(document.querySelectorAll('section.column')).toHaveLength(6);
+    });
+    act(() => {
+      setHash(`#/ticket/${T1}`);
+    });
+    await waitFor(() => {
+      expect(document.querySelector(`article.ticket[data-ticket="${T1}"]`)).not.toBeNull();
+    });
+    expect(window.sessionStorage.getItem('agentboard-token')).toBe(TOKEN);
+    for (const { init } of api.requests) {
+      expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${TOKEN}`);
+    }
+  });
+
   it('mount uses the stored token on a reload and keeps the view route', async () => {
     const api = new FakeApi(model(inputs()));
     vi.stubGlobal('fetch', api.fetch);
