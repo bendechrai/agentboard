@@ -33,8 +33,11 @@ full workflow, and docs/adr/ for design decisions.
   Built: generated help and suggestions, `help agents` with role
   checklists, error hints on the CLI and MCP, `agents install` and
   `agents check`, the `init` suggestion, and the guide over MCP
-  (instructions summary and `agentboard://guide` resources). There are no
-  open OpenSpec changes.
+  (instructions summary and `agentboard://guide` resources).
+- The `add-mcp-command` OpenSpec change is proposed: `agents install
+  --mcp-command <executable>` writes a local MCP command (for example
+  `agentboard` after `npm link`) instead of the `npx` entry, which only
+  works once the package is published. It is not implemented yet.
 - This repository uses its own guidance: `agentboard agents install`
   wrote `.claude/skills/agentboard/SKILL.md` and the `agentboard:` apply
   and archive guidance in `openspec/config.yaml`; `agentboard agents
@@ -42,7 +45,9 @@ full workflow, and docs/adr/ for design decisions.
 
 ## What to do next
 
-1. A human reviews `staging` and promotes it to `main` (a merge-commit PR
+1. Implement `add-mcp-command` (one task group plus docs) with the
+   three-role loop, then archive it.
+2. A human reviews `staging` and promotes it to `main` (a merge-commit PR
    from `staging`), then publishes the npm package.
 
 Each task group uses the three-role loop from CONTRIBUTING.md
