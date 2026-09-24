@@ -26,7 +26,7 @@ function command(name: string): CommandSpec {
 }
 
 describe('the command registry', () => {
-  it('defines the commands of this group, once each, in order', () => {
+  it('defines the commands of this version, once each, in order', () => {
     expect(COMMANDS.map((c) => c.name)).toEqual([
       'init',
       'new',
@@ -41,6 +41,8 @@ describe('the command registry', () => {
       'checklist tick',
       'checklist untick',
       'close',
+      'rebuild',
+      'sync',
       'import-change',
       'close-merged',
       'mcp',
@@ -212,6 +214,11 @@ describe('the command registry', () => {
         ['no-decision', 'boolean', false, false],
       ],
       exclusive: [[[['decision-recorded-in'], ['no-decision']], true]],
+    });
+    expect(shape('rebuild')).toEqual({
+      positionals: [],
+      flags: [['check', 'boolean', false, false]],
+      exclusive: [],
     });
     expect(shape('show')).toEqual({
       positionals: [['id', 'string', true]],

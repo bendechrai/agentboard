@@ -145,9 +145,11 @@ the contents of the cache file or raw event files unless asked with `show
 - **THEN** stdout parses as one JSON array and nothing else is written to stdout
 
 ### Requirement: Exit codes
-Exit codes SHALL be: 0 success; 1 usage error or missing actor; 2 board not
-found or unreadable; 3 conflict during sync that needs a human (see
-board-concurrency); 4 action rejected by board state (invalid transition,
+Exit codes SHALL be: 0 success; 1 usage error, missing actor, or
+`rebuild --check` finding a difference (including a missing cache file); 2 board not
+found or unreadable; 3 sync problem that needs a human (a conflict, a
+sync already in progress, a detached HEAD, or an unreachable or rejecting
+remote; see board-concurrency); 4 action rejected by board state (invalid transition,
 already assigned, not assignee, unknown ticket); 5 event log or cache
 integrity problem (corrupt or malformed file encountered where the command
 needed it, an existing event file whose content does not match its name, or

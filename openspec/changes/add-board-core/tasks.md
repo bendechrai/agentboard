@@ -35,11 +35,11 @@ branch is reviewed and merged, and its decisions are in a spec delta or ADR.
 
 ## 4. Concurrency and crash properties
 
-- [ ] 4.1 Add a test harness that builds the CLI once and spawns it as child processes against a temporary board, and verify it can run 20 processes concurrently on macOS and Linux within the vitest timeout
-- [ ] 4.2 Ten concurrent `claim` processes on one ticket: verify exactly one exits 0, nine exit 4 naming the winner, `show` reports one assignee, and `rebuild --check` reports no divergence
-- [ ] 4.3 Twenty concurrent `comment` processes: verify all twenty comments are present in deterministic order and `rebuild --check` reports no divergence
-- [ ] 4.4 Crash injection: with an environment variable that makes the CLI pause after rename and after temp-write, kill the child with SIGKILL at each point and verify the next command recovers (event folded in the first case; temp reaped and ticket unchanged in the second)
-- [ ] 4.5 Busy-timeout behaviour: verify two writers within the same millisecond both succeed and neither reports a locked database
+- [x] 4.1 Add a test harness that builds the CLI once and spawns it as child processes against a temporary board, and verify it can run 20 processes concurrently on macOS and Linux within the vitest timeout
+- [x] 4.2 Ten concurrent `claim` processes on one ticket: verify exactly one exits 0, nine exit 4 naming the winner, `show` reports one assignee, and `rebuild --check` reports no divergence
+- [x] 4.3 Twenty concurrent `comment` processes: verify all twenty comments are present in deterministic order and `rebuild --check` reports no divergence
+- [x] 4.4 Crash injection: with an environment variable that makes the CLI pause after rename and after temp-write, kill the child with SIGKILL at each point and verify the next command recovers (event folded in the first case; temp reaped and ticket unchanged in the second)
+- [x] 4.5 Busy-timeout behaviour: verify two writers within the same millisecond both succeed and neither reports a locked database
 
 ## 5. Inbox and watch
 
@@ -48,8 +48,8 @@ branch is reviewed and merged, and its decisions are in a spec delta or ADR.
 
 ## 6. Sync
 
-- [ ] 6.1 Implement `sync` (add, commit if needed, pull --rebase, push; no-remote path; exit 3 on non-event conflicts; warning if the host repo tracks `.board`) and verify with tests using two clones of a bare temporary remote that divergent add-only events converge to identical rebuilt caches
-- [ ] 6.2 Verify with a test that `cache.sqlite` and its WAL and SHM files are never committed by `sync`
+- [x] 6.1 Implement `sync` (add, commit if needed, pull --rebase, push; no-remote path; exit 3 on any conflict or other problem that needs a human; warning if the host repo tracks `.board`) and verify with tests using two clones of a bare temporary remote that divergent add-only events converge to identical rebuilt caches
+- [x] 6.2 Verify with a test that `cache.sqlite` and its WAL and SHM files are never committed by `sync`
 
 ## 7. OpenSpec integration
 

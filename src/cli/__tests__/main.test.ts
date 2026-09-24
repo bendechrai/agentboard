@@ -7,7 +7,7 @@ import { SAMPLES } from '../../board/__tests__/helpers.js';
 import { SECRET_PATTERN_NAMES } from '../../board/secrets.js';
 import { version } from '../../index.js';
 import { BoardError } from '../../store/errors.js';
-import { ev, eventNames, gitRepo, putEvent, tempDir } from '../../store/__tests__/helpers.js';
+import { ev, eventNames, git, gitRepo, putEvent, tempDir } from '../../store/__tests__/helpers.js';
 import { errorDocument, exitCodeFor } from '../main.js';
 import { CLOSE_RULE, COMMANDS } from '../registry.js';
 import { cliEnv, oneJson, project, run, written, type Run } from './cli-helpers.js';
@@ -69,6 +69,11 @@ describe('every command prints exactly one JSON document with --json', () => {
         run(['move', id(), 'blocked', ...AS], root);
         return run(['close', id(), '--no-decision', ...AS, '--json'], root);
       },
+      rebuild: () => run(['rebuild', '--json'], root),
+      sync: () => {
+        git(join(root, '.board'), 'init', '-q');
+        return run(['sync', '--json'], root);
+      },
       'import-change': () => {
         mkdirSync(join(root, 'openspec', 'changes', 'c'), { recursive: true });
         writeFileSync(join(root, 'openspec', 'changes', 'c', 'tasks.md'), '## 1. G\n- [ ] 1.1 t\n');
@@ -109,6 +114,8 @@ describe('every command prints exactly one JSON document with --json', () => {
     });
     expect(docs['checklist untick']).toMatchObject({ ticket: { id: id() }, reminder: null });
     expect(docs.close).toMatchObject({ ticket: { closed: true } });
+    expect(docs.rebuild).toMatchObject({ folded: 11, rejected: 0 });
+    expect(docs.sync).toMatchObject({ remote: null, pushed: false, warnings: [] });
     expect(docs['import-change']).toMatchObject({ source: 'openspec', ref: 'c', events: 1 });
     expect(docs['close-merged']).toEqual({ closed: [], unmerged: [], skipped: [] });
     expect(docs.mcp).toMatchObject({ error: { exitCode: 1, reason: 'not-implemented' } });

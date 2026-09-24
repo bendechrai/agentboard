@@ -6,10 +6,10 @@
  * (`parseArgs`) is driven by it, and task group 9 generates the MCP tools
  * from it.
  *
- * Group 3 registers the ticket lifecycle commands plus `version` and the
- * `mcp` placeholder; group 7 adds `import-change` and `close-merged`.
- * `inbox`, `watch`, `rebuild` and `sync` are added by the task groups that
- * implement them.
+ * Task group 3 registered the ticket lifecycle commands plus `version` and
+ * the `mcp` placeholder; task group 4 adds `rebuild`, task group 6 adds
+ * `sync` and task group 7 adds `import-change` and `close-merged`. `inbox`
+ * and `watch` are added by the task group that implements them.
  */
 
 import {
@@ -26,14 +26,28 @@ import {
 import { importChange, parseImportTarget } from '../board/import.js';
 import { initBoard } from '../board/init.js';
 import { closeMerged } from '../board/merged.js';
+import { syncBoard } from '../board/sync.js';
 import { TASK_RULE } from '../board/text.js';
 import { parseTaskFilter, taskRefFromArgs, type TaskFilter } from '../board/resolve.js';
 import { listTickets, newTicket, showRaw, showTicket } from '../board/tickets.js';
 import type { WriteOutcome } from '../board/types.js';
 import { STATUSES, type Status } from '../events/schema.js';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
+import type { Board } from '../store/board.js';
+import { CACHE_FILE, CACHE_SCHEMA_VERSION } from '../store/cache.js';
 import { BoardError } from '../store/errors.js';
+import { checkCache, rebuild } from '../store/rebuild.js';
 import { VERSION } from '../version.js';
-import { asciiText, renderListLine, renderShow } from './render.js';
+import {
+  asciiText,
+  renderCheck,
+  renderListLine,
+  renderRebuild,
+  renderShow,
+  type CheckDocument,
+} from './render.js';
 import type {
   ArgSpec,
   ArgValues,
@@ -245,6 +259,79 @@ function listTaskFilter(values: ArgValues): TaskFilter | undefined {
   return { source: 'openspec', ref: change };
 }
 
+/** `rebuild`: a full refold on the board opened without catch-up. */
+function runRebuild(ctx: RunContext): CommandOutput {
+  const report = rebuild(ctx.board({ catchUp: false }));
+  return { json: report, text: renderRebuild(report) };
+}
+
+/**
+ * `rebuild --check`: compares the live cache, opened for inspection only
+ * (no catch-up, never created, migrated or written), with a fresh rebuild.
+ */
+function runCheck(ctx: RunContext): CommandOutput {
+  const cachePath = join(ctx.boardDir(), CACHE_FILE);
+  if (!existsSync(cachePath)) {
+    return noCacheOutput(cachePath);
+  }
+  let board: Board;
+  try {
+    board = ctx.board({ catchUp: false, prepare: false });
+  } catch (error) {
+    if (error instanceof BoardError && error.reason === 'no-cache') {
+      return noCacheOutput(cachePath);
+    }
+    if (error instanceof BoardError && error.reason === 'schema-mismatch') {
+      const doc: CheckDocument = {
+        ok: false,
+        noCache: false,
+        schemaMismatch: true,
+        differences: [],
+        report: null,
+      };
+      return {
+        json: doc,
+        text: renderCheck(doc),
+        exitCode: 1,
+        warnings: [
+          `the cache file at ${cachePath} is not a cache of schema version ${String(CACHE_SCHEMA_VERSION)}; run agentboard rebuild to replace it`,
+        ],
+      };
+    }
+    throw error;
+  }
+  const result = checkCache(board);
+  const doc: CheckDocument = { ...result, noCache: false, schemaMismatch: false };
+  if (result.ok) {
+    return { json: doc, text: renderCheck(doc) };
+  }
+  return {
+    json: doc,
+    text: renderCheck(doc),
+    exitCode: 1,
+    warnings: [
+      `the cache differs from the event log in ${String(result.differences.length)} row(s); run agentboard rebuild to replace it`,
+    ],
+  };
+}
+
+/** The `rebuild --check` output when there is no cache file at `cachePath`. */
+function noCacheOutput(cachePath: string): CommandOutput {
+  const doc: CheckDocument = {
+    ok: false,
+    noCache: true,
+    schemaMismatch: false,
+    differences: [],
+    report: null,
+  };
+  return {
+    json: doc,
+    text: renderCheck(doc),
+    exitCode: 1,
+    warnings: [`there is no cache file at ${cachePath}; run agentboard rebuild to create it`],
+  };
+}
+
 /** `checklist tick` and `checklist untick`. */
 function checklistRun(done: boolean): CommandSpec['run'] {
   return (ctx, values) => {
@@ -260,8 +347,9 @@ function checklistRun(done: boolean): CommandSpec['run'] {
 /**
  * Every command of this version, in this order: `init`, `new`, `show`,
  * `list`, `claim`, `release`, `move`, `comment`, `handoff`, `link`,
- * `checklist tick`, `checklist untick`, `close`, `import-change`,
- * `close-merged`, `mcp`, `version`.
+ * `checklist tick`, `checklist untick`, `close`, `rebuild`, `sync`,
+ * `import-change`, `close-merged`, `mcp`, `version` (the board-cli order, in
+ * which `rebuild` follows `inbox` and `watch` and precedes `sync`).
  *
  * `run` of each command calls the named operation and returns its result
  * as the `--json` document, with this human rendering:
@@ -274,6 +362,38 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   `checklist tick|untick`); text: the `list` line of the resulting
  *   ticket, preceded by `already claimed by <actor>` for a claim that
  *   wrote nothing, and followed, for a tick, by the reminder `message`.
+ * - `rebuild`: `RebuildReport` from the store's `rebuild` on the board
+ *   opened with `ctx.board({ catchUp: false })`, so the open folds nothing
+ *   and reaps nothing: every event file, including one no command has
+ *   folded yet, is folded, counted and reported by the rebuild itself
+ *   (board-cache: "Rebuild"); text: `renderRebuild`. Exit 0.
+ * - `rebuild --check`: a `CheckDocument`. First, when
+ *   `<ctx.boardDir()>/cache.sqlite` does not exist, the document is the
+ *   `noCache` one, the output carries `exitCode: 1` and the warning
+ *   `there is no cache file at <path>; run agentboard rebuild to create it`,
+ *   and the board is never opened, so no cache file is created. Otherwise
+ *   the board is opened with `ctx.board({ catchUp: false, prepare: false })`,
+ *   so the cache file is never created, migrated or written, no event file
+ *   is folded and no temporary file is reaped before the comparison
+ *   (board-cache: "Rebuild", `rebuild --check` SHALL NOT modify the live
+ *   cache file). If that open throws `BoardError` reason `no-cache` (the
+ *   file vanished after the existence check), the result is the `noCache`
+ *   one above. If it throws reason `schema-mismatch`, the document is the
+ *   `schemaMismatch` one, the output carries `exitCode: 1` and the warning
+ *   `the cache file at <path> is not a cache of schema version <CACHE_SCHEMA_VERSION>; run agentboard rebuild to replace it`,
+ *   and the file is left byte for byte unchanged, cursor rows included.
+ *   Otherwise the store's `checkCache` runs on that board and the document
+ *   is its `CheckResult` with `noCache: false` and `schemaMismatch: false`;
+ *   text:
+ *   `renderCheck`. With no difference it exits 0. On divergence the output
+ *   carries `exitCode: 1` and one warning,
+ *   `the cache differs from the event log in <n> row(s); run agentboard rebuild to replace it`,
+ *   so stdout still receives the full report (the document with `--json`)
+ *   and the process exits 1. `rebuild` writes no event, so it needs no
+ *   actor (`--as` is accepted and ignored).
+ * - `sync`: `SyncResult` (`syncBoard` with `ctx.env`; writes no event, so
+ *   no actor is needed); text: its `message` and a newline; `warnings`:
+ *   the result's `warnings`, printed to stderr by `runCli`.
  * - `import-change <name>`: `ImportResult`; `name` goes through
  *   `parseImportTarget` (a plain name is an OpenSpec change,
  *   `<source>:<ref>` names another source). Text: one line per unit,
@@ -548,6 +668,35 @@ export const COMMANDS: readonly CommandSpec[] = [
             : { id, decisionRecordedIn: path, cwd: ctx.cwd, env: ctx.env },
         ),
       );
+    },
+  },
+  {
+    name: 'rebuild',
+    summary: 'Refold the cache from the event log (--check: compare only, exit 1 on divergence)',
+    positionals: [],
+    flags: [
+      flag(
+        'check',
+        'boolean',
+        'Compare a fresh rebuild with the cache without changing it; exit 1 on divergence',
+      ),
+    ],
+    exclusive: [],
+    writes: false,
+    operation: 'rebuild',
+    run: (ctx, values) => (bool(values, 'check') ? runCheck(ctx) : runRebuild(ctx)),
+  },
+  {
+    name: 'sync',
+    summary: "Commit new events, pull with rebase from the board's remote and push",
+    positionals: [],
+    flags: [],
+    exclusive: [],
+    writes: false,
+    operation: 'syncBoard',
+    run: (ctx) => {
+      const result = syncBoard(ctx.board(), { env: ctx.env });
+      return { json: result, text: `${result.message}\n`, warnings: result.warnings };
     },
   },
   {

@@ -9,7 +9,7 @@ import { openBoard, type Board } from '../store/board.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
 import { findBoard } from '../store/locate.js';
 import { parseArgs, resolveActor, type ParsedCommand } from './parse.js';
-import type { Env, RunContext } from './types.js';
+import type { BoardOpenOptions, Env, RunContext } from './types.js';
 
 /** The process surroundings `runCli` uses; nothing else is read or written. */
 export interface CliIo {
@@ -62,12 +62,17 @@ export function errorDocument(error: unknown): ErrorDocument {
  * 2. For a writing command, `resolveActor(values.as, io.env)`.
  * 3. `command.run(ctx, values)` with a context whose `board()` finds and
  *    opens the board lazily (`findBoard` with `io.cwd` and `io.env`, then
- *    `openBoard`); the board is closed before returning. After opening, one
+ *    `openBoard`, passing `catchUp: false` when the first call asks for
+ *    it) and whose `boardDir()` runs discovery only; the board is closed
+ *    before returning. After opening, one
  *    stderr line `agentboard: removed stale temporary file <path>` is
  *    printed for each reaped temporary file and `agentboard: <message>` for
  *    each corrupt event file in the open report.
- * 4. Success: with `--json`, stdout receives `JSON.stringify(output.json)`
- *    and a newline, and nothing else; without it, `output.text`. Exit 0.
+ * 4. Success (`run` returned): stderr first receives `agentboard: <line>`
+ *    and a newline for each of `output.warnings`; then, with `--json`,
+ *    stdout receives `JSON.stringify(output.json)` and a newline, and
+ *    nothing else; without it, `output.text`. Returns `output.exitCode`
+ *    when present (1 for a divergent `rebuild --check`), otherwise 0.
  * 5. Failure (anything thrown in steps 1 to 3): stderr receives
  *    `agentboard: <message>` and a newline; with `--json` (detected
  *    anywhere in `io.argv`, even when parsing failed), stdout also receives
@@ -92,9 +97,15 @@ export function runCli(io: CliIo): ExitCode {
       cwd: io.cwd,
       env: io.env,
       actor,
-      board(): Board {
+      boardDir(): string {
+        return findBoard({ cwd: io.cwd, env: io.env }).dir;
+      },
+      board(options?: BoardOpenOptions): Board {
         if (board === null) {
-          board = openBoard(findBoard({ cwd: io.cwd, env: io.env }).dir);
+          board = openBoard(findBoard({ cwd: io.cwd, env: io.env }).dir, {
+            catchUp: options?.catchUp !== false,
+            prepare: options?.prepare !== false,
+          });
           for (const path of board.opened?.reaped ?? []) {
             io.stderr(`agentboard: removed stale temporary file ${path}\n`);
           }
@@ -106,8 +117,11 @@ export function runCli(io: CliIo): ExitCode {
       },
     };
     const output = command.run(ctx, values);
+    for (const line of output.warnings ?? []) {
+      io.stderr(`agentboard: ${line}\n`);
+    }
     io.stdout(parsed.json ? `${JSON.stringify(output.json)}\n` : output.text);
-    return 0;
+    return output.exitCode ?? 0;
   } catch (error) {
     const doc = errorDocument(error);
     io.stderr(`agentboard: ${doc.error.message}\n`);
