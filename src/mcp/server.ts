@@ -45,9 +45,30 @@
  * `McpServer.registerTool`, which needs zod schemas. The server name is
  * `SERVER_NAME` and its version is `VERSION`.
  *
- * Tool errors carry a `hint` (add-agent-guidance task group 2). Not yet
- * here (add-agent-guidance task group 4): server `instructions` and the
- * `agentboard://guide` resource. Nothing here may preclude them.
+ * Tool errors carry a `hint` (add-agent-guidance task group 2).
+ *
+ * The guide over MCP (board-agent-guidance: "Guide over MCP";
+ * add-agent-guidance task 4.1): the server's `instructions` are
+ * `renderGuideSummary(VERSION)` and the server declares the `resources`
+ * capability as an empty object (no `subscribe`, no `listChanged`: the
+ * resources never change while the server runs). The resources are
+ * static text, built from `src/guidance/guide.ts`, and need no board, no
+ * actor and no board open: they are served even if the board has gone
+ * since start-up, and reading them writes nothing to stderr.
+ *
+ * Decisions recorded here (test author, task group 4):
+ * - Besides `agentboard://guide`, each role's checklist is a resource,
+ *   `agentboard://guide/<role>`, whose text is the stdout of
+ *   `agentboard help agents --role <role>` (the guide followed by the
+ *   checklist). `help` is not a tool, so without these an MCP-only client
+ *   could not reach the checklists that the guide and the orchestrator's
+ *   checklist tell agents to read.
+ * - Only `resources/list` and `resources/read` are handled; no resource
+ *   templates (the URIs are few and fixed, and all listed).
+ * - An unknown URI is refused as the SDK's own `McpServer` refuses one:
+ *   `McpError(ErrorCode.InvalidParams, "Resource <uri> not found")`
+ *   (JSON-RPC error -32602). URIs match exactly: no normalization, so a
+ *   trailing slash, a query, a fragment or a change of case is unknown.
  */
 
 import type { Readable, Writable } from 'node:stream';
@@ -55,11 +76,25 @@ import type { Readable, Writable } from 'node:stream';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ErrorCode,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  McpError,
+  ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 
 import { LazyBoard, commandActor, errorDocument, exitCodeFor, runContext } from '../cli/main.js';
 import { ACTOR_ENV } from '../cli/parse.js';
 import type { Env } from '../cli/types.js';
+import {
+  GUIDE_RESOURCE_URI,
+  ROLES,
+  agentsHelpOutput,
+  renderGuideSummary,
+  type Role,
+} from '../guidance/guide.js';
 import type { HintContext } from '../guidance/hints.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
 import { findBoard } from '../store/locate.js';
@@ -177,10 +212,30 @@ export interface BoardMcpServer {
   callTool(name: string, args: unknown): ToolCallResult;
   /**
    * Connects the MCP protocol server to `transport` (stdio in production,
-   * an in-memory pair in tests) and starts serving `initialize`,
-   * `tools/list` (every `toolDefinitions()` entry as `{ name,
-   * description, inputSchema, annotations }`) and `tools/call` (via
-   * `callTool`). Resolves once connected.
+   * an in-memory pair in tests) and starts serving `initialize` (with
+   * capabilities `tools` and `resources`, and `instructions`
+   * `renderGuideSummary(VERSION)`), `tools/list` (every `toolDefinitions()`
+   * entry as `{ name, description, inputSchema, annotations }`),
+   * `tools/call` (via `callTool`), `resources/list` and `resources/read`.
+   * Resolves once connected.
+   *
+   * `resources/list` returns, in this order, `{ uri: GUIDE_RESOURCE_URI,
+   * name: 'guide', title, description, mimeType: 'text/plain' }` and then,
+   * for each role of `ROLES` in order, `{ uri: 'agentboard://guide/<role>',
+   * name: 'guide-<role>', title, description, mimeType: 'text/plain' }`,
+   * with a non-empty ASCII `title` and `description` (for example
+   * `Agent guide` / `The full agent guide, as printed by agentboard help
+   * agents` and `Agent guide: <role>` / `The agent guide and the <role>
+   * checklist, as printed by agentboard help agents --role <role>`); no
+   * `nextCursor`.
+   *
+   * `resources/read` of a listed URI returns exactly one content item,
+   * `{ uri, mimeType: 'text/plain', text }`, where `text` is the `text` of
+   * `agentboard help agents` (`agentsHelpOutput(VERSION, undefined)`) for
+   * the guide and of `agentboard help agents --role <role>`
+   * (`agentsHelpOutput(VERSION, role)`) for a role: byte for byte the
+   * stdout of the same CLI invocation of the same build. Any other URI is
+   * the `InvalidParams` error described in the module comment.
    */
   connect(transport: Transport): Promise<void>;
   /** Closes the protocol server and its transport. Idempotent. */
@@ -198,7 +253,7 @@ export function createMcpServer(options: McpServerOptions): BoardMcpServer {
   const boardDir = findBoard({ cwd: options.cwd, env: options.env }).dir;
   const mcp = new McpServer(
     { name: SERVER_NAME, version: VERSION },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {}, resources: {} }, instructions: renderGuideSummary(VERSION) },
   );
   const callTool = (name: string, args: unknown): ToolCallResult =>
     runTool(options, boardDir, name, args);
@@ -220,6 +275,24 @@ export function createMcpServer(options: McpServerOptions): BoardMcpServer {
   mcp.server.setRequestHandler(CallToolRequestSchema, (request) => ({
     ...callTool(request.params.name, request.params.arguments),
   }));
+  mcp.server.setRequestHandler(ListResourcesRequestSchema, () => ({
+    resources: GUIDE_RESOURCES.map(({ uri, name, title, description }) => ({
+      uri,
+      name,
+      title,
+      description,
+      mimeType: 'text/plain',
+    })),
+  }));
+  mcp.server.setRequestHandler(ReadResourceRequestSchema, (request) => {
+    const { uri } = request.params;
+    const resource = GUIDE_RESOURCES.find((r) => r.uri === uri);
+    if (resource === undefined) {
+      throw new McpError(ErrorCode.InvalidParams, `Resource ${uri} not found`);
+    }
+    const { text } = agentsHelpOutput(VERSION, resource.role ?? undefined);
+    return { contents: [{ uri, mimeType: 'text/plain', text }] };
+  });
   let closed = false;
   return {
     boardDir,
@@ -233,6 +306,34 @@ export function createMcpServer(options: McpServerOptions): BoardMcpServer {
     },
   };
 }
+
+/** A guide resource served over MCP (see `BoardMcpServer.connect`). */
+interface GuideResource {
+  readonly uri: string;
+  readonly name: string;
+  readonly title: string;
+  readonly description: string;
+  /** The `--role` of `help agents` whose output it serves, or null for none. */
+  readonly role: Role | null;
+}
+
+/** Every guide resource, in `resources/list` order. */
+const GUIDE_RESOURCES: readonly GuideResource[] = [
+  {
+    uri: GUIDE_RESOURCE_URI,
+    name: 'guide',
+    title: 'Agent guide',
+    description: 'The full agent guide, as printed by agentboard help agents',
+    role: null,
+  },
+  ...ROLES.map((role) => ({
+    uri: `${GUIDE_RESOURCE_URI}/${role}`,
+    name: `guide-${role}`,
+    title: `Agent guide: ${role}`,
+    description: `The agent guide and the ${role} checklist, as printed by agentboard help agents --role ${role}`,
+    role,
+  })),
+];
 
 /** Steps 1 to 6 of `BoardMcpServer.callTool`. Never throws. */
 function runTool(

@@ -189,7 +189,11 @@ project's own checks. With `--json` it SHALL print an array of
 The `mcp` server SHALL send, as its server `instructions`, a summary of the
 agent guide of at most 2000 characters that ends by naming the resource
 `agentboard://guide`, and SHALL expose the full output of
-`agentboard help agents` as that resource with MIME type `text/plain`.
+`agentboard help agents` as that resource with MIME type `text/plain`. It
+SHALL also expose each role's checklist, the output of
+`agentboard help agents --role <role>`, as `agentboard://guide/<role>`,
+because `help` is not an MCP tool. Reading any other URI SHALL fail with the
+MCP InvalidParams error the SDK uses for an unknown resource.
 
 #### Scenario: Client reads the guide
 - **WHEN** an MCP client reads the resource `agentboard://guide`

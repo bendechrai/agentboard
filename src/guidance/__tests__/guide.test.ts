@@ -16,7 +16,6 @@ import { describe, expect, it } from 'vitest';
 
 import { expectBoardError } from '../../board/__tests__/helpers.js';
 import { cliEnv, oneJson, run, spawnCli } from '../../cli/__tests__/cli-helpers.js';
-import { parseArgs } from '../../cli/parse.js';
 import { COMMANDS, HELP_SOURCE, findCommand } from '../../cli/registry.js';
 import type { CommandSpec } from '../../cli/types.js';
 import { STATUSES } from '../../events/schema.js';
@@ -35,37 +34,9 @@ import {
   type AgentsHelpDocument,
   type Role,
 } from '../guide.js';
-import { splitCommandLine } from './command-line.js';
+import { ASCII_LINE, commandLines, parseLine, parsedLines, type Parsed } from './guide-lines.js';
 
 const README = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'README.md');
-
-/** Printable ASCII only (no tabs), no trailing space. */
-const ASCII_LINE = /^(?:[\x20-\x7e]*[\x21-\x7e])?$/;
-
-interface Parsed {
-  line: string;
-  command: string;
-  values: Record<string, unknown>;
-}
-
-/** Every line whose text, ignoring leading spaces, begins with `agentboard `. */
-function commandLines(text: string): string[] {
-  return text
-    .split('\n')
-    .map((line) => line.trimStart())
-    .filter((line) => line.startsWith('agentboard '));
-}
-
-/** A command line parsed with the real parser; throws the parser's error. */
-function parseLine(line: string): Parsed {
-  const words = splitCommandLine(line);
-  const parsed = parseArgs(words.slice(1));
-  return { line, command: parsed.command.name, values: { ...parsed.values } };
-}
-
-function parsedLines(text: string): Parsed[] {
-  return commandLines(text).map(parseLine);
-}
 
 function linesOf(text: string): string[] {
   expect(text.endsWith('\n')).toBe(true);
