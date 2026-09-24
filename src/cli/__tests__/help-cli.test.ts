@@ -197,6 +197,15 @@ describe('--help, -h and help in process', () => {
     expect(doc.map((d) => d.name)).toEqual(NAMES);
   });
 
+  it('help with a subtopic after a one-word command exits 1 pointing to its help', () => {
+    const out = run(['help', 'claim', 'extra'], empty(), cliEnv());
+    expect(out).toEqual({
+      code: 1,
+      stdout: '',
+      stderr: "agentboard: claim has no help subtopic extra; run 'agentboard help claim'\n",
+    });
+  });
+
   it('help with an unknown topic exits 1 with a suggestion on stderr', () => {
     const out = run(['help', 'clam'], empty(), cliEnv());
     expect(out.code).toBe(1);

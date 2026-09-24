@@ -1340,7 +1340,10 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       { code: 0, meaning: 'The client disconnected or the server was stopped by a signal' },
       EXIT_USAGE,
+      EXIT_NO_BOARD,
     ],
+    actorHelp:
+      "Default actor for tool calls: a call's own as comes first, then this, then AGENTBOARD_ACTOR",
     positionals: [],
     flags: [],
     exclusive: [],

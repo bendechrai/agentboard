@@ -83,7 +83,14 @@ function argLine(arg: ArgSpec, positional: boolean): RegExp {
 }
 
 /** Commands that never open a board. */
-const BOARDLESS = new Set(['init', 'mcp', 'version', 'help']);
+const BOARDLESS = new Set(['init', 'version', 'help']);
+
+/**
+ * Commands that locate a board but cannot exit 5: `mcp` locates the board
+ * once at start-up (exit 2 without one) and then reports every failure as
+ * a tool error, never as its own exit code (src/mcp/server.ts, `serveMcp`).
+ */
+const NO_INTEGRITY_EXIT = new Set(['mcp']);
 
 /** Commands that take a ticket id. */
 const ID_COMMANDS = COMMANDS.filter((c) => c.positionals.some((p) => p.name === 'id'));
@@ -169,11 +176,9 @@ describe('the help data of record in the registry', () => {
     }
     const pairs = c.exitCodes.map((e) => `${String(e.code)} ${e.reason ?? ''}`);
     expect(new Set(pairs).size, 'no duplicate code and reason').toBe(pairs.length);
-    // Every command but mcp succeeds with 0; every command can be misused.
-    if (name !== 'mcp') {
-      expect(c.exitCodes[0]).toMatchObject({ code: 0 });
-      expect(c.exitCodes[0]?.reason).toBeUndefined();
-    }
+    // Every command succeeds with 0.
+    expect(c.exitCodes[0]).toMatchObject({ code: 0 });
+    expect(c.exitCodes[0]?.reason).toBeUndefined();
     expect(c.exitCodes).toContainEqual(expect.objectContaining({ code: 1, reason: 'usage' }));
   });
 
@@ -184,17 +189,31 @@ describe('the help data of record in the registry', () => {
     }
   });
 
-  it('lists board-not-found and exit 5 for every command that opens a board', () => {
+  it('lists board-not-found for every command that locates a board, and exit 5 where possible', () => {
     for (const c of COMMANDS) {
       const noBoard = c.exitCodes.some((e) => e.code === 2 && e.reason === 'board-not-found');
-      expect(noBoard, c.name).toBe(!BOARDLESS.has(c.name) && c.name !== 'init');
-      if (!BOARDLESS.has(c.name)) {
-        expect(
-          c.exitCodes.some((e) => e.code === 5),
-          c.name,
-        ).toBe(true);
+      expect(noBoard, c.name).toBe(!BOARDLESS.has(c.name));
+      const five = c.exitCodes.some((e) => e.code === 5);
+      if (NO_INTEGRITY_EXIT.has(c.name)) {
+        expect(five, c.name).toBe(false);
+      } else if (!BOARDLESS.has(c.name)) {
+        expect(five, c.name).toBe(true);
       }
     }
+    expect(command('mcp').exitCodes.map((e) => [e.code, e.reason ?? null])).toEqual([
+      [0, null],
+      [1, 'usage'],
+      [2, 'board-not-found'],
+    ]);
+  });
+
+  it('gives actorHelp to mcp only, which neither writes nor tracks a cursor', () => {
+    expect(COMMANDS.filter((c) => c.actorHelp !== undefined).map((c) => c.name)).toEqual(['mcp']);
+    const mcp = command('mcp');
+    expect(needsActor(mcp)).toBe(false);
+    expect(mcp.actorHelp).toBe(
+      "Default actor for tool calls: a call's own as comes first, then this, then AGENTBOARD_ACTOR",
+    );
   });
 
   it('lists unknown-ticket and the id errors for every command taking an id', () => {
@@ -376,8 +395,9 @@ describe('renderCommandHelp', () => {
         ),
       );
     } else {
+      const summary = c.actorHelp ?? 'Accepted and ignored by this command';
       expect(text).toMatch(
-        /^ {2}--as <actor> {2,}string, optional {2,}Accepted and ignored by this command$/m,
+        new RegExp(`^  --as <actor> {2,}string, optional {2,}${escapeRe(summary)}$`, 'm'),
       );
     }
   });
@@ -475,6 +495,7 @@ describe('commandHelpDocument', () => {
       writes: c.writes,
       tracksCursor: c.tracksCursor === true,
       needsActor: needsActor(c),
+      actorHelp: c.actorHelp ?? null,
       operation: c.operation,
       examples: c.examples,
       exitCodes: c.exitCodes,
@@ -613,7 +634,32 @@ describe('helpOutput', () => {
     expect(err.message).toContain('checklist tick or checklist untick');
   });
 
-  it('refuses extra words after a command name', () => {
-    expectBoardError(() => helpOutput(HELP_SOURCE, ['claim', 'extra']), 1, 'usage');
+  it('refuses a subtopic after a one-word command, pointing to its help', () => {
+    const err = expectBoardError(() => helpOutput(HELP_SOURCE, ['claim', 'extra']), 1, 'usage');
+    expect(err.message).toBe("claim has no help subtopic extra; run 'agentboard help claim'");
+    const odd = expectBoardError(
+      () => helpOutput(HELP_SOURCE, ['version', `x${String.fromCharCode(0xe4)}`]),
+      1,
+      'usage',
+    );
+    expect(odd.message).toMatch(
+      /^version has no help subtopic \S+; run 'agentboard help version'$/,
+    );
+    expect(odd.message).toMatch(/^[\x20-\x7e]+$/);
+  });
+
+  it('keeps the suggestion message for an unknown two-word topic', () => {
+    const err = expectBoardError(() => helpOutput(HELP_SOURCE, ['checklist', 'tik']), 1, 'usage');
+    expect(err.message).toBe(
+      "unknown command checklist tik; did you mean checklist tick or checklist untick? run 'agentboard help' to list the commands",
+    );
+  });
+
+  it("describes mcp's --as as the default actor for tool calls", () => {
+    const text = help(command('mcp'));
+    expect(text).toMatch(
+      /^ {2}--as <actor> {2,}string, optional {2,}Default actor for tool calls: a call's own as comes first, then this, then AGENTBOARD_ACTOR$/m,
+    );
+    expect(text).not.toContain('Accepted and ignored');
   });
 });

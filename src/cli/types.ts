@@ -245,6 +245,16 @@ export interface CommandSpec {
   readonly examples: readonly CommandExample[];
   /** Every exit code the command can produce (see `ExitCodeSpec`). */
   readonly exitCodes: readonly ExitCodeSpec[];
+  /**
+   * Help text for `--as` on a command that neither writes nor tracks a
+   * cursor but still uses the actor: one ASCII line replacing
+   * `Accepted and ignored by this command` on the `--as` line of its help
+   * (the line still reads `string, optional`). Only `mcp` has it, where
+   * `--as` is the server's default actor for tool calls. Absent on every
+   * command that writes or tracks a cursor, and on every command that
+   * ignores `--as`.
+   */
+  readonly actorHelp?: string;
   /** Positional arguments in order. */
   readonly positionals: readonly ArgSpec[];
   /**

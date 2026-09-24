@@ -70,6 +70,8 @@ export interface CommandHelpDocument {
   readonly tracksCursor: boolean;
   /** `writes || tracksCursor`: `--as` or `AGENTBOARD_ACTOR` is required. */
   readonly needsActor: boolean;
+  /** `command.actorHelp`, or null when absent. */
+  readonly actorHelp: string | null;
   readonly operation: string | null;
   readonly examples: readonly CommandExample[];
   readonly exitCodes: readonly ExitCodeSpec[];
@@ -147,8 +149,9 @@ export function synopsis(command: CommandSpec): string {
  * `<name>` for a positional, `--name` for a boolean flag and
  * `--name <name>` for any other flag, except `--as <actor>`. The `--as`
  * line reads `string, required (or set AGENTBOARD_ACTOR)` for a command
- * that writes or tracks a cursor, and `string, optional` with the summary
- * `Accepted and ignored by this command` for any other.
+ * that writes or tracks a cursor; for any other it reads `string, optional`
+ * with the summary `command.actorHelp` when present (`mcp`: the server's
+ * default actor for tool calls), else `Accepted and ignored by this command`.
  *
  * Every line has no trailing spaces; the text ends with one newline. Pure.
  */
@@ -231,6 +234,7 @@ export function commandHelpDocument(source: HelpSource, command: CommandSpec): C
     writes: command.writes,
     tracksCursor: command.tracksCursor === true,
     needsActor: needsActor(command),
+    actorHelp: command.actorHelp ?? null,
     operation: command.operation,
     examples: command.examples,
     exitCodes: command.exitCodes,
@@ -297,6 +301,10 @@ export function overviewDocument(source: HelpSource): CommandHelpDocument[] {
  * - words that, joined by single spaces, are exactly a command name
  *   (`['claim']`, `['checklist', 'tick']`): that command's help (`json`:
  *   `commandHelpDocument`, `text`: `renderCommandHelp`).
+ * - two words whose first alone is a command name (`['claim', 'extra']`):
+ *   throws `BoardError(1, 'usage')` with exactly
+ *   `<command> has no help subtopic <word>; run 'agentboard help <command>'`
+ *   (`<word>` passed through `asciiText`).
  * - anything else: throws `BoardError(1, 'usage',
  *   unknownCommandMessage(topic, source.commands))`, so `help clam`
  *   suggests `claim` and points to `agentboard help`.
