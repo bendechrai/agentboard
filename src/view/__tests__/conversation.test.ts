@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { openDecisions } from '../../events/decisions.js';
 import { conversation, type ConversationMessage } from '../conversation.js';
 import { describeEvent } from '../describe.js';
 import { E, T1, T2, TASK, model } from './helpers.js';
@@ -167,6 +168,43 @@ describe('conversation (board-view-model: "Conversation view")', () => {
       { decision: true, retracted: false, retraction: false },
       { decision: false, retracted: false, retraction: true },
       { decision: true, retracted: false, retraction: false },
+    ]);
+  });
+
+  it('two retractions with a decision between them retract both decisions (group 1 review)', () => {
+    const m = model([
+      E.create(T1, { title: 'x', task: TASK }),
+      E.comment(T1, 'DECISION: first', { actor: 'impl' }),
+      E.comment(T1, 'RETRACTED: first', { actor: 'impl' }),
+      E.comment(T1, 'DECISION: second', { actor: 'impl' }),
+      E.comment(T1, 'RETRACTED: second', { actor: 'impl' }),
+    ]);
+    const messages = conversation(m, T1).slice(1);
+    expect(messages.map(flags)).toEqual([
+      { decision: true, retracted: true, retraction: false },
+      { decision: false, retracted: false, retraction: true },
+      { decision: true, retracted: true, retraction: false },
+      { decision: false, retracted: false, retraction: true },
+    ]);
+    // openDecisions over the same texts agrees: nothing is open.
+    const chat = messages.map((x) => ({ actor: x.actor, text: x.text }));
+    expect(openDecisions(chat)).toEqual([]);
+  });
+
+  it('a decision after the second retraction stays open, as openDecisions says', () => {
+    const m = model([
+      E.create(T1, { title: 'x', task: TASK }),
+      E.comment(T1, 'DECISION: first', { actor: 'impl' }),
+      E.comment(T1, 'RETRACTED: first', { actor: 'impl' }),
+      E.comment(T1, 'DECISION: second', { actor: 'impl' }),
+      E.comment(T1, 'RETRACTED: second', { actor: 'impl' }),
+      E.comment(T1, 'DECISION: third', { actor: 'impl' }),
+    ]);
+    const messages = conversation(m, T1).slice(1);
+    const open = messages.filter((x) => x.type !== 'system' && x.decision && !x.retracted);
+    expect(open.map((x) => x.text)).toEqual(['DECISION: third']);
+    expect(openDecisions(messages.map((x) => ({ actor: x.actor, text: x.text })))).toEqual([
+      { actor: 'impl', text: 'DECISION: third' },
     ]);
   });
 
