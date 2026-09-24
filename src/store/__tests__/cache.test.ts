@@ -1,6 +1,6 @@
 import { existsSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -19,6 +19,7 @@ import {
 } from '../cache.js';
 import { BoardError } from '../errors.js';
 import { checkCache, rebuild } from '../rebuild.js';
+import { runCommand } from '../transaction.js';
 import {
   MISSING,
   P,
@@ -800,5 +801,109 @@ describe('dumpCache', () => {
     const before = dumpCache(board.db);
     board.db.prepare("UPDATE tickets SET title = 'x' WHERE id = ?").run(T1);
     expect(dumpCache(board.db)).not.toBe(before);
+  });
+});
+
+/**
+ * A view of `db` that, right after the first statement read (get, all or
+ * iterate) made through it, runs `write` once: a writer on another
+ * connection committing in the middle of a multi-statement read.
+ */
+function interleaved(db: DatabaseSync, write: () => void): DatabaseSync {
+  let fired = false;
+  const afterFirstRead = (): void => {
+    if (!fired) {
+      fired = true;
+      write();
+    }
+  };
+  const wrap = (statement: StatementSync): StatementSync =>
+    new Proxy(statement, {
+      get(target, prop): unknown {
+        const value: unknown = Reflect.get(target, prop, target);
+        if (typeof value !== 'function') {
+          return value;
+        }
+        if (prop === 'get' || prop === 'all' || prop === 'iterate') {
+          return (...args: unknown[]): unknown => {
+            const result: unknown = value.apply(target, args);
+            afterFirstRead();
+            return result;
+          };
+        }
+        return value.bind(target);
+      },
+    });
+  return new Proxy(db, {
+    get(target, prop): unknown {
+      if (prop === 'prepare') {
+        return (sql: string): StatementSync => wrap(target.prepare(sql));
+      }
+      const value: unknown = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+describe('readTicket and readState read one snapshot', () => {
+  /** A board with T1 created and commented twice (version 3), and a second connection to it. */
+  function seeded(): { board: Board; other: Board; late: () => void } {
+    const events = tempBoard();
+    putEvent(join(events, 'events'), ev(P.create(T1), 'orch', 1000));
+    putEvent(join(events, 'events'), ev(P.comment(T1, 'one'), 'orch', 2000));
+    putEvent(join(events, 'events'), ev(P.comment(T1, 'two'), 'orch', 3000));
+    const board = openB(events);
+    const other = openB(events);
+    const late = (): void => {
+      runCommand(other, 'late', () => ({ ok: true, event: P.comment(T1, 'late') }), { env: {} });
+    };
+    return { board, other, late };
+  }
+
+  it('readTicket: a commit between its statements is invisible, so version matches comments', () => {
+    const { board, late } = seeded();
+    const ticket = readTicket(interleaved(board.db, late), T1);
+    expect(ticket?.version).toBe(3);
+    expect(ticket?.comments.map((c) => c.text)).toEqual(['one', 'two']);
+    expect(board.db.isTransaction).toBe(false);
+    // The write did happen, and the next read sees all of it.
+    const after = readTicket(board.db, T1);
+    expect(after?.version).toBe(4);
+    expect(after?.comments).toHaveLength(3);
+  });
+
+  it('readState: a commit between its statements is invisible', () => {
+    const { board, late } = seeded();
+    const state = readState(interleaved(board.db, late));
+    const ticket = state.tickets[T1];
+    expect(ticket?.version).toBe(3);
+    expect(ticket?.comments).toHaveLength(2);
+    expect(board.db.isTransaction).toBe(false);
+    expect(readState(board.db).tickets[T1]?.comments).toHaveLength(3);
+  });
+
+  it('reads inside the caller transaction without starting another', () => {
+    const { board } = seeded();
+    board.db.exec('BEGIN');
+    try {
+      expect(readTicket(board.db, T1)?.version).toBe(3);
+      expect(Object.keys(readState(board.db).tickets)).toEqual([T1]);
+      expect(board.db.isTransaction).toBe(true);
+    } finally {
+      board.db.exec('ROLLBACK');
+    }
+  });
+
+  it('never waits for the write lock held by another connection', () => {
+    const { board, other } = seeded();
+    other.db.exec('BEGIN IMMEDIATE');
+    try {
+      const started = Date.now();
+      expect(readTicket(board.db, T1)?.version).toBe(3);
+      expect(readState(board.db).tickets[T1]?.version).toBe(3);
+      expect(Date.now() - started).toBeLessThan(BUSY_TIMEOUT_MS / 5);
+    } finally {
+      other.db.exec('ROLLBACK');
+    }
   });
 });
