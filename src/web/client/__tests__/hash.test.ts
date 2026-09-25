@@ -44,6 +44,20 @@ describe('parseHash', () => {
     ['#/ticket/01ARYZ', { view: 'ticket', id: '01ARYZ' }],
     ['#/ticket/a%2Fb', { view: 'ticket', id: 'a/b' }],
     ['#/lanes', { view: 'lanes' }],
+    ['#/health', { view: 'health', stale: null, blocked: null }],
+    ['#/health?stale=30m&blocked=2d', { view: 'health', stale: '30m', blocked: '2d' }],
+    ['#/health?stale=2hours&blocked=0h', { view: 'health', stale: null, blocked: null }],
+    ['#/health?stale=&blocked=99999d', { view: 'health', stale: null, blocked: '99999d' }],
+    ['#/health?stale=1m&stale=2h', { view: 'health', stale: '1m', blocked: null }],
+    ['#/replay', { view: 'replay' }],
+    ['#/replay?at=5', { view: 'replay' }],
+    ['#/graph', { view: 'graph', change: null, since: null }],
+    [
+      '#/graph?change=openspec%3Aadd-login&since=7d',
+      { view: 'graph', change: 'openspec:add-login', since: '7d' },
+    ],
+    ['#/graph?since=-1h', { view: 'graph', change: null, since: null }],
+    ['#/graph?change=&since=1h', { view: 'graph', change: null, since: '1h' }],
   ])('parses %j', (hash, route) => {
     expect(parseHash(hash)).toEqual(route);
   });
@@ -77,6 +91,16 @@ describe('formatHash', () => {
     [{ view: 'ticket', id: T1 }, `#/ticket/${T1}`],
     [{ view: 'ticket', id: 'a/b c' }, '#/ticket/a%2Fb%20c'],
     [{ view: 'lanes' }, '#/lanes'],
+    [{ view: 'health', stale: null, blocked: null }, '#/health'],
+    [{ view: 'health', stale: '30m', blocked: '2d' }, '#/health?stale=30m&blocked=2d'],
+    [{ view: 'health', stale: null, blocked: '26h' }, '#/health?blocked=26h'],
+    [{ view: 'replay' }, '#/replay'],
+    [{ view: 'graph', change: null, since: null }, '#/graph'],
+    [
+      { view: 'graph', change: 'openspec:add-login', since: '1d' },
+      '#/graph?change=openspec%3Aadd-login&since=1d',
+    ],
+    [{ view: 'graph', change: null, since: '1h' }, '#/graph?since=1h'],
   ])('formats %j', (route, hash) => {
     expect(formatHash(route)).toBe(hash);
   });
@@ -88,6 +112,11 @@ describe('formatHash', () => {
     { view: 'feed', change: null, actor: null, kinds: null },
     { view: 'ticket', id: 'x?y#z' },
     { view: 'lanes' },
+    { view: 'health', stale: '45m', blocked: '3d' },
+    { view: 'health', stale: null, blocked: null },
+    { view: 'replay' },
+    { view: 'graph', change: 'openspec:add-login', since: '30d' },
+    { view: 'graph', change: null, since: null },
   ])('round-trips %j', (route) => {
     expect(parseHash(formatHash(route))).toEqual(route);
   });

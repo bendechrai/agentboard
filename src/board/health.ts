@@ -10,7 +10,7 @@ import type { Board } from '../store/board.js';
 import { comparePositions } from '../store/cursors.js';
 import { inSnapshot, loadState } from '../store/engine.js';
 import { recordedPositions } from '../store/folded.js';
-import { checkCache } from '../store/rebuild.js';
+import { checkCache, type CheckResult } from '../store/rebuild.js';
 import {
   DEFAULT_THRESHOLDS,
   healthReport,
@@ -103,7 +103,7 @@ export function boardHealth(board: Board, options?: BoardHealthOptions): HealthR
   if (options?.check === true) {
     // After the snapshot has been committed: checkCache takes the write lock.
     const result = checkCache(board);
-    check = { ranAt: now, matches: result.ok, differingRows: result.differences.length };
+    check = checkSummary(result, now);
   }
   return healthReport({ model, now, thresholds, late: null, check });
 }
@@ -134,4 +134,15 @@ function loadApplied(board: Board, cache: EventCache): Pick<BoardModel, 'tickets
       });
     return { tickets, events };
   });
+}
+
+/** The part of the store's `CheckResult` a health check reports. */
+export type CacheCheckOutcome = Pick<CheckResult, 'ok' | 'differences'>;
+
+/**
+ * The summary of one cache comparison run at `ranAt`: `{ ranAt, matches:
+ * result.ok, differingRows: result.differences.length }`. Pure.
+ */
+export function checkSummary(result: CacheCheckOutcome, ranAt: number): HealthCheck {
+  return { ranAt, matches: result.ok, differingRows: result.differences.length };
 }

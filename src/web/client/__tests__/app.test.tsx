@@ -96,6 +96,9 @@ describe('initial load', () => {
       ['Board', '#/board'],
       ['Feed', '#/feed'],
       ['Lanes', '#/lanes'],
+      ['Health', '#/health'],
+      ['Replay', '#/replay'],
+      ['Graph', '#/graph'],
     ]);
   });
 

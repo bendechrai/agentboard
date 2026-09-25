@@ -70,8 +70,15 @@ import type { TickerTimers, WatchDir } from '../board/ticker.js';
 import { errorDocument } from '../cli/main.js';
 import type { Board } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
+import { checkCache } from '../store/rebuild.js';
 import type { FeedMessage } from '../view/types.js';
 import { API_HINT_CONTEXT, apiResponse, httpStatus } from './api.js';
+import {
+  createCacheChecker,
+  createObservedLog,
+  type CacheCheckOutcome,
+  type HealthResponse,
+} from './health.js';
 import { checkRequest, newToken, securityHeaders, type Guard } from './security.js';
 import {
   KEEPALIVE_MS,
@@ -169,6 +176,14 @@ export interface ServerOptions {
   readonly maxStreams?: number;
   /** Unread bytes per stream client before it is disconnected; default `STREAM_BUFFER_BYTES`. */
   readonly streamBufferBytes?: number;
+  /**
+   * Runs the cache comparison of `GET /api/health/check` (through the
+   * server's `CacheChecker`, `src/web/health.ts`); default `() =>
+   * checkCache(board)` (`src/store/rebuild.ts`). Called only for that
+   * route, never otherwise (tests count its calls and control when it
+   * completes).
+   */
+  readonly checkCache?: (board: Board) => CacheCheckOutcome | Promise<CacheCheckOutcome>;
 }
 
 /** A running server. */
@@ -232,6 +247,23 @@ export interface RunningServer {
  * is false whenever the server writes to a response), and no transaction
  * is ever held across network IO or a timer.
  *
+ * Health (board-insights: "Health in the web app"; add-board-insights
+ * task 3.1). The server keeps one `ObservedLog` (`createObservedLog()`,
+ * `src/web/health.ts`) and one `CacheChecker` (`createCacheChecker({
+ * check: () => checkCache(board), now })`, with `options.checkCache` when
+ * given) for its whole life. Every message of its feed is passed to
+ * `log.observe(message, now())` before it is written to the streams (a
+ * joiner's own first message is not a feed message and is not observed).
+ * Behind the same Host, token and method checks as every API route:
+ * - `GET /api/health`: 200 with `HealthResponse` `{ late: log.list(),
+ *   check: checker.last() }`; never runs the comparison;
+ * - `GET /api/health/check`: 200 with the `HealthCheck` of
+ *   `await checker.run()` (single flight, reused for `CHECK_REUSE_MS`);
+ *   when it rejects, `httpStatus(error)` with `errorDocument(error,
+ *   API_HINT_CONTEXT)`. A check that completes after the client went away,
+ *   or after `close()`, writes nothing.
+ * Any other path under `/api/health/` is 404 `not-found` as usual.
+ *
  * The stream (`GET /api/stream`, board-web: "Live event stream"). The
  * server runs one board feed (`watchBoard`, `src/board/feed.ts`, with
  * `cache` and `feed`) for its whole life and forwards each of its
@@ -281,11 +313,16 @@ export async function startServer(
   const keepaliveMs = options.keepaliveMs ?? KEEPALIVE_MS;
   const maxStreams = options.maxStreams ?? MAX_STREAMS;
   const bufferLimit = options.streamBufferBytes ?? STREAM_BUFFER_BYTES;
+  const compare = options.checkCache ?? checkCache;
+  const observed = createObservedLog();
+  const checker = createCacheChecker({ check: () => compare(board), now });
 
   // Set once listening; no request is handled before that.
   let guard: Guard = { port: requested, token };
   const clients = new Set<StreamClient>();
   const controller = new AbortController();
+  // Set by `close()`: a cache check settling afterwards writes nothing.
+  let stopped = false;
 
   /** Writes `text` to a stream, or disconnects a client that is too far behind. */
   const send = (client: StreamClient, text: string): void => {
@@ -311,6 +348,7 @@ export async function startServer(
     signal: controller.signal,
     cache,
     onMessage: (message: FeedMessage) => {
+      observed.observe(message, now());
       lastProblem = null;
       lastWarning = null;
       const frame = sseMessage(message);
@@ -411,6 +449,24 @@ export async function startServer(
     }
   };
 
+  /** `GET /api/health/check`, authenticated: answers once the shared check settles. */
+  const runCheck = (res: ServerResponse): void => {
+    const answer = (status: number, body: unknown): void => {
+      if (stopped || res.destroyed || res.writableEnded) {
+        return;
+      }
+      sendJson(res, status, body);
+    };
+    checker.run().then(
+      (result) => {
+        answer(200, result);
+      },
+      (error: unknown) => {
+        answer(httpStatus(error), errorDocument(error, API_HINT_CONTEXT));
+      },
+    );
+  };
+
   const handle = (req: IncomingMessage, res: ServerResponse): void => {
     // A body is never read; let it drain.
     req.resume();
@@ -433,6 +489,11 @@ export async function startServer(
         case 'route':
           if (verdict.path === '/api/stream') {
             openStream(req, res, verdict.query);
+          } else if (verdict.path === '/api/health') {
+            const body: HealthResponse = { late: observed.list(), check: checker.last() };
+            sendJson(res, 200, body);
+          } else if (verdict.path === '/api/health/check') {
+            runCheck(res);
           } else if (verdict.api) {
             const result = apiResponse({ board, cache, now }, verdict.path, verdict.query);
             sendJson(res, result.status, result.body);
@@ -516,6 +577,7 @@ export async function startServer(
     streamCount: () => clients.size,
     close(): Promise<void> {
       closing ??= (async () => {
+        stopped = true;
         controller.abort();
         clearInterval(keepalive);
         for (const client of clients) {

@@ -19,14 +19,18 @@
  *   phase becomes `unauthorized` (a 401 from the API or the stream; the
  *   client has already stopped its stream), `props.onUnauthorized` is
  *   called once, which `mount` wires to `discardToken`;
- * - a `nav` with the links `Board` (`#/board`), `Feed` (`#/feed`) and
- *   `Lanes` (`#/lanes`);
+ * - a `nav` with the links, in this order, `Board` (`#/board`), `Feed`
+ *   (`#/feed`), `Lanes` (`#/lanes`), `Health` (`#/health`), `Replay`
+ *   (`#/replay`) and `Graph` (`#/graph`) (add-board-insights group 3);
  * - the session's `boardDir` as text once loaded;
  * - while loading, the text `Loading board...`; when the first load
  *   failed, an element with `role="alert"` holding the error's message;
  * - while the client's `problem` is set, a `ProblemBanner`;
- * - then the view of the route: `BoardView`, `FeedView`, `TicketView` or
- *   `LanesView`, each given the client's model and `now`.
+ * - then the view of the route: `BoardView`, `FeedView`, `TicketView`,
+ *   `LanesView`, `HealthView`, `ReplayView` or `GraphView`, each given the
+ *   client's model and `now` (and, for the last three, the connection and
+ *   `navigate`). Leaving and reopening the replay view mounts a new
+ *   `ReplayView`, so it freezes the events anew.
  * Every text from the board is rendered as text, never as markup; no file
  * under `src/web/client/` may even name Preact's raw HTML property (a
  * source test in `src/web/__tests__/client-source.test.ts` checks it).
@@ -40,8 +44,11 @@ import { BoardClient, type ClientState } from './client.js';
 import { formatHash, parseHash, type Route } from './hash.js';
 import { BoardView } from './views/BoardView.js';
 import { FeedView } from './views/FeedView.js';
+import { GraphView } from './views/GraphView.js';
+import { HealthView } from './views/HealthView.js';
 import { LanesView } from './views/LanesView.js';
 import { ProblemBanner } from './views/ProblemBanner.js';
+import { ReplayView } from './views/ReplayView.js';
 import { TicketView } from './views/TicketView.js';
 
 export interface AppProps {
@@ -57,6 +64,9 @@ const NAV: readonly { label: string; route: Route }[] = [
   { label: 'Board', route: { view: 'board', change: null, assignee: null, closed: false } },
   { label: 'Feed', route: { view: 'feed', change: null, actor: null, kinds: null } },
   { label: 'Lanes', route: { view: 'lanes' } },
+  { label: 'Health', route: { view: 'health', stale: null, blocked: null } },
+  { label: 'Replay', route: { view: 'replay' } },
+  { label: 'Graph', route: { view: 'graph', change: null, since: null } },
 ];
 
 function NoToken(): JSX.Element {
@@ -188,5 +198,11 @@ function body(
       return <TicketView id={route.id} model={model} conn={conn} now={now} />;
     case 'lanes':
       return <LanesView model={model} now={now} />;
+    case 'health':
+      return <HealthView model={model} now={now} route={route} navigate={navigate} conn={conn} />;
+    case 'replay':
+      return <ReplayView model={model} now={now} navigate={navigate} conn={conn} />;
+    case 'graph':
+      return <GraphView model={model} now={now} route={route} navigate={navigate} conn={conn} />;
   }
 }
