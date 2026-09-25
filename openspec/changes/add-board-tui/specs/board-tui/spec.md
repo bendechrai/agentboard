@@ -33,8 +33,9 @@ a hint naming `agentboard list` and `agentboard watch --as <actor>`.
 ### Requirement: Views
 `top` SHALL offer these views, computed with the board view-model:
 - board: one column per status in the order of `boardColumns`, each headed
-  by its status and card count, one line per card with the short id, the
-  assignee or `-`, and the title; closed tickets only when toggled on; at
+  by its status and card count, two lines per card, the title and then
+  the assignee or `-` (the short id is left to the detail, as columns are
+  narrow); closed tickets only when toggled on; at
   140 columns or more, the activity feed in a 40-column pane to the right;
 - feed: one line per `feedEntries` entry, newest first, with
   `relativeTime`, actor, short ticket id and summary, late arrivals

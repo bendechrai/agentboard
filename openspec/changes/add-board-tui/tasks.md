@@ -24,4 +24,4 @@ coverage at or above 90 percent.
 
 ## 3. Documentation (`docs/tui`)
 
-- [x] 3.1 Document `top` in README.md (views, keys, non-TTY behavior, `NO_COLOR`, `reset` if a terminal is left in a bad state), write ADR 0008 (terminal UI without a library: pure frames, restricted ANSI output, fake-terminal tests), and update docs/STATUS.md. Verify: `make ascii`, `make validate-specs`, and running `agentboard top` on a temporary board in at least two terminal emulators while another shell writes events
+- [x] 3.1 Document `top` in README.md (views, keys, non-TTY behavior, `NO_COLOR`, `reset` if a terminal is left in a bad state), write ADR 0008 (terminal UI without a library: pure frames, restricted ANSI output, fake-terminal tests), and update docs/STATUS.md. Verify: `make ascii`, `make validate-specs`, and running the built `agentboard top` on a temporary board under a real pseudo-terminal (resizes, every exit path, `NO_COLOR`) while another process writes events
