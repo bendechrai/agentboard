@@ -677,15 +677,22 @@ $ agentboard serve
 serving /home/me/project/.board read-only at http://127.0.0.1:54311/#token=hzU-J7pLcQxvMQCgXAsoeqFd9WSEPMU2vG6PHqUTWoM
 ```
 
-Open that URL, the whole of it, in a browser. The server runs until you
-stop it with Ctrl-C (SIGINT) or SIGTERM, then exits 0.
+Run from an interactive terminal, `serve` then opens that URL in your
+default browser (see "When the browser opens" below). Otherwise, or if you
+closed the tab, open the URL, the whole of it, in a browser yourself. The
+server runs until you stop it with Ctrl-C (SIGINT) or SIGTERM, then exits
+0.
 
 - `--port <n>` listens on port `n` (0 to 65535). Without it the operating
   system picks a free port, which is fine: the token changes at every start,
   so the URL changes anyway. A port that is already in use exits 1 with
   reason `port-in-use`.
-- `--open` also asks the system to open the URL in your default browser.
-  If that fails you get a warning on stderr and the server keeps running.
+- `--open` always asks the system to open the URL in your default
+  browser, whatever the environment (see below).
+- `--no-open` never opens a browser. Use it on a shared machine (see
+  "Security model") or whenever you would rather copy the URL yourself.
+  Giving both `--open` and `--no-open` exits 1 with reason `usage` before
+  the board is looked up or a port is bound.
 - `--json` prints one JSON line instead of the `serving` line, and nothing
   else on stdout:
 
@@ -706,6 +713,31 @@ agent's actor is set still gives you a read-only server. `serve` never
 moves an inbox cursor; apart from the events of accepted write actions,
 the only change it makes to the board is the cache catch-up every read
 command does. It is not exposed as an MCP tool.
+
+#### When the browser opens
+
+The start-up line is always printed first, exactly as above; the browser is
+opened after it. Nothing more is printed when it opens, so the output a
+script reads does not change. With neither `--open` nor `--no-open`,
+`serve` opens the browser only when all of these hold:
+
+- stdout is a terminal (not a pipe or a file, so `agentboard serve | cat`
+  or a process supervisor reading its output opens nothing);
+- `--json` is not given;
+- the `CI` environment variable is unset or empty (any other value, `0`
+  and `false` included, counts as set);
+- it is not an SSH session: `SSH_CONNECTION`, `SSH_CLIENT` and `SSH_TTY`
+  are all unset or empty. Over SSH the server listens on the remote
+  machine's loopback, which a browser on either machine could not usefully
+  open;
+- on platforms other than macOS and Windows, `DISPLAY` or
+  `WAYLAND_DISPLAY` is set and not empty, so there is a graphical session
+  for `xdg-open` to use.
+
+`--open` skips these checks and always tries; `--no-open` never tries. The
+opener is `open` on macOS, `start` through `cmd` on Windows and `xdg-open`
+elsewhere, looked up on `PATH`. If it is missing or fails you get one
+warning line on stderr and the server keeps running.
 
 ### Security model
 
@@ -759,20 +791,25 @@ arbitrary web sites open. What it does:
 
 What it does not protect against:
 
-- **Other users of the machine, if you use `--open`.** `--open` passes
-  the URL, token included, on a command line. On macOS, and on Linux
-  unless `/proc` is mounted with `hidepid`, every local user can read every
-  process's command line with `ps`. On macOS, `open` hands the URL to the
-  browser by Apple Event, so only the short-lived `open` process shows it.
-  On Linux, `xdg-open` starts the browser with the URL as an argument; if
-  no browser was running, that browser process can keep the URL in its
-  command line for as long as it runs. In that case the token does not
-  keep other users' processes out. On a shared machine, copy the printed
-  URL into the browser by hand instead of using `--open`.
+- **Other users of the machine, whenever `serve` opens the browser.**
+  Opening the browser, which `serve` does by default from an interactive
+  terminal as well as with `--open`, passes the URL, token included, on a
+  command line. On macOS, and on Linux unless `/proc` is mounted with
+  `hidepid`, every local user can read every process's command line with
+  `ps`. On macOS, `open` hands the URL to the browser by Apple Event, so
+  only the short-lived `open` process shows it. On Linux, `xdg-open`
+  starts the browser with the URL as an argument; if no browser was
+  running, that browser process can keep the URL in its command line for
+  as long as it runs. In that case the token does not keep other users'
+  processes out. On a shared machine, start the server with `--no-open`
+  and copy the printed URL into the browser by hand, which keeps the token
+  off every command line. `serve` already skips the browser in an SSH
+  session and in CI, the places most likely to be shared, but it cannot
+  tell that a local desktop is shared (see ADR 0010).
 - **Your own account.** Anyone who can read your terminal or your shell
   scrollback can see the token. The token protects against web pages and,
-  when you do not use `--open` on a shared machine, other users'
-  processes; it does not protect against you.
+  when you use `--no-open` on a shared machine, other users' processes; it
+  does not protect against you.
 - **Browser history.** The page drops the fragment at once, but a browser
   may still have recorded the first URL, token included, in its history.
   Only your account can read that, and the token is dead once the server
@@ -987,7 +1024,7 @@ claim, release, hand off, tick, link and close as that actor until the
 server stops, and every event looks exactly as if that actor had run the
 command. The token changes at every start, so stopping the server revokes
 it. Everything under "What it does not protect against" applies with that
-higher stake: do not use `--open` on a shared machine, and do not paste the
+higher stake: use `--no-open` on a shared machine, and do not paste the
 URL anywhere. Start a writable server only while you use it, and a
 read-only one to just watch. See ADR 0009 for the write-mode decisions.
 
@@ -1030,6 +1067,11 @@ data: {"type":"append","id":"fd5752a1...","events":[...],"tickets":[...]}
 - **The page says "Open the URL printed by agentboard serve".** The tab
   has no token or a stale one (a new tab, or the server was restarted).
   Open the full URL from the terminal, including `#token=...`.
+- **The browser did not open.** `serve` opens it only from an
+  interactive terminal outside CI and SSH, and off macOS and Windows only
+  with a display (see "When the browser opens"). Open the printed URL by
+  hand, or pass `--open` to try anyway; a warning on stderr means the
+  system opener was missing or failed.
 - **`port-in-use`.** Something else listens on that port. Omit `--port`,
   or pass `--port 0`, and let the system choose.
 - **403 `forbidden-host`.** The request did not reach the server as
@@ -1476,7 +1518,7 @@ argument and `agentboard mcp --as <actor>`.
 | Code | Meaning |
 | ---- | ------- |
 | 0 | success |
-| 1 | usage error (including an unknown command or flag), missing actor, refused text or close disposition, `rebuild --check` found a difference, an `agents install` target was refused or nothing was detected, `agents check` found guidance that is not current, `serve` could not use its port (`port-in-use`) or was given an empty `--as`, or `top` was not run in an interactive terminal (`not-a-tty`) |
+| 1 | usage error (including an unknown command or flag), missing actor, refused text or close disposition, `rebuild --check` found a difference, an `agents install` target was refused or nothing was detected, `agents check` found guidance that is not current, `serve` could not use its port (`port-in-use`) or was given an empty `--as` or both `--open` and `--no-open`, or `top` was not run in an interactive terminal (`not-a-tty`) |
 | 2 | board not found or unreadable |
 | 3 | sync problem that needs a human |
 | 4 | action rejected by board state: `invalid-transition`, `already-assigned`, `not-assignee`, `unknown-ticket`, `duplicate-create`, `needs-task-link`, `checklist-index` |

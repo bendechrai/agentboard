@@ -34,8 +34,8 @@ None.
 
 ### Modified Capabilities
 - `board-web`: "Serve command" (when the browser is opened, `--no-open`).
-- `board-cli`: "Command surface" (the `serve` synopsis gains
-  `[--no-open]`; the "Serve has help" scenario names it).
+- `board-cli`: "Command surface" (the `serve` synopsis becomes
+  `[--open | --no-open]`; the "Serve has help" scenario names `--no-open`).
 
 ## Impact
 

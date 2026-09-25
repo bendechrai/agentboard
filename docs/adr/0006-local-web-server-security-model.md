@@ -119,7 +119,9 @@ reading, framing or scripting the page.
     argument, where it can stay for the browser's lifetime if `--open`
     started it. With `--open` on a shared machine the token therefore does
     not keep other users out; the README advises copying the printed URL
-    by hand there.
+    by hand there. ADR 0010 makes opening the browser, and with it this
+    exposure, the default from an interactive terminal, which `--no-open`
+    avoids.
   - The user's own account: anyone who can read the terminal sees the
     token, and a browser may keep the first URL, fragment included, in its
     history database.

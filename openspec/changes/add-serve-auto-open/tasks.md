@@ -15,4 +15,4 @@ first.
 
 ## 2. Documentation (`docs/serve-auto-open`)
 
-- [ ] 2.1 Update README.md ("Starting it", the security model's residual risks with the advice to use `--no-open` on a shared machine, and the command reference), write ADR 0010 (opening the browser by default) and update the ADR index and docs/STATUS.md. Verify: `make ascii`, `make validate-specs`, and running `agentboard serve` from a terminal (the browser opens), `agentboard serve --no-open`, `agentboard serve | cat` and `CI=1 agentboard serve` (no browser in the last three)
+- [x] 2.1 Update README.md ("Starting it", the security model's residual risks with the advice to use `--no-open` on a shared machine, and the command reference), write ADR 0010 (opening the browser by default) and update the ADR index and docs/STATUS.md. Verify: `make ascii`, `make validate-specs`, and running `agentboard serve` from a terminal (the browser opens), `agentboard serve --no-open`, `agentboard serve | cat` and `CI=1 agentboard serve` (no browser in the last three)

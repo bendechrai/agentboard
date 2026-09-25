@@ -18,8 +18,8 @@ full workflow, and docs/adr/ for design decisions.
   (source-neutral task reference), 0005 (sync commits only its own
   paths, as a fixed identity), 0006 (local web server security model),
   0007 (board feed with append, resync and digest resume; a shared
-  view-model), 0008 (terminal UI without a library) and 0009 (write
-  actions in the web app).
+  view-model), 0008 (terminal UI without a library), 0009 (write
+  actions in the web app) and 0010 (open the browser by default).
 - The `add-board-core` OpenSpec change is complete and archived as
   `openspec/changes/archive/2026-09-24-add-board-core/`; its requirements
   are the main specs in `openspec/specs/` (board-cache, board-cli,
@@ -90,10 +90,14 @@ full workflow, and docs/adr/ for design decisions.
 1. A human reviews `staging` and promotes it to `main` (a merge-commit PR
    from `staging`) when ready. Publishing to npm is deferred: agentboard
    is used locally through `npm link`.
-2. `add-serve-auto-open` (proposed): `serve` opens the browser by default
-   when stdout is a terminal, `--json` is not given, `CI` is unset, it is
-   not an SSH session and (off macOS and Windows) a display is set;
-   `--no-open` opts out. Two groups.
+2. `add-serve-auto-open` is complete once its documentation group merges:
+   `serve` opens the browser by default when stdout is a terminal,
+   `--json` is not given, `CI` is unset, it is not an SSH session and (off
+   macOS and Windows) a display is set; `--open` always tries, `--no-open`
+   opts out and both together are `usage`. Documented in the README
+   ("Starting it", "When the browser opens", the security model) and ADR
+   0010. Archive it next, in its own PR, syncing its `board-cli` and
+   `board-web` deltas into the main specs.
 3. `add-claim-leases` (proposed): grace leases confirmed by `renew`
    (`claim --ttl`), takeover of a lapsed lease and a fair waiting queue
    (`claim --wait`, derived `ticket.grant` events) decided from event
