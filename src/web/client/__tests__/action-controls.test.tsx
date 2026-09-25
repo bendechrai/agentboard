@@ -251,6 +251,20 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   return { promise, resolve };
 }
 
+/**
+ * Lets every pending promise callback, state update and effect run, inside
+ * `act` (which flushes Preact's renders and effects when it returns). No
+ * timer is involved: used to check that something did not happen, once
+ * everything already set in motion has run.
+ */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 5; i += 1) {
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+}
+
 const WRITE_CONTROLS = ['comment', 'move', 'claim', 'release', 'handoff', 'link', 'close'];
 
 describe('read-only page (scenario "Read-only page")', () => {
@@ -290,6 +304,12 @@ describe('write mode', () => {
     const banner = document.querySelectorAll('.acting-as');
     expect(banner).toHaveLength(1);
     expect(banner[0]?.textContent?.trim()).toBe('acting as ben');
+  });
+
+  it('renders the actor as text, never as markup', async () => {
+    await openTicket(T1, { ...WRITABLE, actor: '<b>x</b>' });
+    expect(document.querySelector('.acting-as')?.textContent?.trim()).toBe('acting as <b>x</b>');
+    expect(document.querySelector('.acting-as b')).toBeNull();
   });
 
   it('offers a control for every action inside the ticket detail, in order', async () => {
@@ -376,7 +396,7 @@ describe('request bodies', () => {
     const button = control('move').querySelector('button[type="submit"]');
     expect((button as HTMLButtonElement | null)?.disabled).toBe(true);
     submit('move');
-    await Promise.resolve();
+    await settle();
     expect(api.actionsOf('move')).toEqual([]);
   });
 
@@ -761,8 +781,11 @@ describe('success', () => {
     // The fake board is unchanged and no feed message was sent: the ticket
     // shown is the one the action returned.
     expect(api.count(`/api/tickets/${T1}`)).toBe(1);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Once everything set in motion has run, the page still shows it and
+    // has not fetched the detail again.
+    await settle();
     expect(field('Assignee')).toBe('ben');
+    expect(api.count(`/api/tickets/${T1}`)).toBe(1);
   });
 
   it('applies a move, a link and a close from their documents', async () => {
@@ -915,12 +938,17 @@ describe('401 from an action', () => {
       'Open the URL printed by agentboard serve',
     );
     expect(document.querySelector('article.ticket')).toBeNull();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(onUnauthorized).toHaveBeenCalledTimes(1);
     // The client is stopped: its stream is closed.
     await waitFor(() => {
       expect(stream.aborted).toBe(true);
     });
+    await waitFor(() => {
+      expect(onUnauthorized).toHaveBeenCalled();
+    });
+    // Reported once only, once everything set in motion has run.
+    await settle();
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+    expect(api.actionsOf('claim')).toHaveLength(1);
   });
 });
 
