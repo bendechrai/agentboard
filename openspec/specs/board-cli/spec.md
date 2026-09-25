@@ -20,7 +20,7 @@ The CLI SHALL provide: `init`; `new <title> [--description] [--label]...
 `close <id> --as <actor> (--decision-recorded-in <path> | --no-decision)`;
 `inbox --as <actor> [--since <cursor>] [--peek]`; `watch --as <actor>`;
 `rebuild [--check]`; `sync`; `import-change <name>`; `close-merged`;
-`serve [--port <port>] [--open] [--as <actor>]`; `top`;
+`serve [--port <port>] [--open | --no-open] [--as <actor>]`; `top`;
 `health [--stale-after <duration>] [--blocked-after <duration>] [--check]`;
 `mcp`; and `version`. Every command SHALL
 accept `--json`. An argument beginning with `--` is
@@ -57,7 +57,7 @@ user quits it or it receives SIGINT or SIGTERM (see board-tui).
 
 #### Scenario: Serve has help
 - **WHEN** `agentboard help serve` runs with no board and no actor
-- **THEN** it prints the synopsis with `--port`, `--open` and `--as`, the exit codes including 1 `port-in-use` and 2, and an example that parses to `serve`, and exits 0
+- **THEN** it prints the synopsis with `--port`, `--open`, `--no-open` and `--as`, the exit codes including 1 `port-in-use` and 2, and an example that parses to `serve`, and exits 0
 
 #### Scenario: Health has help
 - **WHEN** `agentboard help health` runs with no board and no actor
