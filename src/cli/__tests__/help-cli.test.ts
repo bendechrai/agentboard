@@ -229,7 +229,10 @@ describe('--help, -h and help in process', () => {
   });
 });
 
-describe('the built CLI', () => {
+// Each test starts the built CLI as one or more Node child processes, which
+// on a loaded machine can take longer than vitest's 5 second default; a hung
+// child is still bounded by spawnCli's 30 second timeout.
+describe('the built CLI', { timeout: 30_000 }, () => {
   it('agentboard, --help, -h and help exit 0 with the overview on stdout', () => {
     const outs = [[], ['--help'], ['-h'], ['help']].map((argv) =>
       spawnCli(argv, empty(), cliEnv()),

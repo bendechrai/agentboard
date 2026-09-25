@@ -1,6 +1,15 @@
 # Pinned dev toolchain for agentboard. No HTTP service exists (agentboard
 # is a local CLI), so this does not join the devtun network or publish
 # any ports.
+#
+# /tmp is a tmpfs in both services. The tests create their boards under
+# the OS temporary directory, and every event write fsyncs the file and
+# its directory; on the container's overlay filesystem each such write
+# cost about 5 ms (against under 0.1 ms on tmpfs), and with every vitest
+# worker fsyncing at once, fsync-heavy tests exceeded their timeouts
+# under load. Durability across a power loss is not something the tests
+# can observe, so nothing they check is lost. `exec` because tests run
+# fake executables (such as a fake `gh`) from temporary directories.
 services:
   dev:
     build:
@@ -11,6 +20,8 @@ services:
       - .:/workspace
       - node-modules-cache:/workspace/node_modules
       - npm-cache:/home/dev/.npm
+    tmpfs:
+      - /tmp:exec,mode=1777
     command: sleep infinity
 
   # Same toolchain pinned to the oldest supported Node (package.json
@@ -26,6 +37,8 @@ services:
       - .:/workspace
       - node-modules-floor-cache:/workspace/node_modules
       - npm-cache:/home/dev/.npm
+    tmpfs:
+      - /tmp:exec,mode=1777
     command: sleep infinity
 
 volumes:

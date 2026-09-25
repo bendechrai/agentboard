@@ -38,6 +38,13 @@ const boards: Board[] = [];
 const clients: StreamClient[] = [];
 const blockers: Server[] = [];
 
+// Closing a server waits for its board feed to finish the tick in progress,
+// and the directories removed afterwards can hold thousands of event files.
+// With the large boards of some tests (2500 events, or 16 MB of comments)
+// this teardown has exceeded vitest's 10 second hook default on a loaded
+// machine, so it gets a longer, still bounded, limit.
+const TEARDOWN_TIMEOUT_MS = 30_000;
+
 afterEach(async () => {
   for (const client of clients.splice(0)) {
     client.close();
@@ -52,7 +59,7 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
-});
+}, TEARDOWN_TIMEOUT_MS);
 
 /** A fresh temporary directory (realpath), removed after the test. */
 export function scratch(): string {
