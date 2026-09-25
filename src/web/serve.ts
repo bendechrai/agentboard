@@ -100,8 +100,12 @@ export type OpenMode = 'always' | 'never' | 'auto';
  * counts as not given. Pure.
  */
 export function openMode(values: ArgValues): OpenMode {
-  void values;
-  throw new Error('not implemented');
+  const open = values.open === true;
+  const noOpen = values['no-open'] === true;
+  if (open && noOpen) {
+    throw new BoardError(1, 'usage', 'give only one of --open, --no-open');
+  }
+  return open ? 'always' : noOpen ? 'never' : 'auto';
 }
 
 /** The inputs of `shouldAutoOpen`. */
@@ -133,8 +137,20 @@ export interface AutoOpenInput {
  * its input.
  */
 export function shouldAutoOpen(input: AutoOpenInput): boolean {
-  void input;
-  throw new Error('not implemented');
+  const isSet = (name: string): boolean => {
+    const value = input.env[name];
+    return value !== undefined && value !== '';
+  };
+  if (!input.stdoutIsTTY || input.json || isSet('CI')) {
+    return false;
+  }
+  if (isSet('SSH_CONNECTION') || isSet('SSH_CLIENT') || isSet('SSH_TTY')) {
+    return false;
+  }
+  if (input.platform === 'darwin' || input.platform === 'win32') {
+    return true;
+  }
+  return isSet('DISPLAY') || isSet('WAYLAND_DISPLAY');
 }
 
 /** Test seams of `serveCommand`. */
@@ -226,6 +242,7 @@ export async function serveCommand(
     throw new BoardError(1, 'usage', '--as must name an actor; leave --as out to serve read-only');
   }
   const actor = as ?? null;
+  const mode = openMode(values);
   const board = ctx.board();
   const stderr = (text: string): void => {
     io.stderr?.(text);
@@ -244,8 +261,13 @@ export async function serveCommand(
         ? `${JSON.stringify({ url: server.url, port: server.port, token: server.token, writable: actor !== null, actor })}\n`
         : `serving ${board.dir} ${actor === null ? 'read-only' : `as ${actor}`} at ${server.url}\n`,
     );
-    if (values.open === true) {
-      const open = deps.open ?? ((url: string) => openInBrowser(url));
+    const platform = deps.platform ?? process.platform;
+    const stdoutIsTTY = deps.stdoutIsTTY ?? process.stdout.isTTY === true;
+    if (
+      mode === 'always' ||
+      (mode === 'auto' && shouldAutoOpen({ platform, env: ctx.env, stdoutIsTTY, json: io.json }))
+    ) {
+      const open = deps.open ?? ((url: string) => openInBrowser(url, { platform }));
       open(server.url).catch((error: unknown) => {
         // The URL (and so the token) is never written to stderr, whatever the opener says.
         const message = (error instanceof Error ? error.message : String(error))
