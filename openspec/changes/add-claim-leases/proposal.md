@@ -29,7 +29,13 @@ A separate problem surfaced in the same project: after an OpenSpec
 change was revised (its `tasks.md` regrouped and reworded), re-running
 `import-change` kept the old ticket titles and appended the new checklist
 lines without removing lines that no longer exist, leaving tickets that
-mix old and new tasks. Re-import must reconcile, not only append.
+mix old and new tasks. Worse, when a revision inserted a group (old
+groups 5, 6 and 7 became 6, 7 and 8), `import-change` paired tickets to
+groups by number, so every ticket from the insertion point onward now
+stood for a different group's work than its label said; reconciling lines
+alone would then rewrite each ticket into another group's content, losing
+claims, comments and ticks that belong to the moved group. Re-import must
+pair tickets to groups by identity and reconcile, not only append.
 
 Leases that must be confirmed by the holder, a fair waiting queue decided
 by the fold, an audited forced release, and guidance for the mutex
@@ -86,8 +92,15 @@ every other event.
   for merge-style mutexes when agents cannot block, and handles stale
   holds with leases and forced release.
 
-- Re-import reconciles (separate task group): `import-change` updates an
-  existing ticket's title to the current group heading and makes its
+- Re-import pairs by identity and reconciles (separate task group):
+  existing tickets are paired to groups by normalised title, then by
+  task-line overlap (Jaccard at least 0.5 with a 0.2 margin), then by
+  number only when unambiguous; a moved group's ticket gets a
+  `ticket.renumber` event (its claim, comments and ticks stay with it), a
+  new group gets a new ticket, a group that disappeared marks its ticket
+  superseded (`ticket.supersede`) instead of rewriting it, and an
+  ambiguous pairing writes nothing and exits 4 `reconcile-ambiguous` with
+  the dry-run report. `import-change` then updates each paired ticket's title to the current group heading and makes its
   active checklist equal to the current task lines (matched by task
   number, then by text; unchanged lines keep their done state; removed
   lines are marked removed, never deleted), in one `ticket.reconcile`
@@ -105,8 +118,8 @@ None.
 ### Modified Capabilities
 - `board-events`: `ticket.claim` body fields `lease` and `supersedes`;
   new kinds `ticket.renew`, `ticket.release.force`, `ticket.queue.join`,
-  `ticket.queue.leave`, `ticket.grant` and `ticket.reconcile`; removed
-  checklist lines; the reserved actor
+  `ticket.queue.leave`, `ticket.grant`, `ticket.reconcile`,
+  `ticket.renumber` and `ticket.supersede`; removed checklist lines; the reserved actor
   `agentboard`; grace leases, the queue and grant fold rules; the
   settings `lease.grace` and `queue.window`; new rejection reasons.
 - `board-cli`: `claim --ttl/--wait/--timeout`, `renew`, `unqueue`,
@@ -117,8 +130,9 @@ None.
 - `board-concurrency`: one winner for expired-lease races, fair and
   single grants under concurrency and across skewed replicas, crash
   recovery; re-import reconciles instead of only appending.
-- `board-openspec-integration`: `import-change` reconciles existing
-  tickets, with `--dry-run`, `--force` and orphaned groups reported.
+- `board-openspec-integration`: `import-change` pairs tickets to groups
+  by identity, renumbers, reconciles and supersedes, with `--dry-run` and
+  `--force`.
 - `board-agent-guidance`: the mutex ticket recipe in the guide, the role
   checklists, installed guidance and the MCP instructions.
 - `board-view-model`: feed summaries for the new events.

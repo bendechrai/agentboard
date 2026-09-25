@@ -303,11 +303,43 @@ in-flight information.
   diff first, and `--force` records `forced` and tells the holder through
   `affects`. Title changes and additions are never blocked because they
   lose nothing.
-- Groups that disappear are reported as `orphaned` and left alone:
-  closing or blocking them is a human decision (close needs a decision
-  disposition anyway).
+- Groups that disappear mark their ticket superseded with a
+  `ticket.supersede` event and nothing else: the record stays intact,
+  and closing it is a human decision (close needs a decision disposition
+  anyway).
 - `ticket.checklist.add` stays defined so existing boards fold as
   before; new imports write `ticket.reconcile` instead.
+
+### Pairing tickets to groups by identity
+Observed in vaultfold: a revision inserted a group, so groups 5 to 7
+became 6 to 8. Pairing by number made every later ticket stand for the
+wrong group, and line-level reconciliation would have rewritten each one
+into its neighbour's content, moving claims, comments and ticks onto work
+they never belonged to. A group number is a position; a group's identity
+is its title and its tasks.
+
+- Three passes over what is still unpaired: equal normalised title
+  (unique on both sides); then content, Jaccard similarity of normalised
+  task-line sets at least 0.5, mutual best, with every other candidate at
+  least 0.2 lower; then number, only when neither side has another
+  candidate scoring 0.2 or more. Titles go first because a regroup that
+  rewords tasks usually keeps headings; content catches renames; number
+  is the last resort for a group rewritten in place.
+- Ambiguity refuses the whole import, writing nothing. Pairing is global:
+  one wrong pair displaces others, so a partial import could still move
+  work. The dry-run report shows candidates and scores, and the fix is a
+  human edit (a title, or splitting the change differently), not a
+  guess. Thresholds are constants, stated in the spec so tests can pin
+  them.
+- Renumbering is its own event (`ticket.renumber {from, to}`), so history
+  says plainly "renumbered from 5 to 6"; it moves only the task item and
+  the `group:<n>` label. Items need not be unique in the fold, so swaps
+  need no temporary number, and the fold rejects a stale renumber whose
+  `from` no longer matches (`stale-import`), keeping concurrent imports
+  deterministic.
+- The pairing is a command-time computation, recorded entirely in the
+  events it writes; the fold never recomputes it, so tuning the
+  heuristic later cannot change the fold of existing boards.
 
 ## Interfaces (sketch)
 

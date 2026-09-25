@@ -86,12 +86,16 @@ rules SHALL be exact: a takeover is accepted at and only at walls from
 
 ### Requirement: Re-import is idempotent
 Running `import-change <name>` twice for the same change SHALL create no
-duplicate tickets: tickets are keyed by their task reference (source, ref,
-item), and a second import SHALL reconcile existing tickets with the
-current tasks file (see board-openspec-integration "Reconcile on
-re-import"), writing at most one `ticket.reconcile` event per ticket and
-none when nothing differs. A re-import never changes a ticket's labels or
-status. Two concurrent imports SHALL each validate against the caught-up
+duplicate tickets: existing tickets are paired to groups by identity (see
+board-openspec-integration "Pair tickets to groups by identity"), and a
+second import SHALL renumber, reconcile or supersede them to match the
+current tasks file, writing at most one `ticket.renumber`, one
+`ticket.reconcile` and one `ticket.supersede` event per ticket, and none
+when nothing differs. A re-import never changes a ticket's status or
+assignee, and changes its labels only by renumbering the `group:<n>`
+label. Inserting, deleting, reordering or renaming groups SHALL never move
+a ticket's claim, comments or ticked lines onto a different group's
+work. Two concurrent imports SHALL each validate against the caught-up
 state inside their own transaction, so the second finds nothing left to
 change. `import-change` also accepts
 `<source>:<ref>` so an unsupported source can be named.
@@ -103,3 +107,7 @@ change. `import-change` also accepts
 #### Scenario: Concurrent re-imports of a revised change
 - **WHEN** two child processes run `import-change` for the same revised change at once
 - **THEN** each ticket has exactly one applied `ticket.reconcile`, and `rebuild --check` reports no divergence
+
+#### Scenario: Property: group edits never move work
+- **WHEN** a property test imports a random change, adds random claims, comments and ticks to its tickets, applies a random sequence of group insertions, deletions, reorderings, renames and partial rewordings to tasks.md while tracking each group's true identity, and re-imports after each step
+- **THEN** after every step each ticket that has a claim, comment or tick is either paired with the group that truly continues its original group or superseded, never paired with another group; an ambiguous step writes no event; and a second re-import of the same file writes nothing

@@ -32,6 +32,8 @@ non-empty string, and `done`, a boolean; the fold appends them in order);
 array of objects with `text` and `done`; `forced`, a boolean; `source`, a
 string naming the tasks file and the SHA-256 of its bytes; at least one of
 `title`, `updated`, `removed` and `added` non-empty);
+`ticket.renumber` (from and to: non-empty item strings);
+`ticket.supersede` (reason: non-empty string);
 `board.meta` (key, value; board-level settings such as the default column
 set). Bodies with extra fields SHALL be malformed. A `ttl` outside 30000
 to 604800000 inclusive, or a `grace` or `window` outside 30000 to 600000
@@ -310,3 +312,28 @@ line.
 #### Scenario: Reconcile naming a removed line
 - **WHEN** a reconcile's `removed` names a line already removed
 - **THEN** it is rejected with reason `checklist-index` and nothing changes
+
+### Requirement: Renumber and supersede events
+A `ticket.renumber` SHALL be applied only when the ticket has a task
+reference whose `item` equals `from` and the ticket is not superseded; it
+SHALL set the item to `to` and replace the label `group:<from>` with
+`group:<to>`, leaving every other field, the assignee, comments and
+checklist unchanged. A `ticket.supersede` SHALL be applied only when the
+ticket is not already superseded; it SHALL mark the ticket superseded
+with its reason and change nothing else (status, assignee, checklist and
+comments are kept). Otherwise either SHALL be rejected with reason
+`stale-import`. A superseded ticket SHALL be shown with a `superseded`
+marker by `list` and `show` and SHALL take no further part in
+`import-change`.
+
+#### Scenario: Renumber keeps the work with the ticket
+- **WHEN** a ticket `openspec:add-x#5` held by `impl` with two comments and one ticked line folds a `ticket.renumber` from `5` to `6`
+- **THEN** its task reference is `openspec:add-x#6`, its labels include `group:6` and not `group:5`, and its assignee, comments and checklist are unchanged
+
+#### Scenario: Stale renumber
+- **WHEN** a `ticket.renumber` from `5` to `6` folds for a ticket whose item is already `6`
+- **THEN** it is rejected with reason `stale-import`
+
+#### Scenario: Supersede keeps the record
+- **WHEN** a ticket in `implementing` held by `impl` folds a `ticket.supersede` with reason `group removed from tasks.md`
+- **THEN** it is marked superseded, still in `implementing`, still assigned to `impl`, with its checklist and comments unchanged
