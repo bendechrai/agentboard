@@ -86,10 +86,14 @@
  * text. Checking a box posts `checklist-tick` with `{ id, index }`;
  * unchecking one posts `checklist-untick` with `{ id, index }`, `index`
  * counted from 0. A box always shows the given ticket's state (after a
- * refusal it shows the line as it was). On a successful tick whose
- * `reminder` is not null, the control shows a `p` with class
- * `action-note` holding `reminder.message` as text, until its next
- * request. Refusals are shown in the `div` as for every control.
+ * refusal it shows the line as it was). Each line has its own request
+ * state: its box is disabled while its own request is in flight (so a
+ * second click cannot post a duplicate), while the other lines stay
+ * usable. On a successful tick whose `reminder` is not null, the line's
+ * `li` shows a `p` with class `action-note` holding `reminder.message` as
+ * text, until that line's next request. A refusal is shown in the line's
+ * `li` (inside the `div`), as for every control, until that line's next
+ * request; another line's request never clears or replaces it.
  *
  * No element has a `style` attribute (the Content-Security-Policy's
  * `style-src 'self'` forbids inline styles); every text from the board or
@@ -158,7 +162,9 @@ interface ActionState {
   note: string | null;
   /**
    * Posts `action` with `body`; on success calls `onApplied` and then
-   * `onSuccess` (the control's own reset).
+   * `onSuccess` (the control's own reset). Does nothing while a request of
+   * the control is in flight, so a repeated click or submit made before
+   * the page re-renders its disabled state cannot post a duplicate.
    */
   send: <A extends ActionName>(
     action: A,
@@ -172,6 +178,8 @@ function useAction(props: ActionControlProps): ActionState {
   const [inFlight, setInFlight] = useState(false);
   const [refusal, setRefusal] = useState<Shown | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  // Set synchronously, unlike `inFlight`, which only shows after a render.
+  const pending = useRef(false);
   const latest = useRef(props);
   latest.current = props;
   const mounted = useRef(true);
@@ -187,10 +195,15 @@ function useAction(props: ActionControlProps): ActionState {
     body: ActionBodies[A],
     onSuccess?: (document: ActionSuccess) => void,
   ): void => {
+    if (pending.current) {
+      return;
+    }
+    pending.current = true;
     setInFlight(true);
     setRefusal(null);
     setNote(null);
     void postAction(latest.current.conn, action, body).then((result: ActionResult) => {
+      pending.current = false;
       if (!mounted.current) {
         return;
       }
@@ -553,31 +566,48 @@ export function ActionControls(props: ActionControlProps): JSX.Element {
 
 /** The checklist with a checkbox per line (module comment). */
 export function ChecklistControl(props: ActionControlProps): JSX.Element {
-  const state = useAction(props);
-  const id = props.ticket.id;
   return (
     <div class="action checklist-control" data-action="checklist">
       <ul class="checklist">
         {props.ticket.checklist.map((line, index) => (
-          <li key={String(index)} class={line.done ? 'done' : undefined}>
-            <label>
-              <input
-                type="checkbox"
-                data-index={String(index)}
-                checked={line.done}
-                onChange={(e) => {
-                  // Show the ticket's state until the server answers.
-                  e.currentTarget.checked = line.done;
-                  state.send(line.done ? 'checklist-untick' : 'checklist-tick', { id, index });
-                }}
-              />{' '}
-              {line.text}
-            </label>
-          </li>
+          <ChecklistLine key={String(index)} {...props} index={index} />
         ))}
       </ul>
+    </div>
+  );
+}
+
+/**
+ * One line of the checklist, with its own request state: its box is
+ * disabled while its request is in flight, and its note and refusal are
+ * its own, so another line's request never clears or replaces them.
+ */
+function ChecklistLine(props: ActionControlProps & { index: number }): JSX.Element | null {
+  const state = useAction(props);
+  const { index } = props;
+  const id = props.ticket.id;
+  const line = props.ticket.checklist[index];
+  if (line === undefined) {
+    return null;
+  }
+  return (
+    <li class={line.done ? 'done' : undefined}>
+      <label>
+        <input
+          type="checkbox"
+          data-index={String(index)}
+          checked={line.done}
+          disabled={state.inFlight}
+          onChange={(e) => {
+            // Show the ticket's state until the server answers.
+            e.currentTarget.checked = line.done;
+            state.send(line.done ? 'checklist-untick' : 'checklist-tick', { id, index });
+          }}
+        />{' '}
+        {line.text}
+      </label>
       {state.note !== null ? <p class="action-note">{state.note}</p> : null}
       <Refusal shown={state.refusal} />
-    </div>
+    </li>
   );
 }
