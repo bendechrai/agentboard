@@ -88,23 +88,30 @@ export interface ServeDeps {
 }
 
 /**
- * Runs `agentboard serve [--port <n>] [--open]`, the `stream` of the
- * `serve` registry entry:
+ * Runs `agentboard serve [--port <n>] [--open] [--as <actor>]`, the
+ * `stream` of the `serve` registry entry:
  * 1. `--port`, when given, must be an integer from 0 to 65535, else
- *    `BoardError(1, 'usage')` naming the range; this is checked before
- *    any board lookup, so it exits 1 even where there is no board.
+ *    `BoardError(1, 'usage')` naming the range; `--as`, when given
+ *    (`values.as`), must be a non-empty string, else `BoardError(1,
+ *    'usage')` naming `--as`. Both are checked before any board lookup, so
+ *    they exit 1 even where there is no board.
  * 2. `ctx.board()`: discovery and open with catch-up; no board is
  *    `BoardError(2, 'board-not-found')` from discovery, before anything
  *    listens.
- * 3. `startServer(board, { ...deps.server, port, stderr })` with the port
- *    (default 0) and `io.stderr` as `stderr`; a port in use rejects with
- *    `BoardError(1, 'port-in-use')`.
+ * 3. `startServer(board, { ...deps.server, port, stderr, actor, root, env
+ *    })` with the port (default 0), `io.stderr` as `stderr`, `actor` the
+ *    `--as` value or null (never `ctx.actor` and never `AGENTBOARD_ACTOR`
+ *    from `ctx.env`: the environment never enables writes), `root`
+ *    `actionRoot(ctx.cwd, ctx.env)` (`src/web/actions.ts`) and `env`
+ *    `ctx.env`; a port in use rejects with `BoardError(1, 'port-in-use')`.
  * 4. Prints exactly one line on stdout: without `--json`, `serving <board
- *    dir> read-only at <url>` (`<board dir>` is `board.dir`, `<url>` the
+ *    dir> read-only at <url>`, or with `--as <actor>` `serving <board dir>
+ *    as <actor> at <url>` (`<board dir>` is `board.dir`, `<url>` the
  *    server's start-up URL `http://127.0.0.1:<port>/#token=<token>`, the
  *    token in the fragment); with `--json`, `JSON.stringify({ url, port,
- *    token, writable: false })` with the keys in that order. Nothing else
- *    is ever written to stdout.
+ *    token, writable, actor })` with the keys in that order, `writable`
+ *    true and `actor` the actor with `--as`, else false and null. Nothing
+ *    else is ever written to stdout.
  * 5. With `--open`: `open(url)` (default `openInBrowser`) with that same
  *    fragment URL; when it rejects, `io.stderr` receives `agentboard:
  *    could not open a browser: <message>` and a newline, where every
@@ -115,8 +122,9 @@ export interface ServeDeps {
  * 6. Waits until `io.signal` aborts (at once when it already has), then
  *    `close()`s the server and resolves (the CLI then closes the board and
  *    exits 0).
- * `--as` is accepted and ignored (serve writes nothing and tracks no
- * cursor, so it needs no actor). Writes no event and no cursor.
+ * `serve` needs no actor (the registry entry does not write and tracks no
+ * cursor, so `ctx.actor` is null); without `--as` it writes no event, and
+ * with it only the events of accepted write actions. Writes no cursor.
  */
 export async function serveCommand(
   ctx: RunContext,

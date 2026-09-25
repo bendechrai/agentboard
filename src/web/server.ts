@@ -67,6 +67,7 @@ import {
   type WatchBoardOptions,
 } from '../board/feed.js';
 import type { TickerTimers, WatchDir } from '../board/ticker.js';
+import type { Env } from '../cli/types.js';
 import { errorDocument } from '../cli/main.js';
 import type { Board } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
@@ -184,6 +185,23 @@ export interface ServerOptions {
    * completes).
    */
   readonly checkCache?: (board: Board) => CacheCheckOutcome | Promise<CacheCheckOutcome>;
+  /**
+   * The write actor (board-web-actions: "Write mode is opt-in with an
+   * explicit actor"; add-board-web-actions task 1.1): a non-empty string
+   * makes the server writable as that actor, recorded on every event
+   * written through it; undefined or null (the default) makes it read-only.
+   * An empty string rejects with `BoardError(1, 'usage')` before
+   * listening. The environment (`AGENTBOARD_ACTOR`) is never consulted.
+   */
+  readonly actor?: string | null;
+  /**
+   * The `cwd` of every action (`ActionContext.root`, `src/web/actions.ts`):
+   * the root of the working tree `serve` was started in. Default
+   * `actionRoot(process.cwd(), env)`.
+   */
+  readonly root?: string;
+  /** The environment of every action's run context; default `process.env`. */
+  readonly env?: Env;
 }
 
 /** A running server. */
@@ -228,13 +246,22 @@ export interface RunningServer {
  * `Authorization` headers is 401 `unauthorized` even when the first is
  * valid (`req.headers` keeps only the first; the check counts them in
  * `req.headersDistinct`).
- * - `refuse`: the status, `securityHeaders(api)`, `Allow: GET` on a 405;
- *   the body is `errorDocument(error, API_HINT_CONTEXT)` as JSON on an API
- *   path, else a plain text page. A 401 happens only on API paths.
- * - `route`: `/` serves `<assetsDir>/index.html` (or `PLACEHOLDER_PAGE`),
- *   `/<name>` an asset (see the module comment), `/api/stream` the stream,
- *   and every other API path `apiResponse` (`src/web/api.ts`) with
- *   `{ board, cache, now }`, sent as JSON with its status.
+ * - `refuse`: the status, `securityHeaders(api)`, `Allow: <allow>` on a
+ *   405; the body is `errorDocument(error, API_HINT_CONTEXT)` as JSON on an
+ *   API path, else a plain text page. A 401 happens only on API paths.
+ * - `route` with method `POST` (an action path, authenticated): the action
+ *   checks and `runAction` in the order of the module comment of
+ *   `src/web/actions.ts` (CSRF 403 `csrf-failed`, then the 64 KiB body
+ *   limit 413 `body-too-large`, then `read-only`, the action name and the
+ *   command), with `{ board, actor, root, env }` as its `ActionContext`;
+ *   the result is sent as JSON with its status. A write made this way
+ *   commits on the server's own connection, and the feed's change marker
+ *   counts it, so it reaches every open stream at the next tick.
+ * - `route` with method `GET`: `/` serves `<assetsDir>/index.html` (or
+ *   `PLACEHOLDER_PAGE`), `/<name>` an asset (see the module comment),
+ *   `/api/stream` the stream, and every other API path `apiResponse`
+ *   (`src/web/api.ts`) with `{ board, cache, now, actor }`, sent as JSON
+ *   with its status.
  * Every response, whatever its status, carries `securityHeaders(api)`
  * (so `Cross-Origin-Opener-Policy: same-origin` and
  * `Cross-Origin-Resource-Policy: same-origin` on every response, the 400

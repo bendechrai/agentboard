@@ -57,8 +57,25 @@ export const TOKEN_LENGTH = 43;
 export const CONTENT_SECURITY_POLICY =
   "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
-/** The one method the server answers. */
+/** The method the server answers on every path but the action paths. */
 export const ALLOWED_METHOD = 'GET';
+
+/**
+ * The prefix of the action paths (board-web-actions: "Action endpoints";
+ * add-board-web-actions task 1.2): `POST /api/actions/<action>` is the
+ * one request with a method other than `GET` that passes `checkRequest`.
+ */
+export const ACTIONS_PREFIX = '/api/actions/';
+
+/**
+ * True for an action path: a path beginning with `ACTIONS_PREFIX`
+ * (`/api/actions/comment`, `/api/actions/`, `/api/actions/a/b`), whatever
+ * follows; not `/api/actions` itself. Pure.
+ */
+export function isActionPath(path: string): boolean {
+  void path;
+  throw new Error('not implemented');
+}
 
 /**
  * A new access token: `TOKEN_BYTES` bytes from the operating system's
@@ -215,7 +232,7 @@ export type Verdict =
   /**
    * Refuse the request with `status` and `error` (an `ErrorDocument` on an
    * API path, a short plain text page otherwise; see `server.ts`). A 405
-   * also carries `Allow: GET`.
+   * also carries `Allow: <allow>`.
    */
   | {
       readonly kind: 'refuse';
@@ -224,14 +241,24 @@ export type Verdict =
       readonly error: BoardError;
       /** `isApiPath(path)`. */
       readonly api: boolean;
+      /**
+       * Present exactly on a 405: the method the path answers, sent as the
+       * `Allow` header (board-web: "an `Allow` header naming the permitted
+       * methods"): `POST` on an action path (`isActionPath`), `GET` on
+       * every other path.
+       */
+      readonly allow?: 'GET' | 'POST';
     }
   /**
-   * A `GET` that passed the checks (an API path with a valid bearer token,
-   * or any other path): route `path` (the URL path, not decoded) with
-   * `query`.
+   * A request that passed the checks: a `GET` of any path but an action
+   * path (an API path with a valid bearer token, or any other path), or a
+   * `POST` of an action path with a valid bearer token. Route `path` (the
+   * URL path, not decoded) with `query`.
    */
   | {
       readonly kind: 'route';
+      /** `GET`, or `POST` for an action path. */
+      readonly method: 'GET' | 'POST';
       readonly path: string;
       readonly query: URLSearchParams;
       readonly api: boolean;
@@ -251,10 +278,16 @@ export type Verdict =
  *    'unauthorized')` whose message tells the user to open the URL printed
  *    at start-up. The message never contains a token (not the server's,
  *    not the one presented). Other paths skip this step.
- * 3. The method is `GET`, else refuse 405 with `BoardError(1,
- *    'method-not-allowed')`.
- * 4. `route` with the path and query of `head.url` (a `token` query
- *    parameter is left in `query` and means nothing).
+ * 3. The method (board-web: "Read-only server", as modified by
+ *    add-board-web-actions): on an action path (`isActionPath`) it must
+ *    be `POST`, on every other path `GET`; else refuse 405 with
+ *    `BoardError(1, 'method-not-allowed')` and `allow` `POST` on an action
+ *    path, `GET` elsewhere. (A `GET` of an action path is therefore 405
+ *    with `Allow: POST`, and a `POST` of `/api/board` or `/` 405 with
+ *    `Allow: GET`.) Whether the server is writable is not looked at here:
+ *    a read-only server refuses an action later, with `read-only`.
+ * 4. `route` with the method, the path and query of `head.url` (a `token`
+ *    query parameter is left in `query` and means nothing).
  * `api` is `isApiPath` of the path. Never returns `enter`. Pure.
  */
 export function checkRequest(head: RequestHead, guard: Guard): Verdict {
@@ -296,7 +329,7 @@ export function checkRequest(head: RequestHead, guard: Guard): Verdict {
       api,
     };
   }
-  return { kind: 'route', path, query: new URLSearchParams(query), api };
+  return { kind: 'route', method: 'GET', path, query: new URLSearchParams(query), api };
 }
 
 /** The scheme and space of a bearer `Authorization` header. */

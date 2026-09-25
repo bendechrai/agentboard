@@ -43,6 +43,11 @@ export interface ApiContext {
   readonly cache: EventCache;
   /** The current time in milliseconds since the Unix epoch (`/api/actors`). */
   readonly now: () => number;
+  /**
+   * The server's write actor (`ServerOptions.actor`), or null or undefined
+   * for a read-only server (`/api/session`).
+   */
+  readonly actor?: string | null;
 }
 
 /** A JSON response: the status and the value to send as JSON. */
@@ -97,8 +102,12 @@ export function httpStatus(error: unknown): number {
  * before this function returns. No route writes an event or a cursor.
  *
  * Routes (board-web: "JSON API"), each answering 200 on success:
- * - `/api/session`: `{ version, boardDir, writable, actor }`: `VERSION`,
- *   `board.dir`, false and null. Reads nothing from the cache.
+ * - `/api/session`: `{ version, boardDir, writable, actor }` with the keys
+ *   in this order: `VERSION`, `board.dir`, then `writable` true and `actor`
+ *   `ctx.actor` when `ctx.actor` is a non-empty string, else false and
+ *   null (board-web: "JSON API" as modified by add-board-web-actions). No
+ *   other key (no CSRF token or field of any kind). Reads nothing from the
+ *   cache.
  * - `/api/board`: `{ tickets, meta, id }`: every ticket, open and closed,
  *   sorted by ascending id; the board meta; the snapshot's position id.
  * - `/api/tickets/<id>`: `{ ticket, events }` for a full id or a unique

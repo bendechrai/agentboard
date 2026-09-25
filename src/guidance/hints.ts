@@ -305,6 +305,17 @@ export function hintStep(
  *   answers only `GET` (the word `GET` appears); `too-many-streams`: close
  *   other board tabs or clients, at most 64 streams are open at once (the
  *   number `64` appears), then reconnect.
+ * - The refusals of the write actions (add-board-web-actions task 1.2),
+ *   whose command is `serve` and which each end with step `help serve`:
+ *   `read-only`: the server was started without `--as` and is read-only
+ *   (the word `read-only` appears); step `serve` with `as` A, so with no
+ *   known actor `'agentboard serve --as <actor>'` appears (board-web
+ *   scenario "Read-only server refuses actions"); `csrf-failed`: an action
+ *   must be posted by the page of this server, or by a script with no
+ *   `Origin` header, as `Content-Type: application/json` (the texts
+ *   `Content-Type: application/json` and `Origin` appear);
+ *   `body-too-large`: an action body is at most 64 KiB (the text `64 KiB`
+ *   appears).
  * - `unsupported-source`: only the `openspec` adapter ships; step `new`
  *   with `title` `<title>`, `task` `<source>:<ref>#<item>`, A.
  * - `tasks-not-found`, `malformed-tasks`: fix the tasks file named in the
