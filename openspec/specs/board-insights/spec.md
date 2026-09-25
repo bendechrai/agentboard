@@ -1,6 +1,12 @@
-# Spec Delta
+# board-insights Specification
 
-## ADDED Requirements
+## Purpose
+Board health and history: the health report (stale claims, tickets stuck
+in `blocked`, unpromoted decisions, merged tickets without a PR link, late
+arrivals and the cache check) with `agentboard health` and `board_health`,
+and the web app's Health, Replay and hand-off Graph views.
+
+## Requirements
 
 ### Requirement: Health report
 `healthReport` SHALL be a pure view-model function (see board-view-model)
@@ -15,8 +21,10 @@ The report SHALL contain:
   applied `ticket.claim`, `ticket.handoff` or `ticket.assign` that made
   them the assignee;
 - `stuckBlocked`: every open ticket in `blocked` whose applied event into
-  `blocked` (a `ticket.move` to `blocked` or a `ticket.handoff` with status
-  `blocked`) is at least `blockedAfter` old, with the status it was
+  `blocked` (a `ticket.move` to `blocked`, or a `ticket.handoff` with status
+  `blocked` from a ticket not already in `blocked`; a hand-off within
+  `blocked` reassigns it without restarting the clock) is at least
+  `blockedAfter` old, with the status it was
   blocked from and its latest comment;
 - `unpromotedDecisions`: every open ticket with at least one comment in
   `openDecisions` and no `decision` link, with those comments;
