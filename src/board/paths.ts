@@ -97,8 +97,12 @@ function realTarget(path: string): string {
   }
 }
 
-/** `git rev-parse --show-toplevel` in `cwd`, or null when it fails. */
-function worktreeRoot(cwd: string, env: Env): string | null {
+/**
+ * `git rev-parse --show-toplevel` in `cwd` (with `env`), or null when it
+ * fails (not in a git repository, or git missing). Also the working tree
+ * root of the web actions (`actionRoot`, `src/web/actions.ts`).
+ */
+export function worktreeRoot(cwd: string, env: Env): string | null {
   try {
     const out = execFileSync('git', ['rev-parse', '--show-toplevel'], {
       cwd,

@@ -93,7 +93,11 @@ export interface CommandHelpDocument {
  *    the form above joined by spaces, joined by ` | `, in `(...)` when the
  *    group is required and `[...]` when it is not (e.g.
  *    `(--task <task> | --change <change> --group <group> | --adhoc <adhoc>)`);
- * 4. `--as <actor>` when the command writes or tracks a cursor;
+ * 4. `--as <actor>` when the command writes or tracks a cursor; otherwise
+ *    `[--as <actor>]` when the command has `actorHelp` (`serve`, where
+ *    `--as` enables the write actions, and `mcp`: board-cli "Command
+ *    surface" scenario "Serve has help", as modified by
+ *    add-board-web-actions task 1.1); nothing on every other command;
  * 5. `[--json]`.
  * Pure.
  */
@@ -118,6 +122,8 @@ export function synopsis(command: CommandSpec): string {
   }
   if (needsActor(command)) {
     parts.push('--as <actor>');
+  } else if (command.actorHelp !== undefined) {
+    parts.push('[--as <actor>]');
   }
   parts.push('[--json]');
   return parts.join(' ');
@@ -152,8 +158,9 @@ export function synopsis(command: CommandSpec): string {
  * `--name <name>` for any other flag, except `--as <actor>`. The `--as`
  * line reads `string, required (or set AGENTBOARD_ACTOR)` for a command
  * that writes or tracks a cursor; for any other it reads `string, optional`
- * with the summary `command.actorHelp` when present (`mcp`: the server's
- * default actor for tool calls), else `Accepted and ignored by this command`.
+ * with the summary `command.actorHelp` when present (`serve`: the actor of
+ * the web app's write actions; `mcp`: the server's default actor for tool
+ * calls), else `Accepted and ignored by this command`.
  *
  * Every line has no trailing spaces; the text ends with one newline. Pure.
  */

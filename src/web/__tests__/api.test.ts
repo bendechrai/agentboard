@@ -140,6 +140,35 @@ describe('/api/session', () => {
       actor: null,
     });
   });
+
+  // add-board-web-actions task 1.1 (board-web: "JSON API" as modified).
+  it('gives writable true and the actor of a writable context, and no other key', () => {
+    const board = open(project().boardDir);
+    const base = { board, cache: createEventCache(), now: () => 0 };
+    const writable = apiResponse({ ...base, actor: 'ben' }, '/api/session', new URLSearchParams());
+    expect(writable.status).toBe(200);
+    expect(Object.keys(writable.body as object)).toEqual([
+      'version',
+      'boardDir',
+      'writable',
+      'actor',
+    ]);
+    expect(writable.body).toEqual({
+      version: VERSION,
+      boardDir: board.dir,
+      writable: true,
+      actor: 'ben',
+    });
+    for (const actor of [undefined, null, '']) {
+      const ctx = actor === undefined ? base : { ...base, actor };
+      expect(apiResponse(ctx, '/api/session', new URLSearchParams()).body, String(actor)).toEqual({
+        version: VERSION,
+        boardDir: board.dir,
+        writable: false,
+        actor: null,
+      });
+    }
+  });
 });
 
 describe('/api/board', () => {

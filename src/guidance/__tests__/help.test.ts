@@ -210,8 +210,17 @@ describe('the help data of record in the registry', () => {
     ]);
   });
 
-  it('gives actorHelp to mcp only, which neither writes nor tracks a cursor', () => {
-    expect(COMMANDS.filter((c) => c.actorHelp !== undefined).map((c) => c.name)).toEqual(['mcp']);
+  it('gives actorHelp to serve and mcp only, which neither write nor track a cursor', () => {
+    // add-board-web-actions task 1.1: serve --as is the actor of the web
+    // app's write actions, so its --as line is no longer "ignored".
+    expect(COMMANDS.filter((c) => c.actorHelp !== undefined).map((c) => c.name)).toEqual([
+      'serve',
+      'mcp',
+    ]);
+    const serve = command('serve');
+    expect(needsActor(serve)).toBe(false);
+    expect(serve.actorHelp).toMatch(/write/i);
+    expect(serve.actorHelp).toContain('AGENTBOARD_ACTOR');
     const mcp = command('mcp');
     expect(needsActor(mcp)).toBe(false);
     expect(mcp.actorHelp).toBe(
@@ -338,6 +347,10 @@ describe('synopsis', () => {
     ['show', 'agentboard show <id> [--raw] [--json]'],
     ['help', 'agentboard help [<topic>] [<subtopic>] [--role <role>] [--json]'],
     ['version', 'agentboard version [--json]'],
+    // add-board-web-actions task 1.1: an optional --as that means something.
+    ['serve', 'agentboard serve [--port <port>] [--open] [--as <actor>] [--json]'],
+    ['mcp', 'agentboard mcp [--as <actor>] [--json]'],
+    ['top', 'agentboard top [--json]'],
   ])('of %s', (name, expected) => {
     expect(synopsis(command(name))).toBe(expected);
   });
@@ -353,7 +366,8 @@ describe('synopsis', () => {
     for (const f of c.flags.filter((x) => x.required)) {
       expect(text).toContain(`--${f.name} <${f.name}>`);
     }
-    expect(text.includes('--as <actor>'), name).toBe(needsActor(c));
+    expect(text.includes(' --as <actor>'), name).toBe(needsActor(c));
+    expect(text.includes('[--as <actor>]'), name).toBe(!needsActor(c) && c.actorHelp !== undefined);
   });
 });
 

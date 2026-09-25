@@ -30,7 +30,10 @@
  * - Malformed HTTP (a `clientError` of the parser, for example a raw NUL
  *   in the request target) is answered `400 Bad Request` with
  *   `securityHeaders(false)`, `Content-Length: 0` and `Connection: close`,
- *   never Node's bare 400 page.
+ *   never Node's bare 400 page; when the connection is still sending an
+ *   earlier response (bytes after a request that had no body framing,
+ *   such as a `DELETE` with an unframed body), it is closed instead, as
+ *   Node's own handler does.
  * - Plain text pages (refusals outside `/api`) are `text/plain;
  *   charset=utf-8`, one or two short lines naming the reason, never the
  *   token.
@@ -67,6 +70,7 @@ import {
   type WatchBoardOptions,
 } from '../board/feed.js';
 import type { TickerTimers, WatchDir } from '../board/ticker.js';
+import type { Env } from '../cli/types.js';
 import { errorDocument } from '../cli/main.js';
 import type { Board } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
@@ -79,7 +83,15 @@ import {
   type CacheCheckOutcome,
   type HealthResponse,
 } from './health.js';
-import { checkRequest, newToken, securityHeaders, type Guard } from './security.js';
+import { ACTION_BODY_LIMIT, actionRoot, csrfRefusal, runAction } from './actions.js';
+import {
+  ACTIONS_PREFIX,
+  checkRequest,
+  newToken,
+  securityHeaders,
+  type Guard,
+  type RequestHead,
+} from './security.js';
 import {
   KEEPALIVE_MS,
   MAX_STREAMS,
@@ -184,6 +196,23 @@ export interface ServerOptions {
    * completes).
    */
   readonly checkCache?: (board: Board) => CacheCheckOutcome | Promise<CacheCheckOutcome>;
+  /**
+   * The write actor (board-web-actions: "Write mode is opt-in with an
+   * explicit actor"; add-board-web-actions task 1.1): a non-empty string
+   * makes the server writable as that actor, recorded on every event
+   * written through it; undefined or null (the default) makes it read-only.
+   * An empty string rejects with `BoardError(1, 'usage')` before
+   * listening. The environment (`AGENTBOARD_ACTOR`) is never consulted.
+   */
+  readonly actor?: string | null;
+  /**
+   * The `cwd` of every action (`ActionContext.root`, `src/web/actions.ts`):
+   * the root of the working tree `serve` was started in. Default
+   * `actionRoot(process.cwd(), env)`.
+   */
+  readonly root?: string;
+  /** The environment of every action's run context; default `process.env`. */
+  readonly env?: Env;
 }
 
 /** A running server. */
@@ -228,13 +257,22 @@ export interface RunningServer {
  * `Authorization` headers is 401 `unauthorized` even when the first is
  * valid (`req.headers` keeps only the first; the check counts them in
  * `req.headersDistinct`).
- * - `refuse`: the status, `securityHeaders(api)`, `Allow: GET` on a 405;
- *   the body is `errorDocument(error, API_HINT_CONTEXT)` as JSON on an API
- *   path, else a plain text page. A 401 happens only on API paths.
- * - `route`: `/` serves `<assetsDir>/index.html` (or `PLACEHOLDER_PAGE`),
- *   `/<name>` an asset (see the module comment), `/api/stream` the stream,
- *   and every other API path `apiResponse` (`src/web/api.ts`) with
- *   `{ board, cache, now }`, sent as JSON with its status.
+ * - `refuse`: the status, `securityHeaders(api)`, `Allow: <allow>` on a
+ *   405; the body is `errorDocument(error, API_HINT_CONTEXT)` as JSON on an
+ *   API path, else a plain text page. A 401 happens only on API paths.
+ * - `route` with method `POST` (an action path, authenticated): the action
+ *   checks and `runAction` in the order of the module comment of
+ *   `src/web/actions.ts` (CSRF 403 `csrf-failed`, then the 64 KiB body
+ *   limit 413 `body-too-large`, then `read-only`, the action name and the
+ *   command), with `{ board, actor, root, env }` as its `ActionContext`;
+ *   the result is sent as JSON with its status. A write made this way
+ *   commits on the server's own connection, and the feed's change marker
+ *   counts it, so it reaches every open stream at the next tick.
+ * - `route` with method `GET`: `/` serves `<assetsDir>/index.html` (or
+ *   `PLACEHOLDER_PAGE`), `/<name>` an asset (see the module comment),
+ *   `/api/stream` the stream, and every other API path `apiResponse`
+ *   (`src/web/api.ts`) with `{ board, cache, now, actor }`, sent as JSON
+ *   with its status.
  * Every response, whatever its status, carries `securityHeaders(api)`
  * (so `Cross-Origin-Opener-Policy: same-origin` and
  * `Cross-Origin-Resource-Policy: same-origin` on every response, the 400
@@ -305,6 +343,16 @@ export async function startServer(
   if (!Number.isInteger(requested) || requested < 0 || requested > 65535) {
     throw new BoardError(1, 'usage', 'the port must be an integer from 0 to 65535');
   }
+  if (options.actor === '') {
+    throw new BoardError(
+      1,
+      'usage',
+      'the actor must not be empty; leave it out to serve read-only',
+    );
+  }
+  const actor = options.actor ?? null;
+  const env = options.env ?? process.env;
+  const root = options.root ?? actionRoot(process.cwd(), env);
   const token = options.token ?? newToken();
   const assetsDir = options.assetsDir ?? defaultAssetsDir();
   const now = options.now ?? Date.now;
@@ -467,24 +515,118 @@ export async function startServer(
     );
   };
 
+  /**
+   * `POST /api/actions/<action>`, authenticated: the CSRF rules, the body
+   * limit, then `runAction` (the order of `src/web/actions.ts`). Every
+   * refusal writes nothing; no body is held beyond `ACTION_BODY_LIMIT`.
+   */
+  const handleAction = (
+    req: IncomingMessage,
+    res: ServerResponse,
+    head: RequestHead,
+    path: string,
+  ): void => {
+    // A client that goes away mid-body is not an error of the server.
+    req.on('error', () => undefined);
+    const csrf = csrfRefusal(head, guard.port);
+    if (csrf !== null) {
+      discard(req, res);
+      sendJson(res, 403, errorDocument(csrf, API_HINT_CONTEXT));
+      return;
+    }
+    const tooLarge = (): void => {
+      discard(req, res);
+      sendJson(
+        res,
+        413,
+        errorDocument(
+          new BoardError(
+            1,
+            'body-too-large',
+            `the action body is larger than ${String(ACTION_BODY_LIMIT / 1024)} KiB`,
+          ),
+          API_HINT_CONTEXT,
+        ),
+      );
+    };
+    const declared = Number(req.headers['content-length'] ?? 0);
+    if (declared > ACTION_BODY_LIMIT) {
+      tooLarge();
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const onData = (chunk: Buffer): void => {
+      size += chunk.length;
+      if (size > ACTION_BODY_LIMIT) {
+        chunks.length = 0;
+        req.off('data', onData);
+        req.off('end', onEnd);
+        tooLarge();
+        return;
+      }
+      chunks.push(chunk);
+    };
+    const onEnd = (): void => {
+      // Run nothing whose answer cannot be delivered: a request aborted, a
+      // response already ended or destroyed, or a socket no longer
+      // writable (the clientError handler has ended it after malformed
+      // bytes pipelined behind this body). Otherwise the write would
+      // commit while the client was told something else.
+      if (stopped || req.destroyed || res.destroyed || res.writableEnded || !req.socket.writable) {
+        return;
+      }
+      const text = Buffer.concat(chunks).toString('utf8');
+      chunks.length = 0;
+      try {
+        const result = runAction(
+          { board, actor, root, env },
+          path.slice(ACTIONS_PREFIX.length),
+          text,
+        );
+        sendJson(res, result.status, result.body);
+      } catch (error) {
+        // Unexpected (runAction never throws): as in `handle`.
+        if (res.headersSent) {
+          res.destroy();
+        } else {
+          sendJson(res, 500, errorDocument(error, API_HINT_CONTEXT));
+        }
+      }
+    };
+    req.on('data', onData);
+    req.on('end', onEnd);
+  };
+
+  // The response in progress on each connection (see the clientError handler).
+  const answering = new WeakMap<Socket, ServerResponse>();
+
   const handle = (req: IncomingMessage, res: ServerResponse): void => {
-    // A body is never read; let it drain.
-    req.resume();
+    answering.set(req.socket, res);
+    res.once('finish', () => {
+      if (answering.get(req.socket) === res) {
+        answering.delete(req.socket);
+      }
+    });
     let api = true;
     try {
-      const verdict = checkRequest(
-        {
-          method: req.method ?? '',
-          url: req.url ?? '',
-          headers: req.headers,
-          headersDistinct: req.headersDistinct,
-        },
-        guard,
-      );
+      const head: RequestHead = {
+        method: req.method ?? '',
+        url: req.url ?? '',
+        headers: req.headers,
+        headersDistinct: req.headersDistinct,
+      };
+      const verdict = checkRequest(head, guard);
       api = verdict.api;
+      if (verdict.kind === 'route' && verdict.method === 'POST') {
+        handleAction(req, res, head, verdict.path);
+        return;
+      }
+      // No other request has a body worth reading; let it drain.
+      req.resume();
       switch (verdict.kind) {
         case 'refuse':
-          refuse(res, verdict.status, verdict.error, verdict.api);
+          refuse(res, verdict.status, verdict.error, verdict.api, verdict.allow);
           return;
         case 'route':
           if (verdict.path === '/api/stream') {
@@ -495,7 +637,7 @@ export async function startServer(
           } else if (verdict.path === '/api/health/check') {
             runCheck(res);
           } else if (verdict.api) {
-            const result = apiResponse({ board, cache, now }, verdict.path, verdict.query);
+            const result = apiResponse({ board, cache, now, actor }, verdict.path, verdict.query);
             sendJson(res, result.status, result.body);
           } else {
             servePage(res, assetsDir, verdict.path);
@@ -504,6 +646,7 @@ export async function startServer(
       }
     } catch (error) {
       // Unexpected: answer 500 without detail beyond the error document.
+      req.resume();
       if (!res.headersSent) {
         if (api) {
           sendJson(res, 500, errorDocument(error, API_HINT_CONTEXT));
@@ -519,7 +662,8 @@ export async function startServer(
   const server = createServer({ requireHostHeader: false }, handle);
   // Malformed requests: answer 400 with the security headers, never Node's bare page.
   server.on('clientError', (_error: Error, socket: Socket) => {
-    if (socket.writable) {
+    // As Node's own handler: never write a second response into one already begun.
+    if (socket.writable && answering.get(socket)?.headersSent !== true) {
       const lines = Object.entries({
         ...securityHeaders(false),
         'Content-Length': '0',
@@ -667,9 +811,41 @@ function sendText(
   res.end(text);
 }
 
+/**
+ * Reads and throws away the rest of a refused action's body, holding none
+ * of it, so the connection stays usable and the client can read the
+ * response; a client that keeps sending past `DISCARD_LIMIT` bytes is
+ * disconnected once the response has been sent.
+ */
+function discard(req: IncomingMessage, res: ServerResponse): void {
+  let discarded = 0;
+  req.on('data', (chunk: Buffer) => {
+    discarded += chunk.length;
+    if (discarded > DISCARD_LIMIT) {
+      if (res.writableFinished) {
+        req.socket.destroy();
+      } else {
+        res.once('finish', () => {
+          req.socket.destroy();
+        });
+      }
+    }
+  });
+  req.resume();
+}
+
+/** Bytes of a refused action body read and thrown away before disconnecting: 1 MiB. */
+const DISCARD_LIMIT = 1024 * 1024;
+
 /** A refusal: an `ErrorDocument` on an API path, a plain text page otherwise. */
-function refuse(res: ServerResponse, status: number, error: BoardError, api: boolean): void {
-  const extra: OutgoingHttpHeaders = status === 405 ? { Allow: 'GET' } : {};
+function refuse(
+  res: ServerResponse,
+  status: number,
+  error: BoardError,
+  api: boolean,
+  allow: 'GET' | 'POST' = 'GET',
+): void {
+  const extra: OutgoingHttpHeaders = status === 405 ? { Allow: allow } : {};
   if (api) {
     sendJson(res, status, errorDocument(error, API_HINT_CONTEXT), extra);
   } else {
