@@ -105,7 +105,11 @@ describe('every command prints exactly one JSON document with --json', () => {
     expect(Object.keys(steps('', { id: '' })).sort()).toEqual(COMMANDS.map((c) => c.name).sort());
   });
 
-  it('parses stdout as one document for each command, in order', () => {
+  // Runs every command in turn against one board: about 30 CLI runs, each
+  // finding the board through a git subprocess, several writing fsynced
+  // event files, plus git init and sync. It has exceeded vitest's 5 second
+  // default with the whole suite running on a loaded machine.
+  it('parses stdout as one document for each command, in order', { timeout: 30_000 }, () => {
     const { root, boardDir } = project();
     const state = { id: '' };
     const id = (): string => state.id;

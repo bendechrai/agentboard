@@ -2,6 +2,8 @@
  * Helpers for reading the style map of a frame in the terminal UI tests.
  */
 
+import { isDeepStrictEqual } from 'node:util';
+
 import { expect } from 'vitest';
 
 import type { Frame, Style } from '../frame.js';
@@ -37,20 +39,36 @@ export const all = (n: number, s: Style): Style[] => Array.from({ length: n }, (
  */
 export function expectCanonical(frame: Frame, columns: number): void {
   expect(frame.styles).toHaveLength(frame.lines.length);
-  for (const runs of frame.styles) {
+  // The violations are collected and asserted once per frame: the property
+  // tests check hundreds of frames, and one `expect` per run made the
+  // assertions, not the rendering, most of their running time under load.
+  const problems: string[] = [];
+  frame.styles.forEach((runs, y) => {
     let end = 0;
     let previous: Style | null = null;
     for (const run of runs) {
-      expect(Number.isInteger(run.start) && Number.isInteger(run.length)).toBe(true);
-      expect(run.length).toBeGreaterThanOrEqual(1);
-      expect(run.start).toBeGreaterThanOrEqual(end);
-      expect(run.start + run.length).toBeLessThanOrEqual(columns);
-      expect(run.style).not.toEqual(DEFAULT);
-      if (previous !== null && run.start === end) {
-        expect(run.style).not.toEqual(previous);
+      const at = `line ${String(y)} run ${JSON.stringify(run)}`;
+      if (!Number.isInteger(run.start) || !Number.isInteger(run.length)) {
+        problems.push(`${at}: start and length are not integers`);
+      }
+      if (!(run.length >= 1)) {
+        problems.push(`${at}: shorter than one cell`);
+      }
+      if (!(run.start >= end)) {
+        problems.push(`${at}: starts before the previous run ends at ${String(end)}`);
+      }
+      if (!(run.start + run.length <= columns)) {
+        problems.push(`${at}: ends past column ${String(columns)}`);
+      }
+      if (isDeepStrictEqual(run.style, DEFAULT)) {
+        problems.push(`${at}: has the default style`);
+      }
+      if (previous !== null && run.start === end && isDeepStrictEqual(run.style, previous)) {
+        problems.push(`${at}: has the style of the adjacent previous run`);
       }
       end = run.start + run.length;
       previous = run.style;
     }
-  }
+  });
+  expect(problems).toEqual([]);
 }

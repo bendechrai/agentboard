@@ -12,18 +12,35 @@
  * computed with the parser under test.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { Ticket } from '../../events/fold.js';
-import type { Board } from '../../store/board.js';
+import { openBoard, type Board } from '../../store/board.js';
 import { closeTicket } from '../actions.js';
 import { importChange, parseImportTarget, type ImportResult } from '../import.js';
 import { listTickets, newTicket, showRaw } from '../tickets.js';
-import { SAMPLES, eventCount, expectBoardError, setup } from './helpers.js';
+import {
+  SAMPLES,
+  eventCount,
+  expectBoardError,
+  makeBoardDir,
+  openTracked,
+  setup,
+  tempDir,
+} from './helpers.js';
 
 const FIXTURE = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'add-board-core-tasks.md'),
@@ -87,11 +104,59 @@ function writeTasks(root: string, text: string, change = CHANGE): void {
   writeFileSync(join(root, 'openspec', 'changes', change, 'tasks.md'), text);
 }
 
-function imported(): { board: Board; root: string; first: ImportResult } {
+/** A fresh board with the fixture written and imported for real. */
+function importFresh(): { board: Board; root: string; first: ImportResult } {
   const { board, root } = setup();
   writeTasks(root, FIXTURE);
   const first = importChange(board, 'orch', TARGET);
   return { board, root, first };
+}
+
+/**
+ * The fixture imported once for the whole file: a project root holding the
+ * tasks file and a closed board, and the result of that first import.
+ * `imported` copies it for each test. A first import writes 39 event files,
+ * each fsynced with its directory and committed to the cache; rebuilding it
+ * in every test made this the slowest file of the suite in the floor
+ * container, where tests exceeded vitest's 5 second default under load.
+ */
+let template: { root: string; first: ImportResult } | undefined;
+
+// One first import: a few hundred milliseconds alone, several seconds in a
+// container with the whole suite running, so the hook gets a longer limit
+// than vitest's 10 second default.
+const IMPORT_TIMEOUT_MS = 30_000;
+
+beforeAll(() => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'agentboard-import-')));
+  writeTasks(root, FIXTURE);
+  const board = openBoard(makeBoardDir(root));
+  try {
+    template = { root, first: importChange(board, 'orch', TARGET) };
+  } finally {
+    board.close();
+  }
+}, IMPORT_TIMEOUT_MS);
+
+afterAll(() => {
+  if (template !== undefined) {
+    rmSync(template.root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * A board holding a first import of the fixture (with the tasks file
+ * written), and that import's result: a copy of the shared template, so
+ * each test has its own board and may write to it.
+ */
+function imported(): { board: Board; root: string; first: ImportResult } {
+  if (template === undefined) {
+    throw new Error('the import template is built in beforeAll');
+  }
+  const root = tempDir();
+  cpSync(template.root, root, { recursive: true });
+  const board = openTracked(join(root, '.board'));
+  return { board, root, first: structuredClone(template.first) };
 }
 
 function byItem(result: ImportResult, item: string): Ticket {
@@ -130,29 +195,43 @@ describe('parseImportTarget', () => {
 });
 
 describe('import-change: first import (scenario: one ticket per group)', () => {
-  it('creates nine tickets with titles, task references, labels and checklists', () => {
-    const { board, first } = imported();
-    expect(first).toMatchObject({ source: 'openspec', ref: CHANGE, tasksFile: PATH });
-    expect(first.tickets.map((t) => t.item)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9']);
-    expect(listTickets(board)).toHaveLength(9);
-    first.tickets.forEach((entry, i) => {
-      const n = String(i + 1);
-      const t = entry.ticket;
-      expect(entry.action).toBe('created');
-      expect(entry.appended).toBe(0);
-      expect(entry.id).toBe(t.id);
-      expect(t.title).toBe(TITLES[i]);
-      expect(t.task).toEqual({ source: 'openspec', ref: CHANGE, item: n });
-      expect(t.adhoc).toBeNull();
-      expect(t.labels).toEqual([`change:${CHANGE}`, `group:${n}`]);
-      expect(t.description).toBeNull();
-      expect(t.assignee).toBeNull();
-      expect(t.createdBy).toBe('orch');
-      expect(t.checklist).toEqual(
-        (TASK_LINES[i] ?? []).map((line, j) => ({ text: taskText(line), done: DONE[i]?.[j] })),
-      );
-    });
-  });
+  it(
+    'creates nine tickets with titles, task references, labels and checklists',
+    { timeout: IMPORT_TIMEOUT_MS },
+    () => {
+      const { board, first } = importFresh();
+      expect(first).toMatchObject({ source: 'openspec', ref: CHANGE, tasksFile: PATH });
+      expect(first.tickets.map((t) => t.item)).toEqual([
+        '1',
+        '2',
+        '3',
+        '4',
+        '5',
+        '6',
+        '7',
+        '8',
+        '9',
+      ]);
+      expect(listTickets(board)).toHaveLength(9);
+      first.tickets.forEach((entry, i) => {
+        const n = String(i + 1);
+        const t = entry.ticket;
+        expect(entry.action).toBe('created');
+        expect(entry.appended).toBe(0);
+        expect(entry.id).toBe(t.id);
+        expect(t.title).toBe(TITLES[i]);
+        expect(t.task).toEqual({ source: 'openspec', ref: CHANGE, item: n });
+        expect(t.adhoc).toBeNull();
+        expect(t.labels).toEqual([`change:${CHANGE}`, `group:${n}`]);
+        expect(t.description).toBeNull();
+        expect(t.assignee).toBeNull();
+        expect(t.createdBy).toBe('orch');
+        expect(t.checklist).toEqual(
+          (TASK_LINES[i] ?? []).map((line, j) => ({ text: taskText(line), done: DONE[i]?.[j] })),
+        );
+      });
+    },
+  );
 
   it('keeps the task number in each checklist line and skips continuation lines', () => {
     const { first } = imported();
@@ -343,21 +422,25 @@ describe('import-change: re-import (scenario: second import adds nothing)', () =
 });
 
 describe('import-change: tickets are keyed by task reference', () => {
-  it('adopts a ticket created by hand for a group instead of creating another', () => {
-    const { board, root } = setup();
-    writeTasks(root, FIXTURE);
-    const manual = newTicket(board, 'human', {
-      title: 'My own title',
-      task: { source: 'openspec', ref: CHANGE, item: '7' },
-      checklist: TASK_LINES[6]?.map(taskText),
-    }).ticket;
-    const out = importChange(board, 'orch', TARGET);
-    expect(listTickets(board)).toHaveLength(9);
-    const seven = out.tickets.find((t) => t.item === '7');
-    expect(seven).toMatchObject({ action: 'unchanged', id: manual.id, events: [] });
-    expect(seven?.ticket.title).toBe('My own title');
-    expect(out.events).toBe(TOTAL_EVENTS - 1);
-  });
+  it(
+    'adopts a ticket created by hand for a group instead of creating another',
+    { timeout: IMPORT_TIMEOUT_MS },
+    () => {
+      const { board, root } = setup();
+      writeTasks(root, FIXTURE);
+      const manual = newTicket(board, 'human', {
+        title: 'My own title',
+        task: { source: 'openspec', ref: CHANGE, item: '7' },
+        checklist: TASK_LINES[6]?.map(taskText),
+      }).ticket;
+      const out = importChange(board, 'orch', TARGET);
+      expect(listTickets(board)).toHaveLength(9);
+      const seven = out.tickets.find((t) => t.item === '7');
+      expect(seven).toMatchObject({ action: 'unchanged', id: manual.id, events: [] });
+      expect(seven?.ticket.title).toBe('My own title');
+      expect(out.events).toBe(TOTAL_EVENTS - 1);
+    },
+  );
 
   it('uses the ticket with the smallest id when several share the reference', () => {
     const { board, root } = setup();

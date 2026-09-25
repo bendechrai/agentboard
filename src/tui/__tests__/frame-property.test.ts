@@ -136,31 +136,50 @@ function randomUi(rand: () => number, m: BoardModel): UiState {
   };
 }
 
+/**
+ * Asserts the frame has `size.rows` lines of exactly `size.columns`
+ * printable ASCII characters. The offending lines are collected and
+ * asserted once per frame rather than with an `expect` per line: the
+ * property below checks 480 frames of up to 60 lines, and per-line
+ * assertions cost more than the rendering itself.
+ */
 function expectDimensions(frame: { lines: string[] }, size: Size): void {
   expect(frame.lines).toHaveLength(size.rows);
-  for (const line of frame.lines) {
-    expect(line).toHaveLength(size.columns);
-    expect(line).toMatch(/^[\x20-\x7e]*$/);
-  }
+  const bad = frame.lines
+    .map((line, y) => ({ y, length: line.length, line }))
+    .filter(({ length, line }) => length !== size.columns || !/^[\x20-\x7e]*$/.test(line));
+  expect(bad).toEqual([]);
 }
 
+// The first property renders 480 frames (60 seeded boards of up to 40
+// tickets and 120 events, 8 sizes each). Its inputs are deterministic, so
+// its running time depends only on the machine: well under 2 seconds
+// alone, but it has exceeded vitest's 5 second default with the whole
+// suite running in parallel on a loaded machine, so it carries an
+// explicit limit, as the fold and replay property tests do.
+const PROPERTY_TIMEOUT_MS = 30_000;
+
 describe('scenario "Frame dimensions"', () => {
-  it('every frame is exactly rows lines of exactly columns printable ASCII characters (60x15 to 200x60)', () => {
-    for (let seed = 1; seed <= 60; seed += 1) {
-      const m = randomModel(seed);
-      const rand = prng(seed * 7919);
-      for (let i = 0; i < 8; i += 1) {
-        const size = {
-          columns: 60 + Math.floor(rand() * 141),
-          rows: 15 + Math.floor(rand() * 46),
-        };
-        const ui = randomUi(rand, m);
-        const frame = renderFrame(m, ui, size, NOW + Math.floor(rand() * 100_000));
-        expectDimensions(frame, size);
-        expectCanonical(frame, size.columns);
+  it(
+    'every frame is exactly rows lines of exactly columns printable ASCII characters (60x15 to 200x60)',
+    { timeout: PROPERTY_TIMEOUT_MS },
+    () => {
+      for (let seed = 1; seed <= 60; seed += 1) {
+        const m = randomModel(seed);
+        const rand = prng(seed * 7919);
+        for (let i = 0; i < 8; i += 1) {
+          const size = {
+            columns: 60 + Math.floor(rand() * 141),
+            rows: 15 + Math.floor(rand() * 46),
+          };
+          const ui = randomUi(rand, m);
+          const frame = renderFrame(m, ui, size, NOW + Math.floor(rand() * 100_000));
+          expectDimensions(frame, size);
+          expectCanonical(frame, size.columns);
+        }
       }
-    }
-  });
+    },
+  );
 
   it('holds at the exact bounds and around the feed pane threshold', () => {
     const m = randomModel(4242);
