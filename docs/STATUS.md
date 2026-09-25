@@ -69,8 +69,8 @@ full workflow, and docs/adr/ for design decisions.
   README sections "Board health" and "Replay and the hand-off graph". Its
   requirements are the main spec `board-insights`, plus changes to
   `board-cli`.
-- The `add-board-web-actions` OpenSpec change is complete once its
-  documentation (group 3) merges: `agentboard serve --as <actor>` enables
+- The `add-board-web-actions` OpenSpec change is complete and archived as
+  `openspec/changes/archive/2026-09-25-add-board-web-actions/`: `agentboard serve --as <actor>` enables
   write actions as that actor only (`AGENTBOARD_ACTOR` never does),
   `POST /api/actions/<action>` for comment, move, claim, release,
   handoff, checklist-tick, checklist-untick, link and close, run through
@@ -78,9 +78,8 @@ full workflow, and docs/adr/ for design decisions.
   by the bearer header with JSON-only (UTF-8) bodies, an `Origin` check
   and a 64 KiB limit, and the action controls and acting-as banner on the
   ticket detail. Documented in the README section "Acting from the
-  browser" and ADR 0009. It is then archived in its own PR, folding its
-  deltas into `board-cli`, `board-web` and a new main spec
-  `board-web-actions`.
+  browser" and ADR 0009. Its requirements are the main spec
+  `board-web-actions`, plus changes to `board-cli` and `board-web`.
 - This repository uses its own guidance: `agentboard agents install`
   wrote `.claude/skills/agentboard/SKILL.md` and the `agentboard:` apply
   and archive guidance in `openspec/config.yaml`; `agentboard agents
@@ -91,15 +90,13 @@ full workflow, and docs/adr/ for design decisions.
 1. A human reviews `staging` and promotes it to `main` (a merge-commit PR
    from `staging`) when ready. Publishing to npm is deferred: agentboard
    is used locally through `npm link`.
-2. Archive `add-board-web-actions` in its own PR (all three groups
-   merged; see "What exists").
-3. `add-claim-leases` (proposed): grace leases confirmed by `renew`
+2. `add-claim-leases` (proposed): grace leases confirmed by `renew`
    (`claim --ttl`), takeover of a lapsed lease and a fair waiting queue
    (`claim --wait`, derived `ticket.grant` events) decided from event
    timestamps with a 60 second skew tolerance, an audited
    `release --force --reason`, board settings (`config`), and mutex
    ticket guidance, plus reconciling tickets on `import-change` re-runs
-   (group 8, independent). Independent of `add-board-web-actions`; eight groups,
+   (group 8, independent). Eight groups,
    groups 1 to 5 concurrency-critical (second reviewer on the strongest
    model).
 
@@ -110,9 +107,9 @@ Each task group uses the three-role loop from CONTRIBUTING.md
    `origin/staging`, never from a local `staging` ref.
 2. Cut one feature branch per task group (`<area>/<group-slug>`), then one
    worktree per agent:
-   `git worktree add -b <area>/<group-slug> ../agentboard-<group-slug> origin/staging`
-   for the first role, and `git worktree add ../agentboard-<group-slug>-impl <area>/<group-slug>`
-   for later roles.
+   `git worktree add -b <area>/<group-slug> ../agentboard.worktrees/<area>-<group-slug> origin/staging`
+   for the first role, and `git worktree add ../agentboard.worktrees/<area>-<group-slug>-impl <area>/<group-slug>`
+   for later roles (see CONTRIBUTING.md, "One worktree per agent").
 3. Run the three roles in order, each in its own worktree, on the same
    branch: test author (red tests + compile stubs only) -> implementer
    (green tests, no test edits) -> reviewer (different model; spec
