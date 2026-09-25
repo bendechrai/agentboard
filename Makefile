@@ -16,14 +16,19 @@ check: build typecheck lint test ascii validate-specs
 # Dockerfile.dev / docker-compose.yml) instead of whatever Node happens
 # to be installed on the host. node_modules is a container volume (so
 # host and container binaries never mix), so it is installed first.
+# Afterwards the compose project's network and volumes are removed, so
+# that each worktree does not leave a Docker network behind (enough of
+# them exhaust Docker's address pools); the exit status is make check's.
 check-in-docker:
-	docker compose run --rm --build dev sh -c 'make install && make check'
+	docker compose run --rm --build dev sh -c 'make install && make check'; \
+	status=$$?; docker compose down --volumes --remove-orphans >/dev/null 2>&1; exit $$status
 
 # Runs `make check` on the oldest supported Node (the engines floor in
 # package.json), which check-in-docker does not, because its image tracks
 # the latest Node 22.
 check-floor:
-	docker compose run --rm --build dev-floor sh -c 'make install && make check'
+	docker compose run --rm --build dev-floor sh -c 'make install && make check'; \
+	status=$$?; docker compose down --volumes --remove-orphans >/dev/null 2>&1; exit $$status
 
 # Points git at the repo-tracked hooks directory so pre-push runs the
 # fast local checks before every push. Run once per clone/worktree.

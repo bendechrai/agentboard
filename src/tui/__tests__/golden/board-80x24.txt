@@ -1,0 +1,24 @@
+agentboard top  todo:2 tests:1 implementing:1 review:1 blocked:1 merged:0  last~
+todo 2      |tests 1     |implement~ 1|review 1    |blocked 1   |merged 0       
+Caf\u00E9 \~|Render the ~|Decode raw ~|Review the ~|Wait for th~|               
+orch        |test-author |impl        |rev         |-           |               
+Write the R~|            |            |            |            |               
+-           |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+            |            |            |            |            |               
+[1 board] 2 feed 3 lanes  tab  hjkl move  enter open  c closed  ? help  q quit  

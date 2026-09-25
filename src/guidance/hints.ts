@@ -98,6 +98,7 @@ export const HINT_REASONS: readonly string[] = [
   'no-cache',
   'no-disposition',
   'no-targets',
+  'not-a-tty',
   'not-assignee',
   'not-found',
   'path-outside-tree',
@@ -154,6 +155,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'no-cache': 5,
   'no-disposition': 1,
   'no-targets': 1,
+  'not-a-tty': 1,
   'not-assignee': 4,
   'not-found': 1,
   'path-outside-tree': 1,
@@ -319,6 +321,9 @@ export function hintStep(
  *   (step `<command>` when the command is known).
  * - `no-targets`: `agents install` detected nothing to install; names the
  *   four targets and step `agents install` with `target` `<target>`.
+ * - `not-a-tty`: `top` needs an interactive terminal (the word `terminal`
+ *   appears); for a snapshot of the board step `list`, and for a line
+ *   stream step `watch` with `as` A.
  *
  * Exit 2: `board-not-found`: step `init`, and `AGENTBOARD_DIR`;
  * `board-not-a-repository`: step `help sync`.
@@ -594,6 +599,8 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     `the board server is read-only and answers only GET requests; see ${serveHelp(h)}`,
   'too-many-streams': (h) =>
     `at most 64 streams are open at once; close other board tabs or clients, then reconnect; see ${serveHelp(h)}`,
+  'not-a-tty': (h) =>
+    `top needs an interactive terminal; for a snapshot of the board use ${h.step('list')}, and for a line stream ${h.step('watch', [['as', h.actor]])}`,
   'no-targets': (h) =>
     `choose what to install with ${h.step('agents install', [['target', '<target>']])}, where <target> is claude, agents-md, openspec or mcp-json`,
   // Exit 2.

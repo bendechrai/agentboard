@@ -362,6 +362,7 @@ describe('callTool', () => {
       'board_init',
       'board_watch',
       'board_serve',
+      'board_top',
       'board_rebuild',
       'board_sync',
       'board_mcp',

@@ -400,6 +400,25 @@ describe('the role checklists', () => {
     expect(renderRoleChecklist('orchestrator')).toContain('DECISION:');
   });
 
+  it('orchestrator: health when choosing what to dispatch and before archiving (add-board-insights 2.2)', () => {
+    const text = renderRoleChecklist('orchestrator');
+    const lines = roleLines('orchestrator');
+    const health = lines.filter((p) => p.command === 'health');
+    expect(health).toHaveLength(1);
+    // The line parses to health (the drift guard) and needs no actor.
+    expect(health[0]?.line).toMatch(/^agentboard health(\s|$)/);
+    // It is taught for both occasions the task names.
+    expect(text).toMatch(/dispatch/);
+    expect(text).toMatch(/archiv/);
+    const at = lines.findIndex((p) => p.command === 'health');
+    // After the first inbox, and before closing after merge.
+    expect(at).toBeGreaterThan(0);
+    expect(at).toBeLessThan(lines.findIndex((p) => p.command === 'close-merged'));
+    // The whole orchestrator output stays within the cap.
+    const out = renderGuide(VERSION) + text;
+    expect(out.slice(0, -1).split('\n').length).toBeLessThanOrEqual(GUIDE_MAX_LINES);
+  });
+
   it('test-author: claim, move to tests, hand off to implementing', () => {
     const lines = roleLines('test-author');
     expect(lines.map((p) => p.command)).toContain('claim');

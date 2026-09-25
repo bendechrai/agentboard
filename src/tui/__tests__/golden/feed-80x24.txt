@@ -1,0 +1,24 @@
+agentboard top  todo:2 tests:1 implementing:1 review:1 blocked:1 merged:0  last~
+just now impl 01D0000000 handed off to rev (review): please review the goldens  
+10m ago  late impl 01D0000000 commented: frames look right                      
+19m ago  impl 01D0000000 moved to implementing                                  
+20m ago  impl 01D0000000 moved to tests                                         
+36m ago  orch 01F0000000 closed (decision docs/adr/0008-tui.md)                 
+37m ago  orch 01F0000000 moved to merged                                        
+38m ago  orch 01F0000000 moved to review                                        
+39m ago  orch 01F0000000 moved to implementing                                  
+40m ago  orch 01F0000000 moved to tests                                         
+48m ago  orch 01E0000000 moved to blocked                                       
+49m ago  orch 01E0000000 moved to implementing                                  
+50m ago  orch 01E0000000 moved to tests                                         
+59m ago  test-author 01ARZ3NDEK moved to tests                                  
+1h ago   test-author 01ARZ3NDEK claimed                                         
+1h ago   impl 01ARYZ6S41 linked pr 42                                           
+1h ago   impl 01ARYZ6S41 checked 1                                              
+1h ago   impl 01ARYZ6S41 commented: DECISION: decode raw bytes with a pending b~
+2h ago   impl 01ARYZ6S41 commented: RETRACTED: readline cannot see raw bytes    
+3h ago   impl 01ARYZ6S41 commented: DECISION: use readline for keys             
+4h ago   impl 01ARYZ6S41 moved to implementing                                  
+4h ago   impl 01ARYZ6S41 moved to tests                                         
+5h ago   impl 01ARYZ6S41 claimed                                                
+1 board [2 feed] 3 lanes  tab  jk move  pgup/pgdn  enter open  ? help  q quit   

@@ -114,8 +114,8 @@ export const GUIDE_MAX_LINES = 150;
  *    line), defaulting to the server's actor (a command line
  *    `agentboard mcp --as <actor>`), then its `AGENTBOARD_ACTOR`; errors
  *    carry `exitCode`, `reason`, `message` and `hint`; `init`, `watch`,
- *    `rebuild`, `sync`, `mcp`, `version`, `help`, `agents install` and
- *    `agents check` are not tools. It names
+ *    `serve`, `top`, `rebuild`, `sync`, `mcp`, `version`, `help`, `agents
+ *    install` and `agents check` are not tools. It names
  *    at least `board_claim`, `board_inbox`, `board_handoff` and
  *    `board_checklist_tick`.
  * 9. `Exit codes and hints`: one line per exit code 0 to 5, each written
@@ -181,7 +181,9 @@ export function renderGuide(version: string): string {
  * - `orchestrator`: its first command line is `inbox` (before
  *   dispatching anything), acting on every entry; `agentboard import-change` for a new or grown
  *   change; dispatching one agent per ticket and role; `agentboard show`
- *   or `list` for state, never memory; `agentboard close-merged` and
+ *   or `list` for state, never memory; `agentboard health` when choosing
+ *   what to dispatch and before archiving a change (add-board-insights
+ *   task 2.2); `agentboard close-merged` and
  *   `agentboard close` with a decision disposition after merge, promoting
  *   `DECISION:` comments first (the text `DECISION:` appears).
  * - `test-author`: claim, move to `tests`, write failing tests and stubs,
@@ -432,7 +434,7 @@ const GUIDE_BODY: readonly string[] = [
   "server's own actor, set when it was started as",
   '  agentboard mcp --as <actor>',
   "and then the server's AGENTBOARD_ACTOR. A failed call returns exitCode,",
-  'reason, message and hint. init, watch, serve, rebuild, sync, mcp,',
+  'reason, message and hint. init, watch, serve, top, rebuild, sync, mcp,',
   'version, help, agents install and agents check are not tools; run those',
   'in a shell.',
   '',
@@ -498,7 +500,10 @@ const CHECKLISTS: Readonly<Record<Role, readonly string[]>> = {
     '4. Check state on the board, never from memory:',
     '  agentboard list --change <change>',
     '  agentboard show <id>',
-    '5. After a pull request merges, move its ticket to merged. Promote every',
+    '5. When choosing what to dispatch, and before archiving a change, look',
+    '   for stale claims, long-blocked tickets and unpromoted decisions:',
+    '  agentboard health',
+    '6. After a pull request merges, move its ticket to merged. Promote every',
     '   DECISION: comment to a spec delta or ADR first, then close the ticket,',
     '   with close-merged (for tickets with a pr link) or by hand:',
     '  agentboard move <id> merged --as <actor>',

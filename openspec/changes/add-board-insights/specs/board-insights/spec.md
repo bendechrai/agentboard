@@ -63,8 +63,10 @@ SHALL be shown as invalid, without changing the report, in the web panel.
 and with `check` null unless `--check` is given, in which case it SHALL
 run the same comparison as `rebuild --check` and include its result
 (whether the cache matches and the number of differing rows). It SHALL
-read ticket state from the cache and event bodies only from the event
-files of applied events of open tickets, within one read snapshot, SHALL
+read ticket state from the cache and event bodies from the event files of
+applied events, reading each file at most once, within one read snapshot
+(the cache does not record which ticket an event belongs to, so the files
+of closed tickets cannot be skipped without reading them), SHALL
 write nothing, SHALL need no actor, and SHALL exit 0 whatever the report
 contains. Human output SHALL list each section with its count and one
 line per ticket in the `list` format followed by the finding; `--json`

@@ -15,7 +15,7 @@ The CLI SHALL provide: `init`; `new <title> [--description] [--label]...
 `close <id> --as <actor> (--decision-recorded-in <path> | --no-decision)`;
 `inbox --as <actor> [--since <cursor>] [--peek]`; `watch --as <actor>`;
 `rebuild [--check]`; `sync`; `import-change <name>`; `close-merged`;
-`serve [--port <port>] [--open]`;
+`serve [--port <port>] [--open]`; `top`;
 `health [--stale-after <duration>] [--blocked-after <duration>] [--check]`;
 `mcp`; and `version`. Every command SHALL
 accept `--json`. An argument beginning with `--` is
@@ -26,8 +26,9 @@ given as a unique prefix of at least 6 characters. `--change <name> --group
 `list --change <name>` to `list --task openspec:<name>`. Commands, their
 arguments and flags SHALL be defined once, in a single command registry that
 drives argument parsing and the MCP tool definitions, so the two surfaces
-cannot drift. `serve` is a streaming command like `watch`: it runs until
-SIGINT or SIGTERM (see board-web).
+cannot drift. `serve` and `top` are streaming commands like `watch`:
+`serve` runs until SIGINT or SIGTERM (see board-web), and `top` until the
+user quits it or it receives SIGINT or SIGTERM (see board-tui).
 
 #### Scenario: OpenSpec shorthand is the same task reference
 - **WHEN** one ticket is created with `--change add-board-core --group 3` and another with `--task openspec:add-board-core#3`
@@ -45,18 +46,22 @@ SIGINT or SIGTERM (see board-web).
 - **WHEN** a prefix matches two tickets
 - **THEN** the command exits 1 and lists both full ids
 
-#### Scenario: Health has help
-- **WHEN** `agentboard help health` runs with no board and no actor
-- **THEN** it prints the synopsis with `--stale-after`, `--blocked-after` and `--check`, and an example that parses to `health`, and exits 0
+#### Scenario: Top has help
+- **WHEN** `agentboard help top` runs with no board and no actor
+- **THEN** it prints the synopsis, the exit codes including 1 `not-a-tty` and 2, and an example that parses to `top`, and exits 0
 
 #### Scenario: Serve has help
 - **WHEN** `agentboard help serve` runs with no board and no actor
 - **THEN** it prints the synopsis with `--port` and `--open`, the exit codes including 1 `port-in-use` and 2, and an example that parses to `serve`, and exits 0
 
+#### Scenario: Health has help
+- **WHEN** `agentboard help health` runs with no board and no actor
+- **THEN** it prints the synopsis with `--stale-after`, `--blocked-after` and `--check`, and an example that parses to `health`, and exits 0
+
 ### Requirement: MCP server
 `agentboard mcp` SHALL serve an MCP server over stdio exposing one tool per
-command in the registry except `init`, `watch`, `serve`, `rebuild`, `sync`,
-`mcp` and `version`, which are setup, streaming or maintenance commands run
+command in the registry except `init`, `watch`, `serve`, `top`, `rebuild`,
+`sync`, `mcp` and `version`, which are setup, streaming or maintenance commands run
 by a human or an orchestrator in a shell. Tool names SHALL be the command name with
 spaces and hyphens replaced by underscores and prefixed `board_` (for
 example `board_claim`, `board_checklist_tick`, `board_import_change`). Each
@@ -81,7 +86,7 @@ path as the CLI, so concurrent CLI and MCP writers obey the same guarantees.
 
 #### Scenario: Tools are listed from the registry
 - **WHEN** an MCP client connects and lists tools
-- **THEN** the list contains `board_new`, `board_show`, `board_list`, `board_claim`, `board_release`, `board_move`, `board_comment`, `board_handoff`, `board_link`, `board_checklist_tick`, `board_checklist_untick`, `board_close`, `board_inbox`, `board_import_change`, `board_close_merged` and `board_health`, and no tool for `init`, `watch`, `serve`, `rebuild`, `sync`, `mcp` or `version`
+- **THEN** the list contains `board_new`, `board_show`, `board_list`, `board_claim`, `board_release`, `board_move`, `board_comment`, `board_handoff`, `board_link`, `board_checklist_tick`, `board_checklist_untick`, `board_close`, `board_inbox`, `board_import_change`, `board_close_merged` and `board_health`, and no tool for `init`, `watch`, `serve`, `top`, `rebuild`, `sync`, `mcp` or `version`
 
 #### Scenario: Rejection maps to a tool error
 - **WHEN** `board_claim` is called on a ticket assigned to `impl` with `as` set to `reviewer`
@@ -97,6 +102,10 @@ path as the CLI, so concurrent CLI and MCP writers obey the same guarantees.
 
 #### Scenario: Excluded serve tool
 - **WHEN** an MCP client calls the tool `board_serve`
+- **THEN** the call returns a tool error with `exitCode` 1 and `reason` `usage`
+
+#### Scenario: Excluded top tool
+- **WHEN** an MCP client calls the tool `board_top`
 - **THEN** the call returns a tool error with `exitCode` 1 and `reason` `usage`
 
 #### Scenario: Health is a tool

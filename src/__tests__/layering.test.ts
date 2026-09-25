@@ -256,3 +256,67 @@ describe('layering: browser-safe modules', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+// add-board-tui tasks 1.1 and 1.2 (design.md, "Hand-rolled ANSI rather
+// than a library"): the key decoder, the UI state and the frame renderer
+// are pure. `src/tui/terminal.ts` (group 2) is the only IO module there, so
+// these three modules are listed rather than the whole directory.
+
+describe('layering: pure terminal UI modules', () => {
+  const PURE_TUI = ['keys.ts', 'state.ts', 'frame.ts'].map((name) => join(SRC, 'tui', name));
+
+  it('src/tui holds the key decoder, the UI state and the frame renderer', () => {
+    for (const file of PURE_TUI) {
+      expect(existsSync(file)).toBe(true);
+    }
+  });
+
+  it('no module reachable from src/tui/keys.ts, state.ts or frame.ts imports a node: specifier', () => {
+    const result = walk(PURE_TUI);
+    expect(result.offenders).toEqual([]);
+    expect(result.reached).toEqual(
+      expect.arrayContaining(['tui/keys.ts', 'tui/state.ts', 'tui/frame.ts']),
+    );
+  });
+
+  it('src/tui/keys.ts, state.ts and frame.ts read no clock and draw no random numbers', () => {
+    const offenders: string[] = [];
+    for (const file of PURE_TUI) {
+      const source = readFileSync(file, 'utf8');
+      for (const pattern of [
+        /\bDate\.now\s*\(/,
+        /\bnew\s+Date\s*\(/,
+        /\bMath\.random\s*\(/,
+        /\bperformance\.now\s*\(/,
+        /\bprocess\./,
+        /\bsetTimeout\s*\(/,
+        /\bsetInterval\s*\(/,
+      ]) {
+        if (pattern.test(source)) {
+          offenders.push(`${relative(SRC, file)}: ${String(pattern)}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('src/tui/state.ts and frame.ts contain no escape character (styles are data)', () => {
+    const offenders: string[] = [];
+    for (const name of ['state.ts', 'frame.ts']) {
+      const source = readFileSync(join(SRC, 'tui', name), 'utf8');
+      for (const pattern of [
+        /\\x1b/i,
+        /\\u001b/i,
+        /\\u\{1b\}/i,
+        /\\033/,
+        /\b0x1b\b/i,
+        /\bfromCharCode\(\s*(27|0x1b)\b/i,
+      ]) {
+        if (pattern.test(source)) {
+          offenders.push(`tui/${name}: ${String(pattern)}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});

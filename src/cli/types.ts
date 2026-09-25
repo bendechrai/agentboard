@@ -7,6 +7,7 @@
 
 import type { Board } from '../store/board.js';
 import type { ExitCode } from '../store/errors.js';
+import type { TerminalIo } from '../tui/terminal.js';
 
 /** The environment a command runs with; defined in `src/board/text.ts` (layering). */
 import type { Env } from '../board/text.js';
@@ -165,13 +166,21 @@ export interface StreamIo {
   stderr?(text: string): void;
   /** Aborted when the stream must stop (SIGINT or SIGTERM for the CLI). */
   readonly signal: AbortSignal;
+  /**
+   * The interactive terminal, for a command whose spec has `terminal`
+   * true (`top`) only: `runCliAsync` sets it from `AsyncCliIo.terminal`
+   * when that is provided, and leaves it absent for every other command
+   * (`watch` and `serve` never get one). Absent means no terminal is
+   * available; `top` then refuses with `not-a-tty`.
+   */
+  readonly terminal?: TerminalIo;
 }
 
 /**
  * The overview section a command is listed under (board-agent-guidance:
  * "Generated help"), in overview order:
  * - `lifecycle`: "Ticket lifecycle" (creating, finding and moving tickets);
- * - `awareness`: "Change awareness" (`inbox`, `watch`, `serve`);
+ * - `awareness`: "Change awareness" (`inbox`, `watch`, `serve`, `top`, `health`);
  * - `planning`: "Planning integration" (`import-change`, `close-merged`);
  * - `maintenance`: "Maintenance" (`rebuild`, `sync`);
  * - `setup`: "Setup" (`init`, `mcp`, `version`, `help`).
@@ -281,8 +290,8 @@ export interface CommandSpec {
   readonly tracksCursor?: boolean;
   /**
    * Name of the library function (exported from `src/index.ts`) the command
-   * calls, e.g. `claimTicket`; null for `version`, `mcp`, `serve` and
-   * `help`, which call none. Normally in `src/board/`; `rebuild` names the store's `rebuild`
+   * calls, e.g. `claimTicket`; null for `version`, `mcp`, `serve`, `top`
+   * and `help`, which call none. Normally in `src/board/`; `rebuild` names the store's `rebuild`
    * (its `--check` form calls the store's `checkCache`).
    */
   readonly operation: string | null;
@@ -292,7 +301,13 @@ export interface CommandSpec {
    */
   run(ctx: RunContext, values: ArgValues): CommandOutput;
   /**
-   * Present only for a streaming command (`watch`, `serve`), which cannot answer
+   * True only for `top`, the one command that drives the terminal: it is
+   * the only command to which `runCliAsync` passes a terminal
+   * (`StreamIo.terminal`). Absent (false) for every other command.
+   */
+  readonly terminal?: boolean;
+  /**
+   * Present only for a streaming command (`watch`, `serve`, `top`), which cannot answer
    * with one `CommandOutput`: runs until `io.signal` aborts, writing lines
    * to `io.stdout` as they come, and resolves when it has stopped; rejects
    * with a `BoardError` on failure. `runCliAsync` calls it instead of
