@@ -14,7 +14,8 @@ queue`, `left the queue`, `granted to <actor> (accept within <window>)`,
 `handed off to <actor> (<status>): <note>`, `linked <task|pr|decision>
 <value>`, `closed (decision <path>)` or `closed (no decision)`,
 `checked <n>` or `unchecked <n>` (1-based line number), `added <k>
-checklist line(s)`, and `set <key>` for `board.meta`. A ttl in a summary
+checklist line(s)`, `reconciled with tasks (<u> updated, <r> removed, <a>
+added[, renamed][, forced])`, and `set <key>` for `board.meta`. A ttl in a summary
 SHALL be written in the largest unit that divides it exactly (`90s`,
 `10m`, `2h`). Filters by change,
 by actor and by a set of kinds SHALL be combined with AND. An entry SHALL

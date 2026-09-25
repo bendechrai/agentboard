@@ -271,6 +271,44 @@ human inbox output prefixes an entry with `GRANTED: ` when its `to` is
 the reader and the kind is `ticket.grant`, and with `LOST: ` when its
 `affects` is the reader.
 
+### Re-import reconciles
+Observed in vaultfold: a revised `tasks.md` re-imported onto existing
+tickets kept old titles and appended new lines next to stale ones. The
+board is not the record of scope, so its tickets must follow the tasks
+file, but reconciling must stay event-sourced and must not destroy
+in-flight information.
+
+- One `ticket.reconcile` event per ticket carries the whole diff (title,
+  `updated`, `removed`, `added`, `forced`, and the tasks file's SHA-256),
+  so history shows one readable "reconciled" step, and the fold applies
+  it mechanically. The fold validates only indices; the policy (what is
+  blocked) is a command-time rule, like the lease checks of the CLI.
+- Removed lines are flagged, not deleted, and keep their index, so every
+  earlier and later `ticket.checklist` event keeps its meaning, and a
+  tick of a removed line (for example from another machine) is rejected
+  deterministically. For the same reason a reordered tasks file does not
+  reorder the checklist: active lines keep their order and added lines
+  are appended.
+- Matching by task number first follows how tasks are edited in
+  practice (reworded in place); matching the remaining lines by text
+  without the number catches renumbering after a regroup. Unchanged text
+  keeps the ticket's done flag, the board's in-flight progress; changed
+  text takes the tasks file's checkbox, because it is a different task.
+- Decision: refuse per ticket, not warn. A ticked line being removed or
+  reworded, or lines rewritten under an agent that holds the ticket in
+  `tests`, `implementing` or `review`, is lost progress or a moving
+  target for that agent; a warning scrolls past in an orchestrator's
+  log. Refusing only the affected tickets keeps the rest of the import
+  useful, exit 4 makes the orchestrator notice, `--dry-run` shows the
+  diff first, and `--force` records `forced` and tells the holder through
+  `affects`. Title changes and additions are never blocked because they
+  lose nothing.
+- Groups that disappear are reported as `orphaned` and left alone:
+  closing or blocking them is a human decision (close needs a decision
+  disposition anyway).
+- `ticket.checklist.add` stays defined so existing boards fold as
+  before; new imports write `ticket.reconcile` instead.
+
 ## Interfaces (sketch)
 
 - Constants: `LEASE_SKEW_MS = 60_000`, `TTL_MIN_MS`, `TTL_MAX_MS`,

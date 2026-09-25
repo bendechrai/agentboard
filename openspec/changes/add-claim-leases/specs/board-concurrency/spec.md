@@ -81,3 +81,25 @@ rules SHALL be exact: a takeover is accepted at and only at walls from
 #### Scenario: Renew synced late still wins
 - **WHEN** B renews T1 before expiry but syncs only after A has written a grant or takeover past the old lease's lapse
 - **THEN** after both sync, T1 is held by B with the renewed lease and A's event is rejected (`stale-grant` or `already-assigned`) on both replicas
+
+## MODIFIED Requirements
+
+### Requirement: Re-import is idempotent
+Running `import-change <name>` twice for the same change SHALL create no
+duplicate tickets: tickets are keyed by their task reference (source, ref,
+item), and a second import SHALL reconcile existing tickets with the
+current tasks file (see board-openspec-integration "Reconcile on
+re-import"), writing at most one `ticket.reconcile` event per ticket and
+none when nothing differs. A re-import never changes a ticket's labels or
+status. Two concurrent imports SHALL each validate against the caught-up
+state inside their own transaction, so the second finds nothing left to
+change. `import-change` also accepts
+`<source>:<ref>` so an unsupported source can be named.
+
+#### Scenario: Second import adds nothing
+- **WHEN** `import-change add-board-core` runs twice with an unchanged tasks file
+- **THEN** the ticket count is unchanged and no new events are written
+
+#### Scenario: Concurrent re-imports of a revised change
+- **WHEN** two child processes run `import-change` for the same revised change at once
+- **THEN** each ticket has exactly one applied `ticket.reconcile`, and `rebuild --check` reports no divergence

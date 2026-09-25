@@ -27,6 +27,11 @@ after: an object with exactly one of `released`, an event hash, or
 `ticket.checklist` (index: integer, done: boolean);
 `ticket.checklist.add` (items: non-empty array of objects with `text`, a
 non-empty string, and `done`, a boolean; the fold appends them in order);
+`ticket.reconcile` (optional `title`; `updated`, an array of objects with
+`index`, `text` and `done`; `removed`, an array of indices; `added`, an
+array of objects with `text` and `done`; `forced`, a boolean; `source`, a
+string naming the tasks file and the SHA-256 of its bytes; at least one of
+`title`, `updated`, `removed` and `added` non-empty);
 `board.meta` (key, value; board-level settings such as the default column
 set). Bodies with extra fields SHALL be malformed. A `ttl` outside 30000
 to 604800000 inclusive, or a `grace` or `window` outside 30000 to 600000
@@ -279,3 +284,29 @@ read by the fold, as folded at a grant's position, to derive that grant.
 #### Scenario: Out-of-range setting is ignored
 - **WHEN** `queue.window` is set to 5000
 - **THEN** grants use the default window of 120000
+
+### Requirement: Reconcile events
+A `ticket.reconcile` SHALL be applied only when every index in `updated`
+and `removed` names a checklist line of the ticket that is not already
+removed, and no index appears twice; otherwise it SHALL be rejected with
+reason `checklist-index` and the ticket SHALL be unchanged. When applied
+it SHALL, in one step, set the title when `title` is present, replace the
+text and done flag of each `updated` line, mark each `removed` line as
+removed, and append the `added` lines in order. A removed line SHALL keep
+its index, so earlier and later `ticket.checklist` events keep their
+meaning, SHALL be excluded from the ticket's active checklist, and a
+`ticket.checklist` naming it SHALL be rejected with reason
+`checklist-index`. The ticket's checklist SHALL carry a `removed` flag per
+line.
+
+#### Scenario: Reconcile applies the whole diff in one event
+- **WHEN** a ticket with lines 0 `1.1 A`, 1 `1.2 B` and 2 `1.3 C` folds a reconcile with title `New title`, `updated` `[{index: 1, text: "1.2 B revised", done: false}]`, `removed` `[2]` and `added` `[{text: "1.4 D", done: false}]`
+- **THEN** the title is `New title`, the active checklist is `1.1 A`, `1.2 B revised`, `1.4 D`, line 2 is kept as removed, and the version increases by one
+
+#### Scenario: Tick on a removed line
+- **WHEN** a `ticket.checklist` names a line removed by an earlier reconcile
+- **THEN** it is rejected with reason `checklist-index`
+
+#### Scenario: Reconcile naming a removed line
+- **WHEN** a reconcile's `removed` names a line already removed
+- **THEN** it is rejected with reason `checklist-index` and nothing changes

@@ -25,6 +25,12 @@ Real use in vaultfold showed three more problems:
 - What finally worked was the orchestrator running the queue, with
   workers reporting "ready" and stopping instead of waiting in a loop.
 
+A separate problem surfaced in the same project: after an OpenSpec
+change was revised (its `tasks.md` regrouped and reworded), re-running
+`import-change` kept the old ticket titles and appended the new checklist
+lines without removing lines that no longer exist, leaving tickets that
+mix old and new tasks. Re-import must reconcile, not only append.
+
 Leases that must be confirmed by the holder, a fair waiting queue decided
 by the fold, an audited forced release, and guidance for the mutex
 pattern fix these without changing the event-log model: they are new
@@ -80,6 +86,17 @@ every other event.
   for merge-style mutexes when agents cannot block, and handles stale
   holds with leases and forced release.
 
+- Re-import reconciles (separate task group): `import-change` updates an
+  existing ticket's title to the current group heading and makes its
+  active checklist equal to the current task lines (matched by task
+  number, then by text; unchanged lines keep their done state; removed
+  lines are marked removed, never deleted), in one `ticket.reconcile`
+  event per ticket summarising the diff. A reconcile that would remove or
+  reword a ticked line, or reword or remove lines of a ticket that is
+  held and in progress, is blocked for that ticket (exit 4
+  `reconcile-blocked`, other tickets still reconciled) unless `--force`.
+  `--dry-run` prints the diff and writes nothing.
+
 ## Capabilities
 
 ### New Capabilities
@@ -88,7 +105,8 @@ None.
 ### Modified Capabilities
 - `board-events`: `ticket.claim` body fields `lease` and `supersedes`;
   new kinds `ticket.renew`, `ticket.release.force`, `ticket.queue.join`,
-  `ticket.queue.leave` and `ticket.grant`; the reserved actor
+  `ticket.queue.leave`, `ticket.grant` and `ticket.reconcile`; removed
+  checklist lines; the reserved actor
   `agentboard`; grace leases, the queue and grant fold rules; the
   settings `lease.grace` and `queue.window`; new rejection reasons.
 - `board-cli`: `claim --ttl/--wait/--timeout`, `renew`, `unqueue`,
@@ -98,7 +116,9 @@ None.
   materialisation during catch-up; cache schema version bump.
 - `board-concurrency`: one winner for expired-lease races, fair and
   single grants under concurrency and across skewed replicas, crash
-  recovery.
+  recovery; re-import reconciles instead of only appending.
+- `board-openspec-integration`: `import-change` reconciles existing
+  tickets, with `--dry-run`, `--force` and orphaned groups reported.
 - `board-agent-guidance`: the mutex ticket recipe in the guide, the role
   checklists, installed guidance and the MCP instructions.
 - `board-view-model`: feed summaries for the new events.
@@ -121,6 +141,7 @@ None.
 - `src/store/*`: lease and queue columns, `CACHE_SCHEMA_VERSION` bump,
   grant materialisation in catch-up (a backdated event folded like a late
   sync arrival).
+- `src/board/import.ts` (reconcile diff, guard, dry run).
 - `src/board/*` (claim, renew, unqueue, release, config, inbox fields,
   wait on the watch machinery), `src/cli/registry.ts`,
   `src/cli/render.ts`, `src/mcp/*`, `src/guidance/*` (recipe, hints,

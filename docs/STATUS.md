@@ -91,7 +91,8 @@ full workflow, and docs/adr/ for design decisions.
    (`claim --wait`, derived `ticket.grant` events) decided from event
    timestamps with a 60 second skew tolerance, an audited
    `release --force --reason`, board settings (`config`), and mutex
-   ticket guidance. Independent of the two changes above; seven groups,
+   ticket guidance, plus reconciling tickets on `import-change` re-runs
+   (group 8, independent). Independent of the two changes above; eight groups,
    groups 1 to 5 concurrency-critical (second reviewer on the strongest
    model).
 

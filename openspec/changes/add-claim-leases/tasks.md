@@ -4,7 +4,9 @@ Independent of `add-board-insights` and `add-board-web-actions`: this
 change's MODIFIED text restates requirements those changes do not touch
 (`board-cli` "Claim, release and handoff", `board-events` "Event kinds" and
 "Fold semantics", `board-cache` "Cache schema", `board-view-model`
-"Activity feed entries", `board-agent-guidance` "Agent guide"); if either
+"Activity feed entries", `board-agent-guidance` "Agent guide",
+`board-openspec-integration` "Import a change", `board-concurrency`
+"Re-import is idempotent"); if either
 is archived first and changes one of them, re-sync that MODIFIED text with
 the main spec before archiving this change. `add-board-web-actions` builds
 the web action bodies from the registry, so `claim` and `release` gain
@@ -19,6 +21,9 @@ every task includes `make check` and `make check-floor` passing with
 coverage at or above 90 percent. Groups 1 to 5 are concurrency-critical:
 the orchestrator runs a second reviewer on the strongest model. Groups run
 in order, except that group 6 may run in parallel with groups 4 and 5.
+Group 8 (re-import reconciliation) is independent of groups 1 to 7 and
+may run at any time; if it lands first, group 1 re-syncs the
+`board-events` "Event kinds" text it shares.
 Tests that depend on time use an injected clock in-process and the
 harness preload's clock offset for child processes, never a production
 environment variable.
@@ -57,3 +62,8 @@ environment variable.
 ## 7. Documentation (`docs/claim-leases`)
 
 - [ ] 7.1 Document leases, renew, the queue, `--wait`, grants, forced release and `config` in README.md (command reference; the mutex ticket recipe with a merge-lock example for CLI workers and for an orchestrator running the queue over MCP; grace and liveness; clock skew and multi-machine limits; the upgrade requirement for boards shared between machines), record the decisions in a new ADR (grace leases and liveness instead of a declared intent flag; takeover and grants decided from event timestamps with a fixed 60 second tolerance; derived, backdated grant events with the reserved actor; forced release as a distinct kind without an allowlist), run `agentboard agents install` in this repository to move its own guidance to version 2, and update docs/STATUS.md. Verify: `make ascii`, `make validate-specs`, `agentboard agents check` reporting every target current, and running the README recipe on a temporary board (claim with `--ttl`, let the grace lapse, wait with `--wait --timeout` in a second terminal and see the grant, renew, force-release another ticket and read the previous holder's inbox)
+
+## 8. Re-import reconciliation (`openspec/reconcile-import`)
+
+- [ ] 8.1 Add `ticket.reconcile` to `src/events/schema.ts` and its fold rule (index validation, title, updated, removed flag keeping indices, appended lines; ticks on removed lines rejected `checklist-index`), the per-line `removed` flag in the cache checklist JSON with a cache schema version bump (shared with group 1 if both land together), and the `describeEvent` summary. Verify: table tests for the three "Reconcile events" scenarios and the summary; a property test that folding a random ticket history followed by random reconciles and ticks is independent of read order and never changes the meaning of an existing index
+- [ ] 8.2 Implement the reconcile diff in `src/board/import.ts` (match by task number then by text without the number, done-state rules, order preserved with additions appended, one event per ticket, none when unchanged, orphaned groups reported), the guard (`reconcile-blocked` per ticket, exit 4 after all groups, `--force` with `forced` and `affects`), `--dry-run` (human and `--json`), the `reconcile-blocked` hint, and the `dry_run` and `force` arguments of `board_import_change`. Verify: tests for every scenario of "Reconcile on re-import", the modified "Import a change" and "Re-import is idempotent" (including two concurrent child-process imports of a revised change), a fixture reproducing the vaultfold case (a regrouped and reworded tasks file) whose reconciled tickets match the new groups exactly, dry-run output goldens, and no event file created by `--dry-run`
