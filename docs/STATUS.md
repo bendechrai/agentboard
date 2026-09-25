@@ -16,9 +16,9 @@ full workflow, and docs/adr/ for design decisions.
   a disposable cache), 0002 (one transaction per command, event file
   inside it), 0003 (inbox cursors as a position plus a seen set), 0004
   (source-neutral task reference), 0005 (sync commits only its own
-  paths, as a fixed identity), 0006 (local web server security model) and
+  paths, as a fixed identity), 0006 (local web server security model),
   0007 (board feed with append, resync and digest resume; a shared
-  view-model).
+  view-model) and 0008 (terminal UI without a library).
 - The `add-board-core` OpenSpec change is complete and archived as
   `openspec/changes/archive/2026-09-24-add-board-core/`; its requirements
   are the main specs in `openspec/specs/` (board-cache, board-cli,
@@ -51,9 +51,20 @@ full workflow, and docs/adr/ for design decisions.
   the board in a browser" and ADRs 0006 and 0007. Its requirements are the
   main specs `board-web`, `board-feed` and `board-view-model`, plus
   changes to `board-cli`.
-- Three more observability changes under `openspec/changes/` build on it:
-  `add-board-insights` and `add-board-tui` (in progress), then
-  `add-board-web-actions`.
+- The `add-board-tui` OpenSpec change is complete once its documentation
+  (task group 3) merges: `agentboard top`, a full-screen, read-only
+  terminal view of the board (board, feed, lanes and ticket detail views,
+  keyboard navigation, live updates from the board feed of ADR 0007,
+  `not-a-tty` outside an interactive terminal), hand-rolled over a small
+  set of ANSI sequences with pure frames and fake-terminal tests, the
+  README section "Watching the board in a terminal" and ADR 0008. It is
+  then archived in its own PR, after which its requirements become the
+  main spec `board-tui` plus changes to `board-cli`.
+- `add-board-insights` is in progress: groups 1 and 2 are merged (the
+  pure health and replay view-model, `agentboard health` and the MCP tool
+  `board_health`); groups 3 (the health, replay and hand-off graph web
+  views) and 4 (documentation) remain. `add-board-web-actions` follows
+  both.
 - This repository uses its own guidance: `agentboard agents install`
   wrote `.claude/skills/agentboard/SKILL.md` and the `agentboard:` apply
   and archive guidance in `openspec/config.yaml`; `agentboard agents
@@ -67,12 +78,14 @@ full workflow, and docs/adr/ for design decisions.
 2. Finish the observability changes in progress, then the last one
    (each change's `tasks.md` states its dependencies; archive them in
    this order):
-   1. `add-board-insights`: health panel and `agentboard health` (also the
-      MCP tool `board_health`), replay, and the hand-off graph. In
-      progress.
-   2. `add-board-tui`: `agentboard top`, a terminal client of the same
-      feed and view-model. In progress, in parallel with
-      `add-board-insights`.
+   1. `add-board-tui`: `agentboard top`. Complete once the
+      documentation group merges; archive it next, in its own PR.
+   2. `add-board-insights`: health panel and `agentboard health` (also the
+      MCP tool `board_health`), replay, and the hand-off graph. Groups 1
+      and 2 merged; groups 3 (web views) and 4 (documentation) to do.
+      With `add-board-tui` archived first, re-sync its `board-cli`
+      MODIFIED text with the main spec (keeping `top`) before archiving
+      it, as its `tasks.md` says.
    3. `add-board-web-actions`: write actions from the browser under
       `agentboard serve --as <actor>`, with CSRF protection, on the
       security model of ADR 0006. Next once the two above are done.
