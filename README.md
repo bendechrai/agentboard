@@ -520,6 +520,8 @@ actor with no cursor yet receives every event on the board.
 (using `fs.watch` with a 2 second polling fallback) until stopped with
 Ctrl-C. It never advances the cursor: watching is not acknowledging, so run
 `inbox` to acknowledge what you have acted on.
+To follow the whole board rather than one actor's inbox, use
+`agentboard top` (see "Watching the board in a terminal").
 
 ## Decisions and closing tickets
 
@@ -815,6 +817,123 @@ data: {"type":"append","id":"fd5752a1...","events":[...],"tickets":[...]}
 - **No board found.** Like any command, `serve` exits 2 outside a project
   with a board; run it inside the project or set `AGENTBOARD_DIR`.
 
+## Watching the board in a terminal
+
+`agentboard top` shows the whole board full screen in the terminal you run
+it in, in the spirit of `top(1)`, and keeps it up to date as agents write.
+It is the terminal counterpart of `serve`, for when a browser is awkward
+(for example over SSH on the machine where the agents run), and it shows
+the same data: both are built on the same board feed and view-model (see
+ADR 0007).
+
+```
+$ agentboard top
+agentboard top  todo:3 tests:1 implementing:0 review:0 blocked:0 merged:0  last~
+todo 3      |tests 1     |implement~ 0|review 0    |blocked 0   |merged 0
+Parse config|Write fold ~|            |            |            |
+-           |test-1      |            |            |            |
+Add cache l~|            |            |            |            |
+impl-1      |            |            |            |            |
+...
+[1 board] 2 feed 3 lanes  tab  hjkl move  enter open  c closed  ? help  q quit
+```
+
+The first line shows the ticket count per status, the time since the last
+event and the board directory; the last line shows the keys of what you
+are looking at. Text that does not fit is cut and ends in `~`. Between
+them is one of three views, or a ticket's detail over the current view:
+
+- **Board** (`1`): one column per status (`todo`, `tests`, `implementing`,
+  `review`, `blocked`, `merged`), each headed by its status and card
+  count. A card takes two lines, the title and then the assignee (`-`
+  when unassigned); the detail shows the full id. The selected card is
+  shown inverse, a card that changed in the last 5 seconds bold, a
+  closed card dim. Closed tickets are hidden until you press `c`. When
+  the terminal is at least 140 columns wide, the activity feed is shown
+  in a 40-column pane to the right of the columns.
+- **Feed** (`2`): every applied event on the board, one line each, newest
+  first: how long ago, the actor, the short ticket id and a summary
+  (`5m ago   impl 01ARYZ6S41 claimed`). Events that arrived late through
+  `sync` are marked `late`.
+- **Lanes** (`3`): one block per actor, with when it was last seen and the
+  tickets it holds (short id, status and title).
+- **Detail** (Enter): the ticket's fields (id, title, status, assignee,
+  task reference, labels, description), checklist, links and close
+  disposition, then its conversation: comments as `<actor>: <text>`,
+  hand-offs as `<actor> -> <to> (<status>): <text>`, system lines (created,
+  claimed, moved) indented. Decisions are marked `[DECISION]`, retracted
+  decisions `[DECISION, retracted]` and retractions `[RETRACTED]`. Long
+  lines wrap rather than being cut.
+
+### Keys
+
+| Key | What it does |
+| --- | ------------ |
+| `1`, `2`, `3` | board, feed, lanes (closes an open detail) |
+| Tab | the next view: board, feed, lanes, then board again |
+| arrows, or `h` `j` `k` `l` | move the selection: left and right between board columns, up and down within a column, the feed or the lanes; in a detail, up and down scroll one line |
+| Enter | open the detail of the selected card, of the selected feed entry's ticket, or of the first ticket the selected lane holds |
+| Escape, Backspace | close the detail (the selection is kept) |
+| Page Up, Page Down | scroll the detail or the feed by a screen |
+| `c` | show or hide closed tickets |
+| `?` | show or hide the key help (Escape also hides it) |
+| `q`, Ctrl-C | quit |
+
+Any other key is ignored. The selection follows the item it is on, so a
+card that moves to another column as agents work stays selected.
+
+### Live updates
+
+`top` follows the board with the same feed as `serve`: an event written
+by any process (an agent's CLI or MCP call, another shell, a `sync`)
+appears within about 2 seconds, with no key press. When `sync` brings in
+events that sort before ones already shown, or a claim is refolded as
+having lost a race, `top` reloads the board and marks the late events
+`late` in the feed. Relative times ("5m ago") are refreshed at least
+every 10 seconds. While the board's cache is locked by another command
+the key line starts with `busy`, and it clears on the next update; any
+other failure (for example a corrupt event file) restores the terminal,
+then prints the error and its hint and exits with the error's exit code
+(5 for an integrity problem).
+
+`top` is read-only: it writes no event and never moves an inbox cursor,
+so it needs no actor (`--as` is accepted and ignored). Use the CLI in
+another shell to act on what you see. It runs until you press `q` or
+Ctrl-C, or it receives SIGINT or SIGTERM, then restores the terminal and
+exits 0. It is not exposed as an MCP tool.
+
+### Terminal requirements
+
+- **An interactive terminal.** Standard input and standard output must
+  both be a terminal, and `TERM` must not be `dumb`. Otherwise (piped,
+  redirected, run from a script or a CI job) `top` exits 1 with reason
+  `not-a-tty` before opening the board, writes nothing to stdout and
+  prints a hint on stderr. Use `agentboard list` for a snapshot of the
+  board, or `agentboard watch --as <actor>` for a line stream of one
+  actor's inbox. With `--json`, the failure is the usual JSON error
+  document on stdout:
+
+  ```
+  $ agentboard top --json | cat
+  {"error":{"exitCode":1,"reason":"not-a-tty","message":"agentboard top needs an interactive terminal: standard input and output must be a terminal, and TERM must not be dumb","hint":"top needs an interactive terminal; for a snapshot of the board use 'agentboard list', and for a line stream 'agentboard watch --as <actor>'"}}
+  ```
+
+- **At least 60 columns by 15 rows.** In a smaller terminal the screen
+  shows only `terminal too small: need 60x15, have <c>x<r>`; `top` keeps
+  running and redraws as soon as the terminal is big enough again.
+- **Plain ASCII.** Like every human output of the CLI, board text is shown
+  as ASCII, with other characters escaped; `serve` shows them in full.
+- **Colors.** A few markers are colored (decisions, `late`, `busy`). Set
+  `NO_COLOR` to any non-empty value for no color at all; bold, dim and
+  inverse remain, so the selection still shows.
+
+`top` uses only the alternate screen, cursor positioning and a few text
+attributes, which every common terminal emulator and multiplexer supports
+(see ADR 0008), and it restores the terminal on every way out: raw mode
+off, cursor shown, alternate screen left, and your previous screen
+content back. If a terminal is ever left in a bad state anyway (no echo,
+no cursor, keys not working), type `reset` and press Enter.
+
 ## Rebuild and checking the cache
 
 The cache is derived from the events and every command catches it up
@@ -868,7 +987,7 @@ argument and `agentboard mcp --as <actor>`.
 | Code | Meaning |
 | ---- | ------- |
 | 0 | success |
-| 1 | usage error (including an unknown command or flag), missing actor, refused text or close disposition, `rebuild --check` found a difference, an `agents install` target was refused or nothing was detected, `agents check` found guidance that is not current, or `serve` could not use its port (`port-in-use`) |
+| 1 | usage error (including an unknown command or flag), missing actor, refused text or close disposition, `rebuild --check` found a difference, an `agents install` target was refused or nothing was detected, `agents check` found guidance that is not current, `serve` could not use its port (`port-in-use`), or `top` was not run in an interactive terminal (`not-a-tty`) |
 | 2 | board not found or unreadable |
 | 3 | sync problem that needs a human |
 | 4 | action rejected by board state: `invalid-transition`, `already-assigned`, `not-assignee`, `unknown-ticket`, `duplicate-create`, `needs-task-link`, `checklist-index` |
@@ -882,8 +1001,8 @@ underscores: `board_new`, `board_show`, `board_list`, `board_claim`,
 `board_release`, `board_move`, `board_comment`, `board_handoff`,
 `board_link`, `board_checklist_tick`, `board_checklist_untick`,
 `board_close`, `board_inbox`, `board_import_change` and
-`board_close_merged`. `init`, `watch`, `serve`, `rebuild`, `sync`, `mcp`,
-`version`, `help`, `agents install` and `agents check` are not exposed:
+`board_close_merged`. `init`, `watch`, `serve`, `top`, `rebuild`, `sync`,
+`mcp`, `version`, `help`, `agents install` and `agents check` are not exposed:
 they are run by a human or an orchestrator in a shell (`agents install`
 and `agents check` write and read files in the caller's working tree,
 which a tool call must not do, and the guide reaches MCP clients as

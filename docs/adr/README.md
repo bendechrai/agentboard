@@ -10,3 +10,4 @@ design, in MADR format. Index:
 - [0005. Sync commits only its own paths, as a fixed identity](0005-sync-commits-only-its-own-paths.md)
 - [0006. Local web server security model](0006-local-web-server-security-model.md)
 - [0007. Board feed with append, resync and digest resume; a shared view-model](0007-board-feed-and-shared-view-model.md)
+- [0008. Terminal UI without a library](0008-terminal-ui-without-a-library.md)

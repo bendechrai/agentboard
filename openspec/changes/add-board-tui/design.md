@@ -88,7 +88,8 @@ current view. Between them, the current view:
 
 - Board: six columns (`todo`, `tests`, `implementing`, `review`,
   `blocked`, `merged`) of equal width, each headed by its status and
-  count, cards as one line (short id, assignee, title truncated with `~`),
+  count, cards as two lines (title, then assignee, each truncated with `~`;
+  at 80 columns a column is 12 cells wide, too narrow for the short id),
   the selected card inverse, cards that changed in the last 5 seconds
   bold. At 140 columns or more, the activity feed is shown in a 40-column
   pane to the right.
