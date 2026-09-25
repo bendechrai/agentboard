@@ -151,6 +151,25 @@ export interface FakeRequest {
   init: RequestInit | undefined;
 }
 
+/** The session of a server started with `--as ben` (add-board-web-actions group 2). */
+export const WRITABLE: Session = { ...SESSION, writable: true, actor: 'ben' };
+
+/** One `POST /api/actions/<action>` received by the fake API, parsed. */
+export interface FakeAction {
+  /** The `<action>` of the path. */
+  action: string;
+  url: string;
+  method: string;
+  headers: Headers;
+  /** The body parsed as JSON (undefined when it is not JSON). */
+  body: unknown;
+  init: RequestInit | undefined;
+}
+
+/** What `FakeApi.onAction` answers: a status and a JSON body, now or later. */
+export type FakeActionAnswer =
+  { status: number; body: unknown } | Promise<{ status: number; body: unknown }>;
+
 /**
  * The JSON API and stream of `agentboard serve`, faked from a model,
  * following the contract of `src/web/api.ts`: every `/api/` request must
@@ -173,6 +192,15 @@ export class FakeApi {
   readonly streams: FakeStream[] = [];
   /** Responses forced by path (the URL path without the query), `/api/stream` included. */
   readonly failures = new Map<string, { status: number; body: unknown }>();
+  /** The session `/api/session` reports. */
+  session: Session = SESSION;
+  /** Every authenticated `/api/actions/<action>` request, in order. */
+  readonly actions: FakeAction[] = [];
+  /**
+   * Answers an authenticated `/api/actions/<action>` request (after it is
+   * recorded in `actions`); without one, such a request is 404 `not-found`.
+   */
+  onAction: ((request: FakeAction) => FakeActionAnswer) | null = null;
 
   constructor(board: BoardModel) {
     this.board = board;
@@ -182,8 +210,47 @@ export class FakeApi {
   readonly fetch = (input: string, init?: RequestInit): Promise<Response> => {
     const url = String(input);
     this.requests.push({ url, init });
+    const path = new URL(url, 'http://localhost').pathname;
+    if (
+      path.startsWith('/api/actions/') &&
+      new Headers(init?.headers).get('authorization') === `Bearer ${this.token}`
+    ) {
+      return this.action(url, path, init);
+    }
     return Promise.resolve(this.answer(url, init));
   };
+
+  /** The action requests made so far for `action`. */
+  actionsOf(action: string): FakeAction[] {
+    return this.actions.filter((a) => a.action === action);
+  }
+
+  private async action(
+    url: string,
+    path: string,
+    init: RequestInit | undefined,
+  ): Promise<Response> {
+    let body: unknown;
+    try {
+      body = typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined;
+    } catch {
+      body = undefined;
+    }
+    const request: FakeAction = {
+      action: decodeURIComponent(path.slice('/api/actions/'.length)),
+      url,
+      method: init?.method ?? 'GET',
+      headers: new Headers(init?.headers),
+      body,
+      init,
+    };
+    this.actions.push(request);
+    if (this.onAction === null) {
+      return json(404, errorDoc('not-found', `no action ${request.action}`));
+    }
+    const answer = await this.onAction(request);
+    return json(answer.status, answer.body);
+  }
 
   /** The paths (without query) requested so far, in order. */
   paths(): string[] {
@@ -215,7 +282,7 @@ export class FakeApi {
     }
     switch (url.pathname) {
       case '/api/session':
-        return json(200, SESSION);
+        return json(200, this.session);
       case '/api/board': {
         const tickets = Object.values(this.board.tickets).sort((a, b) =>
           a.id < b.id ? -1 : a.id > b.id ? 1 : 0,

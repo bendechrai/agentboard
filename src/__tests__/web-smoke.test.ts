@@ -17,13 +17,27 @@
  * creates a ticket with the CLI and waits at most 3 seconds for its card,
  * and stops the server with SIGINT (exit 0).
  *
+ * A second test (add-board-web-actions task 2.1; board-web-actions:
+ * "Action endpoints" scenario "Claim from the browser", "Action controls
+ * in the web app") starts a writable server with `--as ben`, opens a
+ * ticket's detail in the page, checks the acting-as banner, presses its
+ * Claim button, and sees the page show the new assignee and `agentboard
+ * show` (a separate CLI process) report it; the action request is a JSON
+ * `POST` with the bearer header and no cookie.
+ *
  * No browser is downloaded: happy-dom is a dev dependency, so this runs in
  * `make check`, `make check-in-docker` and `make check-floor` alike. Run
  * `npm run build` first when running vitest directly (the harness says so
  * when `dist/cli.js` is missing). Only 127.0.0.1 is used, on port 0.
  */
 
-import { Browser, type BrowserPage, type BrowserWindow, type Element } from 'happy-dom';
+import {
+  Browser,
+  type BrowserPage,
+  type BrowserWindow,
+  type Element,
+  type HTMLElement,
+} from 'happy-dom';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { until } from '../web/__tests__/web-helpers.js';
@@ -43,6 +57,7 @@ interface Startup {
   port: number;
   token: string;
   writable: boolean;
+  actor: string | null;
 }
 
 /** One request the page made, as happy-dom's fetch sent it. */
@@ -55,6 +70,8 @@ interface SentRequest {
   url: string;
   authorization: string | null;
   cookie: string | null;
+  method: string;
+  contentType: string | null;
 }
 
 const browsers: Browser[] = [];
@@ -99,6 +116,8 @@ function browser(sent: SentRequest[]): Browser {
               url: request.url.split('#')[0] ?? '',
               authorization: request.headers.get('authorization'),
               cookie: request.headers.get('cookie'),
+              method: request.method,
+              contentType: request.headers.get('content-type'),
             });
             return Promise.resolve();
           },
@@ -200,6 +219,79 @@ describe('smoke: the built package in a happy-dom page', () => {
       const result = await proc.exited;
       expect(result).toMatchObject({ code: 0, signal: null, stderr: '' });
       expect(result.stdout.split('\n')).toEqual([JSON.stringify(line), '']);
+    },
+  );
+
+  it(
+    'claims a ticket through the page of a writable server, and agentboard show reports the new assignee',
+    { timeout: 60_000 },
+    async () => {
+      const { root } = boardProject();
+      const id = await newTicket(root, 'Smoke claim');
+
+      const proc = startCli({ argv: ['serve', '--port', '0', '--json', '--as', 'ben'] }, root);
+      const line = await startup(proc);
+      expect(line.writable).toBe(true);
+      expect(line.actor).toBe('ben');
+
+      const sent: SentRequest[] = [];
+      const page: BrowserPage = browser(sent).newPage();
+      await page.goto(line.url);
+      const window = page.mainFrame.window;
+      await within(() => card(window, id) !== null, 10_000, 'the card');
+
+      // The page names the actor it acts as.
+      await within(
+        () => window.document.querySelector('.acting-as') !== null,
+        10_000,
+        'the acting-as banner',
+      );
+      expect(window.document.querySelector('.acting-as')?.textContent?.trim()).toBe(
+        'acting as ben',
+      );
+
+      // Open the ticket detail and press Claim.
+      window.location.hash = `#/ticket/${id}`;
+      const claimSelector = `article.ticket[data-ticket="${id}"] [data-action="claim"] button`;
+      await within(
+        () => window.document.querySelector(claimSelector) !== null,
+        10_000,
+        'the claim button',
+      );
+      const assignee = (): string | null => {
+        const dts = [...window.document.querySelectorAll('article.ticket dl.fields dt')];
+        const dt = dts.find((d) => d.textContent.trim() === 'Assignee');
+        return dt?.nextElementSibling?.textContent.trim() ?? null;
+      };
+      expect(assignee()).toBe('none');
+      (window.document.querySelector(claimSelector) as HTMLElement).click();
+      await within(() => assignee() === 'ben', 10_000, 'the new assignee in the page');
+
+      // The CLI, in its own process, reads the same board.
+      const shown = await runCliAsync(['show', id, '--json'], root);
+      expect(shown.code, shown.stderr).toBe(0);
+      expect((oneDocument(shown) as { ticket: { assignee: string | null } }).ticket.assignee).toBe(
+        'ben',
+      );
+
+      // The action went out as a JSON POST with the bearer header only.
+      const origin = `http://127.0.0.1:${String(line.port)}`;
+      const claims = sent.filter((r) => r.url === `${origin}/api/actions/claim`);
+      expect(claims).toHaveLength(1);
+      expect(claims[0]).toMatchObject({
+        method: 'POST',
+        authorization: `Bearer ${line.token}`,
+        cookie: null,
+      });
+      expect(claims[0]?.contentType?.split(';')[0]?.trim().toLowerCase()).toBe('application/json');
+      for (const request of sent) {
+        expect(request.url, 'a URL carrying the token').not.toContain(line.token);
+        expect(request.cookie, request.url).toBeNull();
+      }
+
+      process.kill(proc.pid, 'SIGINT');
+      const result = await proc.exited;
+      expect(result).toMatchObject({ code: 0, signal: null, stderr: '' });
     },
   );
 });
