@@ -60,7 +60,11 @@ function temps(eventsDir: string): string[] {
   return readdirSync(eventsDir).filter((name) => name.startsWith('.tmp-'));
 }
 
-describe('scenario: killed after rename, before commit', () => {
+// The tests run the built CLI as child processes (several for some), which
+// on a loaded machine has come close to vitest's 5 second default.
+const PROCESSES = { timeout: 30_000 };
+
+describe('scenario: killed after rename, before commit', PROCESSES, () => {
   let root = '';
   let eventsDir = '';
   let id = '';
@@ -113,7 +117,7 @@ describe('scenario: killed after rename, before commit', () => {
   });
 });
 
-describe('scenario: killed during temporary write', () => {
+describe('scenario: killed during temporary write', PROCESSES, () => {
   let root = '';
   let eventsDir = '';
   let id = '';

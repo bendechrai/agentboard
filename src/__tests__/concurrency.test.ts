@@ -195,10 +195,16 @@ describe('scenario: twenty concurrent comments', () => {
   });
 });
 
+// The two ten-round tests start 20 and 200 CLI processes; they take 5 to 35
+// seconds depending on load, and the 200-process one exceeded 40 seconds in
+// the floor container on a heavily loaded machine. Each child is still
+// bounded by the harness's own per-child timeout, so a hang still fails.
+const TEN_ROUNDS_TIMEOUT_MS = 90_000;
+
 describe('busy timeout: concurrent writers wait instead of failing', () => {
   it(
     'scenario: two writers started in the same millisecond both succeed (ten rounds)',
-    { timeout: 40_000 },
+    { timeout: TEN_ROUNDS_TIMEOUT_MS },
     async () => {
       const { root, eventsDir } = boardProject();
       const id = await newTicket(root, 'Pairs');
@@ -221,7 +227,7 @@ describe('busy timeout: concurrent writers wait instead of failing', () => {
 
   it(
     'twenty processes opening a board with no cache yet all succeed (ten rounds)',
-    { timeout: 40_000 },
+    { timeout: TEN_ROUNDS_TIMEOUT_MS },
     async () => {
       // The first open creates cache.sqlite and switches it to WAL; racing
       // first opens must wait for each other like any other writers

@@ -44,6 +44,11 @@ const MCP = '.mcp.json';
 const V = GUIDANCE_VERSION;
 const TARGETS = ['claude', 'agents-md', 'openspec', 'mcp-json'];
 
+// Most tests here start the built CLI as several Node child processes in a
+// row, which on a loaded machine has taken longer than vitest's 5 second
+// default; a hung child is still bounded by spawnCli's 30 second timeout.
+const SPAWNS = { timeout: 30_000 };
+
 /** The built CLI with no actor and no board override. */
 function cli(argv: readonly string[], cwd: string): Run {
   return spawnCli(argv, cwd, cliEnv());
@@ -54,7 +59,7 @@ function errorOf(out: Run): { exitCode: number; reason: string | null; message: 
     .error;
 }
 
-describe('agents install through the built CLI', () => {
+describe('agents install through the built CLI', SPAWNS, () => {
   it('scenario: installs the Claude skill with no board and no actor', () => {
     const root = plainProject();
     const out = cli(['agents', 'install', '--target', 'claude'], root);
@@ -211,7 +216,7 @@ describe('agents install through the built CLI', () => {
   });
 });
 
-describe('agents check through the built CLI', () => {
+describe('agents check through the built CLI', SPAWNS, () => {
   function installAll(root: string): void {
     writeRel(root, CONFIG, OPENSPEC_FIXTURE);
     const out = cli(['agents', 'install', ...TARGETS.flatMap((t) => ['--target', t])], root);
@@ -297,7 +302,7 @@ describe('help for the agents commands', () => {
   });
 });
 
-describe('init suggests agents install', () => {
+describe('init suggests agents install', SPAWNS, () => {
   it('ends its output with the suggestion, also when the board already exists', () => {
     const root = repo();
     for (const pass of [1, 2]) {
@@ -315,7 +320,7 @@ describe('init suggests agents install', () => {
   });
 });
 
-describe('filesystem problems exit 1 with a refusal, never 5', () => {
+describe('filesystem problems exit 1 with a refusal, never 5', SPAWNS, () => {
   it('a directory at SKILL.md: install refuses it and installs the rest, check skips it', () => {
     const root = plainProject();
     mkdirSync(join(root, SKILL), { recursive: true });
@@ -352,7 +357,7 @@ describe('filesystem problems exit 1 with a refusal, never 5', () => {
   });
 });
 
-describe('symlink cycles through the built CLI (round 3)', () => {
+describe('symlink cycles through the built CLI (round 3)', SPAWNS, () => {
   it('install exits 1 refusing the cycle and installs the rest; check exits 0', () => {
     const root = plainProject();
     symlinkCycle(root, AGENTS, 'two-node');
@@ -376,7 +381,7 @@ describe('symlink cycles through the built CLI (round 3)', () => {
   });
 });
 
-describe('agents install --mcp-command through the built CLI (add-mcp-command)', () => {
+describe('agents install --mcp-command through the built CLI (add-mcp-command)', SPAWNS, () => {
   function mcpWith(entry: unknown): string {
     return `${JSON.stringify({ mcpServers: { agentboard: entry } }, null, 2)}\n`;
   }
@@ -482,11 +487,7 @@ describe('agents install --mcp-command through the built CLI (add-mcp-command)',
 
   it('scenario: switching from the npx entry updates it without --force', () => {
     const root = plainProject();
-    writeRel(
-      root,
-      MCP,
-      mcpWith({ command: 'npx', args: ['-y', '@bendechrai/agentboard', 'mcp'] }),
-    );
+    writeRel(root, MCP, mcpWith({ command: 'npx', args: ['-y', '@bendechrai/agentboard', 'mcp'] }));
     const out = cli(['agents', 'install', '--mcp-command', '/opt/agentboard/bin/agentboard'], root);
     expect(out.code, out.stderr).toBe(0);
     expect(out.stdout).toContain(`updated mcp-json ${MCP}\n`);
