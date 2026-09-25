@@ -369,6 +369,11 @@ and says so. The actor is never inferred from the OS user. Every command
 accepts `--as`, and commands that do not need it ignore it, so an agent can
 pass it on every call.
 
+The one exception is `serve`: it needs no actor, ignores
+`AGENTBOARD_ACTOR`, and accepts write actions from its web page only when
+`--as <actor>` is given on its own command line, writing every event as
+that actor (see "Acting from the browser").
+
 Use one stable name per role instance, for example `orchestrator`,
 `test-1`, `impl-1`, `reviewer-1`.
 
@@ -541,7 +546,9 @@ agentboard close 01M38YRHC3 --as orchestrator --no-decision
 - `--decision-recorded-in` must name a file that exists inside the current
   working tree (relative paths resolve against the current directory); it
   is recorded relative to the working tree root, so it means the same thing
-  in every worktree and clone. A missing file exits 1.
+  in every worktree and clone. A missing file exits 1. The close form of
+  `agentboard serve --as <actor>` has no current directory, so there a
+  relative path resolves against the working tree root instead.
 - `--no-decision` is refused (exit 1, quoting the comments) while the
   ticket has a `DECISION:` comment that its author has not retracted with a
   later comment beginning `RETRACTED:`.
@@ -628,10 +635,12 @@ once.
 
 ## Watching the board in a browser
 
-`agentboard serve` starts a small, read-only web server for the board and
-prints a URL to open in a browser. The page shows the whole board and keeps
-itself up to date as agents write, including events that arrive late
-through `sync`, with no reload:
+`agentboard serve` starts a small web server for the board and prints a
+URL to open in a browser. The page shows the whole board and keeps itself
+up to date as agents write, including events that arrive late through
+`sync`, with no reload. It is read-only unless you start it with
+`--as <actor>`, which lets the page act on tickets as that actor (see
+"Acting from the browser" below):
 
 - **Board**: one column per status, one card per ticket (title, short id
   with the full id as its tooltip, assignee, task reference or an "ad hoc"
@@ -681,13 +690,22 @@ stop it with Ctrl-C (SIGINT) or SIGTERM, then exits 0.
   else on stdout:
 
   ```
-  {"url":"http://127.0.0.1:54311/#token=hzU-...","port":54311,"token":"hzU-...","writable":false}
+  {"url":"http://127.0.0.1:54311/#token=hzU-...","port":54311,"token":"hzU-...","writable":false,"actor":null}
   ```
 
-`serve` writes no event and needs no actor (`--as` is accepted and
-ignored). It never moves an inbox cursor; the only change it makes to the
-board is the cache catch-up every read command does. It is not exposed as
-an MCP tool.
+- `--as <actor>` turns on write mode, with every write made as that actor
+  (see "Acting from the browser"). The line then reads `serving <board
+  dir> as <actor> at <url>`, and the JSON line has `"writable":true` and
+  `"actor":"<actor>"`. An empty value (`--as ''`) exits 1 with reason
+  `usage`.
+
+Without `--as`, `serve` writes no event and needs no actor. Only an
+explicit `--as` on the `serve` command line enables writes: `serve`
+ignores `AGENTBOARD_ACTOR`, so starting a viewer from a shell where an
+agent's actor is set still gives you a read-only server. `serve` never
+moves an inbox cursor; apart from the events of accepted write actions,
+the only change it makes to the board is the cache catch-up every read
+command does. It is not exposed as an MCP tool.
 
 ### Security model
 
@@ -718,11 +736,12 @@ arbitrary web sites open. What it does:
   `forbidden-host`. This stops DNS rebinding, where a web site points its
   own domain at `127.0.0.1` to talk to local servers.
 - **No cross-origin access.** No response carries any
-  `Access-Control-Allow-*` header, and every method but `GET` is refused,
-  so CORS preflights never succeed. On `/api/*` the token is checked
-  before the method, so a preflight or any other non-`GET` request without
-  a token is 401 `unauthorized` (405 with a valid token); on the page and
-  its assets a non-`GET` request is 405 `method-not-allowed`.
+  `Access-Control-Allow-*` header, and every method but `GET` is refused
+  (except `POST` to the action endpoints), so CORS preflights never
+  succeed. On `/api/*` the token is checked before the method, so a
+  preflight or any other request without a token is 401 `unauthorized`
+  (405 with a valid token and the wrong method); on the page and its
+  assets a non-`GET` request is 405 `method-not-allowed`.
 - **Security headers on every response**, errors included: a strict
   `Content-Security-Policy` (only the server's own script, style and
   connections; no framing), `X-Content-Type-Options: nosniff`,
@@ -732,8 +751,11 @@ arbitrary web sites open. What it does:
   `closed` and cannot navigate or script the page) and
   `Cross-Origin-Resource-Policy: same-origin` (no other origin can embed a
   response), plus `Cache-Control: no-store` on API and stream responses.
-- **Read-only.** There is no write route, and board text (titles,
-  comments, actor names) is always shown as text, never as HTML.
+- **Read-only unless started with `--as`.** Without `--as` there is no
+  write route (every action is 405 `read-only`). With it, the only writes
+  are the action endpoints of "Acting from the browser", behind the checks
+  described there. Board text (titles, comments, actor names) is always
+  shown as text, never as HTML.
 
 What it does not protect against:
 
@@ -770,15 +792,215 @@ tab keeps working, but a tab you open by hand, or a tab left open across a
 server restart (the token changes every run), shows "Open the URL printed
 by agentboard serve". Open the URL from the terminal again.
 
+### Acting from the browser
+
+Start the server with `--as <actor>` to answer a question, unblock a
+ticket, take over a stale claim, hand work back to an agent or close a
+merged ticket from the page you are reading:
+
+```
+$ agentboard serve --as ben
+serving /home/me/project/.board as ben at http://127.0.0.1:4477/#token=vYtNk7ld4gs4Wye8GFsIMZfinx8G98Nuw9kDouLDx-M
+$ agentboard serve --json --as ben
+{"url":"http://127.0.0.1:4479/#token=z0CcOj6ITtQLkb4uydBc0v1RM43phOLInwLm4holzKs","port":4479,"token":"z0CcOj6ITtQLkb4uydBc0v1RM43phOLInwLm4holzKs","writable":true,"actor":"ben"}
+```
+
+- **The actor is fixed when the server starts.** Every event written
+  through the server carries the `--as` actor. No request can choose or
+  change it: an action body with an `as` property is refused with 400
+  `usage`, whatever its value. To act as someone else, stop the server and
+  start it again with another `--as`.
+- **Only `--as` enables writes.** `AGENTBOARD_ACTOR` is ignored by
+  `serve` (a deliberate exception to "The actor rule"): with it set and no
+  `--as`, the server is read-only, `/api/session` reports `writable` false
+  and `actor` null, and every action is 405 `read-only`.
+- **The same rules as the CLI.** Each action runs the registry command of
+  the same name, with its arguments converted and checked by the same code
+  as an MCP tool call and its operation run in its single `BEGIN
+  IMMEDIATE` transaction. Validation, refusals and the event written are
+  the CLI's.
+
+#### The controls
+
+The header shows `acting as <actor>`, and the ticket detail
+(`#/ticket/<id>`) gains an Actions panel:
+
+- a **Comment** box;
+- **Move to**, listing only the statuses the state machine permits from
+  the current one (a blocked ticket offers only the status it was blocked
+  from; a merged ticket offers nothing);
+- **Claim** and **Release** buttons;
+- a **hand-off** form: To, Status (the current status first, which makes
+  the hand-off a reassignment, then the permitted moves) and Note;
+- **Link to**: a task reference (`openspec:add-login#1`), a pull request
+  (a URL or number) or a decision path, one per submission;
+- **Close**, with exactly one disposition: "Decision recorded in" with a
+  decision path, or "No decision";
+- a checkbox per checklist line: checking it ticks the line, unchecking it
+  unticks it. A tick on a ticket with a task reference shows the reminder
+  to tick the line in `tasks.md` too.
+
+A success is shown at once, without waiting for the live stream (which
+then confirms it). A refusal is shown beside the control that made it,
+with the same message and hint the CLI prints, and the form keeps what you
+typed. The hint is rendered for the server's actor, so it is the command
+you would type in a shell:
+
+```
+ticket 01M3D3ZT8FBSMYMBR4MSYHJ85H is already assigned to impl-1
+another actor holds this ticket, so do not work on it: see who with 'agentboard show 01M3D3ZT8FBSMYMBR4MSYHJ85H', or find your own work with 'agentboard inbox --as ben'
+```
+
+When the refusal is `busy` (another process held the board cache past the
+busy timeout), it also offers a **Retry** button, which posts the same
+action again. While an action waits for the cache lock, up to the busy
+timeout twice, this server answers nothing else, as a CLI command would
+wait. The page never checks an action itself beyond choosing what to
+offer: a stale page submitting on an old view gets the refusal the board
+gives at write time (for example `invalid-transition`). A read-only server's
+page has no Actions panel and no checkboxes.
+
+**Close and link paths are relative to the working tree root.** On the
+CLI a relative `--decision-recorded-in` or `--decision` path resolves
+against the current directory. The browser has none, so the server uses
+the root of the working tree that contains the directory `serve` was
+started in (`git rev-parse --show-toplevel`, or that directory outside
+git). Started in `/home/me/project/src`, a close with the path
+`docs/adr/0002-sessions.md` names `/home/me/project/docs/adr/0002-sessions.md`
+and is recorded as `docs/adr/0002-sessions.md`. As on the CLI, a close's
+path must exist on the machine running `serve` and lie inside the tree,
+and "No decision" is refused with `unpromoted-decision`, quoting the
+comments, while the ticket has an open `DECISION:` comment.
+
+**No secret-like override.** Comments and hand-off notes are checked
+against the same secret patterns as the CLI and refused with 400
+`secret-like` and the pattern name, never echoing the text. The page has
+no equivalent of `--allow-secret-like`, and a body that contains the
+`allow-secret-like` property is refused with 400 `usage`: the browser is
+where pasted text is most likely to be a real credential. Write a false
+positive with the CLI and `--allow-secret-like`.
+
+#### The action endpoints
+
+The page posts to `POST /api/actions/<action>`, where `<action>` is the
+command name with the space written as `-`. The body is one JSON object
+with the same properties as the command's MCP tool (see "MCP server"),
+without `as`:
+
+| Action | Body |
+| ------ | ---- |
+| `comment` | `{"id", "text"}` |
+| `move` | `{"id", "status"}`; without `status`, a blocked ticket returns to the status it was blocked from |
+| `claim` | `{"id"}` |
+| `release` | `{"id"}` |
+| `handoff` | `{"id", "to", "status", "note"}` |
+| `checklist-tick` | `{"id", "index"}`, `index` an integer counted from 0 |
+| `checklist-untick` | `{"id", "index"}` |
+| `link` | `{"id"}` and exactly one of `"task"`, `"change"` with `"group"`, `"pr"` or `"decision"` |
+| `close` | `{"id"}` and exactly one of `"decision-recorded-in": "<path>"` or `"no-decision": true` |
+
+`id` is a full ticket id or a unique prefix of at least 6 characters, as
+on the CLI. The properties `as`, `json` and `allow-secret-like` are
+refused with 400 `usage` whatever their value, as are unknown properties,
+wrong types and a body that is not one JSON object. Any other action name
+is 404 `not-found`.
+
+A success is 200 with the document the command prints with `--json`:
+`{hash, ticket}` for every action (`hash` is null when nothing was written,
+as for a claim by the ticket's current holder), plus `reminder` for a
+checklist tick or untick. A refusal writes nothing and is an
+`ErrorDocument` with the CLI hint for the server's actor:
+
+| Status | When |
+| ------ | ---- |
+| 400 | a refusal with exit code 1: `usage`, `secret-like`, `unpromoted-decision`, `decision-path-missing`, `path-outside-tree`, `id-too-short`, `ambiguous-id`, ... |
+| 409 | a refusal by board state (exit code 4): `already-assigned`, `not-assignee`, `invalid-transition`, `needs-task-link`, `checklist-index`, `unknown-ticket`, ... |
+| 503 | `busy`: the cache stayed locked; try again |
+| 500 | anything else |
+| 405 | `read-only` (a server without `--as`), or `method-not-allowed` for another method on an action path (`Allow: POST`) |
+| 404 | `not-found`: not one of the nine actions |
+| 403 | `csrf-failed` (below), or `forbidden-host` |
+| 413 | `body-too-large` |
+| 401 | `unauthorized` |
+
+Note that `unknown-ticket` is 409 for an action (it is exit code 4) but
+404 on the `GET` routes. From a script, with the token of the running
+server:
+
+```
+$ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"id":"01M3D3ZT8F","text":"Merged the form behind a flag."}' \
+    http://127.0.0.1:4477/api/actions/comment
+{"hash":"e52d8502deefacb776263e78fe5ad764a61606cdc2f879ef5cf79876eae5297d","ticket":{"id":"01M3D3ZT8FBSMYMBR4MSYHJ85H","title":"Add login form",...}}
+$ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"id":"01M3D3ZT8F","status":"merged"}' http://127.0.0.1:4477/api/actions/move
+{"error":{"exitCode":4,"reason":"invalid-transition","message":"ticket.move on ticket 01M3D3ZT8FBSMYMBR4MSYHJ85H refused: invalid-transition","hint":"check the current status with 'agentboard show 01M3D3ZT8F' and the permitted moves with 'agentboard help move'"}}
+```
+
+A write made through the server reaches every open page through the live
+stream, like a write from any other process.
+
+#### Cross-site request forgery
+
+A cross-site request forgery needs a credential that the browser attaches
+on its own. The server has none: there is no cookie, and the token is
+accepted only in the `Authorization: Bearer` header, which only the page's
+own script sets, from its own tab's `sessionStorage`. A page on another
+origin (another site, or another port on `127.0.0.1`) cannot read that
+storage, and cannot send an `Authorization` header or a JSON body without
+a CORS preflight, which the server never approves. A form post or a
+`no-cors` fetch carries no token and gets 401, even with the token in a
+cookie. So the bearer check of every request is itself the CSRF defence,
+and there is no separate CSRF token or header. In addition, every `POST`,
+after the Host and token checks and before anything else is decided about
+it:
+
+- must carry exactly one `Content-Type` header, `application/json`, whose
+  only permitted parameter is `charset=utf-8` (letter case ignored, the
+  value optionally quoted). Anything else, including a form encoding,
+  `text/plain` or another charset such as `utf-16`, is 403 `csrf-failed`:
+  the body is always decoded as UTF-8, and a JSON content type is a second,
+  independent reason for a browser to preflight any cross-origin write;
+- when it has an `Origin` header, must have exactly one, equal to
+  `http://127.0.0.1:<port>` or `http://localhost:<port>` and naming the
+  same host as the `Host` header; anything else, `null` and another port
+  included, is 403 `csrf-failed`. Browsers send `Origin` on every `POST`;
+  a request without one is not from a browser and is accepted, since it
+  already proved the token;
+- must have a body of at most 64 KiB, else 413 `body-too-large` (a
+  resource bound: the largest real action is a few KiB).
+
+```
+$ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -H 'Origin: https://attacker.example' -d '{"id":"01M3D3ZT8F","text":"x"}' \
+    http://127.0.0.1:4477/api/actions/comment
+{"error":{"exitCode":1,"reason":"csrf-failed","message":"an action sent with an Origin header must come from the page of this server, at the same address as the Host header","hint":"an action must be posted by the page of this server, or by a script that sends no Origin header, with Content-Type: application/json; see 'agentboard help serve'"}}
+```
+
+A refused request writes nothing.
+
+#### What the URL grants
+
+The start-up URL of a server started with `--as` is a credential to write
+as that actor: anyone who has it (or the token in it) can comment, move,
+claim, release, hand off, tick, link and close as that actor until the
+server stops, and every event looks exactly as if that actor had run the
+command. The token changes at every start, so stopping the server revokes
+it. Everything under "What it does not protect against" applies with that
+higher stake: do not use `--open` on a shared machine, and do not paste the
+URL anywhere. Start a writable server only while you use it, and a
+read-only one to just watch. See ADR 0009 for the write-mode decisions.
+
 ### The JSON API
 
-Scripts can read the same data the page does. Every route is `GET`, needs
-the bearer header and answers JSON (errors are the same `ErrorDocument`
+Scripts can read the same data the page does. Every route here is `GET`
+(the only other routes are the `POST` action endpoints of "Acting from the
+browser"), needs the bearer header and answers JSON (errors are the same `ErrorDocument`
 the CLI prints with `--json`, with a hint):
 
 | Route | Answer |
 | ----- | ------ |
-| `/api/session` | `{version, boardDir, writable, actor}` (`writable` false, `actor` null) |
+| `/api/session` | `{version, boardDir, writable, actor}`: `writable` true and `actor` the `--as` actor when started with `--as`, else false and null |
 | `/api/board` | `{tickets, meta, id}`: every ticket, open and closed, the board meta and the feed position id |
 | `/api/tickets/<id>` | `{ticket, events}` for a full id or a unique prefix of at least 6 characters; 400 `id-too-short` or `ambiguous-id`, 404 `unknown-ticket` |
 | `/api/events?after=<hash>&limit=<n>` | `{events, next}`: well-formed events in fold order with their outcome, `limit` 1000 by default and at most 5000; pass `next` as `after` for the next page (null on the last) |
@@ -816,8 +1038,18 @@ data: {"type":"append","id":"fd5752a1...","events":[...],"tickets":[...]}
 - **401 `unauthorized` from curl.** Send exactly one `Authorization:
   Bearer <token>` header with the token of the running server; a query
   parameter or a cookie does not count.
-- **405 `method-not-allowed`.** The server answers only `GET` (curl's
-  `-I` sends `HEAD`).
+- **405 `method-not-allowed`.** The server answers only `GET`, plus `POST`
+  to `/api/actions/<action>` (curl's `-I` sends `HEAD`).
+- **405 `read-only`.** The server was started without `--as`. Stop it and
+  start `agentboard serve --as <actor>`, or run the command in a shell.
+- **403 `csrf-failed`.** An action was posted without exactly one
+  `Content-Type: application/json` header (only `charset=utf-8` may
+  follow it), or with an `Origin` other than the page's own. Scripts send
+  JSON and leave `Origin` out.
+- **413 `body-too-large`.** An action body is at most 64 KiB.
+- **503 `busy` on an action.** Another process held the board cache for
+  longer than the busy timeout. Press Retry beside the control, or post
+  again.
 - **Nothing updates.** The page reconnects to the stream on its own and
   shows a banner when the server reports a problem (for example a corrupt
   event file); the server keeps running and recovers once it is fixed. If
@@ -1227,6 +1459,13 @@ hint as a field, and stderr still has the error and `hint: ` lines:
 {"error":{"exitCode":4,"reason":"already-assigned","message":"ticket 01M38YRHC32109EYJ1TPDZPQ2N is already assigned to impl","hint":"another actor holds this ticket, so do not work on it: see who with 'agentboard show 01M38YRHC3', or find your own work with 'agentboard inbox --as reviewer'"}}
 ```
 
+The refusals of the web app's actions (see "Acting from the browser")
+carry the same hint, rendered for the server's `--as` actor, so a claim
+refused `already-assigned` hints `agentboard inbox --as <that actor>`.
+The server's own refusals have hints too: `read-only` names `agentboard
+serve --as <actor>`, and `csrf-failed` and `body-too-large` say what an
+action request must look like.
+
 MCP tool errors carry the same `hint` field (see "MCP server"). There a
 suggested command that is a tool is written as a tool call, such as
 `board_inbox {"as":"reviewer"}`, and the actor advice names the `as`
@@ -1237,7 +1476,7 @@ argument and `agentboard mcp --as <actor>`.
 | Code | Meaning |
 | ---- | ------- |
 | 0 | success |
-| 1 | usage error (including an unknown command or flag), missing actor, refused text or close disposition, `rebuild --check` found a difference, an `agents install` target was refused or nothing was detected, `agents check` found guidance that is not current, `serve` could not use its port (`port-in-use`), or `top` was not run in an interactive terminal (`not-a-tty`) |
+| 1 | usage error (including an unknown command or flag), missing actor, refused text or close disposition, `rebuild --check` found a difference, an `agents install` target was refused or nothing was detected, `agents check` found guidance that is not current, `serve` could not use its port (`port-in-use`) or was given an empty `--as`, or `top` was not run in an interactive terminal (`not-a-tty`) |
 | 2 | board not found or unreadable |
 | 3 | sync problem that needs a human |
 | 4 | action rejected by board state: `invalid-transition`, `already-assigned`, `not-assignee`, `unknown-ticket`, `duplicate-create`, `needs-task-link`, `checklist-index` |
@@ -1351,8 +1590,9 @@ as `entry-differs` unless `--force` is given, which replaces it.
   looks like a secret (private key PEM headers, AWS access key ids, GitHub
   tokens, long base64 strings after `token`, `secret`, `password` or
   `key`), exiting 1 with the pattern name and never echoing the text.
-  `--allow-secret-like` overrides this for a false positive. Board events
-  are synced and kept forever; never put credentials in them.
+  `--allow-secret-like` overrides this for a false positive (on the CLI
+  and over MCP only; the web app has no override). Board events are synced
+  and kept forever; never put credentials in them.
 - **Not the record of completion.** `tasks.md` checkboxes, ticked in the
   PR that does the work, record what was built. The board records who
   holds the work and its state in flight.
