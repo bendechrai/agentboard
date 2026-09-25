@@ -101,11 +101,18 @@ assuming one, and fetch first so the branch is cut from the remote
 
 ```
 git fetch origin
-git worktree add -b <area>/<group-slug> ../agentboard-<group-slug> origin/staging
+git worktree add -b <area>/<group-slug> ../agentboard.worktrees/<area>-<group-slug> origin/staging
 ```
 
+Worktrees live in the container folder `agentboard.worktrees` beside this
+checkout, one subfolder per worktree named after its branch with `/`
+replaced by `-`. Never create them as siblings of the checkout
+(`../agentboard-<name>`) or inside it (tools such as vitest, tsc and
+eslint would see a second copy of the project). Remove a worktree with
+`git worktree remove` once its branch is merged or abandoned.
+
 For a branch that already exists on the remote (a later role joining a
-group), use `git worktree add ../agentboard-<group-slug> <area>/<group-slug>`
+group), use `git worktree add ../agentboard.worktrees/<area>-<group-slug>-<role> <area>/<group-slug>`
 after the fetch. Agents do not spawn sub-agents.
 
 Never run `git checkout` or `git switch` in a checkout shared with another
