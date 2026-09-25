@@ -155,6 +155,9 @@ describe('contentTypeAllowed', () => {
     'application/json ; charset=utf-8',
     'Application/JSON',
     'application/json; Charset=utf-8',
+    'application/json; charset=Utf-8',
+    'application/json; charset="utf-8"',
+    'application/json; charset="UTF-8"',
   ])('accepts %j', (value) => {
     expect(contentTypeAllowed(value)).toBe(true);
     expect(contentTypeAllowed([value])).toBe(true);
@@ -171,6 +174,14 @@ describe('contentTypeAllowed', () => {
     'application/json; boundary=x',
     'application/json; charset=utf-8; boundary=x',
     'application/json; charset=utf-8; charset=utf-8',
+    'application/json; charset=utf-16',
+    'application/json; charset=UTF-16LE',
+    'application/json; charset="utf-16"',
+    'application/json; charset=iso-8859-1',
+    'application/json; charset=us-ascii',
+    'application/json; charset=utf8',
+    'application/json; charset=utf-8x',
+    'application/json; charset=',
     'json',
     'application/',
     '',
@@ -552,12 +563,13 @@ describe('runAction on a writable server', () => {
     },
   );
 
-  it.each(['[]', '"text"', '7', 'null', 'true'])(
-    'refuses the JSON body %s with 400 usage',
+  it.each(['[]', '[{"id":"x"}]', '"text"', '7', 'null', 'true'])(
+    'refuses the JSON body %s, which is not one object, with 400 usage',
     (text) => {
       const { ctx, eventsDir } = context('ben');
       const before = eventFiles(eventsDir);
-      refusedWith(runAction(ctx, 'claim', text), 400, 1, 'usage');
+      const error = refusedWith(runAction(ctx, 'claim', text), 400, 1, 'usage');
+      expect(error.message).toBe('the request body must be one JSON object');
       expect(eventFiles(eventsDir)).toEqual(before);
     },
   );

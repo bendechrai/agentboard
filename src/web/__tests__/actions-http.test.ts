@@ -250,6 +250,22 @@ describe('Action endpoints', () => {
     expect(eventFiles(eventsDir)).toEqual(before);
   });
 
+  it.each([
+    ['null', 'null'],
+    ['an array', '[]'],
+    ['an array holding the object', '[{"id":"x","text":"t"}]'],
+    ['a number', '7'],
+    ['a string', '"text"'],
+    ['true', 'true'],
+  ])('refuses a body of %s, which is not one JSON object, with 400 usage', async (_what, text) => {
+    const { server, root, eventsDir } = await actionServer({ actor: 'ben' });
+    newTicket(root);
+    const before = eventFiles(eventsDir);
+    const error = refusal(await post(server, 'comment', text), 400, 1, 'usage');
+    expect(error.message).toBe('the request body must be one JSON object');
+    expect(eventFiles(eventsDir)).toEqual(before);
+  });
+
   it('answers a GET of an action path with 405 and Allow: POST, and a POST elsewhere with Allow: GET', async () => {
     const { server, eventsDir } = await actionServer({ actor: 'ben' });
     const before = eventFiles(eventsDir);
@@ -606,6 +622,49 @@ describe('Cross-site request forgery protection', () => {
     );
     expect(result.status, result.body).toBe(200);
     expect(newEvents(eventsDir, before)).toHaveLength(1);
+  });
+
+  it.each([
+    'application/json; charset=utf-16',
+    'application/json; charset=UTF-16LE',
+    'application/json; charset=iso-8859-1',
+  ])(
+    'refuses the content type %j (a charset other than utf-8) with 403 csrf-failed',
+    async (contentType) => {
+      const { server, root, eventsDir } = await actionServer({ actor: 'ben' });
+      const id = newTicket(root);
+      const before = eventFiles(eventsDir);
+      const result = await post(
+        server,
+        'comment',
+        { id, text: 'other charset' },
+        { headers: { 'Content-Type': contentType } },
+      );
+      const error = refusal(result, 403, 1, 'csrf-failed');
+      expect(error.hint).toBe(renderHint('csrf-failed', API_HINT_CONTEXT));
+      expectActionHeaders(result);
+      expect(eventFiles(eventsDir)).toEqual(before);
+    },
+  );
+
+  it.each([
+    'application/json; charset=UTF-8',
+    'application/json;charset=Utf-8',
+    'application/json; charset="utf-8"',
+  ])('accepts the content type %j (utf-8 in any letter case)', async (contentType) => {
+    const { server, root, eventsDir } = await actionServer({ actor: 'ben' });
+    const id = newTicket(root);
+    const before = eventFiles(eventsDir);
+    const result = await post(
+      server,
+      'comment',
+      { id, text: 'utf-8 \u00e9' },
+      { headers: { 'Content-Type': contentType } },
+    );
+    expect(result.status, result.body).toBe(200);
+    expect(newEvents(eventsDir, before).map((e) => e.event.body)).toEqual([
+      { text: 'utf-8 \u00e9' },
+    ]);
   });
 
   it('refuses two Origin headers, the first one allowed, with 403 csrf-failed', async () => {

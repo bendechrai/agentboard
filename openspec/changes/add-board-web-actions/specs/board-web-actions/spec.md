@@ -80,7 +80,9 @@ SHALL offer no override; a false positive is written with the CLI and
 Every `POST` SHALL pass, in addition to the Host check and the
 `Authorization: Bearer` token check of every API request (the only form
 of the token; no cookie is accepted or set), all of: a `Content-Type` of
-`application/json`, optionally with a `charset` parameter; a body of at
+`application/json`, whose only permitted parameter is `charset=utf-8`
+(compared without regard to letter case, the value optionally quoted),
+because the body is always decoded as UTF-8; a body of at
 most 64 KiB (otherwise 413 with reason `body-too-large`); and, when an
 `Origin` header is present, an `Origin` equal to `http://127.0.0.1:<port>`
 or `http://localhost:<port>` naming the same host as the `Host` header. A
@@ -100,6 +102,10 @@ server SHALL draw no CSRF token and require no CSRF header.
 #### Scenario: Form encoding refused
 - **WHEN** an otherwise valid action with the bearer token and a same-origin `Origin` is posted with `Content-Type: application/x-www-form-urlencoded`
 - **THEN** the response is 403 with reason `csrf-failed`
+
+#### Scenario: Charset other than UTF-8 refused
+- **WHEN** an otherwise valid action with the bearer token and a same-origin `Origin` is posted with `Content-Type: application/json; charset=utf-16`
+- **THEN** the response is 403 with reason `csrf-failed` and no event is written
 
 #### Scenario: Script without Origin
 - **WHEN** a client posts a valid comment with the bearer token, `Content-Type: application/json` and no `Origin` header

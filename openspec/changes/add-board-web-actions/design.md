@@ -111,10 +111,14 @@ every request is itself the CSRF defence. Every `POST` must pass:
 
 1. The Host check and the bearer token check of every API request (from
    `add-board-web`).
-2. `Content-Type: application/json` (with an optional `charset`). Kept:
-   the body is JSON anyway, and it keeps a second, independent reason for
-   a browser to preflight any cross-origin write, so a browser bug in the
-   handling of one of the two headers is not enough.
+2. `Content-Type: application/json`, whose only permitted parameter is
+   `charset=utf-8` (case-insensitive, optionally quoted). Kept: the body
+   is JSON anyway, and it keeps a second, independent reason for a
+   browser to preflight any cross-origin write, so a browser bug in the
+   handling of one of the two headers is not enough. Any other charset
+   (`utf-16`, `iso-8859-1`, ...) is refused, because the server always
+   decodes the body as UTF-8 and would otherwise read a differently
+   encoded body as something other than what was sent.
 3. `Origin`, when present, equal to `http://127.0.0.1:<port>` or
    `http://localhost:<port>` and naming the same host as `Host`. Kept:
    browsers send `Origin` on every `POST`, so this costs one comparison
