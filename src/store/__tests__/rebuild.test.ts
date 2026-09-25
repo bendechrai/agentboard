@@ -160,8 +160,9 @@ describe('rebuild', () => {
  * A separate writer process that behaves like a committing command, holding
  * the lock for `holdMs`: it takes BEGIN IMMEDIATE on the live cache, renames
  * a new event file into place, replaces the derived rows with those of a
- * cache that already contains that event, prints "locked", waits, then
- * commits. Pure SQL and fs, so it does not depend on the code under test.
+ * cache that already contains that event, prints "locked", waits, prints
+ * "committing <Date.now()>" and commits. Pure SQL and fs, so it does not
+ * depend on the code under test.
  */
 const WRITER = `
 import { renameSync } from 'node:fs';
@@ -183,12 +184,15 @@ db.exec(\`
 \`);
 process.stdout.write('locked\\n');
 Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(holdMs));
+process.stdout.write('committing ' + String(Date.now()) + '\\n');
 db.exec('COMMIT');
 db.close();
 `;
 
 interface Writer {
   exited: Promise<number | null>;
+  /** The writer's clock just before its COMMIT, read from its output once it exits. */
+  committingAt: Promise<number>;
 }
 
 /** Starts the writer and resolves once it holds the lock with the file renamed. */
@@ -211,9 +215,21 @@ async function startWriter(board: Board, event: unknown, holdMs: number): Promis
   );
   let stderr = '';
   child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+  let out = '';
   const exited = new Promise<number | null>((resolve) => child.on('exit', resolve));
+  // 'close' (not 'exit') fires once stdout has been read to its end.
+  const closed = new Promise<void>((resolve) => child.on('close', () => resolve()));
+  const committingAt = closed.then(() => {
+    const match = /committing (\d+)/.exec(out);
+    if (match?.[1] === undefined) {
+      throw new Error(`the writer did not report its commit: ${out} ${stderr}`);
+    }
+    return Number(match[1]);
+  });
+  // Awaited by the test; this only keeps an early failure from also being
+  // reported as an unhandled rejection.
+  committingAt.catch(() => undefined);
   await new Promise<void>((resolve, reject) => {
-    let out = '';
     child.stdout.on('data', (chunk: Buffer) => {
       out += chunk.toString();
       if (out.includes('locked')) {
@@ -222,23 +238,32 @@ async function startWriter(board: Board, event: unknown, holdMs: number): Promis
     });
     child.on('exit', (code) => reject(new Error(`writer exited ${String(code)}: ${stderr}`)));
   });
-  return { exited };
+  return { exited, committingAt };
 }
 
 describe('checkCache while a writer runs', () => {
   it('waits for a writer holding the lock and reports no divergence', async () => {
     const { board, events } = seeded();
-    const hold = 400;
+    // The hold only has to outlast the delay between the writer printing
+    // "locked" and this process reading it and starting the check. Under
+    // heavy load that delay has reached a few hundred milliseconds, so the
+    // wait is measured against the writer's own commit time rather than
+    // against the hold (which failed with 130 < 250 on a loaded machine).
+    const hold = 1000;
     const writer = await startWriter(board, ev(P.comment(T3, 'concurrent'), 'orch', 99_000), hold);
     // The writer's file is already renamed into place, its rows not yet committed.
     expect(listEventFiles(events)).toHaveLength(24);
     const started = Date.now();
     const result = checkCache(board);
-    const waited = Date.now() - started;
+    const ended = Date.now();
     expect(await writer.exited).toBe(0);
     expect(result.differences).toEqual([]);
     expect(result.ok).toBe(true);
-    expect(waited).toBeGreaterThanOrEqual(hold - 150);
+    // The check began while the writer held the lock (else it proves
+    // nothing) and returned only once the writer had committed.
+    const committingAt = await writer.committingAt;
+    expect(started).toBeLessThan(committingAt);
+    expect(ended).toBeGreaterThanOrEqual(committingAt);
     expect(board.db.isTransaction).toBe(false);
     expect(readTicket(board.db, T3)?.comments.map((c) => c.text)).toEqual(['concurrent']);
     expect(checkCache(board).ok).toBe(true);

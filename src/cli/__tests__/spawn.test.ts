@@ -15,7 +15,11 @@ import { cliEnv, oneJson, project, spawnCli, written } from './cli-helpers.js';
 
 const TASK3 = ['--task', 'openspec:add-board-core#3'];
 
-describe('the built CLI', () => {
+// Each test starts the built CLI as one or more Node child processes
+// (several in a row for some), which on a loaded machine can approach
+// vitest's 5 second default; a hung child is still bounded by spawnCli's
+// own 30 second per-child timeout.
+describe('the built CLI', { timeout: 30_000 }, () => {
   it('prints version', () => {
     const pkg = JSON.parse(
       readFileSync(join(import.meta.dirname, '..', '..', '..', 'package.json'), 'utf8'),

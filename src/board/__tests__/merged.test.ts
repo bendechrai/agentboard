@@ -351,7 +351,10 @@ describe('closeMerged without gh', () => {
   });
 });
 
-describe('runGh (the default runner) against a fake gh on PATH', () => {
+// Each test spawns the fake gh (a shell script) as a real child process,
+// which on a heavily loaded machine has taken longer than vitest's 5 second
+// default; the runner's own 30 second gh timeout is not what is tested here.
+describe('runGh (the default runner) against a fake gh on PATH', { timeout: 20_000 }, () => {
   it('runs gh from env.PATH in cwd and captures its output', () => {
     const { dir, log } = fakeGhOnPath({ '7': 'MERGED' });
     const env = cleanEnv({ PATH: dir });
