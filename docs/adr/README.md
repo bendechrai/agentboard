@@ -11,3 +11,4 @@ design, in MADR format. Index:
 - [0006. Local web server security model](0006-local-web-server-security-model.md)
 - [0007. Board feed with append, resync and digest resume; a shared view-model](0007-board-feed-and-shared-view-model.md)
 - [0008. Terminal UI without a library](0008-terminal-ui-without-a-library.md)
+- [0009. Write actions in the web app](0009-web-write-actions-security.md)

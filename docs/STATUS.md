@@ -18,7 +18,8 @@ full workflow, and docs/adr/ for design decisions.
   (source-neutral task reference), 0005 (sync commits only its own
   paths, as a fixed identity), 0006 (local web server security model),
   0007 (board feed with append, resync and digest resume; a shared
-  view-model) and 0008 (terminal UI without a library).
+  view-model), 0008 (terminal UI without a library) and 0009 (write
+  actions in the web app).
 - The `add-board-core` OpenSpec change is complete and archived as
   `openspec/changes/archive/2026-09-24-add-board-core/`; its requirements
   are the main specs in `openspec/specs/` (board-cache, board-cli,
@@ -68,6 +69,18 @@ full workflow, and docs/adr/ for design decisions.
   README sections "Board health" and "Replay and the hand-off graph". Its
   requirements are the main spec `board-insights`, plus changes to
   `board-cli`.
+- The `add-board-web-actions` OpenSpec change is complete once its
+  documentation (group 3) merges: `agentboard serve --as <actor>` enables
+  write actions as that actor only (`AGENTBOARD_ACTOR` never does),
+  `POST /api/actions/<action>` for comment, move, claim, release,
+  handoff, checklist-tick, checklist-untick, link and close, run through
+  the registry command path shared with the CLI and MCP, CSRF protection
+  by the bearer header with JSON-only (UTF-8) bodies, an `Origin` check
+  and a 64 KiB limit, and the action controls and acting-as banner on the
+  ticket detail. Documented in the README section "Acting from the
+  browser" and ADR 0009. It is then archived in its own PR, folding its
+  deltas into `board-cli`, `board-web` and a new main spec
+  `board-web-actions`.
 - This repository uses its own guidance: `agentboard agents install`
   wrote `.claude/skills/agentboard/SKILL.md` and the `agentboard:` apply
   and archive guidance in `openspec/config.yaml`; `agentboard agents
@@ -78,10 +91,8 @@ full workflow, and docs/adr/ for design decisions.
 1. A human reviews `staging` and promotes it to `main` (a merge-commit PR
    from `staging`) when ready. Publishing to npm is deferred: agentboard
    is used locally through `npm link`.
-2. `add-board-web-actions`: write actions from the browser under
-   `agentboard serve --as <actor>`, on the security model of ADR 0006
-   (bearer token, JSON-only bodies, Origin check). In progress: group 1
-   (write mode and action endpoints, security-critical) first.
+2. Archive `add-board-web-actions` in its own PR (all three groups
+   merged; see "What exists").
 3. `add-claim-leases` (proposed): grace leases confirmed by `renew`
    (`claim --ttl`), takeover of a lapsed lease and a fair waiting queue
    (`claim --wait`, derived `ticket.grant` events) decided from event
