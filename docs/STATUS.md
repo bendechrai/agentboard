@@ -90,7 +90,11 @@ full workflow, and docs/adr/ for design decisions.
 1. A human reviews `staging` and promotes it to `main` (a merge-commit PR
    from `staging`) when ready. Publishing to npm is deferred: agentboard
    is used locally through `npm link`.
-2. `add-claim-leases` (proposed): grace leases confirmed by `renew`
+2. `add-serve-auto-open` (proposed): `serve` opens the browser by default
+   when stdout is a terminal, `--json` is not given, `CI` is unset, it is
+   not an SSH session and (off macOS and Windows) a display is set;
+   `--no-open` opts out. Two groups.
+3. `add-claim-leases` (proposed): grace leases confirmed by `renew`
    (`claim --ttl`), takeover of a lapsed lease and a fair waiting queue
    (`claim --wait`, derived `ticket.grant` events) decided from event
    timestamps with a 60 second skew tolerance, an audited
