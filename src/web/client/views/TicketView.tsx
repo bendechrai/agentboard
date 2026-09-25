@@ -69,6 +69,8 @@ import {
   type Session,
   type TicketDetail,
 } from '../api.js';
+import type { ActionSuccess } from '../actions.js';
+import { ActionControls, ChecklistControl } from './ActionControls.js';
 import { isoTime } from './controls.js';
 
 export interface TicketViewProps {
@@ -92,6 +94,8 @@ export function TicketView(props: TicketViewProps): JSX.Element {
   const { id, conn, now } = props;
   const modelId = props.model.id;
   const [loaded, setLoaded] = useState<Loaded | null>(null);
+  /** The ticket of the last applied success, until the next load of the detail. */
+  const [applied, setApplied] = useState<Ticket | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -99,6 +103,7 @@ export function TicketView(props: TicketViewProps): JSX.Element {
       (detail) => {
         if (live) {
           setLoaded({ id, detail });
+          setApplied(null);
         }
       },
       (error: unknown) => {
@@ -124,20 +129,36 @@ export function TicketView(props: TicketViewProps): JSX.Element {
       </div>
     );
   }
-  const { ticket, events } = loaded.detail;
+  const { events } = loaded.detail;
+  const ticket =
+    applied !== null && applied.id === loaded.detail.ticket.id ? applied : loaded.detail.ticket;
+  const writable = props.session.writable;
+  const controlProps = {
+    ticket,
+    conn,
+    onApplied: (document: ActionSuccess): void => {
+      setApplied(document.ticket);
+    },
+    onUnauthorized: props.onUnauthorized,
+  };
   return (
     <article class="ticket" data-ticket={ticket.id}>
       <h2 class="ticket-title">{ticket.title}</h2>
       <Fields ticket={ticket} />
       {ticket.closed ? <Disposition ticket={ticket} /> : null}
+      {writable ? <ActionControls key={ticket.id} {...controlProps} /> : null}
       <h3>Checklist</h3>
-      <ul class="checklist">
-        {ticket.checklist.map((line, index) => (
-          <li key={String(index)} class={line.done ? 'done' : undefined}>
-            {line.text}
-          </li>
-        ))}
-      </ul>
+      {writable ? (
+        <ChecklistControl key={ticket.id} {...controlProps} />
+      ) : (
+        <ul class="checklist">
+          {ticket.checklist.map((line, index) => (
+            <li key={String(index)} class={line.done ? 'done' : undefined}>
+              {line.text}
+            </li>
+          ))}
+        </ul>
+      )}
       <h3>Links</h3>
       <ul class="links">
         {ticket.links.map((link) => (

@@ -32,7 +32,7 @@
 
 import type { Ticket } from '../../events/fold.js';
 import type { Status } from '../../events/schema.js';
-import type { Connection, ErrorDocument } from './api.js';
+import { apiHeaders, isErrorDocument, type Connection, type ErrorDocument } from './api.js';
 
 /**
  * The action names, in the server's order (`ACTION_NAMES` of
@@ -106,8 +106,7 @@ export type ActionResult =
 
 /** `/api/actions/<action>`. Pure. */
 export function actionPath(action: ActionName): string {
-  void action;
-  throw new Error('not implemented');
+  return `/api/actions/${action}`;
 }
 
 /**
@@ -116,8 +115,12 @@ export function actionPath(action: ActionName): string {
  * `Content-Type: application/json`, and nothing else. Pure.
  */
 export function actionHeaders(token: string): Record<string, string> {
-  void token;
-  throw new Error('not implemented');
+  return { ...apiHeaders(token), 'Content-Type': 'application/json' };
+}
+
+/** A made-up error document (module comment). */
+function madeUp(message: string): ErrorDocument {
+  return { error: { exitCode: 1, reason: null, message, hint: null } };
 }
 
 /**
@@ -140,9 +143,38 @@ export async function postAction<A extends ActionName>(
   action: A,
   body: ActionBodies[A],
 ): Promise<ActionResult> {
-  await Promise.resolve();
-  void conn;
-  void action;
-  void body;
-  throw new Error('not implemented');
+  const path = actionPath(action);
+  let response: Response;
+  try {
+    response = await conn.deps.fetch(path, {
+      method: 'POST',
+      headers: actionHeaders(conn.token),
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { ok: false, status: 0, error: madeUp(`${action} failed: ${reason}`) };
+  }
+  const { status } = response;
+  let parsed: unknown = null;
+  let isJson = true;
+  try {
+    parsed = await response.json();
+  } catch {
+    isJson = false;
+  }
+  if (response.ok) {
+    if (isJson) {
+      return { ok: true, status, document: parsed as ActionSuccess };
+    }
+    return {
+      ok: false,
+      status,
+      error: madeUp(`${action} answered ${String(status)} with a body that is not JSON`),
+    };
+  }
+  if (isErrorDocument(parsed)) {
+    return { ok: false, status, error: parsed };
+  }
+  return { ok: false, status, error: madeUp(`${action} answered ${String(status)}`) };
 }

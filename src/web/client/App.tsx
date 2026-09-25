@@ -99,6 +99,9 @@ export function App(props: AppProps): JSX.Element {
   const onUnauthorized = useRef(props.onUnauthorized);
   onUnauthorized.current = props.onUnauthorized;
   const deps = useRef(props.deps);
+  const client = useRef<BoardClient | null>(null);
+  /** True once an action was answered 401 (the client is then stopped). */
+  const [refused, setRefused] = useState(false);
 
   const conn = useMemo<Connection | null>(
     () => (token === null ? null : { deps: { ...defaultDeps(), ...deps.current }, token }),
@@ -119,27 +122,38 @@ export function App(props: AppProps): JSX.Element {
     if (conn === null) {
       return undefined;
     }
-    const client = new BoardClient(conn);
-    setState(client.getState());
-    const off = client.subscribe(setState);
-    void client.start();
+    const current = new BoardClient(conn);
+    client.current = current;
+    setState(current.getState());
+    const off = current.subscribe(setState);
+    void current.start();
     return () => {
       off();
-      client.stop();
+      current.stop();
+      if (client.current === current) {
+        client.current = null;
+      }
     };
   }, [conn]);
 
   const phase = state?.phase ?? 'loading';
+  const unauthorized = phase === 'unauthorized' || refused;
   useEffect(() => {
-    if (phase === 'unauthorized' && !reported.current) {
+    if (unauthorized && !reported.current) {
       reported.current = true;
       onUnauthorized.current?.();
     }
-  }, [phase]);
+  }, [unauthorized]);
 
-  if (conn === null || phase === 'unauthorized') {
+  if (conn === null || unauthorized) {
     return <NoToken />;
   }
+
+  /** An action answered 401: as a 401 of any other request. */
+  const actionUnauthorized = (): void => {
+    client.current?.stop();
+    setRefused(true);
+  };
 
   const navigate = (next: Route): void => {
     const hash = formatHash(next);
@@ -154,6 +168,9 @@ export function App(props: AppProps): JSX.Element {
       <header class="top">
         <h1 class="brand">agentboard</h1>
         {state?.session ? <p class="board-dir">{state.session.boardDir}</p> : null}
+        {state?.session?.writable === true && state.session.actor !== null ? (
+          <p class="acting-as">acting as {state.session.actor}</p>
+        ) : null}
         {phase === 'ready' ? (
           <p class={state?.connected === true ? 'live on' : 'live off'} role="status">
             {state?.connected === true ? 'live' : 'reconnecting...'}
@@ -175,24 +192,20 @@ export function App(props: AppProps): JSX.Element {
         </nav>
       </header>
       {state?.problem ? <ProblemBanner problem={state.problem} /> : null}
-      <main class="content">{body(state, route, conn, navigate)}</main>
+      <main class="content">{body(state, route, conn, navigate, actionUnauthorized)}</main>
     </div>
   );
 }
 
-/** Stub (add-board-web-actions group 2): the session given to a view before one is loaded. */
+/** The session given to a view before one is loaded: read-only. */
 const READ_ONLY: Session = { version: '', boardDir: '', writable: false, actor: null };
-
-/** Stub (add-board-web-actions group 2): an action answered 401. */
-function actionUnauthorized(): void {
-  throw new Error('not implemented');
-}
 
 function body(
   state: ClientState | null,
   route: Route,
   conn: Connection,
   navigate: (route: Route) => void,
+  onUnauthorized: () => void,
 ): JSX.Element {
   if (state?.phase === 'failed') {
     return (
@@ -218,7 +231,7 @@ function body(
           conn={conn}
           now={now}
           session={state.session ?? READ_ONLY}
-          onUnauthorized={actionUnauthorized}
+          onUnauthorized={onUnauthorized}
         />
       );
     case 'lanes':

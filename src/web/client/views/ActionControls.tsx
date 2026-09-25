@@ -97,11 +97,18 @@
  */
 
 import type { JSX } from 'preact';
+import { useEffect, useRef, useState } from 'preact/hooks';
 
-import type { Ticket } from '../../../events/fold.js';
-import type { Status } from '../../../events/schema.js';
-import type { ActionSuccess } from '../actions.js';
-import type { Connection } from '../api.js';
+import { isTransitionAllowed, type Ticket } from '../../../events/fold.js';
+import { STATUSES, type Status } from '../../../events/schema.js';
+import {
+  postAction,
+  type ActionBodies,
+  type ActionName,
+  type ActionResult,
+  type ActionSuccess,
+} from '../actions.js';
+import type { Connection, ErrorDocument } from '../api.js';
 
 /**
  * The statuses a move of `ticket` may name: every status `s` of
@@ -111,8 +118,7 @@ import type { Connection } from '../api.js';
  * Pure.
  */
 export function moveTargets(ticket: Ticket): Status[] {
-  void ticket;
-  throw new Error('not implemented');
+  return STATUSES.filter((to) => isTransitionAllowed(ticket.status, to, ticket.blockedFrom));
 }
 
 /**
@@ -121,8 +127,7 @@ export function moveTargets(ticket: Ticket): Status[] {
  * status), then `moveTargets(ticket)`. Pure.
  */
 export function handoffStatuses(ticket: Ticket): Status[] {
-  void ticket;
-  throw new Error('not implemented');
+  return [ticket.status, ...moveTargets(ticket).filter((s) => s !== ticket.status)];
 }
 
 /** What every control needs. */
@@ -137,14 +142,442 @@ export interface ActionControlProps {
   onUnauthorized: () => void;
 }
 
+/** A refusal shown beside a control, with the retry of a `busy` one. */
+interface Shown {
+  error: ErrorDocument;
+  retry: (() => void) | null;
+}
+
+/** The request state of one control. */
+interface ActionState {
+  /** True while a request of the control is in flight. */
+  inFlight: boolean;
+  /** The refusal shown beside the control, or null. */
+  refusal: Shown | null;
+  /** The tasks-file reminder of the last successful tick, or null. */
+  note: string | null;
+  /**
+   * Posts `action` with `body`; on success calls `onApplied` and then
+   * `onSuccess` (the control's own reset).
+   */
+  send: <A extends ActionName>(
+    action: A,
+    body: ActionBodies[A],
+    onSuccess?: (document: ActionSuccess) => void,
+  ) => void;
+}
+
+/** The request state and the sender of one control (module comment, "Outcomes"). */
+function useAction(props: ActionControlProps): ActionState {
+  const [inFlight, setInFlight] = useState(false);
+  const [refusal, setRefusal] = useState<Shown | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const latest = useRef(props);
+  latest.current = props;
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  const send = <A extends ActionName>(
+    action: A,
+    body: ActionBodies[A],
+    onSuccess?: (document: ActionSuccess) => void,
+  ): void => {
+    setInFlight(true);
+    setRefusal(null);
+    setNote(null);
+    void postAction(latest.current.conn, action, body).then((result: ActionResult) => {
+      if (!mounted.current) {
+        return;
+      }
+      setInFlight(false);
+      if (result.ok) {
+        const reminder = result.document.reminder;
+        if (reminder !== undefined && reminder !== null) {
+          setNote(reminder.message);
+        }
+        latest.current.onApplied(result.document);
+        onSuccess?.(result.document);
+        return;
+      }
+      if (result.status === 401) {
+        latest.current.onUnauthorized();
+        return;
+      }
+      const retry =
+        result.error.error.reason === 'busy'
+          ? () => {
+              send(action, body, onSuccess);
+            }
+          : null;
+      setRefusal({ error: result.error, retry });
+    });
+  };
+
+  return { inFlight, refusal, note, send };
+}
+
+/** The refusal beside a control: message, hint and, when busy, a retry. */
+function Refusal({ shown }: { shown: Shown | null }): JSX.Element | null {
+  if (shown === null) {
+    return null;
+  }
+  const { message, hint } = shown.error.error;
+  const retry = shown.retry;
+  return (
+    <div class="refusal" role="alert">
+      <p class="refusal-message">{message}</p>
+      {hint !== null ? <p class="refusal-hint">{hint}</p> : null}
+      {retry !== null ? (
+        <button type="button" class="retry" onClick={retry}>
+          Retry
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/** The value of `current` when it is among `options`, else the first option (or ''). */
+function chosen(current: string, options: readonly string[]): string {
+  return options.includes(current) ? current : (options[0] ?? '');
+}
+
+function CommentControl(props: ActionControlProps): JSX.Element {
+  const state = useAction(props);
+  const [text, setText] = useState('');
+  return (
+    <form
+      class="action"
+      data-action="comment"
+      onSubmit={(e) => {
+        e.preventDefault();
+        state.send('comment', { id: props.ticket.id, text }, () => {
+          setText('');
+        });
+      }}
+    >
+      <label for="action-comment-text">Comment</label>
+      <textarea
+        id="action-comment-text"
+        rows={3}
+        value={text}
+        onInput={(e) => {
+          setText(e.currentTarget.value);
+        }}
+      />
+      <div class="action-row">
+        <button type="submit" disabled={state.inFlight}>
+          Comment
+        </button>
+      </div>
+      <Refusal shown={state.refusal} />
+    </form>
+  );
+}
+
+function MoveControl(props: ActionControlProps): JSX.Element {
+  const state = useAction(props);
+  const targets = moveTargets(props.ticket);
+  const [picked, setPicked] = useState('');
+  const status = chosen(picked, targets);
+  return (
+    <form
+      class="action action-inline"
+      data-action="move"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const target = targets.find((t) => t === status);
+        if (target !== undefined) {
+          state.send('move', { id: props.ticket.id, status: target });
+        }
+      }}
+    >
+      <label for="action-move-status">Move to</label>
+      <select
+        id="action-move-status"
+        value={status}
+        onChange={(e) => {
+          setPicked(e.currentTarget.value);
+        }}
+      >
+        {targets.map((target) => (
+          <option key={target} value={target}>
+            {target}
+          </option>
+        ))}
+      </select>
+      <button type="submit" disabled={state.inFlight || targets.length === 0}>
+        Move
+      </button>
+      <Refusal shown={state.refusal} />
+    </form>
+  );
+}
+
+function ButtonControl(
+  props: ActionControlProps & { action: 'claim' | 'release'; text: string },
+): JSX.Element {
+  const state = useAction(props);
+  return (
+    <div class="action action-inline" data-action={props.action}>
+      <button
+        type="button"
+        disabled={state.inFlight}
+        onClick={() => {
+          state.send(props.action, { id: props.ticket.id });
+        }}
+      >
+        {props.text}
+      </button>
+      <Refusal shown={state.refusal} />
+    </div>
+  );
+}
+
+function HandoffControl(props: ActionControlProps): JSX.Element {
+  const state = useAction(props);
+  const statuses = handoffStatuses(props.ticket);
+  const [to, setTo] = useState('');
+  const [picked, setPicked] = useState('');
+  const [note, setNote] = useState('');
+  const status = chosen(picked, statuses);
+  return (
+    <form
+      class="action"
+      data-action="handoff"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const target = statuses.find((s) => s === status) ?? props.ticket.status;
+        state.send('handoff', { id: props.ticket.id, to, status: target, note }, () => {
+          setTo('');
+          setNote('');
+        });
+      }}
+    >
+      <div class="action-row">
+        <label for="action-handoff-to">To</label>
+        <input
+          type="text"
+          id="action-handoff-to"
+          value={to}
+          onInput={(e) => {
+            setTo(e.currentTarget.value);
+          }}
+        />
+        <label for="action-handoff-status">Status</label>
+        <select
+          id="action-handoff-status"
+          value={status}
+          onChange={(e) => {
+            setPicked(e.currentTarget.value);
+          }}
+        >
+          {statuses.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+      </div>
+      <label for="action-handoff-note">Note</label>
+      <textarea
+        id="action-handoff-note"
+        rows={2}
+        value={note}
+        onInput={(e) => {
+          setNote(e.currentTarget.value);
+        }}
+      />
+      <div class="action-row">
+        <button type="submit" disabled={state.inFlight}>
+          Hand off
+        </button>
+      </div>
+      <Refusal shown={state.refusal} />
+    </form>
+  );
+}
+
+type LinkKind = 'task' | 'pr' | 'decision';
+
+const LINK_KINDS: readonly { kind: LinkKind; text: string }[] = [
+  { kind: 'task', text: 'task reference' },
+  { kind: 'pr', text: 'pull request' },
+  { kind: 'decision', text: 'decision path' },
+];
+
+function linkBody(id: string, kind: LinkKind, value: string): ActionBodies['link'] {
+  switch (kind) {
+    case 'task':
+      return { id, task: value };
+    case 'pr':
+      return { id, pr: value };
+    case 'decision':
+      return { id, decision: value };
+  }
+}
+
+function LinkControl(props: ActionControlProps): JSX.Element {
+  const state = useAction(props);
+  const [kind, setKind] = useState<LinkKind>('task');
+  const [value, setValue] = useState('');
+  return (
+    <form
+      class="action action-inline"
+      data-action="link"
+      onSubmit={(e) => {
+        e.preventDefault();
+        state.send('link', linkBody(props.ticket.id, kind, value), () => {
+          setValue('');
+        });
+      }}
+    >
+      <label for="action-link-kind">Link to</label>
+      <select
+        id="action-link-kind"
+        value={kind}
+        onChange={(e) => {
+          const next = LINK_KINDS.find((k) => k.kind === e.currentTarget.value);
+          if (next !== undefined) {
+            setKind(next.kind);
+          }
+        }}
+      >
+        {LINK_KINDS.map((k) => (
+          <option key={k.kind} value={k.kind}>
+            {k.text}
+          </option>
+        ))}
+      </select>
+      <label for="action-link-value">Value</label>
+      <input
+        type="text"
+        id="action-link-value"
+        value={value}
+        onInput={(e) => {
+          setValue(e.currentTarget.value);
+        }}
+      />
+      <button type="submit" disabled={state.inFlight}>
+        Link
+      </button>
+      <Refusal shown={state.refusal} />
+    </form>
+  );
+}
+
+function CloseControl(props: ActionControlProps): JSX.Element {
+  const state = useAction(props);
+  const [decision, setDecision] = useState(true);
+  const [path, setPath] = useState('');
+  return (
+    <form
+      class="action"
+      data-action="close"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const id = props.ticket.id;
+        state.send(
+          'close',
+          decision ? { id, 'decision-recorded-in': path } : { id, 'no-decision': true },
+        );
+      }}
+    >
+      <div class="action-row">
+        <span class="choice">
+          <input
+            type="radio"
+            name="disposition"
+            id="action-close-decision"
+            value="decision-recorded-in"
+            checked={decision}
+            onChange={() => {
+              setDecision(true);
+            }}
+          />
+          <label for="action-close-decision">Decision recorded in</label>
+        </span>
+        <span class="choice">
+          <input
+            type="radio"
+            name="disposition"
+            id="action-close-none"
+            value="no-decision"
+            checked={!decision}
+            onChange={() => {
+              setDecision(false);
+            }}
+          />
+          <label for="action-close-none">No decision</label>
+        </span>
+      </div>
+      <div class="action-row">
+        <label for="action-close-path">Decision path</label>
+        <input
+          type="text"
+          id="action-close-path"
+          value={path}
+          onInput={(e) => {
+            setPath(e.currentTarget.value);
+          }}
+        />
+        <button type="submit" disabled={state.inFlight}>
+          Close
+        </button>
+      </div>
+      <Refusal shown={state.refusal} />
+    </form>
+  );
+}
+
 /** The comment, move, claim, release, hand-off, link and close controls (module comment). */
 export function ActionControls(props: ActionControlProps): JSX.Element {
-  void props;
-  throw new Error('not implemented');
+  return (
+    <section class="actions" aria-label="Actions">
+      <CommentControl {...props} />
+      <MoveControl {...props} />
+      <div class="action-buttons">
+        <ButtonControl {...props} action="claim" text="Claim" />
+        <ButtonControl {...props} action="release" text="Release" />
+      </div>
+      <HandoffControl {...props} />
+      <LinkControl {...props} />
+      <CloseControl {...props} />
+    </section>
+  );
 }
 
 /** The checklist with a checkbox per line (module comment). */
 export function ChecklistControl(props: ActionControlProps): JSX.Element {
-  void props;
-  throw new Error('not implemented');
+  const state = useAction(props);
+  const id = props.ticket.id;
+  return (
+    <div class="action checklist-control" data-action="checklist">
+      <ul class="checklist">
+        {props.ticket.checklist.map((line, index) => (
+          <li key={String(index)} class={line.done ? 'done' : undefined}>
+            <label>
+              <input
+                type="checkbox"
+                data-index={String(index)}
+                checked={line.done}
+                onChange={(e) => {
+                  // Show the ticket's state until the server answers.
+                  e.currentTarget.checked = line.done;
+                  state.send(line.done ? 'checklist-untick' : 'checklist-tick', { id, index });
+                }}
+              />{' '}
+              {line.text}
+            </label>
+          </li>
+        ))}
+      </ul>
+      {state.note !== null ? <p class="action-note">{state.note}</p> : null}
+      <Refusal shown={state.refusal} />
+    </div>
+  );
 }
