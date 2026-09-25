@@ -7,7 +7,9 @@ ticket id and title (null for `board.meta`), the change (task reference
 `<source>:<ref>` of the ticket, when it has one), and a one-line summary
 produced by `describeEvent`: `created <title>`, `commented: <text>`,
 `moved to <status>`, `claimed`, `claimed (lease <ttl>)`, `took over
-from <holder> (lease expired)`, `renewed lease (<ttl>)`, `released`,
+from <holder> (lease expired)`, `renewed lease (<ttl>)`, `joined the
+queue`, `left the queue`, `granted to <actor> (accept within <window>)`,
+`released`,
 `force-released from <holder>: <reason>`, `assigned to <actor>`,
 `handed off to <actor> (<status>): <note>`, `linked <task|pr|decision>
 <value>`, `closed (decision <path>)` or `closed (no decision)`,
@@ -33,3 +35,7 @@ be marked `late` when the consumer's model recorded it as a late arrival.
 #### Scenario: Takeover summary
 - **WHEN** `merger-2` takes T1 over from `merger-1` after its lease expired
 - **THEN** its entry's summary is `took over from merger-1 (lease expired)`
+
+#### Scenario: Grant summary
+- **WHEN** T1 is granted to `merger-2` with a window of 120000
+- **THEN** its entry's actor is `agentboard` and its summary is `granted to merger-2 (accept within 2m)`

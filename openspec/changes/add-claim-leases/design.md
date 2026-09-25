@@ -12,242 +12,297 @@ machine, and the fold's "earlier claim wins, later one is rejected
 sync the board over git.
 
 A claim today never ends except by `release` (holder only), `handoff` or
-`assign`. vaultfold uses a standing ticket as a merge lock; a crashed
-holder stalls every lane, and recovery requires impersonating the holder.
-This change adds leases and a forced release while keeping the fold a
-pure function of the event set.
+`assign`. vaultfold uses a standing ticket as a merge lock and hit four
+failures: a crashed holder stalls every lane; recovery requires
+impersonating the holder; a background polling loop claimed the lock for
+an idle agent and held it for 41 minutes; and 60-second pollers lost
+races to luckier claimers, so waiting was unfair. What worked in the end
+was the orchestrator running the queue while workers reported ready and
+stopped.
+
+This change adds grace leases, a fair waiting queue, a forced release and
+mutex guidance, keeping the fold a pure function of the event set.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- A lease expires without anyone writing anything, and the next claimer
-  takes over atomically, with exactly one winner, on one machine and
-  after sync across machines.
-- The fold never reads the local clock: whether a takeover is valid is
-  decided from the timestamps written in the events, so every replica
-  folds the same set of events to the same state.
-- A clock skew between machines within a stated tolerance never lets a
-  lease be taken over before it has really expired.
-- Breaking someone else's lock is possible without impersonation, is
-  recorded with who and why, and is surfaced to the previous holder.
+- A lock is held only by an actor that shows it is acting (liveness),
+  not by any process that happened to run `claim`.
+- Waiters are served in the order they joined, one at a time, with
+  exactly one holder at any point of the fold, on one machine and after
+  sync across machines.
+- The fold never reads the local clock. Clock-driven transitions (a
+  lease lapsing, a grant passing on) are decided from timestamps written
+  in events, and the events that record them are derived so that every
+  writer produces the same bytes.
+- Clock skew within a stated tolerance never shortens a lease or a
+  grantee's acceptance window.
+- Breaking someone else's lock needs no impersonation and is recorded
+  with who and why.
 - Plain claims (no `--ttl`) are byte-for-byte unchanged.
 
 **Non-Goals:**
-- Writing an event when a lease expires, or a background process.
-- Leases constraining anything but `claim`.
-- Authenticating actors.
-- Web, TUI and `health` lease views; a configurable skew tolerance.
+- A daemon, or any background writer.
+- Leases or the queue constraining anything but `claim`.
+- Authenticating actors; a self-declared "foreground" flag.
+- Web, TUI and `health` views of leases and queues.
 
 ## Decisions
 
-### The lease lives on the claim event
+### Leases live on the claim, and start as a grace lease
 `ticket.claim` gains an optional body field `lease`:
-`{ttl: <ms>, expiresAt: <ms>}`, with `expiresAt` equal to
-`ts.wall + ttl`. An event where that equation does not hold, or where
-`ttl` is outside the permitted range, is malformed. `expiresAt` is
-redundant but written anyway so that a human reading an event file (or
-`show --raw`) sees the expiry without arithmetic, and so that a
-`supersedes` reference can name it.
+`{ttl, grace, expiresAt}` in milliseconds, with `expiresAt` equal to
+`ts.wall + min(ttl, grace)`. `ttl` is what the claimer asked for; `grace`
+is the board's `lease.grace` setting (default 2 minutes) when the claim
+was written, recorded so the fold never depends on when a setting event
+arrived. The folded lease is `{ttl, expiresAt, event, confirmed}` where
+`event` is the hash of the event that set it and `confirmed` is false
+until the holder's first `renew`.
 
-The ticket's folded state gains `lease`: null, or
-`{ttl, expiresAt, event}` where `event` is the hash of the event that set
-it (the claim or the latest renew).
+`ticket.renew` has body `{ttl, expiresAt}` with `expiresAt = ts.wall +
+ttl`. The fold applies it only when its actor is the assignee (otherwise
+`not-assignee`); it sets (not extends) the lease and marks it confirmed.
+The CLI fills `ttl` from the lease's requested ttl when `--ttl` is not
+given, so the first action of real work is simply `renew <id>`. A renew
+after expiry is still accepted when nothing has taken over before it in
+fold order.
 
-Alternative considered: a new kind (`ticket.lease-claim`) so that older
-versions see an unknown kind instead of a malformed claim. Rejected: an
-older reader would then fold the ticket as unassigned and could let a
-second actor claim it, a silent divergence; a malformed claim is at least
-reported. Either way mixed versions cannot share a board once leases are
-used, and on upgrade the preserved events fold correctly. The envelope
-`v` stays 1 because plain claims are unchanged.
+An event where `expiresAt` does not match, or where `ttl` is outside 30
+seconds to 7 days or `grace` outside 30 seconds to 10 minutes, is
+malformed. `expiresAt` is redundant but written so a human reading the
+event sees it and so `supersedes` references can name it.
 
-### Renew
-`ticket.renew` has body `{ttl, expiresAt}` with the same rule. The fold
-applies it only when the event's actor is the assignee (otherwise
-`not-assignee`), replacing the lease with `{ttl, expiresAt, event}`. It
-sets, not extends: the new expiry is the renew's wall plus ttl, so a
-retried renew does not stack. A renew after the expiry is still accepted
-if no takeover has happened before it in fold order: a lease only matters
-when someone else claims. Renewing a claim that has no lease gives it one.
+Alternative considered: a new kind for leased claims, so older versions
+see an unknown kind. Rejected: an older reader would fold the ticket as
+unassigned and could let a second actor claim it, a silent divergence; a
+malformed claim is at least reported. The envelope `v` stays 1 because
+plain claims are unchanged.
+
+### Why liveness, and why no declared "foreground" flag
+The 41-minute hold came from a background loop claiming on behalf of an
+idle agent. A parameter such as `--intent act-now` or `--foreground`
+would not have prevented it: actors and flags are self-asserted, the
+loop would pass the same flag the agent would, and the board cannot
+observe which process is in the foreground. Anything the board cannot
+check is documentation, not enforcement.
+
+Liveness can be checked: an unconfirmed claim protects the ticket only
+for the grace period, and only a `renew` from the holder turns it into
+the requested lease. The pattern "claim, then renew as the first action
+of real work" means a loop that only claims loses the lock within two
+minutes, and a crashed or idle holder loses it within its ttl. A loop
+written to renew as well can defeat this, which no mechanism can prevent
+without authentication; the guidance forbids claiming from a background
+process, and the queue removes the reason to poll at all.
+
+Decision on `--intent act-now`: not added. It would be a second,
+unenforced way to say what the grace lease already enforces, and agents
+would learn to pass it by habit, making it noise in every claim.
 
 ### Takeover rule, decided from event timestamps
-A claim by actor `A` on a ticket held by `H` (with `H` not `A`) is
-accepted only when its body carries
+A claim by actor `A` on a ticket held by `H` (with `H` not `A`) and an
+empty queue is accepted only when its body carries
 `supersedes: {holder, expiresAt, event}` and, at that point in fold
-order:
-
-1. the ticket's assignee is `supersedes.holder`;
-2. the ticket has a lease whose `expiresAt` and `event` equal
-   `supersedes.expiresAt` and `supersedes.event`; and
-3. the claim's own `ts.wall` is at least `expiresAt + LEASE_SKEW_MS`
-   (60000).
-
-Otherwise it is rejected `already-assigned`, as any claim on an assigned
-ticket is today. When accepted, the assignee becomes `A` and the lease
-becomes the claim's own `lease` (or none). A claim on an unassigned
-ticket is accepted as today; a `supersedes` it carries is then moot and
-ignored (the lease it named was released, handed off or taken over
-first).
-
-Only event fields are compared: the claim's wall time is the claimer's
-hybrid timestamp, written once, identical on every replica. No replica
-reads its clock during the fold, so the fold stays a pure function of the
-event set, and `rebuild` stays byte-identical.
-
-Why `supersedes` names the lease's event and expiry rather than just
-"expired": it pins the takeover to the exact lease generation the
-claimer observed. If the holder renewed in time (a renew whose wall is
-before the expiry sorts before any valid takeover, whose wall is at
-least 60 seconds after it), the lease no longer matches and the takeover
-is rejected. The holder who renews before expiry therefore always keeps
-the lock, whatever order the events arrive in.
-
-### Concurrent takeovers: one winner by the existing rule
-Two claimers racing for the same expired lease both write a `supersedes`
-naming the same lease. On one machine, `BEGIN IMMEDIATE` serialises them:
-the second one's catch-up folds the first one's claim and validation
-refuses it `already-assigned`, naming the new holder. Across machines,
-both events may exist; the fold applies the earlier one in fold order,
-after which the assignee is no longer `supersedes.holder` for the later
-one, which is rejected `already-assigned`. This is the existing "earlier
-claim wins" rule, so exactly one takeover is effective on every replica.
+order: the assignee is `supersedes.holder`; the ticket's lease has that
+`expiresAt` and `event`; and the claim's own `ts.wall` is at least
+`expiresAt + LEASE_SKEW_MS` (60000). Otherwise it is rejected
+`already-assigned` (or `queued` when there are waiters, see below). The
+claim's wall is the claimer's hybrid timestamp, written once and
+identical on every replica, so no replica reads its clock during the
+fold. `supersedes` pins the takeover to the exact lease generation the
+claimer saw: a renew written before the expiry sorts before any valid
+takeover (at least 60 seconds after it) and changes the lease, so a
+holder who renews in time always keeps the lock, whatever order the
+events arrive in. Two racing takeovers name the same lease; the earlier
+in fold order applies and the later no longer matches, which is the
+existing earlier-claim-wins rule.
 
 ### Command-time validation matches the fold
-To validate a claim with the fold's own rule, the command needs the new
-event's timestamp before validating, so for `claim`, `renew` and
-`release --force` the hybrid timestamp is built (step 3 of ADR 0002)
-before validation (step 2). Both run under the same write lock, so this
-changes nothing observable. The command additionally requires its own
-clock to say `now >= expiresAt + LEASE_SKEW_MS`, so the writer's check is
-never looser than the fold's (the hybrid wall can run ahead of the local
-clock after a machine with a fast clock wrote events). The command fills
-`supersedes` itself from the current lease; callers never pass it.
+For `claim`, `renew`, `release --force` and the queue commands the hybrid
+timestamp is built before validation (both under the same write lock, so
+nothing observable changes), and validation calls the fold's own rules
+with that timestamp. A takeover additionally requires the local clock to
+read at least `expiresAt + LEASE_SKEW_MS`, so the writer is never looser
+than the fold. The command fills `supersedes` itself.
+
+### The waiting queue
+`claim --wait` on a ticket that is held (or granted, or free with
+waiters) writes `ticket.queue.join` with body `{ttl}`, the lease the
+waiter will ask for. The queue is the set of applied joins not yet
+granted or left, ordered by fold order of the join event, that is by
+(hybrid timestamp, then hash). `ticket.queue.leave` removes the actor.
+A join by the assignee or by an actor already queued, a leave by an
+actor not queued, and a join on a free ticket with an empty queue (claim
+it instead) are rejected `invalid-queue`.
+
+While the queue is not empty, a plain claim or a takeover by anyone on
+that ticket is rejected `queued`: waiters have priority, and the only way
+the ticket passes to a new holder is a grant (or a hand-off by the
+holder, which the queue does not constrain).
+
+### Grants: derived, backdated, identical from every writer
+A grant is due when the queue is not empty and the ticket has become
+available at time `F`:
+
+- released or force-released: `F` is that event's wall;
+- held under a lease that lapsed (a claim not confirmed within its
+  grace, a confirmed lease not renewed, or a grant not accepted):
+  `F = expiresAt + LEASE_SKEW_MS`.
+
+Its slot time is `S = max(F, J) + 1`, where `J` is the wall of the head
+waiter's join. The grant is the event
+`{kind: ticket.grant, actor: "agentboard", ts: {wall: S, counter: 0,
+actor: "agentboard"}, body: {to, ttl, window, after}}`, where `to` and
+`ttl` come from the head waiter's join, `window` is the board's
+`queue.window` (default 2 minutes) in effect at that fold position, and
+`after` names what made the ticket available (`{released: <hash>}` or
+`{lease: {holder, expiresAt, event}}`). Applied, it assigns `to`, removes
+it from the queue, and gives it an unconfirmed lease of
+`{ttl, expiresAt: S + window, event: <grant hash>}`. The grantee accepts
+by renewing, exactly like confirming a grace lease. If it does not, that
+lease lapses and the next grant is due `window + 60 s` after `S`: the
+reservation passes to the next waiter.
+
+Every field of a grant is a function of the folded state; the clock only
+decides whether it is due yet (the writer's clock reads at least `S`).
+So:
+
+- any command that catches up (every command except `rebuild` and
+  `rebuild --check`, including `list`, `show`, `inbox`, `watch` and a
+  waiting `claim --wait`) writes the grants that are due, in the same
+  transaction as its catch-up;
+- two writers on one machine are serialised by the write lock, and the
+  second finds the file already present (writing identical bytes is a
+  no-op); two machines write identical files, so `sync` merges them as
+  one;
+- the fold accepts a `ticket.grant` only when its bytes equal the grant
+  it derives at that position, and rejects it `stale-grant` otherwise
+  (for example when a renew or a leave from another machine, with an
+  earlier wall, arrives after the grant was written);
+- `agentboard` is a reserved actor: commands refuse `--as agentboard`
+  and the fold treats any other kind written by it, or a grant written
+  by anyone else, as malformed.
+
+A grant's wall is in the past when it is written, which ADR 0002 does
+not otherwise allow for a command's own event. It is folded exactly like
+an event that arrives late through `sync`: later events are refolded and
+inbox cursors move back as board-concurrency already requires. There is
+at most one assignee at every fold position, so no double grant can
+exist on any replica.
+
+Alternatives considered: a reservation that is only derived state (no
+event), with the waiter claiming inside its window. Rejected: a waiter
+over MCP cannot block, so it needs something to arrive in its inbox, and
+a passed reservation would be invisible in history. Grants written by the
+releasing command only: rejected, because lapses have no writer, which
+is the case that matters most.
+
+### Waiting on the CLI, never over MCP
+`claim <id> --ttl <d> --wait --timeout <d>` claims at once when the
+ticket is free with an empty queue. Otherwise it joins (unless already
+queued) and blocks on the watch machinery, waking on new events and at
+the next due grant time so that it writes due grants itself. It exits 0
+when a grant to it is applied (printing that it must renew to accept, and
+by when), or, on timeout, writes `ticket.queue.leave` and exits 4
+`wait-timeout`. SIGINT and SIGTERM also leave the queue. A waiter killed
+with SIGKILL stays queued; its grant then lapses after one window and
+passes on, which is the liveness rule doing its job. `--timeout` is
+required with `--wait` on the CLI (1 second to 1 day) so an agent's
+command always returns.
+
+MCP tool calls have client timeouts, so `board_claim` with `wait` never
+blocks: it returns `{queued: true, position, holder}` (or the ordinary
+claim result with `queued: false` when it claimed at once), and
+`timeout` is not part of the tool schema. The grant arrives through
+`board_inbox` as a `ticket.grant` entry with `to` set to the grantee.
+
+### Forced release is a distinct kind, not restricted
+`ticket.release.force` has body `{holder, reason}` and applies only when
+the assignee at that position is `holder` (else `holder-changed`), so a
+forced release that races a takeover or grant never breaks the new
+holder's lock. It clears assignee and lease, leaves status unchanged,
+and, with waiters, makes a grant due. `release --force` needs a
+non-empty `--reason` (refused by the secret patterns like a comment) and
+is a usage error for the holder itself.
+
+Decision: any actor may force a release; no allowlist. Actors are
+self-asserted, so an allowlist of orchestrator actors would be bypassed
+by `--as orchestrator`, the impersonation this change removes. The value
+is the audit trail: a distinct event naming actor, previous holder and
+reason, shown by `show` and delivered to the previous holder's inbox.
+The guidance reserves it for the orchestrator or a human, after checking
+the holder is gone. A later change can add an advisory allowlist if
+confused agents misuse it.
+
+### Board settings
+`lease.grace` and `queue.window` are `board.meta` values in
+milliseconds, written by a new `config set <key> <value>` (duration
+form, 30 seconds to 10 minutes) and read by `config get`. The claim
+records its grace in its own body; a grant reads `queue.window` as folded
+at its position, which every writer computes identically. `config` is a
+setup command and not an MCP tool.
 
 ### Clock skew tolerance
-`LEASE_SKEW_MS` is a constant of 60 seconds, part of the fold rules (a
-board-level setting would have to be folded too, and there is no command
-to write `board.meta` yet; a later change can add one).
+`LEASE_SKEW_MS` is a constant of 60 seconds in the fold rules. On one
+machine every wall comes from one monotonic hybrid clock, so leases,
+takeovers and grants happen exactly at the stated times, never earlier,
+and validation and write are one transaction. Across machines, if clocks
+differ by at most 60 seconds, a takeover or a grant after a lapse is
+never written before the lease really lapsed, and each grantee gets at
+least its window of real time before the grant passes on. A larger skew
+can shorten either by the excess; `show` displays the walls involved.
+Mutual exclusion across machines is only as strong as `sync`: a renew
+written in time but synced late still wins, retroactively rejecting a
+takeover or grant another machine had applied. The guidance tells
+multi-machine users to sync before claiming and before the critical
+step.
 
-- One machine: every event's wall comes from one clock, made monotonic
-  by the hybrid timestamp. A lease is protected for exactly its ttl plus
-  60 seconds and taken over no sooner; the result is exact and
-  immediate, because validation and the write happen in one transaction.
-- Several machines syncing the board: if every pair of clocks differs by
-  at most 60 seconds, a takeover's wall at least 60 seconds after the
-  expiry was written after the real expiry, so no live lease is taken
-  over early. A skew larger than the tolerance can let a machine with a
-  fast clock take over up to (skew - 60 s) early; `show` of the takeover
-  displays both walls so the cause is visible.
-- Across machines a takeover is only known to the others after `sync`,
-  and a holder's renew written before expiry but synced late still wins
-  (see above), retroactively rejecting a takeover the claimer believed
-  had succeeded. The guidance therefore tells multi-machine users to run
-  `sync` before claiming and again before acting on the lock, and to
-  renew at half the ttl. Mutual exclusion across machines is only as
-  strong as sync; within one machine (every worktree of a checkout shares
-  one board) it is exact.
+### Display is the only other place the clock is read
+`list` and `show` compute the lease state from the local clock: `live`,
+`expired` (past `expiresAt`, not yet past the tolerance) and
+`claimable`, plus `grace` when unconfirmed. `show` lists the queue in
+order and a pending grant (to whom, accept by when). None of this is
+stored in the cache or used by the fold.
 
-### Display is the only place the clock is read
-`list` and `show` compute a lease state from the local clock at read
-time: `live` (now < expiresAt), `expired` (expiresAt <= now <
-expiresAt + LEASE_SKEW_MS: expired but not yet claimable) and
-`claimable`. The state and `claimableAt` appear in `--json` output only,
-never in the cache or the fold, so `rebuild --check` is unaffected. In
-`list`, the assignee column stays one token: `merger+9m` for a live lease
-with 9 minutes left, `merger!expired` or `merger!claimable`.
-
-### Release, hand-off and assign clear the lease
-A lease belongs to a holding. `release`, `release --force`, `handoff`,
-`assign` and an accepted takeover end the holding, so they clear the
-lease (a takeover may set its own). `move`, `comment`, `close` and the
-checklist do not touch it. A claim by the current holder stays a no-op
-that writes nothing, with or without `--ttl`; it reports the current
-lease and points to `renew`, so "retrying a claim is safe" still holds.
-
-### Forced release is a distinct kind, not a flag on release
-`ticket.release.force` has body `{holder, reason}`. It is applied only
-when the ticket's assignee is `holder` at that point in fold order;
-otherwise it is rejected with the new reason `holder-changed`. Naming the
-holder pins the forced release to the holding the actor saw, so a forced
-release that races a legitimate takeover or hand-off (possible across
-machines) never breaks the new holder's lock. It clears assignee and
-lease and leaves status unchanged. A distinct kind makes forced releases
-trivially queryable (`inbox`, feeds, `--kind` filters) and keeps
-`ticket.release` "the holder gave it up".
-
-`release --force` requires `--reason` (non-empty, refused by the secret
-patterns like a comment), is a usage error without it, and is a usage
-error when the actor is the holder (plain `release` is the honest
-record). It does not require the lease to have expired: the main use is
-a claim with no lease at all, or a holder known to be dead.
-
-### Forced release is not restricted to configured actors
-Decision: any actor may force a release; there is no allowlist in this
-change.
-
-- Actors are self-asserted (`--as`, `AGENTBOARD_ACTOR`); the board never
-  authenticates. An allowlist of "orchestrator" actors would be bypassed
-  by `--as orchestrator`, which is the same impersonation this change
-  exists to remove, and would push recovery back to it.
-- There is no command that writes `board.meta`, so an allowlist would
-  need a new configuration command and, to stay deterministic, fold-time
-  enforcement against the setting in effect at each event's position.
-  That is a lot of surface for a guard rail that is not a boundary.
-- The value is the audit trail: a distinct event naming actor, previous
-  holder and reason; `show` displays it; the previous holder is told in
-  their inbox; the guidance says forced release is for the orchestrator
-  or a human, after checking the holder is gone.
-
-A later change can add an advisory allowlist in `board.meta` if abuse by
-confused agents appears in practice.
-
-### Inbox: telling the previous holder
-Inbox entries gain `affects`: the previous holder for an applied
-`ticket.release.force` (`body.holder`) and for an applied claim that took
-over a lease (`body.supersedes.holder`), null for every other event. For
-a forced release `note` is the reason. The human inbox output prefixes
-an entry whose `affects` is the reading actor with `LOST: `, so a holder
-that comes back from a stall sees immediately that it no longer holds
-the lock. Delivery itself is unchanged (every effective event already
-reaches every actor).
-
-### Durations
-`--ttl` takes 1 to 5 ASCII digits and a unit `s`, `m`, `h` or `d`
-(`90s`, `10m`, `2h`), between 30 seconds and 7 days inclusive; anything
-else is a usage error naming the form. Seconds are allowed (unlike the
-`health` thresholds) because merge locks are short. The fold accepts any
-integer `ttl` in the same range, so the bounds hold for events written by
-any tool.
+### Inbox fields
+Inbox entries gain `affects`: the previous holder for a forced release,
+a takeover and a grant after a lapse. A grant's `to` is its grantee. The
+human inbox output prefixes an entry with `GRANTED: ` when its `to` is
+the reader and the kind is `ticket.grant`, and with `LOST: ` when its
+`affects` is the reader.
 
 ## Interfaces (sketch)
 
-- `LEASE_SKEW_MS = 60_000`, `TTL_MIN_MS = 30_000`,
-  `TTL_MAX_MS = 604_800_000` exported from the events layer.
-- `Lease = {ttl: number; expiresAt: number; event: string}`; `Ticket`
-  gains `lease: Lease | null`.
-- `parseTtl(text: string): number | null`.
-- `leaseState(lease: Lease, now: number): 'live' | 'expired' | 'claimable'`.
-- `claimTicket(board, actor, {id, ttl?})`, `renewTicket(board, actor,
-  {id, ttl})`, `releaseTicket(board, actor, {id, force?, reason?})`.
+- Constants: `LEASE_SKEW_MS = 60_000`, `TTL_MIN_MS`, `TTL_MAX_MS`,
+  `GRACE_DEFAULT_MS = 120_000`, `WINDOW_DEFAULT_MS = 120_000`,
+  `SYSTEM_ACTOR = 'agentboard'`.
+- `Lease = {ttl; expiresAt; event; confirmed}`; `Ticket` gains
+  `lease: Lease | null` and `queue: Waiter[]` (`{actor, ttl, joined}`).
+- `dueGrant(ticket, meta): GrantEvent | null` (pure; used by the fold to
+  validate and by catch-up to write).
+- `parseDuration`-style parsers for ttl, grace/window and timeout.
+- `claimTicket(board, actor, {id, ttl?, wait?})`, `waitForGrant(...)`,
+  `renewTicket`, `unqueueTicket`, `releaseTicket(board, actor, {id,
+  force?, reason?})`, `setConfig`, `getConfig`.
 - `InboxEntry.affects: string | null`.
 
 The test author's stubs are authoritative (CONTRIBUTING.md).
 
 ## Risks / Trade-offs
 
-- [Mixed versions] An older agentboard reports lease claims as malformed
-  and the new kinds as unknown. Mitigation: documented as an upgrade
-  requirement; plain claims are unaffected, and preserved events fold
-  correctly after the upgrade.
-- [Clock skew beyond 60 s] can shorten a lease across machines.
-  Mitigation: stated bound, both walls visible in `show`, single-machine
-  use exact.
-- [Retroactive loss after sync] A cross-machine takeover can be undone
-  when an earlier renew arrives. Mitigation: the recipe (sync, renew at
-  half ttl); `affects` and `LOST: ` tell the loser.
-- [Cache schema bump] drops cursors, so every actor's inbox redelivers
-  once. Accepted, as for every schema change (redelivery, never loss).
-- [Holder keeps working after losing the lock] Leases are advisory: a
-  stalled holder that wakes up is not stopped by the board. Mitigation:
-  the recipe tells the holder to `renew` (which fails `not-assignee` once
-  taken over) immediately before the critical step.
+- [Backdated grant events] break the "own event sorts last" property of
+  ADR 0002 for one kind. Mitigation: they reuse the late-arrival path
+  already required for sync; property tests cover refolds.
+- [Read commands now write] `list`, `show` and `inbox` may write a due
+  grant. Mitigation: only under the existing catch-up write lock and only
+  when one is due; otherwise reads stay lock-free.
+- [Nobody runs a command] a due grant is written late when no command
+  runs; the grant still carries its slot time, and the grantee's window
+  starts at `S`, so a grant materialised late may already be lapsed.
+  Mitigation: waiters on the CLI wake at due times; over MCP the
+  orchestrator runs the queue.
+- [Mixed versions] older versions reject lease claims and ignore the new
+  kinds. Mitigation: upgrade requirement documented.
+- [Skew beyond 60 s] shortens leases or windows across machines.
+  Mitigation: stated bound; single machine exact.
+- [Cache schema bump] redelivers inbox entries once.
