@@ -80,6 +80,13 @@ full workflow, and docs/adr/ for design decisions.
   ticket detail. Documented in the README section "Acting from the
   browser" and ADR 0009. Its requirements are the main spec
   `board-web-actions`, plus changes to `board-cli` and `board-web`.
+- The `add-serve-auto-open` OpenSpec change is complete and archived as
+  `openspec/changes/archive/2026-09-25-add-serve-auto-open/`: `serve`
+  opens the browser by default when stdout is a terminal, `--json` is not
+  given, `CI` is unset, it is not an SSH session and (off macOS and
+  Windows) a display is set; `--open` always tries and `--no-open` opts
+  out. Documented in the README ("When the browser opens") and ADR 0010.
+  Its requirements are changes to `board-web` and `board-cli`.
 - This repository uses its own guidance: `agentboard agents install`
   wrote `.claude/skills/agentboard/SKILL.md` and the `agentboard:` apply
   and archive guidance in `openspec/config.yaml`; `agentboard agents
@@ -90,15 +97,7 @@ full workflow, and docs/adr/ for design decisions.
 1. A human reviews `staging` and promotes it to `main` (a merge-commit PR
    from `staging`) when ready. Publishing to npm is deferred: agentboard
    is used locally through `npm link`.
-2. `add-serve-auto-open` is complete once its documentation group merges:
-   `serve` opens the browser by default when stdout is a terminal,
-   `--json` is not given, `CI` is unset, it is not an SSH session and (off
-   macOS and Windows) a display is set; `--open` always tries, `--no-open`
-   opts out and both together are `usage`. Documented in the README
-   ("Starting it", "When the browser opens", the security model) and ADR
-   0010. Archive it next, in its own PR, syncing its `board-cli` and
-   `board-web` deltas into the main specs.
-3. `add-claim-leases` (proposed): grace leases confirmed by `renew`
+2. `add-claim-leases` (proposed): grace leases confirmed by `renew`
    (`claim --ttl`), takeover of a lapsed lease and a fair waiting queue
    (`claim --wait`, derived `ticket.grant` events) decided from event
    timestamps with a 60 second skew tolerance, an audited
