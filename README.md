@@ -577,7 +577,9 @@ otherwise, and lists the tickets whose PR is not merged yet or that could
 not be closed (for example because of an open `DECISION:` comment). It asks
 GitHub through `gh pr view`, so it needs `gh` on the PATH and authenticated
 for the repository; without `gh` it exits 1 when there is anything to
-check.
+check. `agentboard health` shows beforehand which `merged` tickets it
+will consider, which an open decision will hold back, and which it can
+never close because they have no `pr` link (see "Board health").
 
 ## Sync between machines
 
@@ -649,9 +651,13 @@ through `sync`, with no reload:
   `already-assigned`).
 - **Lanes**: one lane per actor with the tickets they hold and when they
   were last seen, refreshed at least every 10 seconds.
+- **Health**, **Replay** and **Graph**: what is going wrong on the board,
+  the board at any past position of its event log, and who hands work to
+  whom. See "Board health" and "Replay and the hand-off graph".
 
 The current view and its filters live in the URL hash (`#/board`,
-`#/feed`, `#/ticket/<id>`, `#/lanes`), so a reload keeps them.
+`#/feed`, `#/ticket/<id>`, `#/lanes`, `#/health`, `#/replay`,
+`#/graph`), so a reload keeps them.
 
 ### Starting it
 
@@ -777,6 +783,8 @@ the CLI prints with `--json`, with a hint):
 | `/api/tickets/<id>` | `{ticket, events}` for a full id or a unique prefix of at least 6 characters; 400 `id-too-short` or `ambiguous-id`, 404 `unknown-ticket` |
 | `/api/events?after=<hash>&limit=<n>` | `{events, next}`: well-formed events in fold order with their outcome, `limit` 1000 by default and at most 5000; pass `next` as `after` for the next page (null on the last) |
 | `/api/actors` | the agent lanes |
+| `/api/health` | `{late, check}`: the late and removed events this server has observed (see "Board health") and the last cache check, or null; never runs the check |
+| `/api/health/check` | runs the cache check (as `rebuild --check`) and answers `{ranAt, matches, differingRows}`; one run at a time, and a result less than 30 seconds old is returned without running again |
 | `/api/stream?since=<id>` | Server-Sent Events: `append` and `resync` events with position ids, a `problem` event on a tick failure; resumes from `Last-Event-ID` or `since` |
 
 Start the server in one terminal with `agentboard serve --port 4477
@@ -934,6 +942,248 @@ off, cursor shown, alternate screen left, and your previous screen
 content back. If a terminal is ever left in a bad state anyway (no echo,
 no cursor, keys not working), type `reset` and press Enter.
 
+## Board health
+
+The health report answers what a supervising human or an orchestrator
+asks of a board: which claims have gone quiet, which tickets have sat in
+`blocked`, which `DECISION:` comments still need promoting, and what
+`close-merged` will make of the tickets in `merged`. It is one pure
+function over the board, used by the `health` command, the MCP tool
+`board_health` and the Health view of `agentboard serve`, so the three
+never disagree. It writes nothing.
+
+### The checks
+
+Every age is the time now minus the wall clock of the event it is
+measured from, and 0 when that event's clock is ahead of yours. Only
+applied events count (a claim that lost a race changes nothing), and a
+closed ticket appears in no section.
+
+| Section | What it lists | Default threshold |
+| ------- | ------------- | ----------------- |
+| Stale claims | Open tickets not in `merged` with an assignee who has been idle for at least the threshold | 2 hours (`--stale-after`) |
+| Stuck in blocked | Open tickets in `blocked` that entered `blocked` at least the threshold ago, with the status they were blocked from and their latest comment | 24 hours (`--blocked-after`) |
+| Unpromoted decisions | Open tickets, in any status, with at least one open `DECISION:` comment and no `decision` link | none |
+| close-merged: ready | Open tickets in `merged` with a `pr` link, and either no open decision or a `decision` link | none |
+| close-merged: held by a decision | Open tickets in `merged` with a `pr` link, an open decision and no `decision` link | none |
+| close-merged: missing a PR link | Open tickets in `merged` with no `pr` link | none |
+| Late arrivals | Events a running `serve` saw arrive late or be removed (web only) | none |
+| Cache check | Whether the cache matches the event log, run only on request | none |
+
+- **Idle** is measured from the later of the assignee's own latest event
+  on the ticket (of any kind) and the latest claim, hand-off or assign on
+  the ticket, the event that made them the assignee. Other actors'
+  events do not count: a reviewer commenting on a ticket does not make
+  its implementer look busy. A blocked ticket with an assignee can be
+  both a stale claim and stuck in blocked.
+- **Entering `blocked`** is a `move` to `blocked` or a `handoff` with
+  `--status blocked`. A hand-off with `--status blocked` on a ticket that
+  is already blocked only reassigns it and does not restart the clock;
+  nor does a comment. The latest comment shown is the ticket's last one,
+  hand-off notes included, which by convention says why.
+- **Open decisions** are exactly the ones `close` refuses `--no-decision`
+  for: `DECISION:` comments their author has not retracted with a later
+  `RETRACTED:` comment. Promote them to a spec delta or ADR and record it
+  with `link <id> --decision <path>`.
+- **close-merged candidates.** Whether a pull request is merged is known
+  only to `close-merged`, which asks GitHub through `gh`; the report never
+  claims it. `ready` tickets are closed by `close-merged` once `gh`
+  reports their PR merged; `held by a decision` tickets would be skipped
+  by the decision rule; `missing a PR link` tickets are never considered
+  by `close-merged` and need `link <id> --pr <ref>` or a manual `close`.
+- **Late arrivals** are what a running server observed since it started:
+  events that `sync` delivered with a position before events already
+  shown, and events removed from the fold in a resync (for example a
+  claim refolded as having lost a race). The server keeps the last 100,
+  newest first, each with its kind, ticket and when it was seen, in memory
+  only. The `health` command always reports `late` as null, because a
+  one-shot command cannot observe arrival order.
+- **The cache check** is the comparison `rebuild --check` makes: whether
+  the cache matches a fresh fold of the event log, and how many rows
+  differ. It holds the write lock for the length of a full refold into
+  memory, so it briefly pauses writers and never runs on its own: only
+  `health --check` or the Health view's button runs it. A cache that
+  differs is a finding, not a failure; fix it with `agentboard rebuild`.
+
+Stale claims and stuck tickets are listed longest first; every other
+ticket section is in ticket id order.
+
+### The `health` command
+
+```
+agentboard health [--stale-after <duration>] [--blocked-after <duration>] [--check] [--json]
+```
+
+A duration is `<n>m`, `<n>h` or `<n>d` (minutes, hours or days) with `<n>`
+a whole number from 1 to 99999, so `30m`, `2h` or `7d`. Anything else,
+such as `2hours`, `1.5h`, `0h` or `90s`, exits 1 with reason `usage`,
+before the board is even opened:
+
+```
+$ agentboard health --stale-after 2hours
+agentboard: invalid --stale-after 2hours: a duration is <n>m, <n>h or <n>d with <n> a positive integer of at most 5 digits (for example 30m, 2h or 1d)
+hint: check the arguments with 'agentboard help health'
+```
+
+Each section is printed with its count, then one line per ticket in the
+`list` format followed by the finding. On a board with a quiet claim, a
+blocked ticket and a merged ticket without a PR link, with both
+thresholds lowered to a minute:
+
+```
+$ agentboard health --stale-after 1m --blocked-after 1m
+thresholds: stale after 1m, blocked after 1m
+stale claims: 2
+01M3CCGMG08YEDKBQEK7JMHSWS  implementing  impl-1  Parse config  last active 1m ago (ticket.move by impl-1)
+01M3CCGMJX1A05M6YYB8H3X0R7  blocked  impl-2  Add cache layer  last active 1m ago (ticket.comment by impl-2)
+stuck in blocked: 1
+01M3CCGMJX1A05M6YYB8H3X0R7  blocked  impl-2  Add cache layer  blocked 1m ago from implementing; latest comment by impl-2: waiting on the storage schema from the reviewer
+unpromoted decisions: 1
+01M3CCGMRS6KWXWMHWPBVJJMDZ  todo  -  Query parser  1 open decision, no decision link
+close-merged ready: 1
+01M3CCGMVYJXEDVPFRFV7JTT08  merged  reviewer-1  Ranking  pr 42
+close-merged held by decision: 0
+close-merged missing pr: 1
+01M3CCGMNHZ78NN5F74QME13B1  merged  reviewer-1  Index documents  no pr link
+cache check: not run
+```
+
+`--check` adds the cache check. `--json` prints the report as one JSON
+document with the keys `now`, `thresholds` (in milliseconds),
+`staleClaims`, `stuckBlocked`, `unpromotedDecisions`, `closeMerged`
+(`ready`, `heldByDecision`, `missingPr`), `late` and `check`. Each finding
+carries the ticket's card (as the web page shows it) and, for stale and
+blocked tickets, the event its age was measured from (`since`, with its
+hash, kind, actor and clock) and the age in milliseconds (`idleMs`,
+`blockedMs`). An excerpt of the same board's report:
+
+```
+$ agentboard health --stale-after 1m --blocked-after 1m --check --json | jq '{thresholds, staleClaims: [.staleClaims[] | {ticket: .ticket.shortId, assignee, idleMs}], stuckBlocked: [.stuckBlocked[] | {ticket: .ticket.shortId, blockedFrom, blockedMs}], missingPr: [.closeMerged.missingPr[].ticket.shortId], late, check}'
+{
+  "thresholds": {
+    "staleAfter": 60000,
+    "blockedAfter": 60000
+  },
+  "staleClaims": [
+    {
+      "ticket": "01M3CCGMG0",
+      "assignee": "impl-1",
+      "idleMs": 68781
+    },
+    {
+      "ticket": "01M3CCGMJX",
+      "assignee": "impl-2",
+      "idleMs": 68236
+    }
+  ],
+  "stuckBlocked": [
+    {
+      "ticket": "01M3CCGMJX",
+      "blockedFrom": "implementing",
+      "blockedMs": 68349
+    }
+  ],
+  "missingPr": [
+    "01M3CCGMNH"
+  ],
+  "late": null,
+  "check": {
+    "ranAt": 1790343471569,
+    "matches": true,
+    "differingRows": 0
+  }
+}
+```
+
+`health` exits 0 whatever the report contains, a differing cache
+included: findings are data, so read the report (or `jq` the JSON) rather
+than the exit code. It exits 1 (`usage`) for an unknown flag or a
+malformed duration, 2 when there is no board, and 5 for an integrity
+problem in the event log or cache, or when `--check` cannot take the
+write lock within the busy timeout. It needs no actor (`--as` is
+accepted and ignored). It reads ticket state from the cache and the file
+of every applied event on the board (once each, closed tickets' included,
+since the cache does not record which ticket an event belongs to), all in
+one read snapshot, so it does not block writers unless `--check` is
+given.
+
+Run it before archiving a change and when choosing what to dispatch; the
+orchestrator checklist of the agent guide says so too.
+
+### Over MCP: `board_health`
+
+The MCP tool `board_health` is the same command. Its optional arguments
+are `stale-after` and `blocked-after` (duration strings) and `check` (a
+boolean), and it returns the document `health --json` prints: a call with
+`{"stale-after": "30m"}` returns what `agentboard health --stale-after 30m
+--json` prints. A malformed duration is a tool error with `exitCode` 1 and
+`reason` `usage`.
+
+### In the browser
+
+The Health view of `agentboard serve` (`#/health`) shows the same
+sections, computed in the browser from the board the page already holds,
+re-evaluated on every change and every 10 seconds, plus two things only
+the server knows:
+
+- **Thresholds.** Two inputs, `Stale after` and `Blocked after`, take the
+  same durations as the command and are kept in the URL
+  (`#/health?stale=30m&blocked=2d`). An invalid value is flagged and the
+  report keeps the last valid one.
+- **Late arrivals**, from `GET /api/health`, with when each was observed.
+- **Run cache check**, a button that calls `GET /api/health/check`. The
+  server runs one check at a time: a request that arrives while one runs
+  waits for it and gets its result, and a result less than 30 seconds
+  old is returned without running again. A failed check (for example
+  `busy`) is shown as an error and not kept, so the next press tries
+  again. Nothing else ever runs it.
+
+Both routes are behind the same token and Host checks as every other API
+route (see "Security model" and "The JSON API").
+
+## Replay and the hand-off graph
+
+Two more views of `agentboard serve` show how the board got where it is.
+
+**Replay** (`#/replay`) rebuilds the board at any past position of the
+event log, in the browser, with the same fold the store uses, so an
+event that was rejected at the time (a claim that lost a race) replays as
+rejected. When the view opens it takes a copy of the event list and
+starts at the present; events that arrive while you replay update the
+live board, not the copy, and reopening the view takes a new copy.
+
+- A slider over positions, `Event <n> of <total>`, and `Step back` and
+  `Step forward`.
+- `Play` and `Pause` at 1, 4 or 16 events per second; play stops by
+  itself at the last event.
+- The event at the current position: its actor, a one-line description
+  and its outcome, with the reason when it was rejected.
+- The board columns of the replayed state, as on the live board (closed
+  tickets hidden).
+- `Back to live` returns to the board.
+
+Replay follows the log's fold order, not the order events reached you: an
+event synced late appears at its fold position, which is the only
+history the log can reproduce. Scrubbing stays fast on large boards
+because the page keeps a folded state every 500 events and folds forward
+from the nearest one.
+
+**The hand-off graph** (`#/graph`) shows actors as nodes on a circle, in
+name order, and hand-offs as directed arrows from the actor who ran
+`handoff` to its `--to`, labelled with how many there were and thicker
+as the count grows. A hand-off to yourself (a status change with a note)
+is a loop beside the node. Each node's tooltip gives its sent and
+received totals, and a table under the graph lists every edge. Only
+applied `handoff` events count: claims, releases and assigns are not
+hand-offs.
+
+- **Change** limits the graph to hand-offs on tickets of one change,
+  `<source>:<ref>` (for example `openspec:add-search`, any group).
+- **Since** limits it to hand-offs in the last hour, day, 7 days or 30
+  days.
+- Both are kept in the URL (`#/graph?change=openspec:add-search&since=7d`).
+- When a hand-off arrives live, its arrow is animated for 3 seconds.
+
 ## Rebuild and checking the cache
 
 The cache is derived from the events and every command catches it up
@@ -1000,8 +1250,8 @@ per command, named `board_<command>` with spaces and hyphens turned into
 underscores: `board_new`, `board_show`, `board_list`, `board_claim`,
 `board_release`, `board_move`, `board_comment`, `board_handoff`,
 `board_link`, `board_checklist_tick`, `board_checklist_untick`,
-`board_close`, `board_inbox`, `board_import_change` and
-`board_close_merged`. `init`, `watch`, `serve`, `top`, `rebuild`, `sync`,
+`board_close`, `board_inbox`, `board_import_change`,
+`board_close_merged` and `board_health`. `init`, `watch`, `serve`, `top`, `rebuild`, `sync`,
 `mcp`, `version`, `help`, `agents install` and `agents check` are not exposed:
 they are run by a human or an orchestrator in a shell (`agents install`
 and `agents check` write and read files in the caller's working tree,
