@@ -292,6 +292,33 @@ describe('the drift guard: every example parses to its own command', () => {
     expect(parsed.values['mcp-command']).toBe('agentboard');
   });
 
+  it('covers a serve --no-open example (add-serve-auto-open 1.1)', () => {
+    const withNoOpen = command('serve').examples.filter((e) => / --no-open( |$)/.test(e.command));
+    expect(withNoOpen.length).toBeGreaterThan(0);
+    for (const example of withNoOpen) {
+      expect(examples).toContainEqual(['serve', example.command]);
+      expect(example.summary).toMatch(/browser/i);
+      const parsed = parseArgs(splitCommandLine(example.command).slice(1));
+      expect(parsed.command.name).toBe('serve');
+      expect(parsed.values['no-open']).toBe(true);
+      expect(parsed.values.open).toBeUndefined();
+    }
+  });
+
+  it('describes --no-open and its usage error in the serve help (add-serve-auto-open 1.1)', () => {
+    const serve = command('serve');
+    const noOpen = serve.flags.find((f) => f.name === 'no-open');
+    expect(noOpen).toMatchObject({ type: 'boolean', required: false, repeatable: false });
+    expect(noOpen?.summary).toMatch(/browser/i);
+    expect(serve.description).toContain('--no-open');
+    expect(serve.exclusive).toEqual([
+      expect.objectContaining({ alternatives: [['open'], ['no-open']], required: false }),
+    ]);
+    const usage = serve.exitCodes.find((e) => e.code === 1 && e.reason === 'usage');
+    expect(usage?.meaning).toContain('--no-open');
+    expect(help(serve)).toContain('At most one of: --open | --no-open');
+  });
+
   it('lists the --mcp-command usage errors among the agents install exit codes', () => {
     const usage = command('agents install').exitCodes.find(
       (e) => e.code === 1 && e.reason === 'usage',
@@ -348,7 +375,8 @@ describe('synopsis', () => {
     ['help', 'agentboard help [<topic>] [<subtopic>] [--role <role>] [--json]'],
     ['version', 'agentboard version [--json]'],
     // add-board-web-actions task 1.1: an optional --as that means something.
-    ['serve', 'agentboard serve [--port <port>] [--open] [--as <actor>] [--json]'],
+    // add-serve-auto-open task 1.1: --open and --no-open are exclusive.
+    ['serve', 'agentboard serve [--port <port>] [--open | --no-open] [--as <actor>] [--json]'],
     ['mcp', 'agentboard mcp [--as <actor>] [--json]'],
     ['top', 'agentboard top [--json]'],
   ])('of %s', (name, expected) => {

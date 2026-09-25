@@ -173,6 +173,14 @@ const LIST_TASK_GROUP: ExclusiveGroup = {
   message: 'list takes at most one of --task and --change',
 };
 
+/** `serve` opens the browser, never opens it, or decides by itself. */
+const SERVE_OPEN_GROUP: ExclusiveGroup = {
+  alternatives: [['open'], ['no-open']],
+  required: false,
+  reason: 'usage',
+  message: 'serve takes at most one of --open and --no-open',
+};
+
 /** The dispositions of `close`. */
 const CLOSE_GROUP: ExclusiveGroup = {
   alternatives: [['decision-recorded-in'], ['no-decision']],
@@ -1238,10 +1246,17 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'serve',
     summary: 'Serve a live view of the whole board in a local web browser',
     description:
-      'Starts a web server for the board on 127.0.0.1 only and prints the line serving <board dir> read-only at <url>, or serving <board dir> as <actor> at <url> when started with --as, where the URL carries a new access token each run (with --json, one JSON line with url, port, token, writable and actor instead). Open that URL in a browser to watch every ticket, the activity feed, ticket conversations and agent lanes change live; scripts can send the token as Authorization: Bearer <token> to the JSON API under /api/. Without --as the server is read-only and writes no event. With --as <actor> the page can also comment, move, claim, release, hand off, tick checklist lines, link and close tickets, each written as that actor through the same checks as the CLI (POST /api/actions/<action> with a JSON body); AGENTBOARD_ACTOR never enables writes. Anyone holding the URL can do what the page can, so keep it to yourself. Without --port the operating system picks a free port; --open also opens the URL in the default browser. Runs until interrupted (SIGINT or SIGTERM), then exits 0.',
+      'Starts a web server for the board on 127.0.0.1 only and prints the line serving <board dir> read-only at <url>, or serving <board dir> as <actor> at <url> when started with --as, where the URL carries a new access token each run (with --json, one JSON line with url, port, token, writable and actor instead). Open that URL in a browser to watch every ticket, the activity feed, ticket conversations and agent lanes change live; scripts can send the token as Authorization: Bearer <token> to the JSON API under /api/. Without --as the server is read-only and writes no event. With --as <actor> the page can also comment, move, claim, release, hand off, tick checklist lines, link and close tickets, each written as that actor through the same checks as the CLI (POST /api/actions/<action> with a JSON body); AGENTBOARD_ACTOR never enables writes. Anyone holding the URL can do what the page can, so keep it to yourself. Without --port the operating system picks a free port. After printing the line it opens the URL in the default browser when run from an interactive terminal: stdout is a terminal, no --json, CI unset, not an SSH session, and (other than on macOS and Windows) DISPLAY or WAYLAND_DISPLAY set. --open always tries to open the browser and --no-open never does (use --no-open on a shared machine, where the opener puts the URL and its token on a command line other users can read); failing to open it is only a warning. Runs until interrupted (SIGINT or SIGTERM), then exits 0.',
     group: 'awareness',
     examples: [
-      { command: 'agentboard serve', summary: 'Serve the board on a free local port' },
+      {
+        command: 'agentboard serve',
+        summary: 'Serve the board on a free local port and open it from an interactive terminal',
+      },
+      {
+        command: 'agentboard serve --no-open',
+        summary: 'Serve the board without opening a browser',
+      },
       {
         command: 'agentboard serve --port 4477 --open',
         summary: 'Serve the board on port 4477 and open it in the default browser',
@@ -1261,7 +1276,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         code: 1,
         reason: 'usage',
         meaning:
-          'Invalid arguments: unknown flag, a --port that is not an integer from 0 to 65535, or an empty --as',
+          'Invalid arguments: unknown flag, a --port that is not an integer from 0 to 65535, an empty --as, or --open with --no-open',
       },
       {
         code: 1,
@@ -1276,9 +1291,10 @@ export const COMMANDS: readonly CommandSpec[] = [
     positionals: [],
     flags: [
       flag('port', 'integer', 'Port to listen on, 0 to 65535 (default 0: a free port)'),
-      flag('open', 'boolean', 'Also open the URL in the default browser'),
+      flag('open', 'boolean', 'Always open the URL in the default browser'),
+      flag('no-open', 'boolean', 'Never open the URL in a browser'),
     ],
-    exclusive: [],
+    exclusive: [SERVE_OPEN_GROUP],
     writes: false,
     operation: null,
     run: () => {

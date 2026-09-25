@@ -258,13 +258,15 @@ describe('the command registry', () => {
       exclusive: [],
     });
     expect(shape('watch')).toEqual({ positionals: [], flags: [], exclusive: [] });
+    // add-serve-auto-open task 1.1: --no-open, exclusive with --open.
     expect(shape('serve')).toEqual({
       positionals: [],
       flags: [
         ['port', 'integer', false, false],
         ['open', 'boolean', false, false],
+        ['no-open', 'boolean', false, false],
       ],
-      exclusive: [],
+      exclusive: [[[['open'], ['no-open']], false]],
     });
     // add-board-tui: top has no flags of its own (filters are keys).
     expect(shape('top')).toEqual({ positionals: [], flags: [], exclusive: [] });
@@ -408,6 +410,9 @@ describe('parseArgs: exclusive flag groups', () => {
     [['link', 'T1ABCD', '--pr', '1', '--decision', 'd.md']],
     [['close', 'T1ABCD', '--no-decision', '--decision-recorded-in', 'd.md']],
     [['list', '--task', 'openspec:a', '--change', 'a']],
+    // add-serve-auto-open task 1.1.
+    [['serve', '--open', '--no-open']],
+    [['serve', '--no-open', '--open', '--json']],
   ])('refuses two alternatives %j', (argv) => {
     expectBoardError(() => parseArgs(argv), 1, 'usage');
   });
@@ -429,6 +434,19 @@ describe('parseArgs: exclusive flag groups', () => {
     expect(CLOSE_RULE).toContain('--no-decision');
     expect(CLOSE_RULE).toMatch(/spec/);
     expect(CLOSE_RULE).toMatch(/ADR/);
+  });
+
+  it('serve takes --open, --no-open or neither (add-serve-auto-open 1.1)', () => {
+    expect(parseArgs(['serve']).values).toEqual({});
+    expect(parseArgs(['serve', '--open']).values).toEqual({ open: true });
+    expect(parseArgs(['serve', '--no-open']).values).toEqual({ 'no-open': true });
+    expect(parseArgs(['serve', '--no-open', '--port', '4477']).values).toEqual({
+      'no-open': true,
+      port: 4477,
+    });
+    const err = expectBoardError(() => parseArgs(['serve', '--open', '--no-open']), 1, 'usage');
+    expect(err.message).toContain('--open');
+    expect(err.message).toContain('--no-open');
   });
 
   it('link without a target is a usage error', () => {
