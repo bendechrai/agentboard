@@ -11,7 +11,7 @@
 
 import { spawn } from 'node:child_process';
 
-import type { ArgValues, RunContext, StreamIo } from '../cli/types.js';
+import type { ArgValues, Env, RunContext, StreamIo } from '../cli/types.js';
 import { BoardError } from '../store/errors.js';
 import { actionRoot } from './actions.js';
 import { startServer, type ServerOptions } from './server.js';
@@ -80,22 +80,95 @@ export function openInBrowser(url: string, options: OpenOptions = {}): Promise<v
   });
 }
 
-/** Test seams of `serveCommand`. */
-export interface ServeDeps {
-  /** Opens the URL for `--open`; defaults to `openInBrowser`. */
-  readonly open?: (url: string) => Promise<void>;
-  /** Passed to `startServer` beneath the port (tests); `stderr` defaults to `io.stderr`. */
-  readonly server?: Omit<ServerOptions, 'port'>;
+/**
+ * Whether `serve` opens the start-up URL in a browser (add-serve-auto-open
+ * design.md: "Deciding whether to open"):
+ * - `always`: `--open`; an attempt is made whatever the environment;
+ * - `never`: `--no-open`; no attempt is ever made;
+ * - `auto`: neither flag; an attempt is made only when `shouldAutoOpen`
+ *   holds.
+ */
+export type OpenMode = 'always' | 'never' | 'auto';
+
+/**
+ * The open mode of the parsed `serve` values: `always` when `values.open`
+ * is `true`, `never` when `values['no-open']` is `true`, `auto` when
+ * neither is. Both `true` throws `BoardError(1, 'usage')` with a message
+ * naming `--open` and `--no-open` (the registry's exclusive group already
+ * refuses both when parsing; this guards callers of `serveCommand` that
+ * pass values directly). Any other value of either key (absent, `false`)
+ * counts as not given. Pure.
+ */
+export function openMode(values: ArgValues): OpenMode {
+  void values;
+  throw new Error('not implemented');
+}
+
+/** The inputs of `shouldAutoOpen`. */
+export interface AutoOpenInput {
+  /** The platform (`process.platform` in production). */
+  readonly platform: NodeJS.Platform;
+  /** The environment variables (`RunContext.env` in production). */
+  readonly env: Env;
+  /** Whether stdout is a terminal (`process.stdout.isTTY === true` in production). */
+  readonly stdoutIsTTY: boolean;
+  /** Whether `--json` was given. */
+  readonly json: boolean;
 }
 
 /**
- * Runs `agentboard serve [--port <n>] [--open] [--as <actor>]`, the
- * `stream` of the `serve` registry entry:
+ * Whether `serve` in `auto` mode opens the browser (board-web: "Serve
+ * command", as modified by add-serve-auto-open). True exactly when every
+ * one of these holds, where a variable "is set" when its value is defined
+ * and not the empty string (an undefined value or an absent key is unset):
+ * 1. `stdoutIsTTY` is true;
+ * 2. `json` is false;
+ * 3. `CI` is not set (any non-empty value, `0` and `false` included,
+ *    counts as set);
+ * 4. none of `SSH_CONNECTION`, `SSH_CLIENT` and `SSH_TTY` is set;
+ * 5. when `platform` is neither `darwin` nor `win32`, `DISPLAY` or
+ *    `WAYLAND_DISPLAY` is set. On `darwin` and `win32` neither variable
+ *    is consulted.
+ * Nothing checks whether an opener binary exists. Pure: reads nothing but
+ * its input.
+ */
+export function shouldAutoOpen(input: AutoOpenInput): boolean {
+  void input;
+  throw new Error('not implemented');
+}
+
+/** Test seams of `serveCommand`. */
+export interface ServeDeps {
+  /**
+   * Opens the URL (in `always` mode, and in `auto` mode when
+   * `shouldAutoOpen` holds); defaults to `openInBrowser(url, { platform })`
+   * with the resolved `platform` below.
+   */
+  readonly open?: (url: string) => Promise<void>;
+  /** Passed to `startServer` beneath the port (tests); `stderr` defaults to `io.stderr`. */
+  readonly server?: Omit<ServerOptions, 'port'>;
+  /**
+   * Whether stdout is a terminal, for `shouldAutoOpen`; defaults to
+   * `process.stdout.isTTY === true`, read when `serveCommand` runs.
+   */
+  readonly stdoutIsTTY?: boolean;
+  /**
+   * The platform, for `shouldAutoOpen` and the default `open`; defaults to
+   * `process.platform`.
+   */
+  readonly platform?: NodeJS.Platform;
+}
+
+/**
+ * Runs `agentboard serve [--port <n>] [--open | --no-open] [--as <actor>]`,
+ * the `stream` of the `serve` registry entry:
  * 1. `--port`, when given, must be an integer from 0 to 65535, else
  *    `BoardError(1, 'usage')` naming the range; `--as`, when given
  *    (`values.as`), must be a non-empty string, else `BoardError(1,
- *    'usage')` naming `--as`. Both are checked before any board lookup, so
- *    they exit 1 even where there is no board.
+ *    'usage')` naming `--as`; `openMode(values)` resolves the open mode
+ *    (`--open` with `--no-open` is `BoardError(1, 'usage')`). All are
+ *    checked before any board lookup, so they exit 1 even where there is
+ *    no board, and nothing listens.
  * 2. `ctx.board()`: discovery and open with catch-up; no board is
  *    `BoardError(2, 'board-not-found')` from discovery, before anything
  *    listens.
@@ -113,13 +186,19 @@ export interface ServeDeps {
  *    token, writable, actor })` with the keys in that order, `writable`
  *    true and `actor` the actor with `--as`, else false and null. Nothing
  *    else is ever written to stdout.
- * 5. With `--open`: `open(url)` (default `openInBrowser`) with that same
- *    fragment URL; when it rejects, `io.stderr` receives `agentboard:
+ * 5. Opens the browser when the mode is `always`, or `auto` and
+ *    `shouldAutoOpen({ platform, env: ctx.env, stdoutIsTTY, json: io.json
+ *    })` holds (`platform` and `stdoutIsTTY` from `deps`, else their
+ *    process defaults); in `never` mode, or `auto` when it does not hold,
+ *    `open` is never called. Opening is `open(url)` called exactly once,
+ *    after the start-up line is written and before waiting for the stop
+ *    signal, with that same fragment URL; when it rejects, `io.stderr` receives `agentboard:
  *    could not open a browser: <message>` and a newline, where every
  *    occurrence of the token in the error's message is replaced by the
  *    literal `<token>` (an opener that echoes the URL leaves
  *    `http://127.0.0.1:<port>/#token=<token>` with the placeholder), and
- *    serving carries on. The token is never written to stderr.
+ *    serving carries on (one warning line, in any mode). Nothing is written
+ *    when it resolves. The token is never written to stderr.
  * 6. Waits until `io.signal` aborts (at once when it already has), then
  *    `close()`s the server and resolves (the CLI then closes the board and
  *    exits 0).
