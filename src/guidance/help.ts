@@ -122,6 +122,8 @@ export function synopsis(command: CommandSpec): string {
   }
   if (needsActor(command)) {
     parts.push('--as <actor>');
+  } else if (command.actorHelp !== undefined) {
+    parts.push('[--as <actor>]');
   }
   parts.push('[--json]');
   return parts.join(' ');
@@ -156,8 +158,9 @@ export function synopsis(command: CommandSpec): string {
  * `--name <name>` for any other flag, except `--as <actor>`. The `--as`
  * line reads `string, required (or set AGENTBOARD_ACTOR)` for a command
  * that writes or tracks a cursor; for any other it reads `string, optional`
- * with the summary `command.actorHelp` when present (`mcp`: the server's
- * default actor for tool calls), else `Accepted and ignored by this command`.
+ * with the summary `command.actorHelp` when present (`serve`: the actor of
+ * the web app's write actions; `mcp`: the server's default actor for tool
+ * calls), else `Accepted and ignored by this command`.
  *
  * Every line has no trailing spaces; the text ends with one newline. Pure.
  */

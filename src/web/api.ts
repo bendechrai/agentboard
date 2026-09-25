@@ -148,8 +148,10 @@ const TICKETS_PREFIX = '/api/tickets/';
 function route(ctx: ApiContext, path: string, query: URLSearchParams): unknown {
   const { board, cache } = ctx;
   switch (path) {
-    case '/api/session':
-      return { version: VERSION, boardDir: board.dir, writable: false, actor: null };
+    case '/api/session': {
+      const actor = typeof ctx.actor === 'string' && ctx.actor !== '' ? ctx.actor : null;
+      return { version: VERSION, boardDir: board.dir, writable: actor !== null, actor };
+    }
     case '/api/board': {
       const snapshot = loadSnapshot(board, { cache });
       const tickets = Object.values(snapshot.tickets).sort((a, b) =>

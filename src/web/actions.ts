@@ -65,11 +65,18 @@
  *   are rendered with `API_HINT_CONTEXT` (command `serve`, no actor).
  */
 
-import type { ApiResult } from './api.js';
-import type { RequestHead } from './security.js';
+import { realpathSync } from 'node:fs';
+
+import { worktreeRoot } from '../board/paths.js';
+import { LazyBoard, errorDocument, runContext } from '../cli/main.js';
+import { findCommand } from '../cli/registry.js';
 import type { ArgValues, CommandSpec, Env, RunContext } from '../cli/types.js';
+import type { HintContext } from '../guidance/hints.js';
+import { toolArguments } from '../mcp/tools.js';
 import type { Board } from '../store/board.js';
-import type { BoardError } from '../store/errors.js';
+import { BoardError } from '../store/errors.js';
+import { API_HINT_CONTEXT, type ApiResult } from './api.js';
+import type { RequestHead } from './security.js';
 
 /**
  * The action names, in registry order: each is the registry command name
@@ -109,8 +116,10 @@ export const REFUSED_PROPERTIES: readonly string[] = ['as', 'json', 'allow-secre
  * Pure.
  */
 export function actionCommand(action: string): CommandSpec | undefined {
-  void action;
-  throw new Error('not implemented');
+  if (!(ACTION_NAMES as readonly string[]).includes(action)) {
+    return undefined;
+  }
+  return findCommand(action.replace('-', ' '));
 }
 
 /**
@@ -127,8 +136,36 @@ export function actionCommand(action: string): CommandSpec | undefined {
  * array of every value received) or a single string. Pure.
  */
 export function contentTypeAllowed(value: string | readonly string[] | undefined): boolean {
-  void value;
-  throw new Error('not implemented');
+  const single = onlyValue(value);
+  if (single === undefined) {
+    return false;
+  }
+  const [type, ...parameters] = single.split(';');
+  if (type === undefined || type.trim().toLowerCase() !== JSON_MEDIA_TYPE) {
+    return false;
+  }
+  if (parameters.length === 0) {
+    return true;
+  }
+  return parameters.length === 1 && CHARSET_PARAMETER.test(parameters[0]?.trim() ?? '');
+}
+
+/** The one media type an action body may have. */
+const JSON_MEDIA_TYPE = 'application/json';
+
+/** The one parameter allowed after it: `charset` with a token or quoted token value. */
+const CHARSET_PARAMETER = /^charset=(?:[A-Za-z0-9._-]+|"[A-Za-z0-9._-]+")$/i;
+
+/**
+ * The value of a header that must occur exactly once: the string itself,
+ * or the only element of a one-element array; undefined for no header or
+ * a repeated one.
+ */
+function onlyValue(value: string | readonly string[] | undefined): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+  return value?.length === 1 ? value[0] : undefined;
 }
 
 /**
@@ -150,11 +187,21 @@ export function originAllowed(
   host: string | readonly string[] | undefined,
   port: number,
 ): boolean {
-  void origin;
-  void host;
-  void port;
-  throw new Error('not implemented');
+  if (origin === undefined || (typeof origin !== 'string' && origin.length === 0)) {
+    return true;
+  }
+  const given = onlyValue(origin);
+  const named = onlyValue(host);
+  if (given === undefined || named === undefined) {
+    return false;
+  }
+  return LOOPBACK_NAMES.some(
+    (name) => given === `http://${name}:${String(port)}` && named === `${name}:${String(port)}`,
+  );
 }
+
+/** The host names of the page's own origin. */
+const LOOPBACK_NAMES: readonly string[] = ['127.0.0.1', 'localhost'];
 
 /**
  * The CSRF rules of every `POST` (board-web-actions: "Cross-site request
@@ -169,9 +216,22 @@ export function originAllowed(
  * at. Pure.
  */
 export function csrfRefusal(head: RequestHead, port: number): BoardError | null {
-  void head;
-  void port;
-  throw new Error('not implemented');
+  const headers = head.headersDistinct;
+  if (!contentTypeAllowed(headers?.['content-type'])) {
+    return new BoardError(
+      1,
+      'csrf-failed',
+      'an action must be sent as one Content-Type: application/json header (optionally with a charset)',
+    );
+  }
+  if (!originAllowed(headers?.origin, headers?.host, port)) {
+    return new BoardError(
+      1,
+      'csrf-failed',
+      'an action sent with an Origin header must come from the page of this server, at the same address as the Host header',
+    );
+  }
+  return null;
 }
 
 /**
@@ -182,8 +242,13 @@ export function csrfRefusal(head: RequestHead, port: number): BoardError | null 
  * is not a `BoardError`. Pure.
  */
 export function actionStatus(error: unknown): number {
-  void error;
-  throw new Error('not implemented');
+  if (!(error instanceof BoardError)) {
+    return 500;
+  }
+  if (error.reason === 'busy') {
+    return 503;
+  }
+  return error.exitCode === 1 ? 400 : error.exitCode === 4 ? 409 : 500;
 }
 
 /**
@@ -196,9 +261,31 @@ export function actionStatus(error: unknown): number {
  * exclusive group given twice or not at all). Pure.
  */
 export function actionArguments(command: CommandSpec, body: unknown): ArgValues {
-  void command;
-  void body;
-  throw new Error('not implemented');
+  if (isObject(body)) {
+    for (const name of REFUSED_PROPERTIES) {
+      if (Object.hasOwn(body, name)) {
+        throw new BoardError(
+          1,
+          'usage',
+          `the property ${name} is not accepted: ${REFUSED_WHY[name] ?? ''}`,
+        );
+      }
+    }
+  }
+  return toolArguments(command, body);
+}
+
+/** Why each refused property is refused (the text of the `usage` message). */
+const REFUSED_WHY: Readonly<Record<string, string>> = {
+  as: 'every action is written as the actor the server was started with (agentboard serve --as <actor>)',
+  json: 'the response is always the JSON document',
+  'allow-secret-like':
+    'the web app has no override for secret-like text; use the CLI for a false positive',
+};
+
+/** A JSON object (not an array, not null). */
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -209,9 +296,7 @@ export function actionArguments(command: CommandSpec, body: unknown): ArgValues 
  * the tree root").
  */
 export function actionRoot(cwd: string, env: Env): string {
-  void cwd;
-  void env;
-  throw new Error('not implemented');
+  return realpathSync(worktreeRoot(cwd, env) ?? cwd);
 }
 
 /** What an action runs with: fixed for the life of the server. */
@@ -243,8 +328,32 @@ export interface ActionContext {
  * closing anything. Pure.
  */
 export function actionContext(ctx: ActionContext): RunContext {
-  void ctx;
-  throw new Error('not implemented');
+  return runContext(ctx.root, ctx.env, ctx.actor, new ServerBoard(ctx.board));
+}
+
+/**
+ * The server's open board as the `LazyBoard` of a run context (shared with
+ * the CLI and the MCP server, `runContext`): already open, so `get`
+ * returns it whatever options it is given, and `close` leaves it open.
+ */
+class ServerBoard extends LazyBoard {
+  private readonly open: Board;
+
+  constructor(board: Board) {
+    super(
+      () => board.dir,
+      () => undefined,
+    );
+    this.open = board;
+  }
+
+  override get(): Board {
+    return this.open;
+  }
+
+  override close(): void {
+    // The server closes its board when it stops, never an action.
+  }
 }
 
 /**
@@ -272,8 +381,48 @@ export function actionContext(ctx: ActionContext): RunContext {
  * `errorDocument(error, API_HINT_CONTEXT)`. A failure writes no event.
  */
 export function runAction(ctx: ActionContext, action: string, text: string): ApiResult {
-  void ctx;
-  void action;
-  void text;
-  throw new Error('not implemented');
+  if (ctx.actor === null || ctx.actor === '') {
+    return {
+      status: 405,
+      body: errorDocument(
+        new BoardError(
+          1,
+          'read-only',
+          'this server is read-only: it was started without --as, so it accepts no action',
+        ),
+        API_HINT_CONTEXT,
+      ),
+    };
+  }
+  const command = actionCommand(action);
+  if (command === undefined) {
+    return {
+      status: 404,
+      body: errorDocument(
+        new BoardError(
+          1,
+          'not-found',
+          `no such action; the actions are ${ACTION_NAMES.join(', ')}`,
+        ),
+        API_HINT_CONTEXT,
+      ),
+    };
+  }
+  let context: HintContext = { surface: 'cli', command: command.name, actor: ctx.actor };
+  try {
+    let body: unknown;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      throw new BoardError(1, 'usage', 'the request body must be one JSON object');
+    }
+    if (isObject(body) && typeof body.id === 'string' && body.id !== '') {
+      context = { ...context, id: body.id };
+    }
+    const values = actionArguments(command, body);
+    const output = command.run(actionContext(ctx), values);
+    return { status: 200, body: output.json };
+  } catch (error) {
+    return { status: actionStatus(error), body: errorDocument(error, context) };
+  }
 }

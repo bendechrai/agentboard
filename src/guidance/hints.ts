@@ -76,8 +76,10 @@ export const HINT_REASONS: readonly string[] = [
   'ambiguous-remote',
   'board-not-a-repository',
   'board-not-found',
+  'body-too-large',
   'busy',
   'checklist-index',
+  'csrf-failed',
   'decision-path-missing',
   'detached-head',
   'duplicate-create',
@@ -103,6 +105,7 @@ export const HINT_REASONS: readonly string[] = [
   'not-found',
   'path-outside-tree',
   'port-in-use',
+  'read-only',
   'schema-mismatch',
   'secret-like',
   'streaming-command',
@@ -123,7 +126,8 @@ export const HINT_REASONS: readonly string[] = [
  * The exit code class of each reason in `HINT_REASONS` (a reason belongs to
  * exactly one class: for example `usage` and `missing-actor` are 1,
  * and so are the web server's refusals (`unauthorized`, `forbidden-host`,
- * `not-found`, `method-not-allowed`, `too-many-streams`) and
+ * `not-found`, `method-not-allowed`, `too-many-streams`, `read-only`,
+ * `csrf-failed`, `body-too-large`) and
  * `port-in-use`;
  * `board-not-found` 2, `sync-conflict` 3, `already-assigned` 4, `busy` 5).
  */
@@ -133,8 +137,10 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'ambiguous-remote': 1,
   'board-not-a-repository': 2,
   'board-not-found': 2,
+  'body-too-large': 1,
   busy: 5,
   'checklist-index': 4,
+  'csrf-failed': 1,
   'decision-path-missing': 1,
   'detached-head': 3,
   'duplicate-create': 4,
@@ -160,6 +166,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'not-found': 1,
   'path-outside-tree': 1,
   'port-in-use': 1,
+  'read-only': 1,
   'schema-mismatch': 5,
   'secret-like': 1,
   'streaming-command': 1,
@@ -301,8 +308,10 @@ export function hintStep(
  *   `127.0.0.1` or `localhost` with the port, exactly as printed (both
  *   names appear); `not-found`: names the API routes `/api/session`,
  *   `/api/board`, `/api/tickets/<ticket>`, `/api/events`, `/api/actors` and
- *   `/api/stream`; `method-not-allowed`: the server is read-only and
- *   answers only `GET` (the word `GET` appears); `too-many-streams`: close
+ *   `/api/stream`, and the actions `POST /api/actions/<action>`;
+ *   `method-not-allowed`: the server answers only `GET`, and `POST` on an
+ *   action path, which a read-only server refuses (the words `GET` and
+ *   `read-only` appear); `too-many-streams`: close
  *   other board tabs or clients, at most 64 streams are open at once (the
  *   number `64` appears), then reconnect.
  * - The refusals of the write actions (add-board-web-actions task 1.2),
@@ -605,9 +614,15 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
   'forbidden-host': (h) =>
     `use the address exactly as printed at start-up, with the host 127.0.0.1 or localhost and the port; see ${serveHelp(h)}`,
   'not-found': (h) =>
-    `the API routes are /api/session, /api/board, /api/tickets/<ticket>, /api/events, /api/actors and /api/stream; see ${serveHelp(h)}`,
+    `the API routes are /api/session, /api/board, /api/tickets/<ticket>, /api/events, /api/actors and /api/stream, and the actions POST /api/actions/<action> (comment, move, claim, release, handoff, checklist-tick, checklist-untick, link, close); see ${serveHelp(h)}`,
   'method-not-allowed': (h) =>
-    `the board server is read-only and answers only GET requests; see ${serveHelp(h)}`,
+    `the board server answers only GET requests, and POST to /api/actions/<action> unless it is read-only; see ${serveHelp(h)}`,
+  'read-only': (h) =>
+    `this board server is read-only because it was started without --as; to act from the page, restart it with ${h.step('serve', [['as', h.actor]])}, or run the command in a shell; see ${serveHelp(h)}`,
+  'csrf-failed': (h) =>
+    `an action must be posted by the page of this server, or by a script that sends no Origin header, with Content-Type: application/json; see ${serveHelp(h)}`,
+  'body-too-large': (h) =>
+    `an action body is at most 64 KiB; shorten the text; see ${serveHelp(h)}`,
   'too-many-streams': (h) =>
     `at most 64 streams are open at once; close other board tabs or clients, then reconnect; see ${serveHelp(h)}`,
   'not-a-tty': (h) =>

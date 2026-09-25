@@ -1236,9 +1236,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'serve',
-    summary: 'Serve a live, read-only view of the whole board in a local web browser',
+    summary: 'Serve a live view of the whole board in a local web browser',
     description:
-      'Starts a read-only web server for the board on 127.0.0.1 only and prints the line serving <board dir> read-only at <url>, where the URL carries a new access token each run (with --json, one JSON line with url, port, token and writable instead). Open that URL in a browser to watch every ticket, the activity feed, ticket conversations and agent lanes change live; scripts can send the token as Authorization: Bearer <token> to the JSON API under /api/. Without --port the operating system picks a free port; --open also opens the URL in the default browser. Writes no event and needs no actor (--as is ignored). Runs until interrupted (SIGINT or SIGTERM), then exits 0.',
+      'Starts a web server for the board on 127.0.0.1 only and prints the line serving <board dir> read-only at <url>, or serving <board dir> as <actor> at <url> when started with --as, where the URL carries a new access token each run (with --json, one JSON line with url, port, token, writable and actor instead). Open that URL in a browser to watch every ticket, the activity feed, ticket conversations and agent lanes change live; scripts can send the token as Authorization: Bearer <token> to the JSON API under /api/. Without --as the server is read-only and writes no event. With --as <actor> the page can also comment, move, claim, release, hand off, tick checklist lines, link and close tickets, each written as that actor through the same checks as the CLI (POST /api/actions/<action> with a JSON body); AGENTBOARD_ACTOR never enables writes. Anyone holding the URL can do what the page can, so keep it to yourself. Without --port the operating system picks a free port; --open also opens the URL in the default browser. Runs until interrupted (SIGINT or SIGTERM), then exits 0.',
     group: 'awareness',
     examples: [
       { command: 'agentboard serve', summary: 'Serve the board on a free local port' },
@@ -1250,6 +1250,10 @@ export const COMMANDS: readonly CommandSpec[] = [
         command: 'agentboard serve --json',
         summary: 'Print the URL, port and token as one JSON line for a script',
       },
+      {
+        command: 'agentboard serve --as ben',
+        summary: 'Serve the board and let the page act on tickets as ben',
+      },
     ],
     exitCodes: [
       { code: 0, meaning: 'Stopped by SIGINT or SIGTERM' },
@@ -1257,7 +1261,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         code: 1,
         reason: 'usage',
         meaning:
-          'Invalid arguments: unknown flag, or a --port that is not an integer from 0 to 65535',
+          'Invalid arguments: unknown flag, a --port that is not an integer from 0 to 65535, or an empty --as',
       },
       {
         code: 1,
@@ -1267,6 +1271,8 @@ export const COMMANDS: readonly CommandSpec[] = [
       EXIT_NO_BOARD,
       EXIT_INTEGRITY,
     ],
+    actorHelp:
+      'The actor of the write actions of the page; only this enables writes (AGENTBOARD_ACTOR is ignored)',
     positionals: [],
     flags: [
       flag('port', 'integer', 'Port to listen on, 0 to 65535 (default 0: a free port)'),

@@ -67,14 +67,16 @@ export const ALLOWED_METHOD = 'GET';
  */
 export const ACTIONS_PREFIX = '/api/actions/';
 
+/** The one method of an action path. */
+const ACTION_METHOD = 'POST';
+
 /**
  * True for an action path: a path beginning with `ACTIONS_PREFIX`
  * (`/api/actions/comment`, `/api/actions/`, `/api/actions/a/b`), whatever
  * follows; not `/api/actions` itself. Pure.
  */
 export function isActionPath(path: string): boolean {
-  void path;
-  throw new Error('not implemented');
+  return path.startsWith(ACTIONS_PREFIX);
 }
 
 /**
@@ -317,19 +319,24 @@ export function checkRequest(head: RequestHead, guard: Guard): Verdict {
       api,
     };
   }
-  if (head.method !== ALLOWED_METHOD) {
+  const action = isActionPath(path);
+  const allowed = action ? ACTION_METHOD : ALLOWED_METHOD;
+  if (head.method !== allowed) {
     return {
       kind: 'refuse',
       status: 405,
       error: new BoardError(
         1,
         'method-not-allowed',
-        'the agentboard web server is read-only and answers only GET',
+        action
+          ? 'an action of the agentboard web server answers only POST'
+          : 'the agentboard web server answers only GET here; actions are POST to /api/actions/<action>',
       ),
       api,
+      allow: allowed,
     };
   }
-  return { kind: 'route', method: 'GET', path, query: new URLSearchParams(query), api };
+  return { kind: 'route', method: allowed, path, query: new URLSearchParams(query), api };
 }
 
 /** The scheme and space of a bearer `Authorization` header. */

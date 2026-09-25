@@ -30,7 +30,10 @@
  * - Malformed HTTP (a `clientError` of the parser, for example a raw NUL
  *   in the request target) is answered `400 Bad Request` with
  *   `securityHeaders(false)`, `Content-Length: 0` and `Connection: close`,
- *   never Node's bare 400 page.
+ *   never Node's bare 400 page; when the connection is still sending an
+ *   earlier response (bytes after a request that had no body framing,
+ *   such as a `DELETE` with an unframed body), it is closed instead, as
+ *   Node's own handler does.
  * - Plain text pages (refusals outside `/api`) are `text/plain;
  *   charset=utf-8`, one or two short lines naming the reason, never the
  *   token.
@@ -80,7 +83,15 @@ import {
   type CacheCheckOutcome,
   type HealthResponse,
 } from './health.js';
-import { checkRequest, newToken, securityHeaders, type Guard } from './security.js';
+import { ACTION_BODY_LIMIT, actionRoot, csrfRefusal, runAction } from './actions.js';
+import {
+  ACTIONS_PREFIX,
+  checkRequest,
+  newToken,
+  securityHeaders,
+  type Guard,
+  type RequestHead,
+} from './security.js';
 import {
   KEEPALIVE_MS,
   MAX_STREAMS,
@@ -332,6 +343,16 @@ export async function startServer(
   if (!Number.isInteger(requested) || requested < 0 || requested > 65535) {
     throw new BoardError(1, 'usage', 'the port must be an integer from 0 to 65535');
   }
+  if (options.actor === '') {
+    throw new BoardError(
+      1,
+      'usage',
+      'the actor must not be empty; leave it out to serve read-only',
+    );
+  }
+  const actor = options.actor ?? null;
+  const env = options.env ?? process.env;
+  const root = options.root ?? actionRoot(process.cwd(), env);
   const token = options.token ?? newToken();
   const assetsDir = options.assetsDir ?? defaultAssetsDir();
   const now = options.now ?? Date.now;
@@ -494,24 +515,113 @@ export async function startServer(
     );
   };
 
+  /**
+   * `POST /api/actions/<action>`, authenticated: the CSRF rules, the body
+   * limit, then `runAction` (the order of `src/web/actions.ts`). Every
+   * refusal writes nothing; no body is held beyond `ACTION_BODY_LIMIT`.
+   */
+  const handleAction = (
+    req: IncomingMessage,
+    res: ServerResponse,
+    head: RequestHead,
+    path: string,
+  ): void => {
+    // A client that goes away mid-body is not an error of the server.
+    req.on('error', () => undefined);
+    const csrf = csrfRefusal(head, guard.port);
+    if (csrf !== null) {
+      discard(req, res);
+      sendJson(res, 403, errorDocument(csrf, API_HINT_CONTEXT));
+      return;
+    }
+    const tooLarge = (): void => {
+      discard(req, res);
+      sendJson(
+        res,
+        413,
+        errorDocument(
+          new BoardError(
+            1,
+            'body-too-large',
+            `the action body is larger than ${String(ACTION_BODY_LIMIT / 1024)} KiB`,
+          ),
+          API_HINT_CONTEXT,
+        ),
+      );
+    };
+    const declared = Number(req.headers['content-length'] ?? 0);
+    if (declared > ACTION_BODY_LIMIT) {
+      tooLarge();
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const onData = (chunk: Buffer): void => {
+      size += chunk.length;
+      if (size > ACTION_BODY_LIMIT) {
+        chunks.length = 0;
+        req.off('data', onData);
+        req.off('end', onEnd);
+        tooLarge();
+        return;
+      }
+      chunks.push(chunk);
+    };
+    const onEnd = (): void => {
+      if (stopped || res.destroyed) {
+        return;
+      }
+      const text = Buffer.concat(chunks).toString('utf8');
+      chunks.length = 0;
+      try {
+        const result = runAction(
+          { board, actor, root, env },
+          path.slice(ACTIONS_PREFIX.length),
+          text,
+        );
+        sendJson(res, result.status, result.body);
+      } catch (error) {
+        // Unexpected (runAction never throws): as in `handle`.
+        if (res.headersSent) {
+          res.destroy();
+        } else {
+          sendJson(res, 500, errorDocument(error, API_HINT_CONTEXT));
+        }
+      }
+    };
+    req.on('data', onData);
+    req.on('end', onEnd);
+  };
+
+  // The response in progress on each connection (see the clientError handler).
+  const answering = new WeakMap<Socket, ServerResponse>();
+
   const handle = (req: IncomingMessage, res: ServerResponse): void => {
-    // A body is never read; let it drain.
-    req.resume();
+    answering.set(req.socket, res);
+    res.once('finish', () => {
+      if (answering.get(req.socket) === res) {
+        answering.delete(req.socket);
+      }
+    });
     let api = true;
     try {
-      const verdict = checkRequest(
-        {
-          method: req.method ?? '',
-          url: req.url ?? '',
-          headers: req.headers,
-          headersDistinct: req.headersDistinct,
-        },
-        guard,
-      );
+      const head: RequestHead = {
+        method: req.method ?? '',
+        url: req.url ?? '',
+        headers: req.headers,
+        headersDistinct: req.headersDistinct,
+      };
+      const verdict = checkRequest(head, guard);
       api = verdict.api;
+      if (verdict.kind === 'route' && verdict.method === 'POST') {
+        handleAction(req, res, head, verdict.path);
+        return;
+      }
+      // No other request has a body worth reading; let it drain.
+      req.resume();
       switch (verdict.kind) {
         case 'refuse':
-          refuse(res, verdict.status, verdict.error, verdict.api);
+          refuse(res, verdict.status, verdict.error, verdict.api, verdict.allow);
           return;
         case 'route':
           if (verdict.path === '/api/stream') {
@@ -522,7 +632,7 @@ export async function startServer(
           } else if (verdict.path === '/api/health/check') {
             runCheck(res);
           } else if (verdict.api) {
-            const result = apiResponse({ board, cache, now }, verdict.path, verdict.query);
+            const result = apiResponse({ board, cache, now, actor }, verdict.path, verdict.query);
             sendJson(res, result.status, result.body);
           } else {
             servePage(res, assetsDir, verdict.path);
@@ -531,6 +641,7 @@ export async function startServer(
       }
     } catch (error) {
       // Unexpected: answer 500 without detail beyond the error document.
+      req.resume();
       if (!res.headersSent) {
         if (api) {
           sendJson(res, 500, errorDocument(error, API_HINT_CONTEXT));
@@ -546,7 +657,8 @@ export async function startServer(
   const server = createServer({ requireHostHeader: false }, handle);
   // Malformed requests: answer 400 with the security headers, never Node's bare page.
   server.on('clientError', (_error: Error, socket: Socket) => {
-    if (socket.writable) {
+    // As Node's own handler: never write a second response into one already begun.
+    if (socket.writable && answering.get(socket)?.headersSent !== true) {
       const lines = Object.entries({
         ...securityHeaders(false),
         'Content-Length': '0',
@@ -694,9 +806,41 @@ function sendText(
   res.end(text);
 }
 
+/**
+ * Reads and throws away the rest of a refused action's body, holding none
+ * of it, so the connection stays usable and the client can read the
+ * response; a client that keeps sending past `DISCARD_LIMIT` bytes is
+ * disconnected once the response has been sent.
+ */
+function discard(req: IncomingMessage, res: ServerResponse): void {
+  let discarded = 0;
+  req.on('data', (chunk: Buffer) => {
+    discarded += chunk.length;
+    if (discarded > DISCARD_LIMIT) {
+      if (res.writableFinished) {
+        req.socket.destroy();
+      } else {
+        res.once('finish', () => {
+          req.socket.destroy();
+        });
+      }
+    }
+  });
+  req.resume();
+}
+
+/** Bytes of a refused action body read and thrown away before disconnecting: 1 MiB. */
+const DISCARD_LIMIT = 1024 * 1024;
+
 /** A refusal: an `ErrorDocument` on an API path, a plain text page otherwise. */
-function refuse(res: ServerResponse, status: number, error: BoardError, api: boolean): void {
-  const extra: OutgoingHttpHeaders = status === 405 ? { Allow: 'GET' } : {};
+function refuse(
+  res: ServerResponse,
+  status: number,
+  error: BoardError,
+  api: boolean,
+  allow: 'GET' | 'POST' = 'GET',
+): void {
+  const extra: OutgoingHttpHeaders = status === 405 ? { Allow: allow } : {};
   if (api) {
     sendJson(res, status, errorDocument(error, API_HINT_CONTEXT), extra);
   } else {

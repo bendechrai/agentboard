@@ -13,6 +13,7 @@ import { spawn } from 'node:child_process';
 
 import type { ArgValues, RunContext, StreamIo } from '../cli/types.js';
 import { BoardError } from '../store/errors.js';
+import { actionRoot } from './actions.js';
 import { startServer, type ServerOptions } from './server.js';
 
 /** Starts a child process; the subset of `node:child_process` `spawn` that `openInBrowser` uses. */
@@ -140,16 +141,29 @@ export async function serveCommand(
     }
     port = given;
   }
+  // Only an explicit --as enables writes: never ctx.actor, never AGENTBOARD_ACTOR.
+  const as = values.as;
+  if (as !== undefined && (typeof as !== 'string' || as === '')) {
+    throw new BoardError(1, 'usage', '--as must name an actor; leave --as out to serve read-only');
+  }
+  const actor = as ?? null;
   const board = ctx.board();
   const stderr = (text: string): void => {
     io.stderr?.(text);
   };
-  const server = await startServer(board, { stderr, ...deps.server, port });
+  const server = await startServer(board, {
+    stderr,
+    ...deps.server,
+    port,
+    actor,
+    root: actionRoot(ctx.cwd, ctx.env),
+    env: ctx.env,
+  });
   try {
     io.stdout(
       io.json
-        ? `${JSON.stringify({ url: server.url, port: server.port, token: server.token, writable: false })}\n`
-        : `serving ${board.dir} read-only at ${server.url}\n`,
+        ? `${JSON.stringify({ url: server.url, port: server.port, token: server.token, writable: actor !== null, actor })}\n`
+        : `serving ${board.dir} ${actor === null ? 'read-only' : `as ${actor}`} at ${server.url}\n`,
     );
     if (values.open === true) {
       const open = deps.open ?? ((url: string) => openInBrowser(url));
