@@ -41,13 +41,12 @@
  *   server calls only for `GET /api/health/check`. `GET /api/health`
  *   reports `last()`, and never runs it.
  *
- * Overlap with add-board-insights group 2: `checkSummary` maps the
- * store's `CheckResult` to the report's `HealthCheck`; the `health`
- * command (`src/board/health.ts`) needs the same mapping for `--check`.
- * Whichever lands second should reuse the other's function.
+ * `checkSummary`, which maps the store's `CheckResult` to the report's
+ * `HealthCheck`, lives in `src/board/health.ts` (shared with the `health`
+ * command's `--check`) and is re-exported here.
  */
 
-import type { CheckResult } from '../store/rebuild.js';
+import { checkSummary, type CacheCheckOutcome } from '../board/health.js';
 import type { HealthCheck, LateArrival } from '../view/health.js';
 import type { FeedMessage } from '../view/types.js';
 
@@ -129,16 +128,7 @@ export function createObservedLog(limit: number = LATE_LIMIT): ObservedLog {
   };
 }
 
-/** The part of the store's `CheckResult` a health check reports. */
-export type CacheCheckOutcome = Pick<CheckResult, 'ok' | 'differences'>;
-
-/**
- * The summary of one cache comparison run at `ranAt`: `{ ranAt, matches:
- * result.ok, differingRows: result.differences.length }`. Pure.
- */
-export function checkSummary(result: CacheCheckOutcome, ranAt: number): HealthCheck {
-  return { ranAt, matches: result.ok, differingRows: result.differences.length };
-}
+export { checkSummary, type CacheCheckOutcome };
 
 /** Options of `createCacheChecker`. */
 export interface CacheCheckerOptions {
