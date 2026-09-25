@@ -4,13 +4,20 @@
  * surface" scenario "Serve has help", "Exit codes" scenario "Port in use
  * is a usage-class failure"; add-board-web task 3.1): the start-up line
  * and the `--json` line, `--port` validation, `port-in-use` with its hint,
- * no board, `--as` ignored, `--open` and its failure warning, and the
- * system opener. The real SIGINT and SIGTERM are exercised on the built
+ * no board, `--open` and its failure warning, and the system opener.
+ * Write mode (board-web-actions: "Write mode is opt-in with an explicit
+ * actor", "Close from the browser"; board-web: "Serve command" as modified
+ * by add-board-web-actions; board-cli: "Actor is explicit" scenario "Serve
+ * ignores the environment actor"; add-board-web-actions task 1.1): the
+ * writable start-up line, AGENTBOARD_ACTOR ignored, an empty `--as`, the
+ * tree root of decision paths, and the help of `--as`. The real SIGINT and SIGTERM are exercised on the built
  * CLI in src/__tests__/serve-processes.test.ts.
  */
 
 import { EventEmitter } from 'node:events';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
+import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -21,7 +28,10 @@ import type { StreamIo } from '../../cli/types.js';
 import { run, cliEnv, type RunEnv } from '../../cli/__tests__/cli-helpers.js';
 import { splitCommandLine } from '../../guidance/__tests__/command-line.js';
 import { findBoard } from '../../store/locate.js';
+import { gitRepo } from '../../store/__tests__/helpers.js';
+import { ACTION_NAMES } from '../actions.js';
 import { openInBrowser, serveCommand, type Spawner } from '../serve.js';
+import { cliOk, eventFiles, newEvents, newTicket, post, showTicket } from './action-helpers.js';
 import { freePort, occupiedPort, project, request, scratch, until } from './web-helpers.js';
 
 /** A running in-process `agentboard <argv>`. */
@@ -83,12 +93,13 @@ async function portIsFree(port: number): Promise<boolean> {
 }
 
 describe('scenario: Start and stop (in process)', () => {
-  it('prints one JSON line with url, port, token and writable false, serves, and exits 0 when stopped', async () => {
+  it('prints one JSON line with url, port, token, writable false and actor null, serves, and exits 0 when stopped', async () => {
     const { root } = project();
     const running = start(['serve', '--port', '0', '--json'], root);
     const line = await startupLine(running);
     const doc = JSON.parse(line) as Record<string, unknown>;
-    expect(Object.keys(doc)).toEqual(['url', 'port', 'token', 'writable']);
+    expect(Object.keys(doc)).toEqual(['url', 'port', 'token', 'writable', 'actor']);
+    expect(doc.actor).toBeNull();
     expect(typeof doc.port).toBe('number');
     const port = doc.port as number;
     expect(port).toBeGreaterThan(0);
@@ -136,18 +147,13 @@ describe('scenario: Start and stop (in process)', () => {
     expect(await running.done).toBe(0);
   });
 
-  it('accepts and ignores --as, and needs no actor', async () => {
+  it('needs no actor', async () => {
     const { root } = project();
-    for (const argv of [
-      ['serve', '--json', '--as', 'someone'],
-      ['serve', '--json'],
-    ]) {
-      const running = start(argv, root, cliEnv({ AGENTBOARD_ACTOR: undefined }));
-      const doc = JSON.parse(await startupLine(running)) as { writable: boolean };
-      expect(doc.writable).toBe(false);
-      running.stop();
-      expect(await running.done).toBe(0);
-    }
+    const running = start(['serve', '--json'], root, cliEnv({ AGENTBOARD_ACTOR: undefined }));
+    const doc = JSON.parse(await startupLine(running)) as { writable: boolean; actor: unknown };
+    expect(doc).toMatchObject({ writable: false, actor: null });
+    running.stop();
+    expect(await running.done).toBe(0);
   });
 
   it('refuses the synchronous runCli with streaming-command', () => {
@@ -363,10 +369,12 @@ describe('openInBrowser', () => {
 });
 
 describe('scenario: Serve has help', () => {
-  it('prints the synopsis with --port and --open, the exit codes and examples, with no board and no actor', () => {
+  it('prints the synopsis with --port, --open and --as, the exit codes and examples, with no board and no actor', () => {
     const out = run(['help', 'serve'], scratch(), cliEnv({ AGENTBOARD_ACTOR: undefined }));
     expect(out.code, out.stderr).toBe(0);
-    expect(out.stdout).toMatch(/^Usage: agentboard serve \[--port <port>\] \[--open\]/m);
+    expect(out.stdout).toMatch(
+      /^Usage: agentboard serve \[--port <port>\] \[--open\] \[--as <actor>\] \[--json\]$/m,
+    );
     expect(out.stdout).toMatch(/^\s+1 port-in-use\s/m);
     expect(out.stdout).toMatch(/^\s+2 board-not-found\s/m);
     expect(out.stdout).toMatch(/^\s+0\s+Stopped by SIGINT or SIGTERM/m);
@@ -383,3 +391,264 @@ describe('scenario: Serve has help', () => {
     }
   });
 });
+
+// add-board-web-actions task 1.1: `serve --as <actor>` enables the write
+// actions as that actor only; AGENTBOARD_ACTOR never does.
+
+/** The start-up document of `serve --json`. */
+interface StartupDoc {
+  url: string;
+  port: number;
+  token: string;
+  writable: boolean;
+  actor: string | null;
+}
+
+describe('scenario: Writable start-up', () => {
+  it('prints writable true and actor ben for serve --port 0 --json --as ben', async () => {
+    const { root, boardDir } = project();
+    const running = start(['serve', '--port', '0', '--json', '--as', 'ben'], root);
+    const line = await startupLine(running);
+    const doc = JSON.parse(line) as StartupDoc;
+    expect(Object.keys(doc)).toEqual(['url', 'port', 'token', 'writable', 'actor']);
+    expect(doc.writable).toBe(true);
+    expect(doc.actor).toBe('ben');
+    expect(doc.url).toBe(`http://127.0.0.1:${String(doc.port)}/#token=${doc.token}`);
+    const session = await request(doc.port, '/api/session', {
+      headers: { Authorization: `Bearer ${doc.token}` },
+    });
+    expect(JSON.parse(session.body)).toMatchObject({ boardDir, writable: true, actor: 'ben' });
+    expect(session.headers['set-cookie']).toBeUndefined();
+    running.stop();
+    expect(await running.done).toBe(0);
+    expect(running.stdout()).toBe(`${line}\n`);
+    expect(running.stderr()).toBe('');
+  });
+
+  it('prints serving <board dir> as <actor> at <url> without --json', async () => {
+    const { root, boardDir } = project();
+    const running = start(['serve', '--as', 'ben'], root);
+    const line = await startupLine(running);
+    const match =
+      /^serving (.+) as ben at (http:\/\/127\.0\.0\.1:(\d+)\/#token=([A-Za-z0-9_-]{43}))$/.exec(
+        line,
+      );
+    expect(match, line).not.toBeNull();
+    expect(match?.[1]).toBe(boardDir);
+    running.stop();
+    expect(await running.done).toBe(0);
+    expect(running.stdout()).toBe(`${line}\n`);
+  });
+
+  it(
+    'takes the actor from --as (or --as=<actor>), never from AGENTBOARD_ACTOR',
+    { timeout: 20_000 },
+    async () => {
+      for (const flag of [['--as', 'ben'], ['--as=ben']]) {
+        const { root, eventsDir } = project();
+        const id = newTicket(root);
+        const running = start(
+          ['serve', '--json', ...flag],
+          root,
+          cliEnv({ AGENTBOARD_ACTOR: 'impl-1' }),
+        );
+        const doc = JSON.parse(await startupLine(running)) as StartupDoc;
+        expect(doc).toMatchObject({ writable: true, actor: 'ben' });
+        const before = eventFiles(eventsDir);
+        const result = await post(doc, 'comment', { id, text: 'hello' });
+        expect(result.status, result.body).toBe(200);
+        expect(newEvents(eventsDir, before).map((e) => e.event.actor)).toEqual(['ben']);
+        running.stop();
+        expect(await running.done).toBe(0);
+      }
+    },
+  );
+});
+
+describe('scenario: Environment actor does not enable writes', () => {
+  it('says read-only on start-up with AGENTBOARD_ACTOR=impl-1 and no --as', async () => {
+    const { root } = project();
+    const running = start(['serve'], root, cliEnv({ AGENTBOARD_ACTOR: 'impl-1' }));
+    const line = await startupLine(running);
+    expect(line).toMatch(/^serving .+ read-only at http:\/\/127\.0\.0\.1:\d+\/#token=/);
+    expect(line).not.toContain('impl-1');
+    running.stop();
+    expect(await running.done).toBe(0);
+  });
+
+  it(
+    'reports writable false and actor null, and refuses every action with read-only',
+    { timeout: 20_000 },
+    async () => {
+      const { root, eventsDir } = project();
+      const id = newTicket(root);
+      const running = start(['serve', '--json'], root, cliEnv({ AGENTBOARD_ACTOR: 'impl-1' }));
+      const doc = JSON.parse(await startupLine(running)) as StartupDoc;
+      expect(doc).toMatchObject({ writable: false, actor: null });
+      const session = await request(doc.port, '/api/session', {
+        headers: { Authorization: `Bearer ${doc.token}` },
+      });
+      expect(JSON.parse(session.body)).toMatchObject({ writable: false, actor: null });
+      const before = eventFiles(eventsDir);
+      for (const action of ACTION_NAMES) {
+        const result = await post(doc, action, { id });
+        expect(result.status, `${action}: ${result.body}`).toBe(405);
+        expect(JSON.parse(result.body)).toMatchObject({
+          error: { exitCode: 1, reason: 'read-only' },
+        });
+      }
+      expect(eventFiles(eventsDir)).toEqual(before);
+      running.stop();
+      expect(await running.done).toBe(0);
+    },
+  );
+});
+
+/**
+ * The exit code of `running` once it returns within `ms`; otherwise stops
+ * it (as SIGINT would) and returns the string `still running`.
+ */
+async function exitWithin(running: Running, ms: number): Promise<number | string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<string>((resolve) => {
+    timer = setTimeout(() => {
+      resolve('still running');
+    }, ms);
+  });
+  const outcome = await Promise.race([running.done, late]);
+  clearTimeout(timer);
+  if (outcome === 'still running') {
+    running.stop();
+    await running.done;
+  }
+  return outcome;
+}
+
+describe('an empty --as', () => {
+  it.each([[['--as', '']], [['--as=']]])(
+    '%j exits 1 usage naming --as, before any board lookup or listening',
+    { timeout: 20_000 },
+    async (flag) => {
+      for (const cwd of [project().root, scratch()]) {
+        const port = await freePort();
+        const running = start(['serve', '--port', String(port), '--json', ...flag], cwd);
+        expect(await exitWithin(running, 3000)).toBe(1);
+        const doc = JSON.parse(running.stdout()) as {
+          error: { exitCode: number; reason: string; message: string };
+        };
+        expect(doc.error).toMatchObject({ exitCode: 1, reason: 'usage' });
+        expect(doc.error.message).toContain('--as');
+        expect(running.stdout().trim().split('\n')).toHaveLength(1);
+        expect(await portIsFree(port)).toBe(true);
+      }
+    },
+  );
+});
+
+describe('scenario: Decision path relative to the tree root (serve started in <root>/src)', () => {
+  it(
+    'records docs/adr/0006-web.md relative to the git working tree root',
+    { timeout: 20_000 },
+    async () => {
+      const root = gitRepo(join(scratch(), 'repo'));
+      mkdirSync(join(root, '.board', 'events'), { recursive: true });
+      mkdirSync(join(root, 'docs', 'adr'), { recursive: true });
+      mkdirSync(join(root, 'src'), { recursive: true });
+      writeFileSync(join(root, 'docs', 'adr', '0006-web.md'), '# ADR\n');
+      const id = newTicket(root);
+      for (const status of ['tests', 'implementing', 'review', 'merged']) {
+        cliOk(root, ['move', id, status, '--as', 'orch']);
+      }
+      const running = start(['serve', '--json', '--as', 'ben'], join(root, 'src'));
+      const doc = JSON.parse(await startupLine(running)) as StartupDoc;
+      // link --decision resolves the same way (design.md: "Close paths
+      // relative to the tree root").
+      const linked = await post(doc, 'link', { id, decision: 'docs/adr/0006-web.md' });
+      expect(linked.status, linked.body).toBe(200);
+      expect(
+        showTicket(root, id).links.map((link) => (link.type === 'decision' ? link.path : null)),
+      ).toEqual(['docs/adr/0006-web.md']);
+      const result = await post(doc, 'close', {
+        id,
+        'decision-recorded-in': 'docs/adr/0006-web.md',
+      });
+      expect(result.status, result.body).toBe(200);
+      const ticket = showTicket(root, id);
+      expect(ticket.closed).toBe(true);
+      expect(ticket.disposition).toEqual({ decision: 'docs/adr/0006-web.md' });
+      running.stop();
+      expect(await running.done).toBe(0);
+    },
+  );
+
+  it('resolves against the start directory itself outside git', { timeout: 20_000 }, async () => {
+    const { root, boardDir } = project();
+    mkdirSync(join(root, 'docs', 'adr'), { recursive: true });
+    writeFileSync(join(root, 'docs', 'adr', '0006-web.md'), '# ADR\n');
+    const src = join(root, 'src');
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'note.md'), '# Note\n');
+    const id = newTicket(root);
+    cliOk(root, ['move', id, 'blocked', '--as', 'orch']);
+    const running = start(
+      ['serve', '--json', '--as', 'ben'],
+      src,
+      cliEnv({ AGENTBOARD_DIR: boardDir }),
+    );
+    const doc = JSON.parse(await startupLine(running)) as StartupDoc;
+    const missing = await post(doc, 'close', {
+      id,
+      'decision-recorded-in': 'docs/adr/0006-web.md',
+    });
+    expect(missing.status, missing.body).toBe(400);
+    expect(JSON.parse(missing.body)).toMatchObject({ error: { reason: 'decision-path-missing' } });
+    const result = await post(doc, 'close', { id, 'decision-recorded-in': 'note.md' });
+    expect(result.status, result.body).toBe(200);
+    expect(showTicket(root, id).disposition).toEqual({ decision: 'note.md' });
+    running.stop();
+    expect(await running.done).toBe(0);
+  });
+});
+
+describe('the help of serve (drift guard for --as)', () => {
+  it('describes --as as the write actor, and no longer says it is ignored', () => {
+    const out = run(['help', 'serve'], scratch(), cliEnv({ AGENTBOARD_ACTOR: undefined }));
+    expect(out.code, out.stderr).toBe(0);
+    const spec = findCommand('serve');
+    expect(spec?.actorHelp).toBeDefined();
+    expect(spec?.actorHelp).toMatch(/write/i);
+    expect(spec?.actorHelp).toContain('AGENTBOARD_ACTOR');
+    expect(out.stdout).toMatch(
+      new RegExp(
+        `^  --as <actor> {2,}string, optional {2,}${escapeRe(spec?.actorHelp ?? '')}$`,
+        'm',
+      ),
+    );
+    expect(out.stdout).not.toContain('Accepted and ignored by this command');
+    expect(out.stdout).not.toContain('--as is ignored');
+    expect(spec?.description).toContain('serving <board dir> as <actor> at <url>');
+    expect(spec?.description).not.toMatch(/--as is ignored/);
+    // Still needs no actor to run, and is still not a writing command of the registry.
+    expect(spec?.writes).toBe(false);
+    expect(spec?.tracksCursor ?? false).toBe(false);
+    const usage = spec?.exitCodes.find((e) => e.code === 1 && e.reason === 'usage');
+    expect(usage?.meaning).toContain('--as');
+  });
+
+  it('has an example with --as that parses to serve with that actor', () => {
+    const spec = findCommand('serve');
+    const withActor = (spec?.examples ?? []).filter((e) => / --as /.test(e.command));
+    expect(withActor.length).toBeGreaterThan(0);
+    for (const example of withActor) {
+      const parsed = parseArgs(splitCommandLine(example.command).slice(1));
+      expect(parsed.command.name).toBe('serve');
+      expect(typeof parsed.values.as).toBe('string');
+      expect(parsed.values.as).not.toBe('');
+    }
+  });
+});
+
+/** `text` with the regular expression metacharacters escaped. */
+function escapeRe(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}

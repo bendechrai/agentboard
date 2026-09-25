@@ -47,6 +47,7 @@ interface Startup {
   port: number;
   token: string;
   writable: boolean;
+  actor: string | null;
 }
 
 async function startup(proc: CliProcess): Promise<Startup> {
@@ -75,10 +76,11 @@ describe('scenario: Start and stop', () => {
       await newTicket(root);
       const proc = startCli({ argv: ['serve', '--port', '0', '--json'] }, root);
       const line = await startup(proc);
-      expect(Object.keys(line)).toEqual(['url', 'port', 'token', 'writable']);
+      expect(Object.keys(line)).toEqual(['url', 'port', 'token', 'writable', 'actor']);
       expect(typeof line.port).toBe('number');
       expect(line.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
       expect(line.writable).toBe(false);
+      expect(line.actor).toBeNull();
       expect(line.url).toBe(`http://127.0.0.1:${String(line.port)}/#token=${line.token}`);
       const board = await get(line, '/api/board');
       expect(board.status).toBe(200);

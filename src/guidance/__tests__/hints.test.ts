@@ -43,8 +43,11 @@ const PINNED: Readonly<Record<string, number>> = {
   'ambiguous-remote': 1,
   'board-not-a-repository': 2,
   'board-not-found': 2,
+  // add-board-web-actions task 1.2: the refusals of the write actions.
+  'body-too-large': 1,
   busy: 5,
   'checklist-index': 4,
+  'csrf-failed': 1,
   'decision-path-missing': 1,
   'detached-head': 3,
   'duplicate-create': 4,
@@ -70,6 +73,7 @@ const PINNED: Readonly<Record<string, number>> = {
   'not-found': 1,
   'path-outside-tree': 1,
   'port-in-use': 1,
+  'read-only': 1,
   'schema-mismatch': 5,
   'secret-like': 1,
   'streaming-command': 1,
@@ -205,6 +209,10 @@ function commandFor(reason: string): string {
     'not-found': 'serve',
     'method-not-allowed': 'serve',
     'too-many-streams': 'serve',
+    // The write action refusals (add-board-web-actions group 1) too.
+    'read-only': 'serve',
+    'csrf-failed': 'serve',
+    'body-too-large': 'serve',
   };
   const found = COMMANDS.find((c) => c.exitCodes.some((e) => e.reason === reason));
   return special[reason] ?? found?.name ?? 'show';
@@ -456,6 +464,18 @@ describe('hint contracts (CLI)', () => {
     ['method-not-allowed', 'serve', ['read-only', 'GET', "'agentboard help serve'"]],
     ['too-many-streams', 'serve', ['64', 'reconnect', "'agentboard help serve'"]],
     ['unknown-cursor', 'serve', ['after', '/api/events', "'agentboard help serve'"]],
+    // add-board-web-actions group 1: the write action refusals.
+    [
+      'read-only',
+      'serve',
+      ['read-only', "'agentboard serve --as impl'", "'agentboard help serve'"],
+    ],
+    [
+      'csrf-failed',
+      'serve',
+      ['Content-Type: application/json', 'Origin', "'agentboard help serve'"],
+    ],
+    ['body-too-large', 'serve', ['64 KiB', "'agentboard help serve'"]],
     // add-board-tui group 2: top without an interactive terminal.
     ['not-a-tty', 'top', ['terminal', "'agentboard list'", "'agentboard watch --as impl'"]],
     ['streaming-command', 'top', ["'agentboard top'"]],
@@ -464,6 +484,14 @@ describe('hint contracts (CLI)', () => {
     for (const fragment of fragments) {
       expect(hint).toContain(fragment);
     }
+  });
+
+  it('scenario: Read-only server refuses actions (the hint names agentboard serve --as <actor>)', () => {
+    const hint = cli('read-only', 'serve');
+    expect(hint).toContain("'agentboard serve --as <actor>'");
+    expect(hint.endsWith("'agentboard help serve'")).toBe(true);
+    expect(cli('csrf-failed', 'serve').endsWith("'agentboard help serve'")).toBe(true);
+    expect(cli('body-too-large', 'serve').endsWith("'agentboard help serve'")).toBe(true);
   });
 
   it('unknown-cursor from serve (the events API) does not send the caller to inbox', () => {

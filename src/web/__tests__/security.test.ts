@@ -11,12 +11,14 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { BoardError } from '../../store/errors.js';
 import {
+  ACTIONS_PREFIX,
   ALLOWED_METHOD,
   CONTENT_SECURITY_POLICY,
   TOKEN_BYTES,
   TOKEN_LENGTH,
   checkRequest,
   hostAllowed,
+  isActionPath,
   isApiPath,
   newToken,
   presentedTokens,
@@ -491,5 +493,110 @@ describe('checkRequest', () => {
       GUARD,
     );
     expect(local).toMatchObject({ kind: 'route', path: '/api/session', api: true });
+  });
+});
+
+// add-board-web-actions task 1.2 (board-web: "Read-only server" as modified:
+// GET only, except POST to /api/actions/<action>).
+
+describe('isActionPath', () => {
+  it('is true for every path under /api/actions/', () => {
+    expect(ACTIONS_PREFIX).toBe('/api/actions/');
+    for (const path of ['/api/actions/comment', '/api/actions/', '/api/actions/a/b']) {
+      expect(isActionPath(path), path).toBe(true);
+    }
+  });
+
+  it('is false for everything else', () => {
+    for (const path of ['/api/actions', '/api/actionsx', '/api/board', '/actions/comment', '/']) {
+      expect(isActionPath(path), path).toBe(false);
+    }
+  });
+});
+
+describe('checkRequest and the action paths', () => {
+  it('routes an authenticated POST of an action path with method POST', () => {
+    const verdict = checkRequest(head('POST', '/api/actions/comment?x=1', BEARER), GUARD);
+    expect(verdict).toMatchObject({
+      kind: 'route',
+      method: 'POST',
+      path: '/api/actions/comment',
+      api: true,
+    });
+    const local = checkRequest(
+      head('POST', '/api/actions/claim', { host: `localhost:${String(PORT)}`, ...BEARER }),
+      GUARD,
+    );
+    expect(local).toMatchObject({ kind: 'route', method: 'POST', path: '/api/actions/claim' });
+  });
+
+  it('routes a GET with method GET', () => {
+    expect(checkRequest(head('GET', '/api/board', BEARER), GUARD)).toMatchObject({
+      kind: 'route',
+      method: 'GET',
+    });
+    expect(checkRequest(head('GET', '/'), GUARD)).toMatchObject({ kind: 'route', method: 'GET' });
+  });
+
+  it('checks the Host, then the token, before the method of an action', () => {
+    refused(
+      checkRequest(
+        head('POST', '/api/actions/comment', { ...BEARER, host: 'attacker.example:4477' }),
+        GUARD,
+      ),
+      403,
+      'forbidden-host',
+      true,
+    );
+    refused(checkRequest(head('POST', '/api/actions/comment'), GUARD), 401, 'unauthorized', true);
+    refused(
+      checkRequest(head('POST', '/api/actions/comment', COOKIE), GUARD),
+      401,
+      'unauthorized',
+      true,
+    );
+    refused(
+      checkRequest(head('POST', `/api/actions/comment?token=${TOKEN}`), GUARD),
+      401,
+      'unauthorized',
+      true,
+    );
+    refused(
+      checkRequest(
+        head('OPTIONS', '/api/actions/comment', { origin: 'https://attacker.example' }),
+        GUARD,
+      ),
+      401,
+      'unauthorized',
+      true,
+    );
+  });
+
+  it('answers every other method of an action path with 405 and allow POST', () => {
+    for (const method of ['GET', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS']) {
+      const verdict = checkRequest(head(method, '/api/actions/comment', BEARER), GUARD);
+      refused(verdict, 405, 'method-not-allowed', true);
+      expect(verdict).toMatchObject({ allow: 'POST' });
+    }
+  });
+
+  it('answers a POST anywhere else with 405 and allow GET', () => {
+    for (const url of ['/api/board', '/api/actions', '/api/actionsx/comment', '/api/session']) {
+      const verdict = checkRequest(head('POST', url, BEARER), GUARD);
+      refused(verdict, 405, 'method-not-allowed', true);
+      expect(verdict, url).toMatchObject({ allow: 'GET' });
+    }
+    for (const url of ['/', '/app.js', '/actions/comment']) {
+      const verdict = checkRequest(head('POST', url), GUARD);
+      refused(verdict, 405, 'method-not-allowed', false);
+      expect(verdict, url).toMatchObject({ allow: 'GET' });
+    }
+  });
+
+  it('carries allow on a 405 only', () => {
+    expect(checkRequest(head('POST', '/api/actions/comment'), GUARD)).not.toHaveProperty('allow');
+    expect(
+      checkRequest(head('GET', '/api/board', { host: 'attacker.example:4477' }), GUARD),
+    ).not.toHaveProperty('allow');
   });
 });

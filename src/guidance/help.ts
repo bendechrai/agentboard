@@ -93,7 +93,11 @@ export interface CommandHelpDocument {
  *    the form above joined by spaces, joined by ` | `, in `(...)` when the
  *    group is required and `[...]` when it is not (e.g.
  *    `(--task <task> | --change <change> --group <group> | --adhoc <adhoc>)`);
- * 4. `--as <actor>` when the command writes or tracks a cursor;
+ * 4. `--as <actor>` when the command writes or tracks a cursor; otherwise
+ *    `[--as <actor>]` when the command has `actorHelp` (`serve`, where
+ *    `--as` enables the write actions, and `mcp`: board-cli "Command
+ *    surface" scenario "Serve has help", as modified by
+ *    add-board-web-actions task 1.1); nothing on every other command;
  * 5. `[--json]`.
  * Pure.
  */
