@@ -86,6 +86,15 @@ full workflow, and docs/adr/ for design decisions.
       `agentboard serve --as <actor>`, on the security model of ADR 0006
       (bearer token, JSON-only bodies, Origin check). Next once
       `add-board-insights` is done.
+3. `add-claim-leases` (proposed): grace leases confirmed by `renew`
+   (`claim --ttl`), takeover of a lapsed lease and a fair waiting queue
+   (`claim --wait`, derived `ticket.grant` events) decided from event
+   timestamps with a 60 second skew tolerance, an audited
+   `release --force --reason`, board settings (`config`), and mutex
+   ticket guidance, plus reconciling tickets on `import-change` re-runs
+   (group 8, independent). Independent of the two changes above; eight groups,
+   groups 1 to 5 concurrency-critical (second reviewer on the strongest
+   model).
 
 Each task group uses the three-role loop from CONTRIBUTING.md
 ("Three-agent workflow per task group"):
