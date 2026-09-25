@@ -33,6 +33,25 @@
  *   `rejected` or `unknown`); it shows the kind, the actor, the outcome
  *   and, for a rejected event, its reason, as text.
  * Every text from the board is rendered as text, never as markup.
+ *
+ * Write mode (board-web-actions: "Action controls in the web app";
+ * add-board-web-actions task 2.1):
+ * - when `session.writable` is false, the view is exactly as above: no
+ *   `form`, `input`, `textarea`, `select` or `button` anywhere in it, and
+ *   no request other than `GET`s is ever made;
+ * - when `session.writable` is true, the `ActionControls` of the shown
+ *   ticket are rendered inside the `article`, after the fields (and the
+ *   disposition), and the checklist is the `ChecklistControl` (the same
+ *   `ul.checklist` of one `li` per line, each with its checkbox) in place
+ *   of the plain list. Both get the shown ticket, `conn`,
+ *   `props.onUnauthorized`, and an `onApplied` that replaces the shown
+ *   ticket with the document's `ticket` at once (fields, checklist, links
+ *   and disposition), without requesting the detail again; the
+ *   conversation and the events keep those of the last loaded detail
+ *   until the next reload (on the next `model.id`, when the stream
+ *   confirms the write);
+ * - a reload of the detail (a new `model.id`) replaces the shown ticket
+ *   with the loaded one and keeps what the user entered in the controls.
  */
 
 import type { JSX } from 'preact';
@@ -43,7 +62,13 @@ import { formatTaskRef } from '../../../events/schema.js';
 import { conversation, type ConversationMessage } from '../../../view/conversation.js';
 import { relativeTime } from '../../../view/time.js';
 import type { BoardModel, EventView } from '../../../view/types.js';
-import { ApiError, loadTicketDetail, type Connection, type TicketDetail } from '../api.js';
+import {
+  ApiError,
+  loadTicketDetail,
+  type Connection,
+  type Session,
+  type TicketDetail,
+} from '../api.js';
 import { isoTime } from './controls.js';
 
 export interface TicketViewProps {
@@ -54,6 +79,10 @@ export interface TicketViewProps {
   /** The connection the app's client uses. */
   conn: Connection;
   now: number;
+  /** The session of the app's client: the controls are shown only when `writable`. */
+  session: Session;
+  /** Called when an action is answered 401 (the app discards the token). */
+  onUnauthorized: () => void;
 }
 
 /** The latest answer for one id: the detail, or why it failed. */

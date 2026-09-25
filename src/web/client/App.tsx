@@ -18,11 +18,19 @@
  *   `Open the URL printed by agentboard serve` (and no view). When the
  *   phase becomes `unauthorized` (a 401 from the API or the stream; the
  *   client has already stopped its stream), `props.onUnauthorized` is
- *   called once, which `mount` wires to `discardToken`;
+ *   called once, which `mount` wires to `discardToken`. An action
+ *   answered 401 (the ticket view's `onUnauthorized`) has the same effect:
+ *   the client is stopped, only the `no-token` alert is shown, and
+ *   `props.onUnauthorized` is called once;
  * - a `nav` with the links, in this order, `Board` (`#/board`), `Feed`
  *   (`#/feed`), `Lanes` (`#/lanes`), `Health` (`#/health`), `Replay`
  *   (`#/replay`) and `Graph` (`#/graph`) (add-board-insights group 3);
  * - the session's `boardDir` as text once loaded;
+ * - once the session is loaded and `writable` (board-web-actions: "Action
+ *   controls in the web app": "The page SHALL show the actor it acts as"),
+ *   in the header, one element with class `acting-as` whose text is
+ *   `acting as <actor>`; on a read-only session no element with class
+ *   `acting-as`;
  * - while loading, the text `Loading board...`; when the first load
  *   failed, an element with `role="alert"` holding the error's message;
  * - while the client's `problem` is set, a `ProblemBanner`;
@@ -39,7 +47,7 @@
 import type { JSX } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
-import { defaultDeps, type ClientDeps, type Connection } from './api.js';
+import { defaultDeps, type ClientDeps, type Connection, type Session } from './api.js';
 import { BoardClient, type ClientState } from './client.js';
 import { formatHash, parseHash, type Route } from './hash.js';
 import { BoardView } from './views/BoardView.js';
@@ -172,6 +180,14 @@ export function App(props: AppProps): JSX.Element {
   );
 }
 
+/** Stub (add-board-web-actions group 2): the session given to a view before one is loaded. */
+const READ_ONLY: Session = { version: '', boardDir: '', writable: false, actor: null };
+
+/** Stub (add-board-web-actions group 2): an action answered 401. */
+function actionUnauthorized(): void {
+  throw new Error('not implemented');
+}
+
 function body(
   state: ClientState | null,
   route: Route,
@@ -195,7 +211,16 @@ function body(
     case 'feed':
       return <FeedView model={model} now={now} route={route} navigate={navigate} />;
     case 'ticket':
-      return <TicketView id={route.id} model={model} conn={conn} now={now} />;
+      return (
+        <TicketView
+          id={route.id}
+          model={model}
+          conn={conn}
+          now={now}
+          session={state.session ?? READ_ONLY}
+          onUnauthorized={actionUnauthorized}
+        />
+      );
     case 'lanes':
       return <LanesView model={model} now={now} />;
     case 'health':
