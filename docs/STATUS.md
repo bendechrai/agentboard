@@ -60,12 +60,15 @@ full workflow, and docs/adr/ for design decisions.
   fake-terminal tests, the README section "Watching the board in a
   terminal" and ADR 0008. Its requirements are the main spec `board-tui`,
   plus changes to `board-cli`.
-- `add-board-insights` is in progress: groups 1 and 2 are merged (the
-  pure health and replay view-model, `agentboard health` and the MCP tool
-  `board_health`); groups 3 (the health, replay and hand-off graph web
-  views) and 4 (documentation) remain. Its `board-cli` MODIFIED text is
-  already re-synced with the main spec (keeping `top`).
-  `add-board-web-actions` follows it.
+- The `add-board-insights` OpenSpec change is complete once its
+  documentation group (4) merges: the pure health, replay and hand-off
+  graph view-model, `agentboard health` and the MCP tool `board_health`,
+  the Health, Replay and Graph views of the web app with
+  `GET /api/health` and `GET /api/health/check`, and the README sections
+  "Board health" and "Replay and the hand-off graph". Its `board-cli`
+  MODIFIED text is already re-synced with the main spec (keeping `top`).
+  It is then archived in its own PR, which folds its deltas into the main
+  specs (a new `board-insights` spec, plus changes to `board-cli`).
 - This repository uses its own guidance: `agentboard agents install`
   wrote `.claude/skills/agentboard/SKILL.md` and the `agentboard:` apply
   and archive guidance in `openspec/config.yaml`; `agentboard agents
@@ -76,16 +79,15 @@ full workflow, and docs/adr/ for design decisions.
 1. A human reviews `staging` and promotes it to `main` (a merge-commit PR
    from `staging`) when ready. Publishing to npm is deferred: agentboard
    is used locally through `npm link`.
-2. Finish the observability changes in progress, then the last one
+2. Archive the observability change just finished, then build the last one
    (each change's `tasks.md` states its dependencies; archive them in
    this order):
-   1. `add-board-insights`: health panel and `agentboard health` (also the
-      MCP tool `board_health`), replay, and the hand-off graph. Groups 1
-      and 2 merged; groups 3 (web views) and 4 (documentation) to do.
+   1. `add-board-insights`: complete once group 4 (documentation) merges;
+      archive it in its own PR (see CONTRIBUTING.md, "OpenSpec").
    2. `add-board-web-actions`: write actions from the browser under
       `agentboard serve --as <actor>`, on the security model of ADR 0006
-      (bearer token, JSON-only bodies, Origin check). Next once
-      `add-board-insights` is done.
+      (bearer token, JSON-only bodies, Origin check). Next, once
+      `add-board-insights` is archived.
 
 Each task group uses the three-role loop from CONTRIBUTING.md
 ("Three-agent workflow per task group"):

@@ -30,4 +30,4 @@ percent.
 
 ## 4. Documentation (`docs/insights`)
 
-- [ ] 4.1 Document the health checks with their definitions and default thresholds, the `health` command and `board_health`, replay and the hand-off graph in README.md, and update docs/STATUS.md. Verify: `make ascii`, `make validate-specs`, and running `agentboard health` and `agentboard health --check --json` on a temporary board with a stale claim, a blocked ticket and a merged ticket without a PR link
+- [x] 4.1 Document the health checks with their definitions and default thresholds, the `health` command and `board_health`, replay and the hand-off graph in README.md, and update docs/STATUS.md. Verify: `make ascii`, `make validate-specs`, and running `agentboard health` and `agentboard health --check --json` on a temporary board with a stale claim, a blocked ticket and a merged ticket without a PR link
