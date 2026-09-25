@@ -21,7 +21,7 @@ strongest model.
 
 ## 2. Action controls (`web/action-controls`)
 
-- [ ] 2.1 Implement the controls on the ticket detail (comment, move with permitted targets from `isTransitionAllowed`, claim, release, hand-off, checklist checkboxes, link, close with exactly one disposition), the acting-as banner, refusals with message and hint beside the control keeping the input, immediate application of a success, and the bearer header (from the client of `add-board-web`) on every request. Verify: component tests in `happy-dom` for each control's request body, the two "Action controls in the web app" scenarios, a `busy` refusal offering a retry, and no write control rendered for a read-only session; and the smoke test extended to claim a ticket through the page of a writable server and see `agentboard show` report the new assignee
+- [x] 2.1 Implement the controls on the ticket detail (comment, move with permitted targets from `isTransitionAllowed`, claim, release, hand-off, checklist checkboxes, link, close with exactly one disposition), the acting-as banner, refusals with message and hint beside the control keeping the input, immediate application of a success, and the bearer header (from the client of `add-board-web`) on every request. Verify: component tests in `happy-dom` for each control's request body, the two "Action controls in the web app" scenarios, a `busy` refusal offering a retry, and no write control rendered for a read-only session; and the smoke test extended to claim a ticket through the page of a writable server and see `agentboard show` report the new assignee
 
 ## 3. Documentation (`docs/web-actions`)
 

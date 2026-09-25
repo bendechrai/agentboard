@@ -503,6 +503,137 @@ select {
   font-style: italic;
 }
 
+/* Actions (add-board-web-actions group 2): only on a writable server */
+
+.acting-as {
+  margin: 0;
+  padding: 2px 10px;
+  border: 1px solid var(--problem-border);
+  border-radius: var(--radius);
+  background: var(--problem);
+  font-size: 0.85rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.action {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+}
+
+.action-inline,
+.action-row {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.action label {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.action .choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.action input[type='text'],
+.action textarea {
+  font: inherit;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--fg);
+}
+
+.action input[type='text'] {
+  width: 14rem;
+  max-width: 100%;
+}
+
+.action textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.action textarea:focus-visible,
+.action input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.action-inline .refusal {
+  flex-basis: 100%;
+}
+
+.refusal {
+  margin: 2px 0 0;
+  padding: 6px 10px;
+  border: 1px solid var(--problem-border);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  background: var(--problem);
+  overflow-wrap: anywhere;
+}
+
+.refusal p {
+  margin: 0;
+}
+
+.refusal-hint {
+  margin-top: 2px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+}
+
+.refusal .retry {
+  margin-top: 6px;
+}
+
+.action-note {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.checklist-control .checklist li::before {
+  content: none;
+}
+
+.checklist-control .checklist label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  color: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
 /* Health (add-board-insights group 3) */
 
 .health-view input[type='text'] {
