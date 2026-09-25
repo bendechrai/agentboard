@@ -908,6 +908,158 @@ describe('success', () => {
   });
 });
 
+describe('checklist requests per line', () => {
+  interface Answer {
+    status: number;
+    body: unknown;
+  }
+
+  /** The checkbox of line `index`. */
+  function box(index: number): HTMLInputElement {
+    return el<HTMLInputElement>(`ul.checklist input[data-index="${String(index)}"]`);
+  }
+
+  /** The `index` of a checklist request's body. */
+  function indexOf(request: FakeAction): number {
+    const body = request.body as { index?: unknown } | undefined;
+    return typeof body?.index === 'number' ? body.index : -1;
+  }
+
+  /** Every checklist request made so far, tick or untick. */
+  function checklistRequests(api: FakeApi): FakeAction[] {
+    return [...api.actionsOf('checklist-tick'), ...api.actionsOf('checklist-untick')];
+  }
+
+  it('posts one request for a line clicked twice while its request is pending, and disables its box until the answer', async () => {
+    const { api } = await openTicket(T1);
+    const answer = deferred<Answer>();
+    api.onAction = () => answer.promise;
+    click(box(1));
+    await posted(api, 'checklist-tick');
+    await waitFor(() => {
+      expect(box(1).disabled).toBe(true);
+    });
+    click(box(1));
+    await settle();
+    expect(checklistRequests(api)).toHaveLength(1);
+    const ticked = after(T1, E.check(T1, 1, true, { actor: 'ben', wall: WALL + 500 }));
+    answer.resolve({ status: 200, body: { hash: HASH, ticket: ticked } });
+    await waitFor(() => {
+      expect(box(1).disabled).toBe(false);
+    });
+    await settle();
+    expect(checklistRequests(api)).toHaveLength(1);
+    expect(box(1).checked).toBe(true);
+  });
+
+  it('keeps another line usable while one line is pending', async () => {
+    const { api } = await openTicket(T1);
+    const first = deferred<Answer>();
+    api.onAction = (request) =>
+      indexOf(request) === 1
+        ? first.promise
+        : { status: 200, body: { hash: HASH, ticket: ticketOf(api.board, idOf(request)) } };
+    click(box(1));
+    await posted(api, 'checklist-tick');
+    await waitFor(() => {
+      expect(box(1).disabled).toBe(true);
+    });
+    expect(box(0).disabled).toBe(false);
+    click(box(0));
+    expect((await posted(api, 'checklist-untick')).body).toEqual({ id: T1, index: 0 });
+    expect(box(1).disabled).toBe(true);
+    first.resolve({ status: 200, body: { hash: HASH, ticket: after(T1) } });
+    await waitFor(() => {
+      expect(box(1).disabled).toBe(false);
+    });
+  });
+
+  it("keeps one line's refusal when another line's request resolves", async () => {
+    const { api } = await openTicket(T1);
+    const second = deferred<Answer>();
+    api.onAction = (request) =>
+      indexOf(request) === 1
+        ? { status: 409, body: errorDoc('checklist-index', 'no checklist line 1', null) }
+        : second.promise;
+    click(box(1));
+    await waitFor(() => {
+      expect(refusal('checklist')).not.toBeNull();
+    });
+    click(box(0));
+    await posted(api, 'checklist-untick');
+    await settle();
+    expect(refusal('checklist')?.querySelector('.refusal-message')?.textContent).toBe(
+      'no checklist line 1',
+    );
+    const unticked = after(T1, E.check(T1, 0, false, { actor: 'ben', wall: WALL + 500 }));
+    second.resolve({ status: 200, body: { hash: HASH, ticket: unticked } });
+    await waitFor(() => {
+      expect(box(0).checked).toBe(false);
+    });
+    await settle();
+    expect(refusal('checklist')?.querySelector('.refusal-message')?.textContent).toBe(
+      'no checklist line 1',
+    );
+  });
+
+  it("keeps one line's reminder when another line's request resolves", async () => {
+    const { api } = await openTicket(T1);
+    const reminder = 'Remember to tick task 1 in openspec/changes/add-board-web/tasks.md';
+    const ticked = after(T1, E.check(T1, 1, true, { actor: 'ben', wall: WALL + 500 }));
+    const second = deferred<Answer>();
+    api.onAction = (request) =>
+      indexOf(request) === 1
+        ? { status: 200, body: { hash: HASH, ticket: ticked, reminder: { message: reminder } } }
+        : second.promise;
+    click(box(1));
+    await waitFor(() => {
+      expect(control('checklist').querySelector('.action-note')?.textContent).toBe(reminder);
+    });
+    click(box(0));
+    await posted(api, 'checklist-untick');
+    await settle();
+    expect(control('checklist').querySelector('.action-note')?.textContent).toBe(reminder);
+    const both = after(
+      T1,
+      E.check(T1, 1, true, { actor: 'ben', wall: WALL + 500 }),
+      E.check(T1, 0, false, { actor: 'ben', wall: WALL + 501 }),
+    );
+    second.resolve({ status: 200, body: { hash: HASH, ticket: both, reminder: null } });
+    await waitFor(() => {
+      expect(box(0).checked).toBe(false);
+    });
+    await settle();
+    expect(control('checklist').querySelector('.action-note')?.textContent).toBe(reminder);
+  });
+
+  it('makes a refused line usable again, and a new click posts again', async () => {
+    const { api } = await openTicket(T1);
+    const answer = deferred<Answer>();
+    api.onAction = () => answer.promise;
+    click(box(1));
+    await posted(api, 'checklist-tick');
+    await waitFor(() => {
+      expect(box(1).disabled).toBe(true);
+    });
+    answer.resolve({ status: 409, body: errorDoc('checklist-index', 'no checklist line 1', null) });
+    await waitFor(() => {
+      expect(refusal('checklist')).not.toBeNull();
+    });
+    expect(box(1).disabled).toBe(false);
+    expect(box(1).checked).toBe(false);
+    api.onAction = (request) => ({
+      status: 200,
+      body: { hash: HASH, ticket: ticketOf(api.board, idOf(request)) },
+    });
+    click(box(1));
+    await posted(api, 'checklist-tick', 2);
+    expect(api.actionsOf('checklist-tick').map((a) => a.body)).toEqual([
+      { id: T1, index: 1 },
+      { id: T1, index: 1 },
+    ]);
+  });
+});
+
 describe('401 from an action', () => {
   it('discards the token and shows how to open the board', async () => {
     setHash(`#/ticket/${T1}`);
