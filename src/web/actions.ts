@@ -45,14 +45,19 @@
  *   refused: `node:http` keeps only the first in `req.headers`.
  * - More than one `Content-Type` header (as `headersDistinct` counts them)
  *   is refused as `csrf-failed`.
- * - The media type `application/json` and the parameter name `charset` are
- *   compared without regard to ASCII letter case (RFC 9110 section 8.3.1);
- *   optional whitespace around the `;` is allowed. Any parameter other than
- *   `charset`, or a second parameter, is refused.
+ * - The media type `application/json`, the parameter name `charset` and
+ *   its value `utf-8` are compared without regard to ASCII letter case
+ *   (RFC 9110 section 8.3.1); the value may be quoted, and optional
+ *   whitespace around the `;` is allowed. Any other charset (`utf-16`,
+ *   `iso-8859-1`, `utf8`, ...), any parameter other than `charset`, or a
+ *   second parameter, is refused: the body is always decoded as UTF-8.
  * - The refused body properties `as`, `json` and `allow-secret-like` are
  *   refused whenever present, whatever their value (`"as": ""` and
  *   `"allow-secret-like": false` included).
- * - A body that is not valid JSON (an empty body included) is 400 `usage`.
+ * - A body that is not valid JSON (an empty body included), or valid JSON
+ *   that is not one object (`null`, an array, a number, a string, a
+ *   boolean), is 400 `usage` with the message "the request body must be
+ *   one JSON object".
  * - For an action, `unknown-ticket` is exit 4 and therefore 409, as the
  *   spec's status rule says ("409 for exit 4"); only the `GET` routes
  *   answer it with 404.
@@ -124,15 +129,18 @@ export function actionCommand(action: string): CommandSpec | undefined {
 
 /**
  * True exactly when `value` is one `Content-Type` value whose media type
- * is `application/json`, optionally followed by one `charset` parameter:
- * `application/json`, `application/json; charset=utf-8`,
- * `application/json;charset=UTF-8`, `Application/JSON` (case-insensitive
- * type and parameter name, optional whitespace around `;`). False for
- * undefined, an empty array, an array of two or more values, any other
- * media type (`application/x-www-form-urlencoded`, `multipart/form-data`,
- * `text/plain`, `application/jsonx`, `application/json-patch+json`), any
- * parameter other than `charset` (`application/json; boundary=x`) and
- * two parameters. `value` is `req.headersDistinct['content-type']` (an
+ * is `application/json`, optionally followed by the one parameter
+ * `charset=utf-8`: `application/json`, `application/json; charset=utf-8`,
+ * `application/json;charset=UTF-8`, `application/json; charset="utf-8"`,
+ * `Application/JSON` (case-insensitive type, parameter name and charset
+ * value, the value optionally quoted, optional whitespace around `;`).
+ * False for undefined, an empty array, an array of two or more values, any
+ * other media type (`application/x-www-form-urlencoded`,
+ * `multipart/form-data`, `text/plain`, `application/jsonx`,
+ * `application/json-patch+json`), any other charset (`utf-16`,
+ * `UTF-16LE`, `iso-8859-1`, `us-ascii`, `utf8`, an empty value), since the
+ * body is always decoded as UTF-8, any parameter other than `charset`
+ * (`application/json; boundary=x`) and two parameters. `value` is `req.headersDistinct['content-type']` (an
  * array of every value received) or a single string. Pure.
  */
 export function contentTypeAllowed(value: string | readonly string[] | undefined): boolean {
@@ -153,8 +161,8 @@ export function contentTypeAllowed(value: string | readonly string[] | undefined
 /** The one media type an action body may have. */
 const JSON_MEDIA_TYPE = 'application/json';
 
-/** The one parameter allowed after it: `charset` with a token or quoted token value. */
-const CHARSET_PARAMETER = /^charset=(?:[A-Za-z0-9._-]+|"[A-Za-z0-9._-]+")$/i;
+/** The one parameter allowed after it: `charset=utf-8`, the value optionally quoted. */
+const CHARSET_PARAMETER = /^charset=(?:utf-8|"utf-8")$/i;
 
 /**
  * The value of a header that must occur exactly once: the string itself,
@@ -221,7 +229,7 @@ export function csrfRefusal(head: RequestHead, port: number): BoardError | null 
     return new BoardError(
       1,
       'csrf-failed',
-      'an action must be sent as one Content-Type: application/json header (optionally with a charset)',
+      'an action must be sent as one Content-Type: application/json header (optionally with charset=utf-8)',
     );
   }
   if (!originAllowed(headers?.origin, headers?.host, port)) {
@@ -334,7 +342,10 @@ export function actionContext(ctx: ActionContext): RunContext {
 /**
  * The server's open board as the `LazyBoard` of a run context (shared with
  * the CLI and the MCP server, `runContext`): already open, so `get`
- * returns it whatever options it is given, and `close` leaves it open.
+ * returns it whatever options it is given. The inherited `close` only
+ * closes a board the base class opened itself, which never happens here
+ * (`get` is overridden), so it leaves the server's board open; the server
+ * closes its board when it stops.
  */
 class ServerBoard extends LazyBoard {
   private readonly open: Board;
@@ -350,10 +361,6 @@ class ServerBoard extends LazyBoard {
   override get(): Board {
     return this.open;
   }
-
-  override close(): void {
-    // The server closes its board when it stops, never an action.
-  }
 }
 
 /**
@@ -365,8 +372,11 @@ class ServerBoard extends LazyBoard {
  *    `'agentboard serve --as <actor>'`).
  * 2. `actionCommand(action)` undefined: 404 with `BoardError(1,
  *    'not-found')` naming the actions.
- * 3. `text` parsed as JSON; a parse failure (an empty text included) is 400
- *    with `BoardError(1, 'usage')`.
+ * 3. `text` parsed as JSON; a parse failure (an empty text included), or a
+ *    value that is not one JSON object (`null`, an array, a number, a
+ *    string, a boolean), is 400 with `BoardError(1, 'usage')` and the
+ *    message "the request body must be one JSON object", before any
+ *    argument conversion.
  * 4. `actionArguments(command, body)`.
  * 5. `command.run(actionContext(ctx), values)`: the command's own
  *    operation in its single `BEGIN IMMEDIATE` transaction.
@@ -410,13 +420,17 @@ export function runAction(ctx: ActionContext, action: string, text: string): Api
   }
   let context: HintContext = { surface: 'cli', command: command.name, actor: ctx.actor };
   try {
+    const notObject = new BoardError(1, 'usage', 'the request body must be one JSON object');
     let body: unknown;
     try {
       body = JSON.parse(text);
     } catch {
-      throw new BoardError(1, 'usage', 'the request body must be one JSON object');
+      throw notObject;
     }
-    if (isObject(body) && typeof body.id === 'string' && body.id !== '') {
+    if (!isObject(body)) {
+      throw notObject;
+    }
+    if (typeof body.id === 'string' && body.id !== '') {
       context = { ...context, id: body.id };
     }
     const values = actionArguments(command, body);

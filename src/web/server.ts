@@ -568,7 +568,12 @@ export async function startServer(
       chunks.push(chunk);
     };
     const onEnd = (): void => {
-      if (stopped || res.destroyed) {
+      // Run nothing whose answer cannot be delivered: a request aborted, a
+      // response already ended or destroyed, or a socket no longer
+      // writable (the clientError handler has ended it after malformed
+      // bytes pipelined behind this body). Otherwise the write would
+      // commit while the client was told something else.
+      if (stopped || req.destroyed || res.destroyed || res.writableEnded || !req.socket.writable) {
         return;
       }
       const text = Buffer.concat(chunks).toString('utf8');
