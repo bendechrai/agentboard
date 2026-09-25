@@ -6,8 +6,13 @@
  * built CLI through the multi-process harness; run `npm run build` first
  * when running vitest directly.
  *
- * Every server listens on 127.0.0.1 with port 0.
+ * Every server listens on 127.0.0.1 with port 0. Every child's stdout is
+ * a pipe, so none of them opens a browser by default (add-serve-auto-open
+ * task 1.1, checked with fake openers on PATH below).
  */
+
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -125,6 +130,81 @@ describe('scenario: Start and stop', () => {
       expect((await get(line, '/api/session')).status).toBe(200);
       process.kill(proc.pid, 'SIGINT');
       expect((await proc.exited).code).toBe(0);
+    },
+  );
+});
+
+/**
+ * A directory holding fake `open` and `xdg-open` scripts, which append
+ * their arguments as one line to the file named by `FAKE_OPENER_LOG`.
+ */
+function fakeOpeners(): string {
+  const bin = scratch();
+  for (const name of ['open', 'xdg-open']) {
+    const path = join(bin, name);
+    writeFileSync(path, '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$FAKE_OPENER_LOG"\n');
+    chmodSync(path, 0o755);
+  }
+  return bin;
+}
+
+// add-serve-auto-open task 1.1 (board-web: "Serve command" scenario "No
+// browser for a script"): every other test in this repository spawns serve
+// with a piped stdout, so none of them may ever run a system opener.
+describe('scenario: No browser for a script (built CLI, stdout a pipe)', () => {
+  it.skipIf(process.platform === 'win32')(
+    'never runs the system opener without flags, while --open on the same PATH does',
+    { timeout: 60_000 },
+    async () => {
+      const { root } = boardProject();
+      const bin = fakeOpeners();
+      const logs = scratch();
+      const plainLog = join(logs, 'plain.log');
+      const openLog = join(logs, 'open.log');
+      // Every other condition of the auto check holds (no CI, no SSH, a
+      // display for linux): only the piped stdout keeps the browser shut.
+      const env = (log: string) =>
+        cliEnv({
+          PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+          FAKE_OPENER_LOG: log,
+          CI: undefined,
+          SSH_CONNECTION: undefined,
+          SSH_CLIENT: undefined,
+          SSH_TTY: undefined,
+          DISPLAY: ':0',
+          WAYLAND_DISPLAY: undefined,
+        });
+      const plain = startCli({ argv: ['serve'], env: env(plainLog) }, root);
+      await until(
+        () => plain.stdout().includes('\n'),
+        15_000,
+        `the start-up line (stderr: ${plain.stderr()})`,
+      );
+      const line = plain.stdout().split('\n')[0] ?? '';
+      const match = /^serving .+ read-only at (http:\/\/127\.0\.0\.1:(\d+)\/#token=(\S+))$/.exec(
+        line,
+      );
+      expect(match, line).not.toBeNull();
+      const endpoint = { port: Number(match?.[2]), token: match?.[3] ?? '' };
+      // The control: a second server started after the first has printed
+      // its start-up line, with --open and the same fake openers. Once its
+      // opener has run, the first server has long passed its own decision.
+      const forced = startCli({ argv: ['serve', '--open', '--json'], env: env(openLog) }, root);
+      const forcedLine = await startup(forced);
+      await until(
+        () => existsSync(openLog) && readFileSync(openLog, 'utf8').includes(forcedLine.url),
+        15_000,
+        `the fake opener of the --open server (stderr: ${forced.stderr()})`,
+      );
+      expect(existsSync(plainLog)).toBe(false);
+      expect((await get(endpoint, '/api/session')).status).toBe(200);
+      process.kill(plain.pid, 'SIGINT');
+      process.kill(forced.pid, 'SIGINT');
+      const [plainResult, forcedResult] = await Promise.all([plain.exited, forced.exited]);
+      expect(plainResult).toMatchObject({ code: 0, signal: null, stderr: '' });
+      expect(plainResult.stdout).toBe(`${line}\n`);
+      expect(forcedResult).toMatchObject({ code: 0, signal: null, stderr: '' });
+      expect(existsSync(plainLog)).toBe(false);
     },
   );
 });

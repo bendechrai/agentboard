@@ -51,7 +51,12 @@ function start(argv: readonly string[], cwd: string, env: RunEnv = cliEnv()): Ru
   const io: AsyncCliIo = {
     argv,
     cwd,
-    env,
+    // CI is always set here: these servers run the real opener by default,
+    // and vitest's stdout may be a terminal, so without it a plain
+    // `serve` would open a browser on the developer's machine
+    // (add-serve-auto-open; the open decision is tested with injected seams
+    // in serve-open.test.ts).
+    env: { ...env, CI: '1' },
     stdout: (text) => {
       stdout += text;
     },
@@ -369,12 +374,18 @@ describe('openInBrowser', () => {
 });
 
 describe('scenario: Serve has help', () => {
-  it('prints the synopsis with --port, --open and --as, the exit codes and examples, with no board and no actor', () => {
+  it('prints the synopsis with --port, --open, --no-open and --as, the exit codes and examples, with no board and no actor', () => {
     const out = run(['help', 'serve'], scratch(), cliEnv({ AGENTBOARD_ACTOR: undefined }));
     expect(out.code, out.stderr).toBe(0);
+    // add-serve-auto-open task 1.1: --open and --no-open are one optional
+    // exclusive group, rendered as the spec's `[--open | --no-open]`.
     expect(out.stdout).toMatch(
-      /^Usage: agentboard serve \[--port <port>\] \[--open\] \[--as <actor>\] \[--json\]$/m,
+      /^Usage: agentboard serve \[--port <port>\] \[--open \| --no-open\] \[--as <actor>\] \[--json\]$/m,
     );
+    expect(out.stdout).toMatch(/^ {2}--open {2,}boolean, optional {2,}\S/m);
+    expect(out.stdout).toMatch(/^ {2}--no-open {2,}boolean, optional {2,}\S/m);
+    expect(out.stdout).toMatch(/^At most one of: --open \| --no-open$/m);
+    expect(out.stdout).toMatch(/^\s+1 usage\s/m);
     expect(out.stdout).toMatch(/^\s+1 port-in-use\s/m);
     expect(out.stdout).toMatch(/^\s+2 board-not-found\s/m);
     expect(out.stdout).toMatch(/^\s+0\s+Stopped by SIGINT or SIGTERM/m);
