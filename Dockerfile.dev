@@ -4,7 +4,10 @@
 # is installed on the host. Built with `docker compose build dev` and
 # run with `make check-in-docker` / `make dev-shell`.
 
-FROM node:22-bookworm-slim
+# NODE_IMAGE defaults to the latest Node 22; the dev-floor service in
+# docker-compose.yml overrides it with the oldest supported release.
+ARG NODE_IMAGE=node:22-bookworm-slim
+FROM ${NODE_IMAGE}
 
 ARG UID=1000
 
@@ -14,9 +17,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd -g ${UID} dev \
-    && useradd -m -u ${UID} -g dev -s /bin/bash dev \
-    && mkdir -p /workspace /home/dev/.npm \
+# The node base image already has a `node` user and group at uid/gid 1000.
+# Rename whichever user holds ${UID} to `dev` instead of creating a second
+# one, which would fail on the duplicate id.
+RUN existing="$(getent passwd ${UID} | cut -d: -f1)" \
+    && if [ -n "$existing" ]; then \
+        groupmod -n dev "$(id -gn "$existing")" \
+        && usermod -l dev -d /home/dev -m -s /bin/bash "$existing"; \
+    else \
+        groupadd -g ${UID} dev \
+        && useradd -m -u ${UID} -g dev -s /bin/bash dev; \
+    fi \
+    && mkdir -p /workspace/node_modules /home/dev/.npm \
     && chown -R dev:dev /workspace /home/dev
 
 USER dev

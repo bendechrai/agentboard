@@ -1,0 +1,169 @@
+/**
+ * `watch` (board-cli: "Command surface"; add-board-core design.md: "`watch`"): a stream of
+ * an actor's pending inbox entries that never acknowledges them.
+ */
+
+import type { Board } from '../store/board.js';
+import { catchUp } from '../store/cache.js';
+import { isPending, readCursor } from '../store/cursors.js';
+import { inSnapshot } from '../store/engine.js';
+import { BoardError } from '../store/errors.js';
+import { readEventFile, type ReadOutcome } from '../store/eventfile.js';
+import { changeMarker, effectiveExcept } from '../store/folded.js';
+import type { InboxEntry } from './inbox.js';
+import { toEntries } from './pending.js';
+import { TICK_POLL_MS, runTicker } from './ticker.js';
+
+/** Interval of the polling fallback, in milliseconds. */
+export const WATCH_POLL_MS = TICK_POLL_MS;
+
+/** Options of `watchInbox`. */
+export interface WatchOptions {
+  /** Stops the watch. Aborting resolves the promise (after cleanup). */
+  readonly signal: AbortSignal;
+  /**
+   * Receives the entries each tick found that this watch has not passed
+   * on before, in fold order. Never called with an empty array.
+   */
+  onEntries(entries: readonly InboxEntry[]): void;
+  /** Polling interval; defaults to `WATCH_POLL_MS`. */
+  readonly pollMs?: number;
+  /**
+   * When false, `fs.watch` is not used and only polling runs (tests of the
+   * fallback). Defaults to true.
+   */
+  readonly fsWatch?: boolean;
+  /**
+   * Reads one event file, with the contract of `readEventFile`
+   * (`src/store/eventfile.ts`), which is the default. Every event file the
+   * watch reads to build entries is read through this function (catch-up's
+   * own reading of newly written files is not), so tests can count the
+   * reads of a tick.
+   */
+  readonly readEventFile?: (eventsDir: string, name: string) => ReadOutcome;
+  /**
+   * Receives one plain ASCII line (without a newline) for each tick that
+   * failed with a transient `BoardError` of exit code 5 and reason `busy`;
+   * the watch then carries on at its next tick. Defaults to ignoring it.
+   * The CLI prints it to stderr as `agentboard: <line>`.
+   */
+  onWarning?(line: string): void;
+}
+
+/**
+ * `watch --as <actor>`.
+ *
+ * The first tick runs the same catch-up as any command and passes on
+ * every entry pending for the actor's stored cursor (as
+ * `readInbox(board, actor, { peek: true })` lists them), in fold order.
+ *
+ * Later ticks do bounded work. The watch remembers every effective event
+ * it has examined (passed on or not), and, as of its last examination, a
+ * change marker made of two parts: the connection's `PRAGMA data_version`
+ * (which moves when another connection commits) and the connection's own
+ * change counter, SQLite's `total_changes()` (which moves when anything,
+ * including another caller sharing this `Board` in the same process,
+ * commits a change on this connection; `data_version` never moves for a
+ * connection's own commits). A later tick runs catch-up; when that
+ * catch-up folded nothing and neither part of the marker has changed, the
+ * tick ends there, reading no event file and no `folded` row. A catch-up
+ * that finds nothing new changes no rows, so it does not move the marker.
+ * An event written, or a late event folded, through the watch's own
+ * `Board` (for example `commentTicket(board, ...)` or `readInbox(board,
+ * ...)` catching up, between two ticks) is therefore passed on at the next
+ * tick, like one committed by another process. Otherwise it lists the
+ * effective
+ * events it has not examined yet (from `folded`, without reading files):
+ * exactly the events newly folded as applied or newly turned effective,
+ * whether they sort after everything examined so far or behind it (a late
+ * arrival, or a rejected event made effective by one). Of those, it passes
+ * on, in fold order, the ones pending for the actor's stored cursor
+ * (`isPending`), reading one event file per entry passed on (see
+ * `WatchOptions.readEventFile`), and marks them all examined. No event is
+ * examined twice, so no entry is passed on twice.
+ *
+ * The examined set is not pruned. Pruning it by the seen-set window would
+ * make an old examined event look new at the next listing and pass it on
+ * a second time, so it grows with the effective events of the board over
+ * the life of the watch: one 64-character hash per event (about 1 MB per
+ * 10,000 events).
+ *
+ * The stored cursor is never written (watch is a stream, not an
+ * acknowledgement; the actor runs `inbox` to acknowledge), and entries that
+ * a concurrent `inbox` acknowledges before the watch reaches them are
+ * simply no longer pending.
+ *
+ * Runs one tick at once, before waiting for anything (so the actor's
+ * pending entries are printed first), even when `signal` is already
+ * aborted. Then, until `signal` aborts, runs a tick whenever `fs.watch` on
+ * `board.eventsDir` reports a change (unless `fsWatch` is false) and every
+ * `pollMs` milliseconds regardless, because `fs.watch` is unreliable on
+ * network filesystems and coalesces events on macOS. Ticks never overlap.
+ * An `error` from the `fs.watch` watcher closes it and polling continues.
+ *
+ * On abort: closes the watcher, clears the timer and resolves; nothing is
+ * left that keeps the event loop alive. When a tick throws
+ * `BoardError(5, 'busy')` (the cache stayed locked past the busy timeout
+ * and its retry), the watch calls `onWarning` with the error's message and
+ * carries on: the next tick picks up whatever that one missed. When a tick
+ * throws anything else, the same cleanup as on abort happens and the
+ * promise rejects with that error. Does not close `board`.
+ *
+ * @throws BoardError exit 1 `missing-actor` (as a rejection) when `actor`
+ *   is empty, before the first tick.
+ */
+export function watchInbox(board: Board, actor: string, options: WatchOptions): Promise<void> {
+  if (actor === '') {
+    return Promise.reject(
+      new BoardError(
+        1,
+        'missing-actor',
+        'watch needs an actor: pass --as <actor> or set AGENTBOARD_ACTOR',
+      ),
+    );
+  }
+  const { signal, onEntries } = options;
+  const read = options.readEventFile ?? readEventFile;
+  const { db } = board;
+  // Every effective event examined so far, and the change marker at the
+  // time: `data_version` (other connections' commits) and `total_changes()`
+  // (this connection's own changes, which `data_version` never counts).
+  const examined = new Set<string>();
+  let version: string | null = null;
+
+  /** One tick's examination; the watch state changes only if it succeeds. */
+  const examine = (): void => {
+    const report = catchUp(board);
+    const current = changeMarker(db);
+    if (
+      version !== null &&
+      current === version &&
+      report.applied.length === 0 &&
+      !report.refolded
+    ) {
+      return;
+    }
+    const { fresh, entries } = inSnapshot(db, () => {
+      const cursor = readCursor(db, actor);
+      const unseen = effectiveExcept(db, examined);
+      const due = unseen.filter((p) => isPending(cursor, p));
+      return { fresh: unseen, entries: toEntries(board, due, read) };
+    });
+    version = current;
+    for (const p of fresh) {
+      examined.add(p.hash);
+    }
+    if (entries.length > 0) {
+      onEntries(entries);
+    }
+  };
+
+  return runTicker({
+    signal,
+    examine,
+    dir: board.eventsDir,
+    ...(options.pollMs === undefined ? {} : { pollMs: options.pollMs }),
+    ...(options.fsWatch === undefined ? {} : { fsWatch: options.fsWatch }),
+    ...(options.onWarning === undefined ? {} : { onWarning: options.onWarning }),
+  });
+}

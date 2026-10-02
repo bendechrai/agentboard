@@ -1,0 +1,245 @@
+/**
+ * The single-page app of `agentboard serve` (board-web: "Board views", "Access
+ * token"; add-board-web design.md of add-board-web: "Front end", "Client model").
+ *
+ * With a token (`props.token` not null), on mount it creates one
+ * `BoardClient` with the connection `{ deps: { ...defaultDeps(),
+ * ...props.deps }, token }` and starts it, subscribes to its state, and
+ * stops it on unmount. With no token it makes no request at all. The route
+ * is `parseHash(location.hash)`, read on mount and on every `hashchange`;
+ * `navigate(route)` sets `location.hash` to `formatHash(route)` (the view
+ * then follows the `hashchange`), so the view and its filters survive a
+ * reload.
+ *
+ * DOM contract (relied on by the component tests):
+ * - with no token, or once the client's phase is `unauthorized`, only an
+ *   element with `role="alert"` and class `no-token` whose text includes
+ *   `Open the URL printed by agentboard serve` (and no view). When the
+ *   phase becomes `unauthorized` (a 401 from the API or the stream; the
+ *   client has already stopped its stream), `props.onUnauthorized` is
+ *   called once, which `mount` wires to `discardToken`. An action
+ *   answered 401 (the ticket view's `onUnauthorized`) has the same effect:
+ *   the client is stopped, only the `no-token` alert is shown, and
+ *   `props.onUnauthorized` is called once;
+ * - a `nav` with the links, in this order, `Board` (`#/board`), `Feed`
+ *   (`#/feed`), `Lanes` (`#/lanes`), `Health` (`#/health`), `Replay`
+ *   (`#/replay`) and `Graph` (`#/graph`);
+ * - the session's `boardDir` as text once loaded;
+ * - once the session is loaded and `writable` (board-web-actions: "Action
+ *   controls in the web app": "The page SHALL show the actor it acts as"),
+ *   in the header, one element with class `acting-as` whose text is
+ *   `acting as <actor>`; on a read-only session no element with class
+ *   `acting-as`;
+ * - while loading, the text `Loading board...`; when the first load
+ *   failed, an element with `role="alert"` holding the error's message;
+ * - while the client's `problem` is set, a `ProblemBanner`;
+ * - then the view of the route: `BoardView`, `FeedView`, `TicketView`,
+ *   `LanesView`, `HealthView`, `ReplayView` or `GraphView`, each given the
+ *   client's model and `now` (and, for the last three, the connection and
+ *   `navigate`). Leaving and reopening the replay view mounts a new
+ *   `ReplayView`, so it freezes the events anew.
+ * Every text from the board is rendered as text, never as markup; no file
+ * under `src/web/client/` may even name Preact's raw HTML property (a
+ * source test in `src/web/__tests__/client-source.test.ts` checks it).
+ */
+
+import type { JSX } from 'preact';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+
+import { defaultDeps, type ClientDeps, type Connection, type Session } from './api.js';
+import { BoardClient, type ClientState } from './client.js';
+import { formatHash, parseHash, type Route } from './hash.js';
+import { BoardView } from './views/BoardView.js';
+import { FeedView } from './views/FeedView.js';
+import { GraphView } from './views/GraphView.js';
+import { HealthView } from './views/HealthView.js';
+import { LanesView } from './views/LanesView.js';
+import { ProblemBanner } from './views/ProblemBanner.js';
+import { ReplayView } from './views/ReplayView.js';
+import { TicketView } from './views/TicketView.js';
+
+export interface AppProps {
+  /** The access token (`takeToken`), or null when there is none. */
+  token: string | null;
+  /** Called once when the token is refused with 401 (`mount` discards the stored token). */
+  onUnauthorized?: () => void;
+  /** Replaces some of `defaultDeps()` (tests); every other dependency is the browser's. */
+  deps?: Partial<ClientDeps>;
+}
+
+const NAV: readonly { label: string; route: Route }[] = [
+  { label: 'Board', route: { view: 'board', change: null, assignee: null, closed: false } },
+  { label: 'Feed', route: { view: 'feed', change: null, actor: null, kinds: null } },
+  { label: 'Lanes', route: { view: 'lanes' } },
+  { label: 'Health', route: { view: 'health', stale: null, blocked: null } },
+  { label: 'Replay', route: { view: 'replay' } },
+  { label: 'Graph', route: { view: 'graph', change: null, since: null } },
+];
+
+function NoToken(): JSX.Element {
+  return (
+    <main class="app">
+      <div role="alert" class="no-token">
+        <h1>agentboard</h1>
+        <p>
+          This page needs the access token of the running server. Open the URL printed by agentboard
+          serve (it ends with <code>#token=...</code>) in this tab.
+        </p>
+      </div>
+    </main>
+  );
+}
+
+export function App(props: AppProps): JSX.Element {
+  const { token } = props;
+  const [route, setRoute] = useState<Route>(() => parseHash(window.location.hash));
+  const [state, setState] = useState<ClientState | null>(null);
+  const reported = useRef(false);
+  const onUnauthorized = useRef(props.onUnauthorized);
+  onUnauthorized.current = props.onUnauthorized;
+  const deps = useRef(props.deps);
+  const client = useRef<BoardClient | null>(null);
+  /** True once an action was answered 401 (the client is then stopped). */
+  const [refused, setRefused] = useState(false);
+
+  const conn = useMemo<Connection | null>(
+    () => (token === null ? null : { deps: { ...defaultDeps(), ...deps.current }, token }),
+    [token],
+  );
+
+  useEffect(() => {
+    const follow = (): void => {
+      setRoute(parseHash(window.location.hash));
+    };
+    window.addEventListener('hashchange', follow);
+    return () => {
+      window.removeEventListener('hashchange', follow);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (conn === null) {
+      return undefined;
+    }
+    const current = new BoardClient(conn);
+    client.current = current;
+    setState(current.getState());
+    const off = current.subscribe(setState);
+    void current.start();
+    return () => {
+      off();
+      current.stop();
+      if (client.current === current) {
+        client.current = null;
+      }
+    };
+  }, [conn]);
+
+  const phase = state?.phase ?? 'loading';
+  const unauthorized = phase === 'unauthorized' || refused;
+  useEffect(() => {
+    if (unauthorized && !reported.current) {
+      reported.current = true;
+      onUnauthorized.current?.();
+    }
+  }, [unauthorized]);
+
+  if (conn === null || unauthorized) {
+    return <NoToken />;
+  }
+
+  /** An action answered 401: as a 401 of any other request. */
+  const actionUnauthorized = (): void => {
+    client.current?.stop();
+    setRefused(true);
+  };
+
+  const navigate = (next: Route): void => {
+    const hash = formatHash(next);
+    if (window.location.hash !== hash) {
+      window.location.hash = hash;
+    }
+    setRoute(parseHash(hash));
+  };
+
+  return (
+    <div class="app">
+      <header class="top">
+        <h1 class="brand">agentboard</h1>
+        {state?.session ? <p class="board-dir">{state.session.boardDir}</p> : null}
+        {state?.session?.writable === true && state.session.actor !== null ? (
+          <p class="acting-as">acting as {state.session.actor}</p>
+        ) : null}
+        {phase === 'ready' ? (
+          <p class={state?.connected === true ? 'live on' : 'live off'} role="status">
+            {state?.connected === true ? 'live' : 'reconnecting...'}
+          </p>
+        ) : null}
+        <nav aria-label="Views">
+          <ul>
+            {NAV.map((item) => (
+              <li key={item.label}>
+                <a
+                  href={formatHash(item.route)}
+                  aria-current={item.route.view === route.view ? 'page' : undefined}
+                >
+                  {item.label}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      </header>
+      {state?.problem ? <ProblemBanner problem={state.problem} /> : null}
+      <main class="content">{body(state, route, conn, navigate, actionUnauthorized)}</main>
+    </div>
+  );
+}
+
+/** The session given to a view before one is loaded: read-only. */
+const READ_ONLY: Session = { version: '', boardDir: '', writable: false, actor: null };
+
+function body(
+  state: ClientState | null,
+  route: Route,
+  conn: Connection,
+  navigate: (route: Route) => void,
+  onUnauthorized: () => void,
+): JSX.Element {
+  if (state?.phase === 'failed') {
+    return (
+      <div role="alert" class="error">
+        {state.error?.message ?? 'The board could not be loaded.'}
+      </div>
+    );
+  }
+  if (state?.phase !== 'ready' || state.model === null) {
+    return <p class="loading">Loading board...</p>;
+  }
+  const { model, now } = state;
+  switch (route.view) {
+    case 'board':
+      return <BoardView model={model} now={now} route={route} navigate={navigate} />;
+    case 'feed':
+      return <FeedView model={model} now={now} route={route} navigate={navigate} />;
+    case 'ticket':
+      return (
+        <TicketView
+          id={route.id}
+          model={model}
+          conn={conn}
+          now={now}
+          session={state.session ?? READ_ONLY}
+          onUnauthorized={onUnauthorized}
+        />
+      );
+    case 'lanes':
+      return <LanesView model={model} now={now} />;
+    case 'health':
+      return <HealthView model={model} now={now} route={route} navigate={navigate} conn={conn} />;
+    case 'replay':
+      return <ReplayView model={model} now={now} navigate={navigate} conn={conn} />;
+    case 'graph':
+      return <GraphView model={model} now={now} route={route} navigate={navigate} conn={conn} />;
+  }
+}

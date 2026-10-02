@@ -22,3 +22,6 @@ coverage/
 *.swp
 *.swo
 *~
+
+# Vitest artefacts
+.vitest/

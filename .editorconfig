@@ -13,3 +13,7 @@ indent_style = tab
 
 [.githooks/*]
 indent_style = tab
+
+# Golden frames of the terminal UI are exact lines, trailing spaces included.
+[src/tui/__tests__/golden/*.txt]
+trim_trailing_whitespace = false

@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# pre-push hook: enforces the fast local checks before every push, while
-# GitHub Actions CI is disabled (see CONTRIBUTING.md, "Verification is
-# local"). Install with `make hooks` (once per clone/worktree).
+# pre-push hook: enforces the fast local checks before every push (see
+# CONTRIBUTING.md, "Checks"). Install with `make hooks` (once per
+# clone/worktree).
 #
-# Tests are deliberately not run here (same policy as vaultfold): they
-# are slower and are still required by `make check` before finishing any
-# task, just not gated at push time.
+# Tests are deliberately not run here: they are slower, and `make check`
+# runs them before a pull request is opened.
 #
 # Emergency bypass only: SKIP_CHECK=1 git push
 set -u
