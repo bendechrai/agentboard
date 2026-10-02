@@ -1,10 +1,9 @@
 /**
  * Help and suggestions at the CLI (board-agent-guidance: "Generated help",
- * "Unknown command suggestions"; add-agent-guidance tasks 1.1 and 1.2):
- * how `parseArgs` turns help requests into the `help` command, every
- * command's `--help` and `-h` in process with no board and no actor, and
- * the spec scenarios through the built CLI for exit codes and the
- * separation of stdout and stderr.
+ * "Unknown command suggestions"): how `parseArgs` turns help requests into
+ * the `help` command, every command's `--help` and `-h` in process with no
+ * board and no actor, and the spec scenarios through the built CLI for
+ * exit codes and the separation of stdout and stderr.
  */
 
 import { readdirSync } from 'node:fs';
@@ -201,7 +200,7 @@ describe('--help, -h and help in process', () => {
     const out = run(['help', 'claim', 'extra'], empty(), cliEnv());
     expect(out.code).toBe(1);
     expect(out.stdout).toBe('');
-    // The second line is the hint (add-agent-guidance task 2.2).
+    // The second line is the hint.
     expect(out.stderr.split('\n')).toHaveLength(3);
     const [message, hint, end] = out.stderr.split('\n');
     expect(message).toBe(

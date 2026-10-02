@@ -4,7 +4,7 @@
  * `topCommand`, `runTop`): the board feed is replaced with one whose first
  * tick after start-up fails with an integrity error, so the terminal must
  * be restored before the CLI prints the error and its hint, and the exit
- * code is 5 (add-board-tui task 2.1).
+ * code is 5.
  */
 
 import { describe, expect, it, vi } from 'vitest';

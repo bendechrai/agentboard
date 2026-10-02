@@ -1,6 +1,5 @@
 /**
- * Frames of `agentboard top` (board-tui: "Views", "Frame rendering";
- * add-board-tui task 1.2).
+ * Frames of `agentboard top` (board-tui: "Views", "Frame rendering").
  *
  * A frame is a pure function of the model, the UI state, the terminal size
  * and `now` (milliseconds since the Unix epoch): no clock, no IO, no
@@ -8,8 +7,8 @@
  * test enforces this). Equal inputs give deep-equal frames, and no input is
  * modified. A frame is plain text (exactly `size.rows` lines of exactly
  * `size.columns` printable ASCII characters, 0x20 to 0x7E) plus a style
- * map; styles are data, never escape codes (the terminal driver of group 2
- * turns them into SGR sequences).
+ * map; styles are data, never escape codes (the terminal driver,
+ * `src/tui/terminal.ts`, turns them into SGR sequences).
  *
  * Definitions used below:
  * - `fitText(text, width)` (exported): text made single-width ASCII and

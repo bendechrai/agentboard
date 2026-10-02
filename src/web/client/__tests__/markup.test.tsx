@@ -1,9 +1,8 @@
 // @vitest-environment happy-dom
 /**
- * Board text is never markup (board-web: "Board text is never markup",
- * scenario "Title with markup"; add-board-web task 4.4): a title, comment,
- * note, label and actor holding HTML are shown literally in every view,
- * and no element is created from them.
+ * Board text is never markup (board-web: "Board text is never markup", scenario
+ * "Title with markup"): a title, comment, note, label and actor holding HTML
+ * are shown literally in every view, and no element is created from them.
  */
 
 import { cleanup, waitFor } from '@testing-library/preact';

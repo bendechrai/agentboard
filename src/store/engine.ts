@@ -74,7 +74,7 @@ export function isBusy(error: unknown): boolean {
 
 /**
  * `BEGIN IMMEDIATE`, retried once when still busy after the busy timeout;
- * a second busy failure is `BoardError(5, 'busy')` (design.md, Risks).
+ * a second busy failure is `BoardError(5, 'busy')` (add-board-core design.md, Risks).
  */
 export function beginImmediate(db: DatabaseSync): void {
   for (let attempt = 1; ; attempt += 1) {

@@ -1,7 +1,6 @@
 /**
- * Error hints at the CLI (board-agent-guidance: "Error hints";
- * add-agent-guidance task 2.2): every refusal prints `agentboard:
- * <message>` then `hint: <hint>` on stderr, the `--json` error document
+ * Error hints at the CLI (board-agent-guidance: "Error hints"): every
+ * refusal prints `agentboard: <message>` then `hint: <hint>` on stderr, the `--json` error document
  * carries the same hint, and the spec scenarios (claim race loser, missing
  * actor, needs-task-link, the decision rule on close) name the command
  * that moves the caller forward. The hint texts themselves are pinned in

@@ -1,12 +1,11 @@
 /**
- * Test doubles for the web client (add-board-web group 4): a fake
- * same-origin API served from a `BoardModel` through a stubbed `fetch`,
- * requiring `Authorization: Bearer <TOKEN>` like the server; fake event
- * streams returned by that `fetch` for `/api/stream`, whose body the test
- * writes SSE text into; a manual clock with captured intervals and
- * timeouts; and message builders. Board fixtures come from the view-model
- * test helpers (events with explicit walls folded by the store's own pure
- * fold).
+ * Test doubles for the web client: a fake same-origin API served from a
+ * `BoardModel` through a stubbed `fetch`, requiring `Authorization: Bearer
+ * <TOKEN>` like the server; fake event streams returned by that `fetch` for
+ * `/api/stream`, whose body the test writes SSE text into; a manual clock with
+ * captured intervals and timeouts; and message builders. Board fixtures come
+ * from the view-model test helpers (events with explicit walls folded by the
+ * store's own pure fold).
  */
 
 import { render, type RenderResult } from '@testing-library/preact';
@@ -151,7 +150,7 @@ export interface FakeRequest {
   init: RequestInit | undefined;
 }
 
-/** The session of a server started with `--as ben` (add-board-web-actions group 2). */
+/** The session of a server started with `--as ben`. */
 export const WRITABLE: Session = { ...SESSION, writable: true, actor: 'ben' };
 
 /** One `POST /api/actions/<action>` received by the fake API, parsed. */

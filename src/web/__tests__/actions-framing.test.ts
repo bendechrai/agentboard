@@ -1,8 +1,7 @@
 /**
  * The body framing of the write actions on raw sockets (board-web-actions:
  * "Cross-site request forgery protection", the 64 KiB limit and "A refused
- * request SHALL write nothing"; add-board-web-actions task 1.3, follow-up
- * of the group 1 reviews).
+ * request SHALL write nothing").
  *
  * - The streamed 64 KiB counter at its exact boundary, with a chunked body
  *   and no Content-Length (the declared-length precheck cannot mask it).
@@ -29,7 +28,7 @@ import { rawRequest, type RawResult } from './web-helpers.js';
 /** The action body limit of the spec: 64 KiB. */
 const LIMIT = 64 * 1024;
 
-/** The discard cap of design.md: 1 MiB. */
+/** The discard cap of the server (`DISCARD_LIMIT` in src/web/server.ts): 1 MiB. */
 const CAP = 1024 * 1024;
 
 /** A JSON comment body for `id` of exactly `bytes` bytes. */

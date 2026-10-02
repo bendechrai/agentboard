@@ -1,7 +1,6 @@
 /**
- * `board_health` (add-board-insights task 2.1; board-cli: "MCP server"
- * scenario "Health is a tool"; board-insights: "Health command" scenario
- * "Health over MCP"): the tool is generated from the registry with its
+ * `board_health` (board-cli: "MCP server" scenario "Health is a tool";
+ * board-insights: "Health command" scenario "Health over MCP"): the tool is generated from the registry with its
  * three optional properties, and a call through the MCP server returns the
  * document `agentboard health --json` prints with the same arguments.
  *

@@ -1,6 +1,6 @@
 /**
- * The replay view (board-insights: "Replay"; design.md: "Replay in the
- * browser with the store's own fold"; add-board-insights task 3.3).
+ * The replay view (board-insights: "Replay"; add-board-insights design.md of add-board-insights:
+ * "Replay in the browser with the store's own fold").
  *
  * Behavior:
  * - When the view mounts it takes a copy of `model.events` (every

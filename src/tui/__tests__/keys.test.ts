@@ -1,7 +1,7 @@
 /**
- * The key decoder (board-tui: "Keys"; add-board-tui task 1.1): table tests
- * of every key's byte forms, including CSI and SS3 arrows, ignored
- * sequences and sequences split across reads.
+ * The key decoder (board-tui: "Keys"): table tests of every key's byte forms,
+ * including CSI and SS3 arrows, ignored sequences and sequences split across
+ * reads.
  */
 
 import { describe, expect, it } from 'vitest';

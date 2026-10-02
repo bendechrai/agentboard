@@ -1401,8 +1401,8 @@ function shuffle<T>(items: readonly T[], rand: () => number): T[] {
 // The shuffled-order property folds 150 events 26 times per seed. Its inputs
 // are deterministic (seeded PRNG), so its running time depends only on the
 // machine; under heavy parallel load (the whole suite with coverage in a
-// container) it has exceeded vitest's 5 second default, so it carries an
-// explicit timeout (add-board-web task 5.3).
+// container) it can exceed vitest's 5 second default, so it carries an
+// explicit timeout.
 const SHUFFLE_PROPERTY_TIMEOUT_MS = 60_000;
 
 describe('fold: determinism', () => {

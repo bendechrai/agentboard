@@ -1,6 +1,6 @@
 /**
  * End-to-end smoke test of `agentboard serve` on the built package
- * (add-board-web task 5.1; design.md "Testing strategy", smoke; board-web:
+ * (add-board-web design.md "Testing strategy", smoke; board-web:
  * "Serve command" scenario "Start and stop", "Access token", "Live event
  * stream" scenario "CLI write reaches the browser", "Self-contained front
  * end").
@@ -17,7 +17,7 @@
  * creates a ticket with the CLI and waits at most 3 seconds for its card,
  * and stops the server with SIGINT (exit 0).
  *
- * A second test (add-board-web-actions task 2.1; board-web-actions:
+ * A second test (board-web-actions:
  * "Action endpoints" scenario "Claim from the browser", "Action controls
  * in the web app") starts a writable server with `--as ben`, opens a
  * ticket's detail in the page, checks the acting-as banner, presses its

@@ -2,11 +2,11 @@
  * The write actions of `agentboard serve --as <actor>` (board-web-actions:
  * "Write mode is opt-in with an explicit actor", "Action endpoints",
  * "Close from the browser", "Secret-like text is refused", "Cross-site
- * request forgery protection"; board-web: "Read-only server"; design.md of
+ * request forgery protection"; board-web: "Read-only server"; add-board-web-actions design.md of
  * add-board-web-actions: "One endpoint per command, MCP-shaped bodies, the
  * MCP conversion", "Status codes", "Close paths relative to the tree root",
  * "No secret-like override in the browser", "CSRF protection: structural,
- * with defence in depth"; add-board-web-actions tasks 1.2 and 1.3).
+ * with defence in depth").
  *
  * `POST /api/actions/<action>` runs one registry command, converted from
  * the MCP-shaped JSON body by `toolArguments` (`src/mcp/tools.ts`) and run
@@ -30,13 +30,13 @@
  * 4. `runAction` with the body text: 405 `read-only` on a server without
  *    an actor, 404 `not-found` for another action name, then the body and
  *    the command (see `runAction`).
- * So every `POST`, whatever server and whatever action name, passes the
- * CSRF rules and the size limit before anything else is decided about it
- * (task 1.3: "ahead of every action, after the Host and bearer token
- * checks"), and the `read-only` scenario of board-web ("an authenticated
- * same-origin `POST`") is answered after them.
+ * So every `POST`, whatever server and whatever action name, passes the CSRF
+ * rules and the size limit before anything else is decided about it (ahead of
+ * every action, after the Host and bearer token checks), and the `read-only`
+ * scenario of board-web ("an authenticated same-origin `POST`") is answered
+ * after them.
  *
- * Decisions recorded here (test author, add-board-web-actions group 1):
+ * Design notes:
  * - The CSRF check is applied, in this order, before the read-only check
  *   and before the action name is looked up, so a request failing it is
  *   403 `csrf-failed` on every server and for every name.
@@ -300,8 +300,8 @@ function isObject(value: unknown): value is Record<string, unknown> {
  * The root of the working tree that contains `cwd`: the output of `git
  * rev-parse --show-toplevel` run in `cwd` with `env` (realpath), or the
  * realpath of `cwd` itself when that fails (not in a git repository, git
- * missing). The `cwd` of every action (design.md: "Close paths relative to
- * the tree root").
+ * missing). The `cwd` of every action (add-board-web-actions design.md: "Close
+ * paths relative to the tree root").
  */
 export function actionRoot(cwd: string, env: Env): string {
   return realpathSync(worktreeRoot(cwd, env) ?? cwd);

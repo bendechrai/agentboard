@@ -310,7 +310,7 @@ describe('exit codes and error output', () => {
   it('exitCodeFor and errorDocument map BoardError and anything else', () => {
     const err = new BoardError(4, 'already-assigned', 'held by impl');
     expect(exitCodeFor(err)).toBe(4);
-    // The hint (add-agent-guidance task 2.2): CLI context with placeholders by default.
+    // The hint: CLI context with placeholders by default.
     const cli = { surface: 'cli', command: null } as const;
     expect(errorDocument(err)).toEqual({
       error: {
@@ -702,7 +702,7 @@ describe('other commands', () => {
     const out = run(['mcp'], tempDir());
     expect(out.code).toBe(1);
     expect(out.stdout).toBe('');
-    // Then the hint line (add-agent-guidance task 2.2).
+    // Then the hint line.
     expect(out.stderr).toMatch(
       /^agentboard: agentboard mcp serves MCP over stdio and runs only from the agentboard executable\nhint: \S[^\n]*\n$/,
     );

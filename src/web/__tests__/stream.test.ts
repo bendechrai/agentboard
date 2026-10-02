@@ -1,11 +1,11 @@
 /**
- * The live event stream, in process (board-web: "Live event stream",
- * "Reads never block writers"; design.md: "One feed per server, fanned
- * out to every client", "A tick failure does not stop the server";
- * add-board-web task 3.3): the SSE framing, the first message with and
- * without a start position, `Last-Event-ID` and `since`, appends and
- * resyncs, one shared feed, keepalive comments, `problem` events, the
- * 64-stream cap and the per-client buffer limit.
+ * The live event stream, in process (board-web: "Live event stream", "Reads
+ * never block writers"; add-board-web design.md: "One feed per server,
+ * fanned out to every client", "A tick failure does not stop the server"):
+ * the SSE framing, the first message with and without a start position,
+ * `Last-Event-ID` and `since`, appends and resyncs, one shared feed,
+ * keepalive comments, `problem` events, the 64-stream cap and the per-client
+ * buffer limit.
  *
  * The scenarios with CLI processes (a CLI write reaching the stream,
  * twenty concurrent comments while a client does not read, SIGINT and
@@ -155,7 +155,7 @@ async function withTicket(options: ServerOptions = FAST): Promise<{
 }
 
 describe('SSE framing', () => {
-  it('has the limits of board-web and design.md', () => {
+  it('has the limits of board-web and the add-board-web design', () => {
     expect(STREAM_RETRY_MS).toBe(2000);
     expect(KEEPALIVE_MS).toBe(15_000);
     expect(MAX_STREAMS).toBe(64);

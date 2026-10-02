@@ -1,9 +1,8 @@
 /**
- * Event parity between the browser and the CLI (board-web-actions:
- * "Action endpoints": "validation, refusals and the resulting event are
- * identical to the CLI's"; design.md: "A browser write is
- * indistinguishable from the same CLI command by the same actor";
- * add-board-web-actions task 1.2 Verify).
+ * Event parity between the browser and the CLI (board-web-actions: "Action
+ * endpoints": "validation, refusals and the resulting event are identical to
+ * the CLI's"; add-board-web-actions design.md: "A browser write is
+ * indistinguishable from the same CLI command by the same actor").
  *
  * For each action (and each form of `link` and `close`), a board is set up
  * through the CLI, its event files are copied to a second project, the

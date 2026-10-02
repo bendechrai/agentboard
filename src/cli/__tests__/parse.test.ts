@@ -68,7 +68,7 @@ describe('the command registry', () => {
       'serve',
       'top',
     ]);
-    // add-board-tui task 2.2: top is the one command given a terminal.
+    // top is the one command given a terminal.
     expect(COMMANDS.filter((c) => c.terminal === true).map((c) => c.name)).toEqual(['top']);
     expect(command('inbox').operation).toBe('readInbox');
     expect(command('watch').operation).toBe('watchInbox');
@@ -258,7 +258,7 @@ describe('the command registry', () => {
       exclusive: [],
     });
     expect(shape('watch')).toEqual({ positionals: [], flags: [], exclusive: [] });
-    // add-serve-auto-open task 1.1: --no-open, exclusive with --open.
+    // --no-open is exclusive with --open.
     expect(shape('serve')).toEqual({
       positionals: [],
       flags: [
@@ -268,7 +268,7 @@ describe('the command registry', () => {
       ],
       exclusive: [[[['open'], ['no-open']], false]],
     });
-    // add-board-tui: top has no flags of its own (filters are keys).
+    // top has no flags of its own (filters are keys).
     expect(shape('top')).toEqual({ positionals: [], flags: [], exclusive: [] });
   });
 
@@ -286,9 +286,9 @@ describe('parseArgs: command selection', () => {
     expect(parsed.json).toBe(false);
   });
 
-  // add-agent-guidance: an unknown command names the token, suggests close
-  // commands and points to `agentboard help` (which lists them all) instead
-  // of listing every command; an empty argv is the overview (help-cli.test.ts).
+  // An unknown command names the token, suggests close commands and points
+  // to `agentboard help` (which lists them all) instead of listing every
+  // command; an empty argv is the overview (help-cli.test.ts).
   it.each([[['nope']], [['checklist']], [['checklist', 'toggle', 'x', '1']], [['--json']]])(
     'refuses %j with a usage error pointing to agentboard help',
     (argv) => {
@@ -410,7 +410,6 @@ describe('parseArgs: exclusive flag groups', () => {
     [['link', 'T1ABCD', '--pr', '1', '--decision', 'd.md']],
     [['close', 'T1ABCD', '--no-decision', '--decision-recorded-in', 'd.md']],
     [['list', '--task', 'openspec:a', '--change', 'a']],
-    // add-serve-auto-open task 1.1.
     [['serve', '--open', '--no-open']],
     [['serve', '--no-open', '--open', '--json']],
   ])('refuses two alternatives %j', (argv) => {
@@ -436,7 +435,7 @@ describe('parseArgs: exclusive flag groups', () => {
     expect(CLOSE_RULE).toMatch(/ADR/);
   });
 
-  it('serve takes --open, --no-open or neither (add-serve-auto-open 1.1)', () => {
+  it('serve takes --open, --no-open or neither', () => {
     expect(parseArgs(['serve']).values).toEqual({});
     expect(parseArgs(['serve', '--open']).values).toEqual({ open: true });
     expect(parseArgs(['serve', '--no-open']).values).toEqual({ 'no-open': true });

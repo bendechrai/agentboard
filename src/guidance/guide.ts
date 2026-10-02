@@ -1,10 +1,10 @@
 /**
- * The agent guide (board-agent-guidance: "Agent guide"; design.md: "The
- * guide is code, tested against the registry"; add-agent-guidance task
- * 2.1): a self-contained text, printed by `agentboard help agents`, that
- * takes an agent with no prior knowledge to correct use of the board, and
- * a checklist per role, printed after the guide by
- * `agentboard help agents --role <role>`.
+ * The agent guide (board-agent-guidance: "Agent guide"; add-agent-guidance
+ * add-agent-guidance design.md: "The guide is code, tested against the registry"): a
+ * self-contained text, printed by `agentboard help agents`, that takes an
+ * agent with no prior knowledge to correct use of the board, and a checklist
+ * per role, printed after the guide by `agentboard help agents --role
+ * <role>`.
  *
  * The guide is a template in this file, stamped with the running version.
  * Every line of its output whose text, ignoring leading spaces, begins with
@@ -21,7 +21,7 @@
  * among them `inbox`, `list`, `show`, `claim`, `handoff`, `move`,
  * `comment` and `close`.
  *
- * Decisions recorded here (test author, task group 2):
+ * Design notes:
  * - `--role` is a flag of the `help` command (string, optional), valid only
  *   with the topic `agents`: `agentboard help agents --role implementer`.
  *   With any other topic, or none, it is `BoardError(1, 'usage')` saying
@@ -29,7 +29,7 @@
  *   excluded from MCP.
  * - The topic is exactly the one word `agents`: `help agents` is the guide
  *   even when registry commands start with `agents` (`agents install`,
- *   `agents check`, task group 3), whose help stays reachable as
+ *   `agents check`), whose help stays reachable as
  *   `help agents install` (see `helpOutput`).
  * - The 150-line cap applies to every output: `help agents` and
  *   `help agents --role <role>` for each role (guide plus checklist), so
@@ -182,8 +182,8 @@ export function renderGuide(version: string): string {
  *   dispatching anything), acting on every entry; `agentboard import-change` for a new or grown
  *   change; dispatching one agent per ticket and role; `agentboard show`
  *   or `list` for state, never memory; `agentboard health` when choosing
- *   what to dispatch and before archiving a change (add-board-insights
- *   task 2.2); `agentboard close-merged` and
+ *   what to dispatch and before archiving a change; `agentboard
+ *   close-merged` and
  *   `agentboard close` with a decision disposition after merge, promoting
  *   `DECISION:` comments first (the text `DECISION:` appears).
  * - `test-author`: claim, move to `tests`, write failing tests and stubs,
@@ -250,12 +250,12 @@ export const GUIDE_SUMMARY_MAX_CHARS = 2000;
 /**
  * The summary of the guide that the MCP server sends as its
  * `instructions` at initialization (board-agent-guidance: "Guide over
- * MCP"; add-agent-guidance task 4.1). Many clients put the instructions
+ * MCP"). Many clients put the instructions
  * in the model's context unasked, while the full guide is only read on
  * demand, so the summary carries the rules an agent must never break and
  * points to the full guide for the rest.
  *
- * Decisions recorded here (test author, task group 4):
+ * Design notes:
  * - The summary is its own template in this module, beside the guide, not
  *   cut out of the guide's text: the guide is written for a shell and
  *   would not fit in 2000 characters. It is kept consistent with the guide

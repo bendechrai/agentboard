@@ -1,10 +1,9 @@
 /**
- * The ticket detail (board-web: "Board views"; board-view-model:
- * "Conversation view"; add-board-web task 4.4). The ticket and its events
- * come from `loadTicketDetail(conn, id)` (the feed carries only effective
- * events, so rejected ones are read from the API), requested when the view
- * opens and again whenever `model.id` changes. The conversation is
- * `conversation({ events: detail.events }, detail.ticket.id)`.
+ * The ticket detail (board-web: "Board views"; board-view-model: "Conversation
+ * view"). The ticket and its events come from `loadTicketDetail(conn, id)` (the
+ * feed carries only effective events, so rejected ones are read from the API),
+ * requested when the view opens and again whenever `model.id` changes. The
+ * conversation is `conversation({ events: detail.events }, detail.ticket.id)`.
  *
  * DOM contract (relied on by the component tests):
  * - while the first detail is loading, the text `Loading ticket...`; when
@@ -34,8 +33,7 @@
  *   and, for a rejected event, its reason, as text.
  * Every text from the board is rendered as text, never as markup.
  *
- * Write mode (board-web-actions: "Action controls in the web app";
- * add-board-web-actions task 2.1):
+ * Write mode (board-web-actions: "Action controls in the web app"):
  * - when `session.writable` is false, the view is exactly as above: no
  *   `form`, `input`, `textarea`, `select` or `button` anywhere in it, and
  *   no request other than `GET`s is ever made;

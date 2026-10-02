@@ -11,7 +11,7 @@ import {
 import type { EventOutcome, EventView } from '../types.js';
 import { E, OTHER, T1, T2, T3, T4, TASK, TASK2, model, type Opts } from './helpers.js';
 
-// add-board-insights task 1.2; board-insights: "Replay".
+// board-insights: "Replay".
 
 /** A small deterministic PRNG (mulberry32), so every run sees the same sequences. */
 function prng(seed: number): () => number {

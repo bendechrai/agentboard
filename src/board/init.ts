@@ -1,5 +1,5 @@
 /**
- * `agentboard init` (board-events: "Board directory per project"; design.md:
+ * `agentboard init` (board-events: "Board directory per project"; add-board-core design.md:
  * "Git sync model").
  */
 

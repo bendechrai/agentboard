@@ -1,11 +1,10 @@
 /**
- * Error hints, in process (board-agent-guidance: "Error hints";
- * add-agent-guidance task 2.2): the set of reasons derived from the source
- * and pinned, a hint for every reason on both surfaces, the contract of
- * each hint, the rendering of suggested commands (`hintStep`), and the
- * drift guard that every command a hint suggests parses with the real
- * parser (CLI) or the tool argument validator (MCP). The CLI and MCP
- * scenarios are in src/cli/__tests__/hints-cli.test.ts and
+ * Error hints, in process (board-agent-guidance: "Error hints"): the set of
+ * reasons derived from the source and pinned, a hint for every reason on both
+ * surfaces, the contract of each hint, the rendering of suggested commands
+ * (`hintStep`), and the drift guard that every command a hint suggests parses
+ * with the real parser (CLI) or the tool argument validator (MCP). The CLI and
+ * MCP scenarios are in src/cli/__tests__/hints-cli.test.ts and
  * src/mcp/__tests__/hints-mcp.test.ts.
  */
 
@@ -43,7 +42,7 @@ const PINNED: Readonly<Record<string, number>> = {
   'ambiguous-remote': 1,
   'board-not-a-repository': 2,
   'board-not-found': 2,
-  // add-board-web-actions task 1.2: the refusals of the write actions.
+  // The refusals of the write actions.
   'body-too-large': 1,
   busy: 5,
   'checklist-index': 4,
@@ -203,13 +202,13 @@ function commandFor(reason: string): string {
     integrity: 'show',
     'missing-actor': 'comment',
     usage: 'claim',
-    // The web server's refusals (add-board-web group 3) are reported by serve.
+    // The web server's refusals are reported by serve.
     unauthorized: 'serve',
     'forbidden-host': 'serve',
     'not-found': 'serve',
     'method-not-allowed': 'serve',
     'too-many-streams': 'serve',
-    // The write action refusals (add-board-web-actions group 1) too.
+    // The write action refusals too.
     'read-only': 'serve',
     'csrf-failed': 'serve',
     'body-too-large': 'serve',
@@ -440,7 +439,7 @@ describe('hint contracts (CLI)', () => {
     ['malformed-event', 'comment', ["'agentboard version'"]],
     ['streaming-command', 'watch', ["'agentboard watch"]],
     ['streaming-command', 'serve', ["'agentboard serve'"]],
-    // add-board-web group 3: serve and the web server's refusals.
+    // serve and the web server's refusals.
     ['port-in-use', 'serve', ["'agentboard serve --port 0'", '--port']],
     [
       'unauthorized',
@@ -464,7 +463,7 @@ describe('hint contracts (CLI)', () => {
     ['method-not-allowed', 'serve', ['read-only', 'GET', "'agentboard help serve'"]],
     ['too-many-streams', 'serve', ['64', 'reconnect', "'agentboard help serve'"]],
     ['unknown-cursor', 'serve', ['after', '/api/events', "'agentboard help serve'"]],
-    // add-board-web-actions group 1: the write action refusals.
+    // The write action refusals.
     [
       'read-only',
       'serve',
@@ -476,7 +475,7 @@ describe('hint contracts (CLI)', () => {
       ['Content-Type: application/json', 'Origin', "'agentboard help serve'"],
     ],
     ['body-too-large', 'serve', ['64 KiB', "'agentboard help serve'"]],
-    // add-board-tui group 2: top without an interactive terminal.
+    // top without an interactive terminal.
     ['not-a-tty', 'top', ['terminal', "'agentboard list'", "'agentboard watch --as impl'"]],
     ['streaming-command', 'top', ["'agentboard top'"]],
   ])('%s (from %s) contains %j', (reason, command, fragments) => {

@@ -1,6 +1,6 @@
 /**
  * `rebuild` and `rebuild --check` as library functions (board-cache:
- * "Rebuild"). CLI wiring is task group 3.
+ * "Rebuild"). The `rebuild` command of the CLI calls them.
  */
 
 import type { DatabaseSync } from 'node:sqlite';

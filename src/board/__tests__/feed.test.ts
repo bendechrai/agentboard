@@ -1,5 +1,5 @@
 /**
- * The board feed (board-feed; add-board-web tasks 2.2 and 2.3), in
+ * The board feed (board-feed), in
  * process: position ids and the digest, the event cache, append and
  * resync messages, idle ticks, cursors, and resume from a position id.
  * The child-process scenarios (a CLI write, twenty concurrent comments
@@ -7,8 +7,8 @@
  *
  * Expected values are computed independently of the feed: the digest by
  * XOR over the hex-decoded hashes with `Buffer`, and the effective events
- * and ticket states by the group 1 `fold` over the event files
- * (`foldDir`).
+ * and ticket states by `fold` (`src/events/fold.ts`) over the event
+ * files (`foldDir`).
  */
 
 import { writeFileSync } from 'node:fs';
@@ -293,7 +293,7 @@ describe('effectiveDigest', () => {
   });
 });
 
-describe('createEventCache (design.md: "Event files are cached by hash")', () => {
+describe('createEventCache (add-board-web design.md: "Event files are cached by hash")', () => {
   it('reads each file once and returns the validated event', () => {
     const { eventsDir } = boardDir();
     const one = put(eventsDir, ev(P.create(T1), 'orch', 1000));

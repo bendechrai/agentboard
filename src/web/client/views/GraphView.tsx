@@ -1,8 +1,8 @@
 /**
- * The hand-off graph (board-insights: "Hand-off graph"; design.md:
- * "Hand-off graph"; add-board-insights task 3.3): `handoffGraph` of the
- * client's model drawn as inline SVG made by Preact, with no graph
- * library and no external resource.
+ * The hand-off graph (board-insights: "Hand-off graph"; add-board-insights design.md of
+ * add-board-insights: "Hand-off graph"): `handoffGraph` of the client's model
+ * drawn as inline SVG made by Preact, with no graph library and no external
+ * resource.
  *
  * Behavior:
  * - The graph is `handoffGraph(model.events, filter)` where

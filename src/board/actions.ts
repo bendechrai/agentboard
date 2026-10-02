@@ -37,8 +37,8 @@ import { refuseSecretLike } from './secrets.js';
 import type { WriteOptions, WriteOutcome } from './types.js';
 
 // openDecisions and the decision prefixes live in the pure module
-// src/events/decisions.ts; the same bindings are re-exported here so the
-// library API is unchanged.
+// src/events/decisions.ts and are re-exported here as part of the library
+// API.
 export { DECISION_PREFIX, RETRACTED_PREFIX, openDecisions } from '../events/decisions.js';
 
 /**
@@ -337,7 +337,7 @@ export type CloseInput =
  * - The fold refuses a close unless the ticket is in `merged` or `blocked`
  *   and not already closed: exit 4 `invalid-transition`.
  *
- * Check order (group 3 round 2 ruling): usage errors (neither or both
+ * Check order: usage errors (neither or both
  * dispositions, at the parser) first; then the path checks
  * (`path-outside-tree`, then `decision-path-missing`); then closability
  * (exit 4 `invalid-transition` for a ticket not in `merged` or `blocked`,

@@ -1,5 +1,5 @@
 /**
- * Shared fixtures for the web server tests (add-board-web group 3): a
+ * Shared fixtures for the web server tests: a
  * temporary board with test assets, servers started in process on
  * 127.0.0.1 port 0 and closed after each test, a raw HTTP client that
  * controls every header (the `Host` header included, which `fetch` does

@@ -2,8 +2,7 @@
  * Drift guard between the action names of the server
  * (`src/web/actions.ts`) and of the web client
  * (`src/web/client/actions.ts`, which cannot import the server module):
- * the page posts exactly the actions the server answers
- * (add-board-web-actions task 2.1).
+ * the page posts exactly the actions the server answers.
  */
 
 import { describe, expect, it } from 'vitest';

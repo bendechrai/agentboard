@@ -1,9 +1,9 @@
 /**
- * `agentboard health` through the CLI driver (add-board-insights task
- * 2.1; board-insights: "Health command", "Durations"; board-cli: "Command
- * surface" scenario "Health has help"): the registry entry, the help, the
- * JSON report, the check, malformed durations with their hint, the human
- * output (`renderHealth`), and that it writes nothing and needs no actor.
+ * `agentboard health` through the CLI driver (board-insights: "Health
+ * command", "Durations"; board-cli: "Command surface" scenario "Health has
+ * help"): the registry entry, the help, the JSON report, the check,
+ * malformed durations with their hint, the human output (`renderHealth`),
+ * and that it writes nothing and needs no actor.
  *
  * The clock is faked (`Date` only) so that ages and the report's `now` are
  * exact. Expected documents are computed independently of the command:

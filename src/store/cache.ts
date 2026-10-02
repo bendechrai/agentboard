@@ -1,12 +1,11 @@
 /**
  * The derived SQLite cache (board-cache: "Cache is derived and disposable",
- * "Cache schema", "Cache connection settings"; design.md: "One transaction
+ * "Cache schema", "Cache connection settings"; add-board-core design.md: "One transaction
  * per command, event file inside it").
  *
  * The cache holds nothing that cannot be derived from the event files,
- * except the `cursors` table (acknowledgement state owned by `inbox`, task
- * group 5), which is preserved by rebuilds and excluded from the canonical
- * dump.
+ * except the `cursors` table (acknowledgement state owned by `inbox`), which
+ * is preserved by rebuilds and excluded from the canonical dump.
  *
  * Schema (version `CACHE_SCHEMA_VERSION`). Timestamps are stored as
  * `encodeHlc` text; JSON columns hold canonical JSON text (`canonicalEncode`
@@ -91,13 +90,13 @@
  * cursors only causes redelivery, never a skipped event): `rebuild` keeps its
  * rows and `rebuild --check` does not compare it.
  *
- * Cursor seen sets (task group 5, `src/store/cursors.ts`) are stored in one
+ * Cursor seen sets (`src/store/cursors.ts`) are stored in one
  * more table, `cursor_seen (actor, hash, wall)`, documented there. It is
  * part of the cursors and is treated exactly like `cursors`: kept by
  * `rebuild`, not covered by `dumpCache` or `rebuild --check`, dropped with
  * every other table when the schema version differs. `openCache` creates it
- * with `CREATE TABLE IF NOT EXISTS` on every open, so a version 1 cache made
- * before group 5 gains it without a version change.
+ * with `CREATE TABLE IF NOT EXISTS` on every open, so a version 1 cache
+ * without it gains it without a version change.
  */
 
 import { existsSync } from 'node:fs';
@@ -231,8 +230,8 @@ export function openCache(path: string, options?: OpenCacheOptions): DatabaseSyn
 }
 
 /**
- * Creates `cursor_seen` when it is missing (a version 1 cache made before
- * task group 5). Looks first, so an open that finds the table never
+ * Creates `cursor_seen` when it is missing (a version 1 cache without it).
+ * Looks first, so an open that finds the table never
  * writes and never waits for a concurrent writer's lock.
  */
 function ensureCursorSeen(db: DatabaseSync): void {
@@ -439,7 +438,7 @@ export interface CatchUpOptions {
  * the lock, and `COMMIT` (rolled back on error). A call that finds nothing
  * new changes no rows.
  *
- * Late events (task group 5): after the derived rows are up to date, the
+ * Late events: after the derived rows are up to date, the
  * events this call newly recorded as applied, plus (after a refold) every
  * event already recorded whose `folded` flag went from 0 to 1, are passed to
  * `resetLateCursors` (`src/store/cursors.ts`) in the same transaction, so an

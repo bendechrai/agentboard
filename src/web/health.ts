@@ -1,13 +1,12 @@
 /**
- * What only a running server knows about the board's health
- * (board-insights: "Health in the web app"; design.md: "Server additions",
- * "Late arrivals", "Cache check"; add-board-insights task 3.1): the late
- * and removed events its feed observed, and the on-request cache check.
- * The server (`src/web/server.ts`) owns one `ObservedLog` and one
- * `CacheChecker` for its whole life and answers `GET /api/health` and
- * `GET /api/health/check` from them.
+ * What only a running server knows about the board's health (board-insights:
+ * "Health in the web app"; add-board-insights design.md: "Server additions",
+ * "Late arrivals", "Cache check"): the late and removed events its feed
+ * observed, and the on-request cache check. The server (`src/web/server.ts`)
+ * owns one `ObservedLog` and one `CacheChecker` for its whole life and
+ * answers `GET /api/health` and `GET /api/health/check` from them.
  *
- * Decisions recorded here (test author, add-board-insights group 3):
+ * Design notes:
  * - Observation order. Within one `resync`, the late events are observed
  *   first, in the message's (fold) order, then the removed hashes, in the
  *   message's order; messages are observed in the order the feed delivers

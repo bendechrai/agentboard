@@ -1,7 +1,6 @@
 /**
- * Task 7.1: `importChange` against a fixture tasks file shaped like this
- * repository's own `openspec/changes/add-board-core/tasks.md`
- * (board-openspec-integration: "Import a change"; board-concurrency:
+ * `importChange` against a fixture tasks file shaped like a real OpenSpec
+ * `tasks.md` (board-openspec-integration: "Import a change"; board-concurrency:
  * "Re-import is idempotent"; board-events: tickets are created in `todo`
  * and an import writes the permitted moves).
  *
@@ -117,8 +116,8 @@ function importFresh(): { board: Board; root: string; first: ImportResult } {
  * tasks file and a closed board, and the result of that first import.
  * `imported` copies it for each test. A first import writes 39 event files,
  * each fsynced with its directory and committed to the cache; rebuilding it
- * in every test made this the slowest file of the suite in the floor
- * container, where tests exceeded vitest's 5 second default under load.
+ * in every test would be slow enough under load to exceed vitest's 5
+ * second default.
  */
 let template: { root: string; first: ImportResult } | undefined;
 

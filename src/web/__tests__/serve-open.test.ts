@@ -1,10 +1,10 @@
 /**
- * Whether `agentboard serve` opens the browser (add-serve-auto-open task
- * 1.1; board-web: "Serve command" as modified by add-serve-auto-open, its
- * scenarios "Opens the browser from an interactive terminal", "No browser
- * for a script", "No browser without a display on Linux", "Explicit open
- * and no-open", "Conflicting open flags" and "Opener failure is a
- * warning"; design.md: "Deciding whether to open", "Order and output").
+ * Whether `agentboard serve` opens the browser (board-web: "Serve command", its
+ * scenarios "Opens the browser from an interactive terminal", "No browser for a
+ * script", "No browser without a display on Linux", "Explicit open and
+ * no-open", "Conflicting open flags" and "Opener failure is a warning";
+ * add-serve-auto-open design.md: "Deciding whether to open", "Order and
+ * output").
  *
  * `openMode` and `shouldAutoOpen` are pure and tested on their own, for
  * every condition on darwin, win32 and linux. `serveCommand` is then run

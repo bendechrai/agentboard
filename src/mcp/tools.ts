@@ -1,12 +1,12 @@
 /**
  * MCP tool definitions generated from the command registry (board-cli: "MCP
- * server"; design.md: "Library first, CLI second", "MCP server"). Nothing
+ * server"; add-board-core design.md: "Library first, CLI second", "MCP server"). Nothing
  * about a tool is written by hand: its name, description and input schema
  * are computed from the `CommandSpec`, and its arguments are validated by
  * the same rules as the CLI parser (`parseArgs`), so the CLI and the MCP
  * surface cannot drift.
  *
- * Decisions of task group 9 recorded here:
+ * Design notes:
  * - Exclusive flag groups (`ExclusiveGroup`) are NOT expressed as `oneOf`,
  *   `anyOf` or `allOf`: several MCP clients and model APIs refuse top-level
  *   combinators in a tool input schema. They are stated in the tool
@@ -33,7 +33,7 @@ export const TOOL_PREFIX = 'board_';
  * The commands that are not exposed as tools (board-cli: "MCP server"):
  * setup, streaming or maintenance commands run by a human or an
  * orchestrator in a shell, `help` (tools/list already describes every
- * tool; board-agent-guidance ruling 0412c1c), and `agents install` and
+ * tool), and `agents install` and
  * `agents check`, which write or read host project files in the caller's
  * working tree (board-agent-guidance: "Help is not an MCP tool").
  */

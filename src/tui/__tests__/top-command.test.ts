@@ -2,9 +2,9 @@
  * The `top` command in process, through `runCliAsync` with a fake terminal
  * and a stop signal the test controls (board-tui: "Top command",
  * "Interactive terminal required"; board-cli: "Command surface" scenario
- * "Top has help", "Exit codes" scenario "Top without a terminal";
- * add-board-tui task 2.2), and `processTerminal` over a fake process. The
- * built CLI is exercised in `src/__tests__/top-processes.test.ts`.
+ * "Top has help", "Exit codes" scenario "Top without a terminal"), and
+ * `processTerminal` over a fake process. The built CLI is exercised in
+ * `src/__tests__/top-processes.test.ts`.
  */
 
 import { EventEmitter } from 'node:events';
@@ -104,8 +104,16 @@ function boardWithTicket(title = 'Shown in top'): { root: string; boardDir: stri
 describe('scenario: Piped output (no interactive terminal)', () => {
   const cases: [string, () => FakeTerminal | null, RunEnv][] = [
     ['no terminal at all', () => null, ttyEnv()],
-    ['stdin not a TTY', () => new FakeTerminal(undefined, { stdin: false, stdout: true }), ttyEnv()],
-    ['stdout not a TTY', () => new FakeTerminal(undefined, { stdin: true, stdout: false }), ttyEnv()],
+    [
+      'stdin not a TTY',
+      () => new FakeTerminal(undefined, { stdin: false, stdout: true }),
+      ttyEnv(),
+    ],
+    [
+      'stdout not a TTY',
+      () => new FakeTerminal(undefined, { stdin: true, stdout: false }),
+      ttyEnv(),
+    ],
     ['TERM=dumb', () => new FakeTerminal(), ttyEnv({ TERM: 'dumb' })],
   ];
 
@@ -306,7 +314,13 @@ interface FakeHost extends TerminalHost {
 }
 
 function fakeHost(
-  options: { stdinTTY?: boolean; stdoutTTY?: boolean; columns?: number; rows?: number; raw?: boolean } = {},
+  options: {
+    stdinTTY?: boolean;
+    stdoutTTY?: boolean;
+    columns?: number;
+    rows?: number;
+    raw?: boolean;
+  } = {},
 ): FakeHost {
   const calls: string[] = [];
   const stdin = Object.assign(new EventEmitter(), {

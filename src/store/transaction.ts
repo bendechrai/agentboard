@@ -1,6 +1,6 @@
 /**
  * The single command transaction (board-cache: "One command, one
- * transaction"; board-concurrency: "Crash consistency"; design.md: "One
+ * transaction"; board-concurrency: "Crash consistency"; add-board-core design.md: "One
  * transaction per command, event file inside it").
  */
 
@@ -220,7 +220,7 @@ export function runCommand(
 }
 
 /**
- * Environment variable for crash injection (task 4.4). When set to one of
+ * Environment variable for crash injection. When set to one of
  * the `PausePoint` values, a writing command pauses at that point of the
  * event write: it prints `agentboard: paused at <point> <path>` plus a
  * newline to stderr and then blocks synchronously (never returning) until

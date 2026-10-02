@@ -3,7 +3,7 @@
  * (`dist/cli.js`, built before the tests by `make check`): an event written
  * by another process appears on the watcher's stdout within 3 seconds, the
  * watcher never advances the cursor, and SIGTERM or SIGINT stop it with
- * exit code 0. Task group 5.2.
+ * exit code 0.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';

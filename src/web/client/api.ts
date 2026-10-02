@@ -1,7 +1,7 @@
 /**
  * The web client's side of the JSON API of `agentboard serve` (board-web:
- * "Access token", "JSON API"; `src/web/api.ts` holds the server's contract;
- * add-board-web task 4.2). The stream is read by `stream.ts`.
+ * "Access token", "JSON API"; `src/web/api.ts` holds the server's contract).
+ * The stream is read by `stream.ts`.
  *
  * The client talks only to its own origin, by absolute paths (`/api/...`).
  * Every API request carries `Authorization: Bearer <token>`, the token
@@ -12,7 +12,7 @@
  * Every IO goes through `ClientDeps`, so tests pass a stubbed `fetch`, a
  * clock and timers.
  *
- * Decisions recorded here (test author, add-board-web group 4):
+ * Design notes:
  * - `/api/board` and the pages of `/api/events` are separate requests, so
  *   separate read snapshots: events written between them appear in the
  *   events but not in the board. `loadModel` requests the board first and
@@ -277,8 +277,8 @@ export interface HealthResponse {
 }
 
 /**
- * `GET /api/health`: what only the server knows (add-board-insights task
- * 3.2). Never runs the cache check. Rejects as `getJson`.
+ * `GET /api/health`: what only the server knows. Never runs the cache
+ * check. Rejects as `getJson`.
  */
 export async function loadHealth(conn: Connection): Promise<HealthResponse> {
   return (await getJson(conn, '/api/health')) as HealthResponse;

@@ -2,8 +2,7 @@
  * The write actions over HTTP, in process (board-web-actions: "Write mode
  * is opt-in with an explicit actor", "Action endpoints", "Close from the
  * browser", "Secret-like text is refused", "Cross-site request forgery
- * protection"; board-web: "Read-only server", "JSON API", as modified by
- * add-board-web-actions; add-board-web-actions tasks 1.1 to 1.3).
+ * protection"; board-web: "Read-only server", "JSON API").
  *
  * Every server listens on 127.0.0.1 with port 0. Every refused request is
  * checked to leave the events directory exactly as it was.
@@ -823,7 +822,7 @@ describe('Cross-site request forgery protection', () => {
   });
 });
 
-describe('no cookie and no CSRF token anywhere (add-board-web-actions task 1.1)', () => {
+describe('no cookie and no CSRF token anywhere', () => {
   it('sends no Set-Cookie and no csrf header or field on any route of a writable server', async () => {
     const { server, root } = await actionServer({ actor: 'ben' });
     const id = newTicket(root);

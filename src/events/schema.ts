@@ -148,7 +148,7 @@ export interface TicketChecklistAddItem {
 }
 
 /**
- * `ticket.checklist.add` (added by the group 7 ruling for re-import):
+ * `ticket.checklist.add` (written when re-importing a change adds lines):
  * `items` is a non-empty array of checklist lines, appended by the fold in
  * array order after the ticket's existing lines.
  */

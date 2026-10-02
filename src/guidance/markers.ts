@@ -1,8 +1,8 @@
 /**
  * Reading the ownership markers and managed regions of installed guidance
- * (design.md: "Ownership markers"), shared by `agents install`
- * (`./install.ts`) and `agents check` (`./check.ts`). Internal to the
- * guidance module: not re-exported from the package entry point.
+ * (add-agent-guidance design.md: "Ownership markers"), shared by `agents
+ * install` (`./install.ts`) and `agents check` (`./check.ts`). Internal to
+ * the guidance module: not re-exported from the package entry point.
  */
 
 import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
@@ -79,8 +79,8 @@ function resolvePath(path: string, links = 0): string | null {
  *   (`EISDIR` for a directory, including a path resolving to the root
  *   itself), an ancestor is not a directory (`ENOTDIR`), or resolution
  *   meets a symlink cycle at the path or an ancestor (`ELOOP`, when
- *   `MAX_LINKS` links were followed without reaching a real path; round 3
- *   ruling: never reported as `ok`).
+ *   `MAX_LINKS` links were followed without reaching a real path; never
+ *   reported as `ok`).
  *
  * Inside the tree means equal to `root` or starting with `root` plus the
  * path separator, so a sibling whose path only shares the root's leading

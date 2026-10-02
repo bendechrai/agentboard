@@ -1,7 +1,6 @@
 /**
  * Applying board feed messages to a client model (board-view-model:
- * "Applying feed messages"; add-board-web task 2.3). Pure and
- * browser-safe; see `types.ts`.
+ * "Applying feed messages"). Pure and browser-safe; see `types.ts`.
  */
 
 import type { BoardModel, FeedMessage } from './types.js';

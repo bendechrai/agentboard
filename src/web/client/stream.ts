@@ -1,11 +1,10 @@
 /**
- * Reading the live stream `/api/stream` with `fetch` (board-web: "Live
- * event stream", "Access token"; add-board-web task 4.2). `EventSource`
- * cannot send the `Authorization` header, so the client requests the
- * stream with `fetch`, parses the body with `SseParser` (`sse.ts`) and
- * reconnects by itself the way `EventSource` would.
+ * Reading the live stream `/api/stream` with `fetch` (board-web: "Live event
+ * stream", "Access token"). `EventSource` cannot send the `Authorization`
+ * header, so the client requests the stream with `fetch`, parses the body with
+ * `SseParser` (`sse.ts`) and reconnects by itself the way `EventSource` would.
  *
- * Decisions recorded here (test author, add-board-web group 4):
+ * Design notes:
  * - Every connection requests `streamUrl(since)` with the `since` given to
  *   `openStream`; a reconnection also sends `Last-Event-ID: <id>` once an
  *   id has been received (the server prefers the header to `since`).

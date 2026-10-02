@@ -3,8 +3,8 @@
 ## Purpose
 Defines the board-wide change feed: append and resync messages, position
 ids, resuming from a position and joining a running feed, shared by every
-live view of the board (the web server's event stream and, later, the
-terminal UI) without ever blocking writers.
+live view of the board (the web server's event stream and the terminal
+UI) without ever blocking writers.
 
 ## Requirements
 

@@ -2,8 +2,8 @@
  * CLI entry point for agentboard: runs `runCli` with the real process and
  * sets the exit code (without `process.exit`, so stdout is flushed).
  *
- * `mcp` (task group 9): when `parseArgs(argv)` succeeds and names the
- * `mcp` command, the entry point does not call `runCli`; it imports
+ * `mcp`: when `parseArgs(argv)` succeeds and names the `mcp` command, the
+ * entry point does not call `runCli`; it imports
  * `src/mcp/server.ts` (dynamically, so no other command loads the MCP
  * SDK) and sets the exit code to the awaited `serveMcp({ cwd, env, stdin:
  * process.stdin, stdout: process.stdout, stderr, signal, actor })`, where
@@ -14,16 +14,16 @@
  * `runCliAsync` unchanged. The warning filter below applies to `mcp` too, and
  * nothing but protocol messages is written to stdout.
  *
- * Task group 5: every other argv goes to `runCliAsync` (which behaves exactly
- * as `runCli` for every non-streaming command) and awaits it. Its
- * `stopSignal` installs SIGINT and SIGTERM handlers that abort one
+ * Every other argv goes to `runCliAsync` (which behaves exactly as `runCli`
+ * for every non-streaming command) and is awaited. Its `stopSignal`
+ * installs SIGINT and SIGTERM handlers that abort one
  * `AbortController` and returns its signal; they are installed only then,
  * so a non-streaming command keeps Node's default signal behaviour. A
  * `watch` stopped by either signal therefore exits 0 once its stream has
  * closed, with every line it printed flushed.
  *
- * add-board-tui task 2.2: `runCliAsync` also receives `terminal`, which
- * imports `src/tui/terminal.ts` dynamically and returns
+ * `runCliAsync` also receives `terminal`, which imports
+ * `src/tui/terminal.ts` dynamically and returns
  * `processTerminal()` over the real `process.stdin`, `process.stdout` and
  * `process`. `runCliAsync` calls it only for `top`, so no other command
  * loads the terminal driver or touches the terminal. `top` stopped by

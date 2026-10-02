@@ -1,6 +1,6 @@
 /**
  * Task source adapters (board-openspec-integration: "Task sources are
- * adapters"; design.md: "Task reference is source-neutral").
+ * adapters"; add-board-core design.md: "Task reference is source-neutral").
  *
  * The board core depends on a planning tool only through the adapter keyed
  * by a task reference's `source`. Everything source-specific (where the

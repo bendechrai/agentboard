@@ -1,6 +1,6 @@
 /**
- * The health report (board-insights: "Health report", "Durations";
- * add-board-insights task 1.1). Pure and browser-safe; see `types.ts`.
+ * The health report (board-insights: "Health report", "Durations"). Pure
+ * and browser-safe; see `types.ts`.
  *
  * One definition of every health check, shared by the web health panel
  * (evaluated in the browser), the `health` CLI command and the MCP tool

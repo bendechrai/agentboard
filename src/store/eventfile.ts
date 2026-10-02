@@ -1,6 +1,6 @@
 /**
  * Event files on disk (board-events: "Event files are immutable and
- * content-addressed"; design.md: "Atomic event write").
+ * content-addressed"; add-board-core design.md: "Atomic event write").
  *
  * An event file is `<events dir>/<sha256-hex>.json` whose bytes are the
  * canonical encoding of one event (see `canonicalEncode`) and whose name is

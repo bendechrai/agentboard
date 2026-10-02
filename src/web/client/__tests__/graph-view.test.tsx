@@ -1,12 +1,11 @@
 // @vitest-environment happy-dom
 /**
- * The hand-off graph view (board-insights: "Hand-off graph", scenarios
- * "Counts per pair", "Claims are not hand-offs", "Filter by change";
- * add-board-insights task 3.3), driven through the real app on a fake API
- * and a fake clock: nodes on a circle in name order, directed edges with
- * their counts, the change and time filters kept in the URL hash, the
- * 3 second animation of an edge when a hand-off on it arrives from the
- * stream, actor names never rendered as markup (inside SVG text too), and
+ * The hand-off graph view (board-insights: "Hand-off graph", scenarios "Counts
+ * per pair", "Claims are not hand-offs", "Filter by change"), driven through
+ * the real app on a fake API and a fake clock: nodes on a circle in name order,
+ * directed edges with their counts, the change and time filters kept in the URL
+ * hash, the 3 second animation of an edge when a hand-off on it arrives from
+ * the stream, actor names never rendered as markup (inside SVG text too), and
  * no inline style or external reference.
  */
 

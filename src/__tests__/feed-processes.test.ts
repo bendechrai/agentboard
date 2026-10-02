@@ -1,9 +1,9 @@
 /**
  * The board feed against real CLI processes (board-feed: "Board-wide
  * change feed" scenario "Event written by another process", "The feed
- * never blocks writers" scenario "Stalled consumer"; add-board-web task
- * 2.2). Runs the built CLI through the multi-process harness; run
- * `npm run build` first when running vitest directly.
+ * never blocks writers" scenario "Stalled consumer"). Runs the built CLI
+ * through the multi-process harness; run `npm run build` first when running
+ * vitest directly.
  */
 
 import { describe, expect, it } from 'vitest';

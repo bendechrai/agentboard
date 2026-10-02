@@ -1,13 +1,13 @@
 /**
- * The access token in the browser (board-web: "Access token"; add-board-web
- * task 4.2). `agentboard serve` prints `http://127.0.0.1:<port>/#token=<token>`:
- * the token travels in the URL fragment, which the browser never sends to
- * the server. On load the client takes it from the fragment, keeps it in
- * `sessionStorage` (so a reload of the tab keeps working, and closing the
- * tab forgets it), removes it from the address bar, and sends it as
- * `Authorization: Bearer <token>` on every API request. No cookie is used.
+ * The access token in the browser (board-web: "Access token"). `agentboard
+ * serve` prints `http://127.0.0.1:<port>/#token=<token>`: the token travels in
+ * the URL fragment, which the browser never sends to the server. On load the
+ * client takes it from the fragment, keeps it in `sessionStorage` (so a reload
+ * of the tab keeps working, and closing the tab forgets it), removes it from
+ * the address bar, and sends it as `Authorization: Bearer <token>` on every API
+ * request. No cookie is used.
  *
- * Decisions recorded here (test author, add-board-web group 4):
+ * Design notes:
  * - The token fragment is exactly `#token=<value>` (the whole fragment);
  *   any other fragment (a view route such as `#/feed`, or none) leaves the
  *   address bar alone and the stored token is used.

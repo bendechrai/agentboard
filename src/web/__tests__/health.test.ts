@@ -1,6 +1,6 @@
 /**
  * What only a running server knows about health, as units (board-insights:
- * "Health in the web app"; add-board-insights task 3.1): the observed log
+ * "Health in the web app"): the observed log
  * of late and removed events (at most 100, newest first, with observation
  * times, kind and ticket kept for removed hashes), the cache check summary,
  * and the single-flight cache checker reusing a result for 30 seconds,

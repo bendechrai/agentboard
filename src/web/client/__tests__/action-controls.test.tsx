@@ -1,14 +1,13 @@
 // @vitest-environment happy-dom
 /**
- * The action controls of the ticket detail (board-web-actions: "Action
- * controls in the web app", scenarios "Refusal shown with its hint" and
- * "Read-only page"; design.md of add-board-web-actions: "The page";
- * add-board-web-actions task 2.1): the request body of every control, the
- * move and hand-off targets from `isTransitionAllowed`, the acting-as
- * banner, a refusal beside its control with message and hint keeping the
- * input, a success applied at once, a `busy` refusal offering a retry, a
- * 401 discarding the token, the bearer header on every action request, and
- * no write control on a read-only session.
+ * The action controls of the ticket detail (board-web-actions: "Action controls
+ * in the web app", scenarios "Refusal shown with its hint" and "Read-only
+ * page"; add-board-web-actions design.md of add-board-web-actions: "The page"): the request body of
+ * every control, the move and hand-off targets from `isTransitionAllowed`, the
+ * acting-as banner, a refusal beside its control with message and hint keeping
+ * the input, a success applied at once, a `busy` refusal offering a retry, a
+ * 401 discarding the token, the bearer header on every action request, and no
+ * write control on a read-only session.
  *
  * The app runs against the fake API of `client-helpers.tsx`, whose
  * `onAction` answers `POST /api/actions/<action>` and records each request.

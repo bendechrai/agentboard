@@ -1,11 +1,11 @@
 // @vitest-environment happy-dom
 /**
- * The app shell with the client model (board-web: "Board views"; design.md:
- * "Client model"; add-board-web task 4.2): the initial load, an append, a
- * resync reload with late entries marked, the problem banner, the 10
- * second refresh of relative times, restoring the view and its filters
- * from the URL hash, the missing or refused token, and the bootstrap of
- * `mount` and `main.tsx` taking the token from the URL fragment.
+ * The app shell with the client model (board-web: "Board views"; add-board-web design.md of
+ * add-board-web: "Client model"): the initial load, an append, a resync reload
+ * with late entries marked, the problem banner, the 10 second refresh of
+ * relative times, restoring the view and its filters from the URL hash, the
+ * missing or refused token, and the bootstrap of `mount` and `main.tsx` taking
+ * the token from the URL fragment.
  */
 
 import { act, cleanup, render, screen, waitFor } from '@testing-library/preact';

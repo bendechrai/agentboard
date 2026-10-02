@@ -1,6 +1,6 @@
 /**
  * `agentboard sync` (board-concurrency: "Sync converges"; board-cache:
- * "Cache is not synced"; design.md: "Git sync model"; risk "Host project
+ * "Cache is not synced"; add-board-core design.md: "Git sync model"; risk "Host project
  * forgets `.board/` in its gitignore").
  *
  * The board directory is its own git repository (`initBoard` makes it one).

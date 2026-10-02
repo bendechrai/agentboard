@@ -1,12 +1,12 @@
 /**
  * The URL hash of the web client: which view is shown and its filters
- * (board-web: "Board views": "The current view and its filters SHALL be
- * kept in the URL hash, so reloading the page restores them"; design.md:
- * "Front end", "Client model"; add-board-web task 4.2). There is no router
- * library: the client parses `location.hash` with `parseHash`, writes it
- * with `formatHash`, and re-renders on `hashchange`. Pure.
+ * (board-web: "Board views": "The current view and its filters SHALL be kept in
+ * the URL hash, so reloading the page restores them"; add-board-web design.md of
+ * add-board-web: "Front end", "Client model"). There is no router library: the
+ * client parses `location.hash` with `parseHash`, writes it with `formatHash`,
+ * and re-renders on `hashchange`. Pure.
  *
- * Decisions recorded here (test author, add-board-web group 4):
+ * Design notes:
  * - Hash forms, each starting `#/`:
  *   - `#/board` with the optional query parameters `change` (the board's
  *     task filter, `BoardFilters.task`: `<source>:<ref>` or
@@ -21,7 +21,7 @@
  *   - `#/lanes`;
  *   - `#/health` with the optional query parameters `stale` and `blocked`
  *     (the health thresholds as duration texts, board-insights:
- *     "Durations"; add-board-insights group 3);
+ *     "Durations");
  *   - `#/replay` (no parameter: the replay position is not kept, since the
  *     frozen event list is taken anew whenever the view opens);
  *   - `#/graph` with the optional query parameters `change` (the graph's
@@ -83,7 +83,7 @@ export interface LanesRoute {
   view: 'lanes';
 }
 
-/** The health view and its thresholds (add-board-insights task 3.2). */
+/** The health view and its thresholds. */
 export interface HealthRoute {
   view: 'health';
   /** The `staleAfter` threshold as a valid duration text, or null for the default (`2h`). */
@@ -92,12 +92,12 @@ export interface HealthRoute {
   blocked: string | null;
 }
 
-/** The replay view (add-board-insights task 3.3). */
+/** The replay view. */
 export interface ReplayRoute {
   view: 'replay';
 }
 
-/** The hand-off graph and its filters (add-board-insights task 3.3). */
+/** The hand-off graph and its filters. */
 export interface GraphRoute {
   view: 'graph';
   /** `GraphFilter.change` (`<source>:<ref>`), or null for every change. */

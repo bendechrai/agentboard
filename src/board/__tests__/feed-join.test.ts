@@ -1,6 +1,5 @@
 /**
- * Joining a running board feed (board-feed: "Joining a running feed";
- * add-board-web task 3.3, round 2 after the security review, finding B1):
+ * Joining a running board feed (board-feed: "Joining a running feed"):
  * `joinBoardFeed` compares the joiner's position with the board, not with
  * what the feed has delivered, by first bringing the feed up to date in
  * the same turn.

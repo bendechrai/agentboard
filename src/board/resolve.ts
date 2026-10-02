@@ -1,6 +1,6 @@
 /**
  * Ticket id prefix resolution and task reference arguments (board-cli:
- * "Command surface"; design.md: Risks, "Prefix ids collide").
+ * "Command surface"; add-board-core design.md: Risks, "Prefix ids collide").
  */
 
 import type { BoardState } from '../events/fold.js';

@@ -1,5 +1,5 @@
 /**
- * ULID ticket ids (design.md: "Ids: hand-rolled ULID"), following
+ * ULID ticket ids (add-board-core design.md: "Ids: hand-rolled ULID"), following
  * https://github.com/ulid/spec.
  *
  * A ULID is 26 characters of Crockford base32
@@ -12,13 +12,13 @@
  * no `I`, `L`, `O` or `U`, first character `0` to `7`. Lowercase input is not
  * a ULID here (callers that accept user-typed prefixes normalise first).
  *
- * Browser-safe (add-board-web task 1.1): this module imports no `node:`
+ * Browser-safe: this module imports no `node:`
  * module. Its default random source is the global Web Crypto
  * `crypto.getRandomValues` (present in Node 22 and every browser), looked
  * up on `globalThis.crypto` each time random bytes are needed (not
  * captured at module load), so the pure fold that reaches this module
- * through `schema.ts` can be bundled for the browser. The bytes contract
- * is unchanged: 10 random bytes per fresh random part.
+ * through `schema.ts` can be bundled for the browser. Each fresh random
+ * part takes 10 random bytes.
  */
 
 /** Crockford base32 alphabet, in digit order. */

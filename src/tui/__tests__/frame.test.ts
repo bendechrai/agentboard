@@ -1,14 +1,13 @@
 /**
- * Frames (board-tui: "Views", "Frame rendering"; add-board-tui task 1.2):
+ * Frames (board-tui: "Views", "Frame rendering"):
  * plain-text golden files for each view at 80x24 and 140x40, the too-small
  * screen and a detail with a decision, a retracted decision and a
  * retraction; then the layout rules, truncation and the style map.
  *
  * The golden files under `golden/` are the exact frame lines, one per file
- * line, with trailing spaces (see `.editorconfig`). They were produced by a
- * throwaway implementation written from the doc comments of `frame.ts` and
- * checked by hand; never regenerate them from the implementation under
- * test.
+ * line, with trailing spaces (see `.editorconfig`). They follow the doc
+ * comments of `frame.ts` and are checked by hand; never regenerate them
+ * from the implementation under test.
  */
 
 import { readFileSync } from 'node:fs';

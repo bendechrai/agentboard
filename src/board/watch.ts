@@ -1,5 +1,5 @@
 /**
- * `watch` (board-cli: "Command surface"; design.md: "`watch`"): a stream of
+ * `watch` (board-cli: "Command surface"; add-board-core design.md: "`watch`"): a stream of
  * an actor's pending inbox entries that never acknowledges them.
  */
 

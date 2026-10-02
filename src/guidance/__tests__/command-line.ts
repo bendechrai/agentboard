@@ -1,6 +1,6 @@
 /**
  * Test helper: splits an example command line (`CommandExample.command`,
- * and later the agent guide's `agentboard ` lines) into argv words the way
+ * and the agent guide's `agentboard ` lines) into argv words the way
  * a POSIX shell would for the subset the examples use: words separated by
  * spaces, `"..."` and `'...'` quoting (no escapes, no expansion), and
  * adjacent quoted and unquoted parts joined into one word.

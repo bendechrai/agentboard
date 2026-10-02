@@ -1,6 +1,6 @@
 /**
  * The guide summary sent as the MCP server `instructions`
- * (board-agent-guidance: "Guide over MCP"; add-agent-guidance task 4.1):
+ * (board-agent-guidance: "Guide over MCP"):
  * the format (version stamp, ASCII, at most 2000 characters, ends by
  * naming `agentboard://guide`), the rules it must carry, and the drift
  * guard shared with the guide (every command line parses, is one of the
@@ -46,7 +46,9 @@ describe('the constants', () => {
 describe('the format', () => {
   it('is stamped with the version given on its first line', () => {
     expect(linesOf(summary())[0]).toBe(`Agent guide summary for agentboard ${VERSION}`);
-    expect(linesOf(renderGuideSummary('9.8.7'))[0]).toBe('Agent guide summary for agentboard 9.8.7');
+    expect(linesOf(renderGuideSummary('9.8.7'))[0]).toBe(
+      'Agent guide summary for agentboard 9.8.7',
+    );
   });
 
   it('is pure', () => {

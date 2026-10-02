@@ -1,7 +1,7 @@
 /**
- * The banner shown while the stream reports a problem (board-web: "Live
- * event stream": a tick failure is sent as a `problem` event; design.md:
- * "A tick failure does not stop the server"; add-board-web task 4.2).
+ * The banner shown while the stream reports a problem (board-web: "Live event
+ * stream": a tick failure is sent as a `problem` event; add-board-web design.md of
+ * add-board-web: "A tick failure does not stop the server").
  *
  * DOM contract (relied on by the component tests):
  * - one element with `role="alert"` and class `problem`, holding the

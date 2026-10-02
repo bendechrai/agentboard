@@ -1,10 +1,9 @@
 // @vitest-environment happy-dom
 /**
- * The live board view (board-web: "Board views", scenario "Card moves
- * live"; board-view-model: "Board columns and cards"; add-board-web task
- * 4.3): cards per column, the changed highlight, the change and assignee
- * filters, the closed toggle, all driven through the real app and kept in
- * the URL hash.
+ * The live board view (board-web: "Board views", scenario "Card moves live";
+ * board-view-model: "Board columns and cards"): cards per column, the changed
+ * highlight, the change and assignee filters, the closed toggle, all driven
+ * through the real app and kept in the URL hash.
  */
 
 import { cleanup, fireEvent, screen, waitFor } from '@testing-library/preact';

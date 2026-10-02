@@ -2,7 +2,7 @@
  * The server over real HTTP, in process (board-web: "Loopback only",
  * "Access token", "Host header check", "No cross-origin access and
  * security headers", "Read-only server", the server side of
- * "Self-contained front end"; add-board-web task 3.1, round 2): every
+ * "Self-contained front end"): every
  * security check (bearer token only, on the API only; no cookie ever; one
  * Host header), the assets (no token, regular files only, a FIFO never
  * blocks) and the placeholder page,

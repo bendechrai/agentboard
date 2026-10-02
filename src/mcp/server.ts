@@ -1,5 +1,5 @@
 /**
- * The `agentboard mcp` server (board-cli: "MCP server"; design.md: "MCP
+ * The `agentboard mcp` server (board-cli: "MCP server"; add-board-core design.md: "MCP
  * server"): the official MCP TypeScript SDK (`@modelcontextprotocol/sdk`)
  * over stdio, one tool per registry command (`toolDefinitions`), each call
  * running the command's own `run` exactly as one CLI invocation does.
@@ -45,18 +45,17 @@
  * `McpServer.registerTool`, which needs zod schemas. The server name is
  * `SERVER_NAME` and its version is `VERSION`.
  *
- * Tool errors carry a `hint` (add-agent-guidance task group 2).
+ * Tool errors carry a `hint` (board-agent-guidance: "Error hints").
  *
- * The guide over MCP (board-agent-guidance: "Guide over MCP";
- * add-agent-guidance task 4.1): the server's `instructions` are
- * `renderGuideSummary(VERSION)` and the server declares the `resources`
- * capability as an empty object (no `subscribe`, no `listChanged`: the
- * resources never change while the server runs). The resources are
- * static text, built from `src/guidance/guide.ts`, and need no board, no
+ * The guide over MCP (board-agent-guidance: "Guide over MCP"): the
+ * server's `instructions` are `renderGuideSummary(VERSION)` and the server
+ * declares the `resources` capability as an empty object (no `subscribe`,
+ * no `listChanged`: the resources never change while the server runs).
+ * The resources are static text, built from `src/guidance/guide.ts`, and need no board, no
  * actor and no board open: they are served even if the board has gone
  * since start-up, and reading them writes nothing to stderr.
  *
- * Decisions recorded here (test author, task group 4):
+ * Design notes:
  * - Besides `agentboard://guide`, each role's checklist is a resource,
  *   `agentboard://guide/<role>`, whose text is the stdout of
  *   `agentboard help agents --role <role>` (the guide followed by the
@@ -135,9 +134,9 @@ export interface ToolCallResult {
    * Exactly one text item. On success its text is
    * `JSON.stringify(output.json)` (the CLI's `--json` stdout without the
    * trailing newline); on failure it is the error message, followed, when
-   * the hint is not null, by a newline and `hint: <hint>` (decision, task
-   * group 2: many clients show a model only the text content, so the hint
-   * is in the text as well as in the structured content).
+   * the hint is not null, by a newline and `hint: <hint>` (many clients
+   * show a model only the text content, so the hint is in the text as well
+   * as in the structured content).
    */
   content: { type: 'text'; text: string }[];
   /**
@@ -196,8 +195,7 @@ export interface BoardMcpServer {
    *    on first use (passing `catchUp` and `prepare` as `runCli` does) and
    *    printing the open report's reaped and corrupt files to stderr as
    *    `runCli` does. The board is closed when the call ends, whatever
-   *    happens. The implementation should share this context building
-   *    with `src/cli/main.ts` rather than copy it.
+   *    happens. The context building is shared with `src/cli/main.ts`.
    * 5. Success: `output.warnings` to stderr, then the result described on
    *    `ToolCallResult`. An output carrying `exitCode` (only `rebuild
    *    --check`, which is not a tool) is a tool error with that exit code,

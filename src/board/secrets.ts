@@ -1,6 +1,6 @@
 /**
  * Secret-looking text refusal (board-cli: "No secrets on the board";
- * design.md: "Secret refusal"). A guard rail, not a scanner.
+ * add-board-core design.md: "Secret refusal"). A guard rail, not a scanner.
  */
 
 import { BoardError } from '../store/errors.js';

@@ -1,8 +1,7 @@
 // @vitest-environment happy-dom
 /**
  * The agent lanes view (board-web: "Board views"; board-view-model: "Agent
- * lanes", scenarios "Last seen" and "Assignee without events";
- * add-board-web task 4.4).
+ * lanes", scenarios "Last seen" and "Assignee without events").
  */
 
 import { cleanup, waitFor } from '@testing-library/preact';

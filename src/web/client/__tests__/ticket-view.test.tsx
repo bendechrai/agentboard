@@ -1,11 +1,10 @@
 // @vitest-environment happy-dom
 /**
  * The ticket detail view (board-web: "Board views", scenario "Conversation
- * highlights a decision"; board-view-model: "Conversation view";
- * add-board-web task 4.4): fields, checklist, links, disposition, the
- * conversation with decisions, retractions and hand-offs, and the events
- * with their outcomes, including a rejected event with its reason, read
- * from `/api/tickets/<id>`.
+ * highlights a decision"; board-view-model: "Conversation view"): fields,
+ * checklist, links, disposition, the conversation with decisions, retractions
+ * and hand-offs, and the events with their outcomes, including a rejected event
+ * with its reason, read from `/api/tickets/<id>`.
  */
 
 import { cleanup, screen, waitFor } from '@testing-library/preact';

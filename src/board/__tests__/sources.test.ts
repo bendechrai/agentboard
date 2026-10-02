@@ -1,5 +1,5 @@
 /**
- * Task 7.2: a ticket whose source has no adapter is fully usable
+ * A ticket whose source has no adapter is fully usable
  * (board-openspec-integration: "Task sources are adapters", scenario
  * "Ticket from a source with no adapter"), and only `import-change` needs
  * an adapter.

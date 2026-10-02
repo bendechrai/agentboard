@@ -1,7 +1,7 @@
 /**
- * The board feed (board-feed; design.md: "The board feed: append or
+ * The board feed (board-feed; add-board-web design.md: "The board feed: append or
  * resync", "Position ids and resume with a set digest", "Event files are
- * cached by hash"; add-board-web tasks 2.2 and 2.3): a stream of every
+ * cached by hash"): a stream of every
  * effective event of the board, of every kind and on every ticket,
  * independent of any actor, as `append` and `resync` messages
  * (`FeedMessage`, `src/view/types.ts`) with position ids.
@@ -105,7 +105,7 @@ function toHex(bytes: Uint8Array): string {
 }
 
 /**
- * A process-wide map from event hash to parsed event (design.md: "Event
+ * A process-wide map from event hash to parsed event (add-board-web design.md: "Event
  * files are cached by hash"). Event files are named by the hash of their
  * content and never modified, so each file is read at most once per cache.
  */
@@ -471,10 +471,8 @@ const joins = new WeakMap<
  * The first message for a consumer joining the running feed that was
  * started with `watchBoard(board, options)` (this exact options object),
  * so that one feed can serve many consumers, each starting at its own
- * position (board-feed: "Joining a running feed"; design.md: "One feed
- * per server, fanned out to every client"; added by the add-board-web
- * group 3 implementer, contract reworked in round 2 after the security
- * review, finding B1).
+ * position (board-feed: "Joining a running feed"; add-board-web design.md: "One feed
+ * per server, fanned out to every client").
  *
  * The position is compared with the board, not with what the feed has
  * delivered so far. So, in the same synchronous turn and before anything

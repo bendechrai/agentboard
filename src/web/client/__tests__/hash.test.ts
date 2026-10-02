@@ -1,6 +1,6 @@
 /**
- * The URL hash routes of the web client (board-web: "Board views": the
- * view and its filters are kept in the URL hash; add-board-web task 4.2).
+ * The URL hash routes of the web client (board-web: "Board views": the view and
+ * its filters are kept in the URL hash).
  */
 
 import { describe, expect, it } from 'vitest';

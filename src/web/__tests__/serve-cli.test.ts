@@ -2,13 +2,12 @@
  * The `serve` command in process, through `runCliAsync` with a stop signal
  * the test controls (board-web: "Serve command"; board-cli: "Command
  * surface" scenario "Serve has help", "Exit codes" scenario "Port in use
- * is a usage-class failure"; add-board-web task 3.1): the start-up line
+ * is a usage-class failure"): the start-up line
  * and the `--json` line, `--port` validation, `port-in-use` with its hint,
  * no board, `--open` and its failure warning, and the system opener.
  * Write mode (board-web-actions: "Write mode is opt-in with an explicit
- * actor", "Close from the browser"; board-web: "Serve command" as modified
- * by add-board-web-actions; board-cli: "Actor is explicit" scenario "Serve
- * ignores the environment actor"; add-board-web-actions task 1.1): the
+ * actor", "Close from the browser"; board-web: "Serve command"; board-cli:
+ * "Actor is explicit" scenario "Serve ignores the environment actor"): the
  * writable start-up line, AGENTBOARD_ACTOR ignored, an empty `--as`, the
  * tree root of decision paths, and the help of `--as`. The real SIGINT and SIGTERM are exercised on the built
  * CLI in src/__tests__/serve-processes.test.ts.
@@ -54,8 +53,8 @@ function start(argv: readonly string[], cwd: string, env: RunEnv = cliEnv()): Ru
     // CI is always set here: these servers run the real opener by default,
     // and vitest's stdout may be a terminal, so without it a plain
     // `serve` would open a browser on the developer's machine
-    // (add-serve-auto-open; the open decision is tested with injected seams
-    // in serve-open.test.ts).
+    // (the open decision is tested with injected seams in
+    // serve-open.test.ts).
     env: { ...env, CI: '1' },
     stdout: (text) => {
       stdout += text;
@@ -377,8 +376,8 @@ describe('scenario: Serve has help', () => {
   it('prints the synopsis with --port, --open, --no-open and --as, the exit codes and examples, with no board and no actor', () => {
     const out = run(['help', 'serve'], scratch(), cliEnv({ AGENTBOARD_ACTOR: undefined }));
     expect(out.code, out.stderr).toBe(0);
-    // add-serve-auto-open task 1.1: --open and --no-open are one optional
-    // exclusive group, rendered as the spec's `[--open | --no-open]`.
+    // --open and --no-open are one optional exclusive group, rendered as the
+    // spec's `[--open | --no-open]`.
     expect(out.stdout).toMatch(
       /^Usage: agentboard serve \[--port <port>\] \[--open \| --no-open\] \[--as <actor>\] \[--json\]$/m,
     );
@@ -403,7 +402,7 @@ describe('scenario: Serve has help', () => {
   });
 });
 
-// add-board-web-actions task 1.1: `serve --as <actor>` enables the write
+// `serve --as <actor>` enables the write
 // actions as that actor only; AGENTBOARD_ACTOR never does.
 
 /** The start-up document of `serve --json`. */
@@ -572,8 +571,8 @@ describe('scenario: Decision path relative to the tree root (serve started in <r
       }
       const running = start(['serve', '--json', '--as', 'ben'], join(root, 'src'));
       const doc = JSON.parse(await startupLine(running)) as StartupDoc;
-      // link --decision resolves the same way (design.md: "Close paths
-      // relative to the tree root").
+      // link --decision resolves the same way (add-board-web-actions design.md:
+      // "Close paths relative to the tree root").
       const linked = await post(doc, 'link', { id, decision: 'docs/adr/0006-web.md' });
       expect(linked.status, linked.body).toBe(200);
       expect(
@@ -622,7 +621,7 @@ describe('scenario: Decision path relative to the tree root (serve started in <r
 });
 
 describe('the help of serve (drift guard for --as)', () => {
-  it('describes --as as the write actor, and no longer says it is ignored', () => {
+  it('describes --as as the write actor, and never says it is ignored', () => {
     const out = run(['help', 'serve'], scratch(), cliEnv({ AGENTBOARD_ACTOR: undefined }));
     expect(out.code, out.stderr).toBe(0);
     const spec = findCommand('serve');
@@ -639,7 +638,7 @@ describe('the help of serve (drift guard for --as)', () => {
     expect(out.stdout).not.toContain('--as is ignored');
     expect(spec?.description).toContain('serving <board dir> as <actor> at <url>');
     expect(spec?.description).not.toMatch(/--as is ignored/);
-    // Still needs no actor to run, and is still not a writing command of the registry.
+    // Needs no actor to run, and is not a writing command of the registry.
     expect(spec?.writes).toBe(false);
     expect(spec?.tracksCursor ?? false).toBe(false);
     const usage = spec?.exitCodes.find((e) => e.code === 1 && e.reason === 'usage');

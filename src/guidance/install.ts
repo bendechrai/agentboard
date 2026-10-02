@@ -1,9 +1,9 @@
 /**
  * `agentboard agents install` (board-agent-guidance: "Installing guidance
  * into a host project", "Installed guidance never clobbers user content";
- * design.md: "Ownership markers", "Where files are written",
- * "Auto-detection"; add-agent-guidance tasks 3.1 and 3.2; "Managed MCP
- * entry" and `--mcp-command`, add-mcp-command tasks 1.1 and 1.2).
+ * add-agent-guidance design.md: "Ownership markers", "Where files are
+ * written", "Auto-detection"; board-agent-guidance: "Managed MCP entry" and
+ * `--mcp-command`).
  *
  * Writes the text of `./installed-text.ts` into the root of the current
  * working tree. Each target owns only its marked region of its file, and
@@ -108,7 +108,7 @@ export interface InstallOptions {
   /** `--force`: overwrite content agentboard does not own (see `RefusalReason`). */
   readonly force?: boolean;
   /**
-   * `--mcp-command <executable>` (add-mcp-command): the executable the
+   * `--mcp-command <executable>`: the executable the
    * `mcp-json` target runs, written as `mcpEntry(mcpCommand)`, that is
    * `{"command": <executable>, "args": ["mcp"]}`, instead of the default
    * `npx` entry. Giving it (any value, even one that is then refused)
@@ -138,8 +138,8 @@ export interface TargetSelection {
    * exactly `.claude/ exists`, `AGENTS.md exists` or
    * `openspec/config.yaml exists`. The `mcp-json` target when
    * `--mcp-command` is given: exactly `requested with --mcp-command`, also
-   * when `--target mcp-json` is given too (add-mcp-command: the output
-   * names `--mcp-command` as the reason).
+   * when `--target mcp-json` is given too (the output names
+   * `--mcp-command` as the reason).
    */
   readonly reason: string;
 }
@@ -185,7 +185,7 @@ export type InstallAction = 'created' | 'updated' | 'unchanged' | 'refused';
  * - `missing-file` (`openspec`): `openspec/config.yaml` does not exist; the
  *   message says to run `openspec init` first. agentboard never creates an
  *   OpenSpec config.
- * - `outside-tree` (every target; orchestrator ruling, group 3 round 2):
+ * - `outside-tree` (every target):
  *   the target path, with symlinks resolved (`realpathSync` of the file
  *   when it exists, else of its nearest existing ancestor, with the rest of
  *   the path appended), is not the working tree root or inside it. Inside
@@ -205,7 +205,7 @@ export type InstallAction = 'created' | 'updated' | 'unchanged' | 'refused';
  *   meets a symlink cycle at the path or at any ancestor, including a
  *   dangling multi-segment target through a self-referential directory
  *   (`ELOOP`: more than 40 links followed, or `ELOOP` from a read, mkdir
- *   or write; round 3 ruling). The message names the code.
+ *   or write). The message names the code.
  * - `unwritable` (every target): reading the file, creating a parent
  *   directory or writing the file failed with `EACCES` or `EPERM`. A
  *   target that needs no write (`unchanged`) is not refused for a
@@ -301,7 +301,7 @@ function kindOf(path: string): 'dir' | 'file' | null {
 }
 
 /**
- * The targets auto-detection selects in `root` (design.md:
+ * The targets auto-detection selects in `root` (add-agent-guidance design.md:
  * "Auto-detection"), in `GUIDANCE_TARGETS` order: `claude` when `.claude`
  * exists and is a directory (reason `.claude/ exists`), `agents-md` when
  * `AGENTS.md` exists (reason `AGENTS.md exists`), `openspec` when

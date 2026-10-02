@@ -1,11 +1,8 @@
 /**
- * Task 9.1 (board-cli: "MCP server", "Tools are listed from the registry";
- * "Command surface": one registry drives the parser and the MCP tools):
- * tool names, exclusions, generated input schemas and argument validation,
+ * MCP tool definitions (board-cli: "MCP server", "Tools are listed from
+ * the registry"; "Command surface": one registry drives the parser and the
+ * MCP tools): tool names, exclusions, generated input schemas and argument validation,
  * in process.
- *
- * The literal tool list includes `board_inbox`, so the tests that pin it
- * stay red until task group 5 (inbox) is in the branch.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -61,7 +58,7 @@ describe('tool names', () => {
   it('excludes exactly init, watch, serve, top, rebuild, sync, mcp, version, help and the agents commands', () => {
     // agents install and agents check write or read host project files in
     // the caller's working tree and are run in a shell, like the other
-    // setup commands (add-agent-guidance group 3).
+    // setup commands.
     expect([...EXCLUDED_COMMANDS].sort()).toEqual(
       [
         'agents check',
@@ -79,7 +76,7 @@ describe('tool names', () => {
     );
   });
 
-  it('scenario: the listed tools are exactly the spec set (needs task group 5 for inbox)', () => {
+  it('scenario: the listed tools are exactly the spec set', () => {
     expect(
       toolDefinitions()
         .map((t) => t.name)
@@ -230,7 +227,7 @@ describe('descriptions and annotations', () => {
     }
   });
 
-  it('does not mark board_inbox read-only: it advances a cursor (needs task group 5)', () => {
+  it('does not mark board_inbox read-only: it advances a cursor', () => {
     expect(tool('board_inbox').annotations).toEqual({ readOnlyHint: false });
   });
 });
@@ -399,7 +396,7 @@ describe('toolArguments', () => {
   });
 });
 
-describe('toolArguments: help words are values (add-agent-guidance group 1 ruling)', () => {
+describe('toolArguments: help words are values', () => {
   it('keeps --help and -h as positional and flag values, never a help request', () => {
     expect(toolArguments(command('comment'), { id: '01ABCDEF', text: '--help' })).toEqual({
       id: '01ABCDEF',

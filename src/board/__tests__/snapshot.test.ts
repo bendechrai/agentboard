@@ -1,12 +1,12 @@
 /**
- * The snapshot loader (add-board-web task 3.2; design.md: "Interfaces
- * (sketch)", "Reads never block writers"): tickets, meta, every
+ * The snapshot loader (add-board-web design.md: "Interfaces (sketch)", "Reads never
+ * block writers"): tickets, meta, every
  * well-formed event with its outcome in fold order, and the position id,
  * from one read snapshot.
  *
  * Expected values are computed independently of the loader: outcomes and
- * state by the group 1 `fold` over the event files (`foldDir`), the fold
- * order by `compareFoldOrder` over the files, and the digest by XOR with
+ * state by `fold` (`src/events/fold.ts`) over the event files
+ * (`foldDir`), the fold order by `compareFoldOrder` over the files, and the digest by XOR with
  * `Buffer`. The one comparison with the feed is the point of the test
  * "equals the id of a feed started on the same board".
  */

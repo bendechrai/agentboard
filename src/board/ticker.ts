@@ -1,16 +1,15 @@
 /**
  * The shared tick loop of `watch` and the board feed (board-feed: "Board-wide
- * change feed"; design.md: "One ticker for `watch` and the feed";
- * add-board-web task 2.1).
+ * change feed"; add-board-web design.md: "One ticker for `watch` and the feed").
  *
- * The loop is the one `watchInbox` used to run on its own: one tick at
- * start, then a tick after each `fs.watch` notification on a directory
- * (coalesced over `FS_SETTLE_MS`) and every `pollMs` milliseconds
- * regardless, never two ticks at once, transient `busy` failures reported
- * as warnings, and full cleanup on abort. What a tick does is the caller's
- * `examine` function: `watchInbox` (`src/board/watch.ts`) and `watchBoard`
- * (`src/board/feed.ts`) are two examiners run by this loop, and
- * `watchInbox` keeps no timer or watcher of its own once it runs on it.
+ * The loop runs one tick at start, then a tick after each `fs.watch`
+ * notification on a directory (coalesced over `FS_SETTLE_MS`) and every
+ * `pollMs` milliseconds regardless, never two ticks at once, with transient
+ * `busy` failures reported as warnings, and full cleanup on abort. What a
+ * tick does is the caller's `examine` function: `watchInbox`
+ * (`src/board/watch.ts`) and `watchBoard` (`src/board/feed.ts`) are two
+ * examiners run by this loop, and neither keeps a timer or watcher of its
+ * own.
  *
  * Timers and the directory watcher are injectable so the loop can be
  * tested with a fake clock; the defaults are the global timers and
@@ -88,7 +87,7 @@ export interface TickerOptions {
   onWarning?(line: string): void;
   /**
    * Receives every other error a tick throws; the loop then carries on at
-   * the next tick (the server's behavior, design.md: "A tick failure does
+   * the next tick (the server's behavior, add-board-web design.md: "A tick failure does
    * not stop the server"). When absent (the `watch` behavior), such an
    * error stops the loop: the same cleanup as on abort happens and the
    * promise rejects with that error.

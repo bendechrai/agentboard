@@ -1,5 +1,5 @@
 /**
- * Mounting the app into the page (add-board-web task 4.2).
+ * Mounting the app into the page.
  */
 
 import { render } from 'preact';

@@ -1,12 +1,12 @@
 /**
  * The JSON API over HTTP, in process (board-web: "JSON API", "Reads never
- * block writers"; add-board-web task 3.2): every route and every error,
+ * block writers"): every route and every error,
  * the rejected-claim detail, paging 2500 events, `unknown-cursor`, a bad
  * `limit`, the catch-up of a read, and a check that no transaction is
  * open on the server's connection whenever a response body is written.
  *
- * Expected values are computed independently of the server: outcomes and
- * state by the group 1 `fold` over the event files (`foldDir`), fold order
+ * Expected values are computed independently of the server: outcomes and state
+ * by `fold` (`src/events/fold.ts`) over the event files (`foldDir`), fold order
  * by `compareFoldOrder`, the digest by XOR with `Buffer`.
  */
 
@@ -141,7 +141,7 @@ describe('/api/session', () => {
     });
   });
 
-  // add-board-web-actions task 1.1 (board-web: "JSON API" as modified).
+  // board-web: "JSON API".
   it('gives writable true and the actor of a writable context, and no other key', () => {
     const board = open(project().boardDir);
     const base = { board, cache: createEventCache(), now: () => 0 };

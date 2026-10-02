@@ -1,9 +1,8 @@
 # agentboard root Makefile.
 #
-# Mirrors the process used by other projects in this workspace (see
-# CONTRIBUTING.md): local verification via `make check`, a pre-push hook
-# that enforces it, and a pinned dev toolchain container for parity
-# across machines.
+# Local verification via `make check`, a pre-push hook that runs its fast
+# subset, and a pinned dev toolchain container for parity across machines
+# (see CONTRIBUTING.md).
 
 SHELL := /bin/sh
 

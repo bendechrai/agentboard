@@ -1,7 +1,7 @@
 /**
- * Fixture boards for the terminal UI tests (add-board-tui group 1). Built
- * with the view-model test helpers (events with explicit walls, folded with
- * the store's own pure fold), so they are exactly what a snapshot gives.
+ * Fixture boards for the terminal UI tests. Built with the view-model test
+ * helpers (events with explicit walls, folded with the store's own pure fold),
+ * so they are exactly what a snapshot gives.
  */
 
 import type { FoldInput } from '../../events/fold.js';

@@ -8,15 +8,11 @@
  * enforces this), so the close rule in `src/board/actions.ts` and the view
  * model under `src/view/` share one definition of an open decision.
  *
- * Refactor contract (add-board-web task 1.1). `DECISION_PREFIX`,
- * `RETRACTED_PREFIX` and `openDecisions` move here from
- * `src/board/actions.ts` with no change in behavior, and `actions.ts`
- * re-exports these same bindings (for example
- * `export { DECISION_PREFIX, RETRACTED_PREFIX, openDecisions } from
- * '../events/decisions.js'`), so that `import { openDecisions } from
- * './board/actions.js'` and the library entry `src/index.ts` (which
- * re-exports `actions.ts`) keep working and yield the identical function
- * object. `actions.ts` keeps no copy of its own.
+ * `src/board/actions.ts` re-exports `DECISION_PREFIX`, `RETRACTED_PREFIX`
+ * and `openDecisions` from here (the same bindings), so importing
+ * `openDecisions` through `actions.ts` or through the library entry
+ * `src/index.ts` (which re-exports `actions.ts`) yields the identical
+ * function object. `actions.ts` keeps no copy of its own.
  */
 
 /** The comment prefix that marks a decision (board-openspec-integration). */

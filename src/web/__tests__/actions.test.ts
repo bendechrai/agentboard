@@ -2,7 +2,7 @@
  * The write actions in process, without HTTP (board-web-actions: "Write
  * mode is opt-in with an explicit actor", "Action endpoints", "Close from
  * the browser", "Secret-like text is refused", "Cross-site request forgery
- * protection"; add-board-web-actions tasks 1.2 and 1.3): the action names
+ * protection"): the action names
  * and their registry commands, the content type and `Origin` rules, the
  * status mapping, the argument conversion (the MCP `toolArguments`, plus
  * the refused `as`, `json` and `allow-secret-like`), the working tree root,

@@ -1,6 +1,6 @@
 /**
- * Test-only terminal for the `top` driver tests (add-board-tui task 2.1;
- * design.md: "Testing strategy"): an interpreter that understands exactly
+ * Test-only terminal for the `top` driver tests (add-board-tui design.md:
+ * "Testing strategy"): an interpreter that understands exactly
  * the escape sequences the driver may emit and reconstructs the screen
  * from them, and a fake `TerminalIo` built on it.
  *
@@ -438,7 +438,8 @@ export class FakeTerminal implements TerminalIo {
 
   /** Types input: a string is sent as its bytes (Latin-1, one byte per character). */
   type(input: string | Uint8Array): void {
-    const bytes = typeof input === 'string' ? Uint8Array.from(input, (c) => c.charCodeAt(0)) : input;
+    const bytes =
+      typeof input === 'string' ? Uint8Array.from(input, (c) => c.charCodeAt(0)) : input;
     for (const entry of [...this.data]) {
       entry.fn(bytes);
     }

@@ -1,11 +1,8 @@
 /**
- * Tasks 9.2 and 9.3 against the built executable (board-cli: "MCP server";
+ * The MCP server against the built executable (board-cli: "MCP server";
  * board-concurrency): `node dist/cli.js mcp` spawned as a child with the
  * SDK client over stdio, compared with the CLI's own `--json` output, and
  * raced against a CLI process.
- *
- * The tool-list test includes `board_inbox`, so it is red until task group
- * 5 is in the branch.
  */
 
 import { spawn } from 'node:child_process';
@@ -172,7 +169,7 @@ describe('agentboard mcp and SIGTERM', () => {
 });
 
 describe('agentboard mcp over stdio', () => {
-  it('scenario: lists exactly the spec tools (needs task group 5 for inbox)', async () => {
+  it('scenario: lists exactly the spec tools', async () => {
     const { root } = boardProject();
     const mcp = await mcpChild(root);
     const listed = await mcp.client.listTools();

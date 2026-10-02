@@ -1,8 +1,8 @@
 /**
  * `close-merged`: closes the `merged` tickets whose pull request has been
  * merged (board-openspec-integration: "Close merged", "Decisions are
- * promoted, not buried"; design.md Open Questions: `gh` is required, a
- * `gh`-less fallback is deferred).
+ * promoted, not buried"). The GitHub CLI `gh` is required; there is no
+ * `gh`-less fallback.
  *
  * The PR merge state comes from the GitHub CLI through a `GhRunner`, which
  * is injectable so that tests never run the real `gh`: library tests pass

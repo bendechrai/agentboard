@@ -1,5 +1,5 @@
 /**
- * Helpers for the guidance installer tests (add-agent-guidance group 3):
+ * Helpers for the guidance installer tests:
  * reading and writing files relative to a project root, a byte-and-mtime
  * snapshot of a tree for idempotence checks, the OpenSpec config fixture,
  * and a git repository with a linked worktree.

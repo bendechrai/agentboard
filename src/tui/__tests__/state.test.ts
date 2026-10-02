@@ -1,7 +1,7 @@
 /**
- * The UI state reducers (board-tui: "Keys"; add-board-tui task 1.1): table
- * tests of `reduceKey` for every key in every mode, the "Keys" scenarios,
- * and `reconcileUi`, including selection clamping when a column empties.
+ * The UI state reducers (board-tui: "Keys"): table tests of `reduceKey` for
+ * every key in every mode, the "Keys" scenarios, and `reconcileUi`, including
+ * selection clamping when a column empties.
  */
 
 import { describe, expect, it } from 'vitest';

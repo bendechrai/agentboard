@@ -1,7 +1,7 @@
 /**
  * Cursors: position plus bounded seen set (board-concurrency: "Inbox never
  * misses an event"; board-cache: "Cache is derived and disposable";
- * design.md: "Cursors as position plus seen set"). Task group 5.
+ * add-board-core design.md: "Cursors as position plus seen set").
  */
 
 import { join } from 'node:path';
@@ -510,7 +510,7 @@ describe('late events found by folding', () => {
   });
 });
 
-describe('round 2: reset targets, the lateness boundary and incremental seen writes', () => {
+describe('reset targets, the lateness boundary and incremental seen writes', () => {
   /** create@1000, a comment at `wall`, the top comment at 10h; cursor for orch on top. */
   function withEventAt(wall: number): {
     board: Board;

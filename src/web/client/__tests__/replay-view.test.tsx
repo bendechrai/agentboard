@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
 /**
- * The replay view (board-insights: "Replay", scenario "A rejected claim
- * replays as rejected"; add-board-insights task 3.3), driven through the
- * real app on a fake API and a fake clock: the frozen event list, the
- * slider, stepping (across a rejected claim), play and pause at 1, 4 and
- * 16 events per second, the current event's description, the replayed
- * columns, back to live, events arriving while replaying, a late event at
- * its fold position, text never rendered as markup and no inline style.
+ * The replay view (board-insights: "Replay", scenario "A rejected claim replays
+ * as rejected"), driven through the real app on a fake API and a fake clock:
+ * the frozen event list, the slider, stepping (across a rejected claim), play
+ * and pause at 1, 4 and 16 events per second, the current event's description,
+ * the replayed columns, back to live, events arriving while replaying, a late
+ * event at its fold position, text never rendered as markup and no inline
+ * style.
  */
 
 import { cleanup, fireEvent, waitFor } from '@testing-library/preact';

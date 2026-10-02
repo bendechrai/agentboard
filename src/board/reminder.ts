@@ -3,10 +3,9 @@
  * (board-openspec-integration: "Completion truth stays in tasks", "Task
  * sources are adapters").
  *
- * Task 7.2: the path and line come from the ticket's source adapter
+ * The path and line come from the ticket's source adapter
  * (`sourceAdapter(task.source)`, `SourceAdapter.locate`), never from
- * source-specific code in this module; the results are unchanged from
- * group 3 for `openspec`.
+ * source-specific code in this module.
  */
 
 import type { Ticket } from '../events/fold.js';

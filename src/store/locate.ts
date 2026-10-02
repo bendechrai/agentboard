@@ -1,6 +1,6 @@
 /**
  * Board discovery (board-events: "Board discovery from any worktree";
- * design.md: "Board discovery").
+ * add-board-core design.md: "Board discovery").
  */
 
 import { execFileSync } from 'node:child_process';

@@ -1,6 +1,5 @@
 /**
- * Process warning policy of the CLI entry point (`src/cli.ts`; group 3
- * round 2 ruling).
+ * Process warning policy of the CLI entry point (`src/cli.ts`).
  */
 
 /** The Node option that turns process warnings off. */

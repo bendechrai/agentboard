@@ -246,9 +246,9 @@ describe('checkCache while a writer runs', () => {
     const { board, events } = seeded();
     // The hold only has to outlast the delay between the writer printing
     // "locked" and this process reading it and starting the check. Under
-    // heavy load that delay has reached a few hundred milliseconds, so the
+    // heavy load that delay can reach a few hundred milliseconds, so the
     // wait is measured against the writer's own commit time rather than
-    // against the hold (which failed with 130 < 250 on a loaded machine).
+    // against the hold.
     const hold = 1000;
     const writer = await startWriter(board, ev(P.comment(T3, 'concurrent'), 'orch', 99_000), hold);
     // The writer's file is already renamed into place, its rows not yet committed.

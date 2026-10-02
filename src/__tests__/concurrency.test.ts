@@ -1,10 +1,10 @@
 /**
- * Tasks 4.2, 4.3 and 4.5 (board-concurrency: "Claim race has exactly one
+ * Real CLI processes racing on one board (board-concurrency: "Claim race has exactly one
  * winner", "Concurrent comments are never lost"; board-cache: "Cache
- * connection settings"): real CLI processes racing on one board through
- * the start gate of the harness, checked against the CLI's own view
- * (`show`, `rebuild --check`) and against an independent fold of the event
- * files built on the group 1 layer only.
+ * connection settings"), started together through the start gate of the
+ * harness and checked against the CLI's own view (`show`, `rebuild --check`)
+ * and against an independent fold of the event files built on the events
+ * layer (`src/events`) only.
  */
 
 import { rmSync } from 'node:fs';
@@ -196,7 +196,7 @@ describe('scenario: twenty concurrent comments', () => {
 });
 
 // The two ten-round tests start 20 and 200 CLI processes; they take 5 to 35
-// seconds depending on load, and the 200-process one exceeded 40 seconds in
+// seconds depending on load, and the 200-process one can exceed 40 seconds in
 // the floor container on a heavily loaded machine. Each child is still
 // bounded by the harness's own per-child timeout, so a hang still fails.
 const TEN_ROUNDS_TIMEOUT_MS = 90_000;

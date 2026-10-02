@@ -1,6 +1,6 @@
 /**
  * "Did you mean" suggestions (board-agent-guidance: "Unknown command
- * suggestions"; add-agent-guidance task 1.2), in process against the real
+ * suggestions"), in process against the real
  * registry and small fixed registries.
  */
 

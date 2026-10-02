@@ -1,6 +1,6 @@
 /**
  * The built front end and its tool coverage (board-web: "Self-contained
- * front end", scenario "No external requests"; add-board-web task 4.1):
+ * front end", scenario "No external requests"):
  * `make build` produces `dist/web/index.html`, `app.js` and `app.css`, the
  * bundle inlines everything, no built asset names another host, `npm run
  * typecheck` and `npm run lint` cover the client project, and
@@ -8,7 +8,7 @@
  *
  * These tests read the build output: `make check` builds before it tests.
  *
- * Decision recorded here (test author, add-board-web group 4): the bundle
+ * Design note: the bundle
  * inlines Preact, which holds the XML namespace names of SVG, MathML and
  * XHTML (`http://www.w3.org/...`). They are identifiers compared with
  * `namespaceURI`, never requested, so the scan allows exactly those

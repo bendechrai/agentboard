@@ -1,7 +1,6 @@
 /**
- * The single-page app of `agentboard serve` (board-web: "Board views",
- * "Access token"; design.md: "Front end", "Client model"; add-board-web
- * tasks 4.2 to 4.4).
+ * The single-page app of `agentboard serve` (board-web: "Board views", "Access
+ * token"; add-board-web design.md of add-board-web: "Front end", "Client model").
  *
  * With a token (`props.token` not null), on mount it creates one
  * `BoardClient` with the connection `{ deps: { ...defaultDeps(),
@@ -24,7 +23,7 @@
  *   `props.onUnauthorized` is called once;
  * - a `nav` with the links, in this order, `Board` (`#/board`), `Feed`
  *   (`#/feed`), `Lanes` (`#/lanes`), `Health` (`#/health`), `Replay`
- *   (`#/replay`) and `Graph` (`#/graph`) (add-board-insights group 3);
+ *   (`#/replay`) and `Graph` (`#/graph`);
  * - the session's `boardDir` as text once loaded;
  * - once the session is loaded and `writable` (board-web-actions: "Action
  *   controls in the web app": "The page SHALL show the actor it acts as"),

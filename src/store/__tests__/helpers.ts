@@ -1,8 +1,8 @@
 /**
  * Shared fixtures for the store tests: temporary directories, a clean git
  * environment, event builders, simple operations and an independent fold of
- * an events directory (built on the group 1 layer only, never on the store
- * code under test).
+ * an events directory (built on the events layer, `src/events`, only, never
+ * on the store code under test).
  */
 
 import { execFileSync } from 'node:child_process';
@@ -187,7 +187,7 @@ export function allNames(eventsDir: string): string[] {
 
 /**
  * Independent fold of an events directory: every correctly named,
- * well-formed file, folded with the group 1 `fold`.
+ * well-formed file, folded with `fold` from `src/events/fold.ts`.
  */
 export function foldDir(eventsDir: string): FoldResult {
   const inputs: FoldInput[] = [];

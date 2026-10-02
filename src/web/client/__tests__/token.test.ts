@@ -1,7 +1,7 @@
 /**
- * Taking the access token from the URL fragment (`token.ts`; board-web:
- * "Access token"; add-board-web task 4.2): stored in `sessionStorage`,
- * removed from the address bar, validated, and read back on a reload.
+ * Taking the access token from the URL fragment (`token.ts`; board-web: "Access
+ * token"): stored in `sessionStorage`, removed from the address bar, validated,
+ * and read back on a reload.
  */
 
 import { describe, expect, it } from 'vitest';

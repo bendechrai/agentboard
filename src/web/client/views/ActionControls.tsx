@@ -1,9 +1,8 @@
 /**
  * The action controls of the ticket detail on a writable server
- * (board-web-actions: "Action controls in the web app"; design.md of
- * add-board-web-actions: "The page"; add-board-web-actions task 2.1).
- * `TicketView` renders them only when the session is `writable`; a
- * read-only server's page renders none of them.
+ * (board-web-actions: "Action controls in the web app"; add-board-web-actions design.md of
+ * add-board-web-actions: "The page"). `TicketView` renders them only when the
+ * session is `writable`; a read-only server's page renders none of them.
  *
  * Every control posts with `postAction(conn, <action>, <body>)`
  * (`../actions.ts`), whose `id` is always the ticket's full id

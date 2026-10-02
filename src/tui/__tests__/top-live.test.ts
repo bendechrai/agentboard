@@ -2,13 +2,12 @@
  * The `top` driver on a real temporary board with the real snapshot loader
  * and board feed, on a fake terminal (board-tui: "Live updates" scenarios
  * "Comment from another process" and "Late arrival", "Top command": no
- * event and no cursor written; add-board-tui task 2.1). The writer is the
- * built CLI in a child process (run `npm run build` first when running
- * vitest directly).
+ * event and no cursor written). The writer is the built CLI in a child
+ * process (run `npm run build` first when running vitest directly).
  *
  * Expected screens are `renderFrame` of a snapshot the test loads itself
  * over a second connection to the same board, with the UI state the test
- * computes with the group 1 functions.
+ * computes with the pure UI functions (`state.ts` and `applyFeedMessage`).
  */
 
 import { readdirSync } from 'node:fs';
@@ -19,11 +18,7 @@ import { loadSnapshot } from '../../board/snapshot.js';
 import { openBoard, type Board } from '../../store/board.js';
 import { P, ev, putEvent, T1 } from '../../store/__tests__/helpers.js';
 import type { BoardModel } from '../../view/types.js';
-import {
-  boardProject,
-  oneDocument,
-  runCliAsync,
-} from '../../__tests__/harness/processes.js';
+import { boardProject, oneDocument, runCliAsync } from '../../__tests__/harness/processes.js';
 import { renderFrame, type Size } from '../frame.js';
 import type { Key } from '../keys.js';
 import { initialUi, reconcileUi, reduceKey, type UiState } from '../state.js';
@@ -88,17 +83,28 @@ describe('live updates on a real board', () => {
     { timeout: 30_000 },
     async () => {
       const { root, boardDir, eventsDir } = boardProject();
-      const created = await runCliAsync(['new', 'Watched live', ...TASK, '--as', 'orch', '--json'], root);
+      const created = await runCliAsync(
+        ['new', 'Watched live', ...TASK, '--as', 'orch', '--json'],
+        root,
+      );
       expect(created.code, created.stderr).toBe(0);
       const id = (oneDocument(created) as { ticket: { id: string } }).ticket.id;
       const now = Date.now() + 60_000;
       const m0 = modelOf(boardDir);
       const session = startTop(boardDir, now);
       const { term } = session;
-      await until(() => term.raw && term.screen.screenText().includes('Watched live'), 5000, 'the board');
+      await until(
+        () => term.raw && term.screen.screenText().includes('Watched live'),
+        5000,
+        'the board',
+      );
       term.type('2');
       const ui0: UiState = reduceKey(reconcileUi(initialUi(boardDir), m0), FEED, m0, SIZE);
-      await until(() => screenShows(term.screen, renderFrame(m0, ui0, SIZE, now)), 2000, 'the feed view');
+      await until(
+        () => screenShows(term.screen, renderFrame(m0, ui0, SIZE, now)),
+        2000,
+        'the feed view',
+      );
       const filesBefore = readdirSync(eventsDir).length;
       const cursorsBefore = cursorRows(session.board);
 
@@ -140,7 +146,11 @@ describe('live updates on a real board', () => {
       await until(() => term.raw, 5000, 'top to start');
       term.type('2');
       const ui0: UiState = reduceKey(reconcileUi(initialUi(boardDir), m0), FEED, m0, SIZE);
-      await until(() => screenShows(term.screen, renderFrame(m0, ui0, SIZE, now)), 2000, 'the feed view');
+      await until(
+        () => screenShows(term.screen, renderFrame(m0, ui0, SIZE, now)),
+        2000,
+        'the feed view',
+      );
 
       // Copied into events/ as sync would: behind the head.
       const late = putEvent(eventsDir, ev(P.comment(T1, 'at 1500'), 'remote', 1500));

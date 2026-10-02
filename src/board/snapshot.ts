@@ -1,8 +1,7 @@
 /**
- * The snapshot loader (design.md: "Interfaces (sketch)", "Reads never
- * block writers"; add-board-web task 3.2): the whole board as the web API
- * and, in `add-board-tui`, `top` load it, from one read snapshot of the
- * cache.
+ * The snapshot loader (add-board-web design.md: "Interfaces (sketch)", "Reads never
+ * block writers"): the whole board as the web API and `top` load it, from
+ * one read snapshot of the cache.
  *
  * Internal to the server and the terminal UI; not re-exported from
  * `src/index.ts`.

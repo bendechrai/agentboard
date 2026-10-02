@@ -1,7 +1,7 @@
 /**
  * The per-request security checks as pure functions (board-web: "Access
  * token", "Host header check", "No cross-origin access and security
- * headers", "Read-only server"; add-board-web task 3.1). The same
+ * headers", "Read-only server"). The same
  * scenarios over real HTTP are in server.test.ts.
  */
 
@@ -496,8 +496,8 @@ describe('checkRequest', () => {
   });
 });
 
-// add-board-web-actions task 1.2 (board-web: "Read-only server" as modified:
-// GET only, except POST to /api/actions/<action>).
+// board-web: "Read-only server": GET only, except POST to
+// /api/actions/<action>.
 
 describe('isActionPath', () => {
   it('is true for every path under /api/actions/', () => {
