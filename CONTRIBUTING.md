@@ -66,7 +66,8 @@ deltas into the main specs.
 ## Checks
 
 There is no hosted CI: the checks run locally, and a pull request is only
-opened once they pass.
+opened once they pass. A maintainer also runs them on every pull request
+before merging it.
 
 - `make check` builds, typechecks, lints, runs the tests with coverage,
   checks for non-ASCII bytes and validates the specs. It must pass before
