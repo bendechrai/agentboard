@@ -13,3 +13,4 @@ design, in MADR format. Index:
 - [0008. Terminal UI without a library](0008-terminal-ui-without-a-library.md)
 - [0009. Write actions in the web app](0009-web-write-actions-security.md)
 - [0010. Open the browser by default](0010-open-the-browser-by-default.md)
+- [0011. Hosted CI on GitHub Actions](0011-hosted-ci-on-github-actions.md)

@@ -62,7 +62,7 @@ test:
 # choke on invalid/partial UTF-8 sequences.
 ascii:
 	@pattern=$$(printf '[\200-\377]'); \
-	if LC_ALL=C grep -RIl "$$pattern" docs openspec README.md CLAUDE.md CONTRIBUTING.md src; then \
+	if LC_ALL=C grep -RIl "$$pattern" adr openspec README.md CLAUDE.md CONTRIBUTING.md STATUS.md src; then \
 		echo "non-ASCII byte(s) found in the file(s) listed above" >&2; \
 		exit 1; \
 	fi; \

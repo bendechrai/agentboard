@@ -166,6 +166,6 @@ None.
   unknown), so every machine sharing a board must upgrade before any
   actor uses `--ttl`, `--wait`, `--force` or `config set`. Once upgraded,
   the preserved events fold correctly with no migration.
-- README.md, a new ADR, docs/STATUS.md, and this repository's own
+- README.md, a new ADR, STATUS.md, and this repository's own
   installed guidance (reinstalled at version 2).
 - No new dependencies.
