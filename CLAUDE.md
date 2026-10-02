@@ -6,9 +6,9 @@ TypeScript CLI, Node 22.16+. Uses `node:sqlite` (unflagged from 22.13;
 Specs in `openspec/` are the source of truth. Any behavior change goes
 through an OpenSpec change proposal before implementation.
 
-Decisions are recorded as ADRs in `docs/adr/`.
+Decisions are recorded as ADRs in `adr/`.
 
-See `docs/STATUS.md` for a cold-start handover: what exists, what to build
+See `STATUS.md` for a cold-start handover: what exists, what to build
 next, and the current gap list.
 
 Workflow, branch model and the test-author / implementer / reviewer split

@@ -6,7 +6,7 @@ conventions the project follows. It applies to humans and coding agents
 alike.
 
 Specs in `openspec/` define behavior and are the source of truth. ADRs in
-`docs/adr/` record design decisions. `docs/STATUS.md` is a short
+`adr/` record design decisions. `STATUS.md` is a short
 orientation: what exists and what is planned next.
 
 ## Getting set up
@@ -39,7 +39,7 @@ using a linked build in another project.
   tasks), merged before any implementation. If you are unsure whether
   something counts as a behavior change, open an issue first.
 - **Design decisions** that are not themselves requirements are recorded
-  as an ADR in `docs/adr/`.
+  as an ADR in `adr/`.
 
 After editing anything under `openspec/`, run `make validate-specs`
 (`openspec validate --all --no-interactive`). When every task of a change

@@ -24,8 +24,8 @@ each other. A SQLite database (`.board/cache.sqlite`) is derived from the
 event log as a disposable read cache; it can be deleted at any time and is
 rebuilt from the events by the next command.
 
-See `docs/adr/` for the reasoning behind the design, starting with
-`docs/adr/0001-event-log-source-of-truth.md`.
+See `adr/` for the reasoning behind the design, starting with
+`adr/0001-event-log-source-of-truth.md`.
 
 ## Install and run
 
@@ -1655,5 +1655,5 @@ as `entry-differs` unless `--force` is given, which replaces it.
 
 Behavior changes go through an OpenSpec change proposal under
 `openspec/changes/` before implementation; decisions are recorded in
-`docs/adr/`. See CONTRIBUTING.md for the workflow and `docs/STATUS.md` for
+`adr/`. See CONTRIBUTING.md for the workflow and `STATUS.md` for
 the current state of the project.
