@@ -40,9 +40,8 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
 
 ## What is next
 
-1. Promote `staging` to `main` and publish the package to npm as
-   `@bendechrai/agentboard`. Until then, agentboard is used from a local
-   build through `npm link`.
+1. Publish 0.1.0 to npm as `@bendechrai/agentboard`, then move publishing
+   to a GitHub Actions release workflow with npm trusted publishing.
 2. `add-claim-leases` (proposed, in `openspec/changes/`): grace leases
    confirmed by `renew` (`claim --ttl`), takeover of a lapsed lease, a
    fair waiting queue (`claim --wait`), an audited `release --force
