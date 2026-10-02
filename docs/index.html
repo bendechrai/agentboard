@@ -247,10 +247,20 @@
 
   .steps { counter-reset: s; display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 40px; }
   @media (max-width: 900px) { .steps { grid-template-columns: 1fr; } }
-  .steps > div { counter-increment: s; }
+  .steps > div { counter-increment: s; min-width: 0; }
+  /* On desktop the three steps share their rows (badge, heading, text,
+     command), so the commands line up however long each text is. */
+  @media (min-width: 901px) {
+    .steps { grid-template-rows: repeat(4, auto); }
+    .steps > div { display: grid; grid-row: span 4; grid-template-rows: subgrid; row-gap: 0; align-items: start; }
+  }
   .steps > div::before { content: counter(s); display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--signal); color: var(--signal-ink); font: 600 15px/1 var(--display); margin-bottom: 14px; }
   .steps p { color: var(--ink-2); margin: 0 0 12px; font-size: 16px; }
   .steps .term { font-size: 12.5px; padding: 14px 16px; }
+  .steps .term pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* Grid items never grow past their column because of a long command. */
+  .grid3 > *, .flow > *, .split > *, .caps > * { min-width: 0; }
+  @media (max-width: 600px) { .term pre { white-space: pre-wrap; overflow-wrap: anywhere; } }
 
   .cta { text-align: center; padding: 110px 0 120px; }
   .cta h2 { margin-bottom: 26px; }
