@@ -65,9 +65,13 @@ deltas into the main specs.
 
 ## Checks
 
-There is no hosted CI: the checks run locally, and a pull request is only
-opened once they pass. A maintainer also runs them on every pull request
-before merging it.
+Run the checks locally before you open a pull request. GitHub Actions
+(`.github/workflows/ci.yml`) then runs `make check` on every pull request
+and every push to `staging` and `main`, on the oldest supported Node and
+each newer release line, and a pull request merges only when it passes. A
+maintainer also runs the checks locally on every pull request before
+merging it. Pull requests into `main` that do not come from `staging`
+fail the `promotion source` check.
 
 - `make check` builds, typechecks, lints, runs the tests with coverage,
   checks for non-ASCII bytes and validates the specs. It must pass before
@@ -82,6 +86,20 @@ before merging it.
 - Coverage thresholds are set in `vitest.config.ts` (90% for statements,
   branches, functions and lines). A change that lowers a threshold
   explains why in the PR description.
+
+## Releasing
+
+Releases are published to npm as `@bendechrai/agentboard` from `main`.
+
+1. In a pull request into `staging`, bump the version in both
+   `package.json` (`npm version <x.y.z> --no-git-tag-version`, which also
+   updates `package-lock.json`) and `src/version.ts`. A test fails when the
+   two differ.
+2. Promote `staging` to `main`.
+3. Publish from `main` and tag the release `v<x.y.z>`.
+
+Until 1.0, a minor version may change commands, flags and output; a patch
+version does not.
 
 ## Conventions
 
