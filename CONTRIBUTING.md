@@ -89,14 +89,22 @@ fail the `promotion source` check.
 
 ## Releasing
 
-Releases are published to npm as `@bendechrai/agentboard` from `main`.
+Releases are published to npm as `@bendechrai/agentboard`, staged from
+`main` by `.github/workflows/release.yml` with npm trusted publishing.
 
 1. In a pull request into `staging`, bump the version in both
    `package.json` (`npm version <x.y.z> --no-git-tag-version`, which also
    updates `package-lock.json`) and `src/version.ts`. A test fails when the
    two differ.
 2. Promote `staging` to `main`.
-3. Publish from `main` and tag the release `v<x.y.z>`.
+3. Tag the merge on `main` and push the tag:
+   `git tag -a v<x.y.z> -m "agentboard <x.y.z>" origin/main && git push origin v<x.y.z>`.
+   The workflow checks that the tag matches both versions and is on `main`,
+   runs `make check`, and stages the release on npm. CI cannot make a
+   version live on its own.
+4. A maintainer approves the staged release with 2FA, on npmjs.com (Staged
+   Packages) or with `npm stage approve <id>`, then creates the GitHub
+   Release for the tag.
 
 Until 1.0, a minor version may change commands, flags and output; a patch
 version does not.

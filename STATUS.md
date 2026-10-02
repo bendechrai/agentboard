@@ -34,14 +34,20 @@ tested and documented in README.md.
   `board_health` MCP tool, and the Health, Replay and Graph views of the
   web app.
 
+Released as `@bendechrai/agentboard` 0.1.0 on npm (tag `v0.1.0`), with the
+landing site in `docs/` served at https://bendechrai.github.io/agentboard/.
+Later releases are staged by `.github/workflows/release.yml` (see
+CONTRIBUTING.md, "Releasing").
+
 This repository coordinates its own agents with agentboard: `agentboard
 agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
 `agentboard:` guidance in `openspec/config.yaml`.
 
 ## What is next
 
-1. Publish 0.1.0 to npm as `@bendechrai/agentboard`, then move publishing
-   to a GitHub Actions release workflow with npm trusted publishing.
+1. `add-description-markdown` (proposed, in `openspec/changes/`): render a
+   ticket's description as Markdown in the web app, into elements only,
+   never HTML.
 2. `add-claim-leases` (proposed, in `openspec/changes/`): grace leases
    confirmed by `renew` (`claim --ttl`), takeover of a lapsed lease, a
    fair waiting queue (`claim --wait`), an audited `release --force

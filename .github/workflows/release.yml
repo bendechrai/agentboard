@@ -1,0 +1,46 @@
+# Push a tag like v0.2.0 (matching the version in package.json and
+# src/version.ts) on main to stage a release on npm. Uses npm trusted
+# publishing in stage-only mode: no token, provenance is added
+# automatically, and the version goes live only after a maintainer approves
+# it with 2FA, on npmjs.com (Staged Packages) or with `npm stage approve <id>`.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+      - name: The tag matches the version and is on main
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          source=$(sed -n "s/^export const VERSION = '\(.*\)';$/\1/p" src/version.ts)
+          if [ "v$version" != "$GITHUB_REF_NAME" ] || [ "$source" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME must match package.json ($version) and src/version.ts ($source)."
+            exit 1
+          fi
+          git fetch -q origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME is not on main."
+            exit 1
+          fi
+      - run: npm ci
+      - run: make check
+      # Staged publishing needs npm 11.15.0 or later.
+      - run: npm install -g npm@latest
+      - run: npm stage publish
