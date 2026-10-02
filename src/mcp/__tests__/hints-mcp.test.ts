@@ -1,10 +1,10 @@
 /**
- * Error hints over MCP (board-agent-guidance: "Error hints"; add-agent-guidance
- * task 2.2): a failed tool call carries `hint` alongside `exitCode`,
- * `reason` and `message`, also as a `hint: ` line in its text content, and
- * the hint is written for a tool caller: tool calls instead of command
- * lines, and the `as` argument or `agentboard mcp --as <actor>` instead of
- * `--as` and `AGENTBOARD_ACTOR`. In process through `callTool`, plus one
+ * Error hints over MCP (board-agent-guidance: "Error hints"): a failed tool
+ * call carries `hint` alongside `exitCode`, `reason` and `message`, also
+ * as a `hint: ` line in its text content, and the hint is written for a
+ * tool caller: tool calls instead of command lines, and the `as` argument
+ * or `agentboard mcp --as <actor>` instead of `--as` and
+ * `AGENTBOARD_ACTOR`. In process through `callTool`, plus one
  * scenario through a spawned server.
  */
 

@@ -28,7 +28,7 @@ The board core SHALL depend on a planning tool only through a source
 adapter keyed by the task reference's `source`. An adapter SHALL provide:
 locating its root in the host project, listing the importable units for a
 `ref`, and mapping an `item` to its tasks file path and line for reminders.
-This change SHALL ship the `openspec` adapter only. Tickets whose source has
+agentboard SHALL ship the `openspec` adapter only. Tickets whose source has
 no adapter in the running version SHALL still be created, shown, listed,
 moved and closed normally. Only `import-change` requires an adapter, and it
 SHALL exit 1 naming the unsupported source; `checklist tick` on such a

@@ -1,13 +1,13 @@
 /**
  * `agents check` through the library (board-agent-guidance: "Checking
- * installed guidance"; add-agent-guidance task 3.3): which targets are
+ * installed guidance"): which targets are
  * found, the `current`, `stale` and `modified` states and installed
  * versions of each target, the command output with its exit code, and the
  * text rendering. Through the built CLI in
  * src/cli/__tests__/agents-cli.test.ts.
  *
- * The managed `.mcp.json` entry (add-mcp-command task 1.2;
- * board-agent-guidance: "Managed MCP entry"): `isManagedMcpEntry` and how
+ * The managed `.mcp.json` entry (board-agent-guidance: "Managed MCP
+ * entry"): `isManagedMcpEntry` and how
  * `agents check` classifies the npx entry, local entries and unrecognised
  * ones.
  */
@@ -390,7 +390,7 @@ describe('paths agents install would refuse', () => {
   });
 });
 
-describe('the containment boundary and symlink cycles (round 3)', () => {
+describe('the containment boundary and symlink cycles', () => {
   it('does not read or report a file linked into a sibling whose path starts with the root path', () => {
     const { root, sibling } = prefixSibling();
     writeFileSync(join(sibling, 'AGENTS.md'), `${renderAgentsBlock()}\n`);
@@ -411,7 +411,7 @@ describe('the containment boundary and symlink cycles (round 3)', () => {
   );
 });
 
-describe('isManagedMcpEntry (add-mcp-command 1.2)', () => {
+describe('isManagedMcpEntry', () => {
   it.each([
     ['the npx entry', { ...MCP_ENTRY, args: [...MCP_ENTRY.args] }],
     ['the npx entry with its keys reversed', { args: [...MCP_ENTRY.args], command: 'npx' }],
@@ -453,7 +453,7 @@ describe('isManagedMcpEntry (add-mcp-command 1.2)', () => {
   });
 });
 
-describe('mcp-json managed shapes (add-mcp-command 1.2)', () => {
+describe('mcp-json managed shapes', () => {
   function mcpWith(entry: unknown): string {
     return `${JSON.stringify({ mcpServers: { agentboard: entry } }, null, 2)}\n`;
   }
@@ -466,7 +466,13 @@ describe('mcp-json managed shapes (add-mcp-command 1.2)', () => {
     const root = plainProject();
     writeRel(root, MCP, mcpWith(MCP_ENTRY));
     expect(check(root)).toEqual([
-      { target: 'mcp-json', path: MCP, state: 'current', installedVersion: null, currentVersion: V },
+      {
+        target: 'mcp-json',
+        path: MCP,
+        state: 'current',
+        installedVersion: null,
+        currentVersion: V,
+      },
     ]);
   });
 
@@ -478,7 +484,13 @@ describe('mcp-json managed shapes (add-mcp-command 1.2)', () => {
     const root = plainProject();
     writeRel(root, MCP, mcpWith({ command, args: ['mcp'] }));
     expect(check(root)).toEqual([
-      { target: 'mcp-json', path: MCP, state: 'current', installedVersion: null, currentVersion: V },
+      {
+        target: 'mcp-json',
+        path: MCP,
+        state: 'current',
+        installedVersion: null,
+        currentVersion: V,
+      },
     ]);
     const out = checkCommand(root, ENV);
     expect(out.exitCode ?? 0).toBe(0);
@@ -531,7 +543,13 @@ describe('mcp-json managed shapes (add-mcp-command 1.2)', () => {
     const root = plainProject();
     writeRel(root, MCP, mcpWith(entry));
     expect(mcpEntryOf(root)).toEqual([
-      { target: 'mcp-json', path: MCP, state: 'modified', installedVersion: null, currentVersion: V },
+      {
+        target: 'mcp-json',
+        path: MCP,
+        state: 'modified',
+        installedVersion: null,
+        currentVersion: V,
+      },
     ]);
     const out = checkCommand(root, ENV);
     expect(out.exitCode).toBe(1);

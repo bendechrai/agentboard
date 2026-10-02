@@ -4,6 +4,16 @@
   "private": false,
   "type": "module",
   "description": "A local, offline, conflict-free ticket board for AI agents working on one project.",
+  "license": "MIT",
+  "author": "Ben Dechrai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bendechrai/agentboard.git"
+  },
+  "homepage": "https://github.com/bendechrai/agentboard#readme",
+  "bugs": {
+    "url": "https://github.com/bendechrai/agentboard/issues"
+  },
   "engines": {
     "node": ">=22.16"
   },

@@ -1,7 +1,6 @@
 /**
- * Tasks 7.1 to 7.3 through the CLI: `import-change` and `close-merged`
- * (board-cli: "Command surface", "Output conventions", "Exit codes";
- * board-openspec-integration). `close-merged` runs against a fake `gh`
+ * `import-change` and `close-merged` through the CLI (board-cli: "Command
+ * surface", "Output conventions", "Exit codes"; board-openspec-integration). `close-merged` runs against a fake `gh`
  * placed first on the PATH passed to the CLI, or a PATH with no `gh` at
  * all; the real `gh` is never run.
  */
@@ -170,7 +169,7 @@ describe('agentboard import-change', SLOW, () => {
       'agentboard: refused: the text matches the secret pattern(s) github-token; ' +
         'the board is not a secret store',
     );
-    // The hint (add-agent-guidance task 2.2) must not suggest the flag either.
+    // The hint must not suggest the flag either.
     expect(hint).toMatch(/^hint: \S/);
     expect(hint).not.toContain('--allow-secret-like');
     expect(end).toBe('');

@@ -1,8 +1,7 @@
 /**
- * The guide over MCP (board-agent-guidance: "Guide over MCP";
- * add-agent-guidance task 4.1): the server `instructions` are the guide
- * summary, and the resources `agentboard://guide` and
- * `agentboard://guide/<role>` serve exactly what `agentboard help agents
+ * The guide over MCP (board-agent-guidance: "Guide over MCP"): the server
+ * `instructions` are the guide summary, and the resources
+ * `agentboard://guide` and `agentboard://guide/<role>` serve exactly what `agentboard help agents
  * [--role <role>]` prints. In process over an in-memory transport, and
  * against `node dist/cli.js mcp` spawned with the SDK client, compared
  * byte for byte with the built CLI's stdout.

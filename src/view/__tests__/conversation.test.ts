@@ -171,7 +171,7 @@ describe('conversation (board-view-model: "Conversation view")', () => {
     ]);
   });
 
-  it('two retractions with a decision between them retract both decisions (group 1 review)', () => {
+  it('two retractions with a decision between them retract both decisions', () => {
     const m = model([
       E.create(T1, { title: 'x', task: TASK }),
       E.comment(T1, 'DECISION: first', { actor: 'impl' }),

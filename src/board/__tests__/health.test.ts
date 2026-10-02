@@ -1,11 +1,11 @@
 /**
- * `boardHealth` (add-board-insights task 2.1; board-insights: "Health
- * command"; design.md: "The `health` command"; orchestrator ruling
- * 90c9f29: health reads the event files of all applied events, each at
- * most once, within one read snapshot).
+ * `boardHealth` (board-insights: "Health command"; add-board-insights design.md: "The
+ * `health` command"): health reads the event files of all applied events,
+ * each at most once, within one read snapshot.
  *
  * The expected report is computed independently of `boardHealth`: the
- * group 1 `healthReport` over the whole board as `loadSnapshot` loads it.
+ * pure `healthReport` (`src/view/health.ts`) over the whole board as
+ * `loadSnapshot` loads it.
  * The event files `boardHealth` may read (applied events only, never a
  * rejected, unknown-kind or malformed one) are computed from how the
  * fixture was written, and cross-checked with the independent `foldDir`.

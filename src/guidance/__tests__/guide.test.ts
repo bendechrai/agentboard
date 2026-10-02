@@ -1,11 +1,11 @@
 /**
- * The agent guide (board-agent-guidance: "Agent guide"; design.md: "The
- * guide is code, tested against the registry"; add-agent-guidance task
- * 2.1): the drift guard (every `agentboard ` line of every guide output
- * parses with the real parser), the format (ASCII, at most 150 lines,
- * version stamp, every required section in order), the content each
- * section and each role checklist must carry, agreement with README.md,
- * and `help agents [--role <role>]` through the CLI, in process and built.
+ * The agent guide (board-agent-guidance: "Agent guide"; add-agent-guidance
+ * add-agent-guidance design.md: "The guide is code, tested against the registry"): the drift
+ * guard (every `agentboard ` line of every guide output parses with the real
+ * parser), the format (ASCII, at most 150 lines, version stamp, every
+ * required section in order), the content each section and each role
+ * checklist must carry, agreement with README.md, and `help agents [--role
+ * <role>]` through the CLI, in process and built.
  */
 
 import { readFileSync, readdirSync } from 'node:fs';
@@ -400,7 +400,7 @@ describe('the role checklists', () => {
     expect(renderRoleChecklist('orchestrator')).toContain('DECISION:');
   });
 
-  it('orchestrator: health when choosing what to dispatch and before archiving (add-board-insights 2.2)', () => {
+  it('orchestrator: health when choosing what to dispatch and before archiving', () => {
     const text = renderRoleChecklist('orchestrator');
     const lines = roleLines('orchestrator');
     const health = lines.filter((p) => p.command === 'health');
@@ -494,7 +494,7 @@ describe('agentsHelpOutput and isRole', () => {
 });
 
 describe('help agents beside commands whose first word is agents', () => {
-  /** Fake `agents install` and `agents check` commands (task group 3 adds the real ones). */
+  /** Fake `agents install` and `agents check` commands, standing in for the real ones. */
   function withAgentsCommands(): { source: HelpSource; fakes: CommandSpec[] } {
     const base = findCommand('version');
     if (base === undefined) {
@@ -506,7 +506,7 @@ describe('help agents beside commands whose first word is agents', () => {
       summary: `${name} (fake, for this test)`,
       examples: [{ command: 'agentboard version', summary: 'placeholder' }],
     }));
-    // Group 3 added the real commands; the fakes stand in for them here.
+    // The fakes replace the real commands of the same names.
     const others = COMMANDS.filter((c) => !c.name.startsWith('agents '));
     return { source: { ...HELP_SOURCE, commands: [...others, ...fakes] }, fakes };
   }

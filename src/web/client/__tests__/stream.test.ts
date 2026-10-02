@@ -1,9 +1,8 @@
 /**
  * Reading `/api/stream` with `fetch` (`stream.ts`; board-web: "Live event
- * stream", "Access token"; add-board-web task 4.2): the request and its
- * headers, events across chunk boundaries and split UTF-8 characters,
- * reconnection with `Last-Event-ID` after the `retry` delay, stopping on
- * 401, and `close()`.
+ * stream", "Access token"): the request and its headers, events across chunk
+ * boundaries and split UTF-8 characters, reconnection with `Last-Event-ID`
+ * after the `retry` delay, stopping on 401, and `close()`.
  */
 
 import { describe, expect, it, vi } from 'vitest';

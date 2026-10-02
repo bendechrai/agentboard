@@ -1,12 +1,11 @@
 /**
  * The client of the write actions (board-web-actions: "Action endpoints",
- * "Cross-site request forgery protection"; design.md of
- * add-board-web-actions: "Status codes", "The page"; add-board-web-actions
- * task 2.1): `postAction` sends a same-origin JSON `POST` with the bearer
- * header and nothing else, and turns every answer (a success, an
- * `ErrorDocument` refusal, a body that is not one, a network failure) into
- * an `ActionResult` without ever rejecting. No DOM is needed: these run in
- * the Node environment.
+ * "Cross-site request forgery protection"; add-board-web-actions design.md of add-board-web-actions:
+ * "Status codes", "The page"): `postAction` sends a same-origin JSON `POST`
+ * with the bearer header and nothing else, and turns every answer (a success,
+ * an `ErrorDocument` refusal, a body that is not one, a network failure) into
+ * an `ActionResult` without ever rejecting. No DOM is needed: these run in the
+ * Node environment.
  */
 
 import { describe, expect, it } from 'vitest';

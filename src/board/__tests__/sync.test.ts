@@ -1,7 +1,7 @@
 /**
  * `syncBoard` (board-concurrency: "Sync converges", scenarios "Divergent
  * clones converge" and "Sync with no remote"; board-cache: "Cache is not
- * synced"; design.md: "Git sync model"). Every remote is a temporary bare
+ * synced"; add-board-core design.md: "Git sync model"). Every remote is a temporary bare
  * repository on local disk.
  */
 

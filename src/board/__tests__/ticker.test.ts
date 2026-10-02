@@ -1,7 +1,7 @@
 /**
- * The shared tick loop (board-feed: "Board-wide change feed"; design.md:
- * "One ticker for `watch` and the feed"). Task 2.1: no overlap and cleanup
- * on abort, driven by an injected clock and an injected directory watcher.
+ * The shared tick loop (board-feed: "Board-wide change feed"; add-board-web design.md:
+ * "One ticker for `watch` and the feed"): no overlap and cleanup on
+ * abort, driven by an injected clock and an injected directory watcher.
  */
 
 import { readFileSync } from 'node:fs';
@@ -533,7 +533,7 @@ describe('runTicker: cleanup', () => {
   });
 });
 
-describe('watchInbox runs on the ticker (task 2.1)', () => {
+describe('watchInbox runs on the ticker', () => {
   it('src/board/watch.ts uses runTicker and keeps no timer or watcher of its own', () => {
     const source = readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), '..', 'watch.ts'),

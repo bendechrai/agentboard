@@ -1,10 +1,9 @@
 /**
  * The Server-Sent Events framing of `/api/stream` (board-web: "Live event
- * stream", "Reads never block writers"; design.md: "Server-Sent Events for
- * the live stream", "One feed per server, fanned out to every client";
- * add-board-web task 3.3). The server (`src/web/server.ts`) owns the one
- * feed and the open streams; this module is the wire format and the
- * limits. Pure.
+ * stream", "Reads never block writers"; add-board-web design.md:
+ * "Server-Sent Events for the live stream", "One feed per server, fanned out
+ * to every client"). The server (`src/web/server.ts`) owns the one feed and
+ * the open streams; this module is the wire format and the limits. Pure.
  */
 
 import type { ErrorDocument } from '../cli/main.js';

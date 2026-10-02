@@ -2,7 +2,7 @@
  * Opening the cache for inspection only (`openCache(path, { prepare:
  * false })`, `openBoard(dir, { prepare: false })`), which `rebuild --check`
  * uses so that it never modifies the live cache file (board-cache:
- * "Rebuild"; ruling 05f4334).
+ * "Rebuild").
  */
 
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

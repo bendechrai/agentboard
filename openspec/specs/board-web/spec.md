@@ -1,8 +1,9 @@
 # board-web Specification
 
 ## Purpose
-Defines `agentboard serve`: a local, read-only web view of the board served
-on `127.0.0.1` behind an access token, with its security model (loopback
+Defines `agentboard serve`: a local web view of the board, read-only unless
+started with `--as <actor>` (see board-web-actions), served on `127.0.0.1`
+behind an access token, with its security model (loopback
 only, bearer token, Host check, no cross-origin access, security headers),
 the JSON API, the live event stream and the board views of the front end.
 

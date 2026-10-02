@@ -1,5 +1,5 @@
 /**
- * Task 7.2: the source adapter registry and the `openspec` adapter,
+ * The source adapter registry and the `openspec` adapter,
  * including its tasks.md parser (board-openspec-integration: "Task sources
  * are adapters", "Import a change").
  */
@@ -13,7 +13,7 @@ import { OPENSPEC_SOURCE, openspecAdapter, parseOpenSpecTasks } from '../openspe
 import { SOURCE_ADAPTERS, sourceAdapter, type TaskUnit } from '../sources.js';
 import { expectBoardError, tempDir } from './helpers.js';
 
-/** The layout the group 3 reminder tests use (line numbers noted). */
+/** The layout the reminder tests use (`reminder.test.ts`; line numbers noted). */
 const TASKS_MD = [
   '# Tasks', //                                    1
   '', //                                           2

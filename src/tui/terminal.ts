@@ -1,9 +1,8 @@
 /**
  * The terminal driver and the loop of `agentboard top` (board-tui: "Top
  * command", "Interactive terminal required", "Live updates", "Frame
- * rendering", "Terminal restoration"; design.md: "Hand-rolled ANSI rather
- * than a library", "Non-TTY and terminal restoration"; add-board-tui task
- * 2.1).
+ * rendering", "Terminal restoration"; add-board-tui design.md: "Hand-rolled
+ * ANSI rather than a library", "Non-TTY and terminal restoration").
  *
  * This is the only module of `src/tui/` that performs IO: `keys.ts`,
  * `state.ts` and `frame.ts` are pure (the layering test enforces it), and

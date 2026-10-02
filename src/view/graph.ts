@@ -1,6 +1,6 @@
 /**
- * The hand-off graph (board-insights: "Hand-off graph"; add-board-insights
- * task 1.2). Pure and browser-safe; see `types.ts`.
+ * The hand-off graph (board-insights: "Hand-off graph"). Pure and
+ * browser-safe; see `types.ts`.
  */
 
 import type { Hlc } from '../events/hlc.js';

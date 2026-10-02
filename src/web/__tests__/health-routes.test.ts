@@ -3,7 +3,7 @@
  * (board-insights: "Health in the web app", scenarios "Late arrival shown
  * in health" and "Check is single-flight and cached"; board-web: "Access
  * token", "Host header check", "No cross-origin access and security
- * headers", "Read-only server"; add-board-insights task 3.1), with an
+ * headers", "Read-only server"), with an
  * injected clock and an injected cache comparison the test counts and
  * completes by hand.
  */

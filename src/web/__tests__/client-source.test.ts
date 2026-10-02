@@ -1,11 +1,11 @@
 /**
  * Source rules of the web client (board-web: "Board text is never markup";
- * design.md: "Front end": `dangerouslySetInnerHTML` is not used anywhere;
- * add-board-web tasks 4.1 and 4.4). The client imports only Preact, its
- * own modules and the pure, browser-safe view-model and event modules, and
- * authenticates only with the Bearer header: it uses no cookie, no
- * `EventSource` (which cannot send the header) and no `localStorage` (the
- * token is kept in `sessionStorage` only).
+ * add-board-web design.md: "Front end": `dangerouslySetInnerHTML` is not
+ * used anywhere). The client imports only Preact, its own modules and the
+ * pure, browser-safe view-model and event modules, and authenticates only
+ * with the Bearer header: it uses no cookie, no `EventSource` (which cannot
+ * send the header) and no `localStorage` (the token is kept in
+ * `sessionStorage` only).
  */
 
 import {
@@ -135,7 +135,7 @@ describe('client authentication', () => {
   });
 });
 
-describe('inline styles and the Content-Security-Policy (add-board-insights group 3)', () => {
+describe('inline styles and the Content-Security-Policy', () => {
   /** The client sources (not tests) whose text sets an inline style or holds a style element. */
   function styleOffenders(dir: string): string[] {
     const offenders: string[] = [];

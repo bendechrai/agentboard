@@ -1,7 +1,7 @@
 /**
- * The activity feed (board-web: "Board views"; board-view-model: "Activity
- * feed entries"; add-board-web task 4.3): `feedEntries(model, filters)`,
- * newest first, with the filters of the route.
+ * The activity feed (board-web: "Board views"; board-view-model: "Activity feed
+ * entries"): `feedEntries(model, filters)`, newest first, with the filters of
+ * the route.
  *
  * DOM contract (relied on by the component tests):
  * - one `ol` with class `feed`, holding one `li` with class `entry`,

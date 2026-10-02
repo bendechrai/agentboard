@@ -3,10 +3,10 @@
  * "Interactive terminal required" scenario "Piped output", "Top command"
  * scenario "JSON error document when piped", "Terminal restoration",
  * "Live updates", "Frame rendering" scenario "No color"; board-cli: "Exit
- * codes" scenario "Top without a terminal"; add-board-tui task 2.2). Run
- * `npm run build` first when running vitest directly.
+ * codes" scenario "Top without a terminal"). Run `npm run build` first
+ * when running vitest directly.
  *
- * No pseudo-terminal is used (design.md: node-pty was rejected). Without
+ * No pseudo-terminal is used (add-board-tui design.md: no node-pty). Without
  * a terminal the child must refuse with `not-a-tty` and write no escape
  * sequence. To reach the terminal path of `src/cli.ts` anyway, some tests
  * preload a small module (`node --import`) that makes the child's piped

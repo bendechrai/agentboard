@@ -1,9 +1,8 @@
 /**
- * Shared fixtures for the write action tests (add-board-web-actions group
- * 1): a writable or read-only server on a temporary project, tickets made
- * through the in-process CLI, an action poster that sets exactly the
- * headers a test asks for, and helpers to read the event files and the
- * `ErrorDocument` of a refusal.
+ * Shared fixtures for the write action tests: a writable or read-only server on
+ * a temporary project, tickets made through the in-process CLI, an action
+ * poster that sets exactly the headers a test asks for, and helpers to read the
+ * event files and the `ErrorDocument` of a refusal.
  *
  * The page of a writable server would send, for every action, exactly:
  * `Authorization: Bearer <token>`, `Content-Type: application/json` and

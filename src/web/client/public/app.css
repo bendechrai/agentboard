@@ -1,7 +1,7 @@
 /*
- * The one stylesheet of the agentboard web client (add-board-web group 4):
- * hand-written, no CSS framework, a light and a dark scheme. The class
- * names are the DOM contract documented in src/web/client/views/.
+ * The one stylesheet of the agentboard web client: hand-written, no CSS
+ * framework, a light and a dark scheme. The class names are the DOM
+ * contract documented in src/web/client/views/.
  */
 
 :root {
@@ -503,7 +503,7 @@ select {
   font-style: italic;
 }
 
-/* Actions (add-board-web-actions group 2): only on a writable server */
+/* Actions: only on a writable server */
 
 .acting-as {
   margin: 0;
@@ -634,7 +634,7 @@ select {
   cursor: pointer;
 }
 
-/* Health (add-board-insights group 3) */
+/* Health */
 
 .health-view input[type='text'] {
   width: 6rem;

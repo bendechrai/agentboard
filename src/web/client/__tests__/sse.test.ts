@@ -1,8 +1,7 @@
 /**
- * The Server-Sent Events parser of the client (`sse.ts`; board-web: "Live
- * event stream"; add-board-web task 4.2), as the HTML standard interprets
- * an event stream, including chunk boundaries that split lines and line
- * ends, and multi-line data. Pure.
+ * The Server-Sent Events parser of the client (`sse.ts`; board-web: "Live event
+ * stream"), as the HTML standard interprets an event stream, including chunk
+ * boundaries that split lines and line ends, and multi-line data. Pure.
  */
 
 import { describe, expect, it } from 'vitest';

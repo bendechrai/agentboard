@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { monotonicFactory, newUlid } from '../ulid.js';
 
-// add-board-web task 1.1: the default random source is the global Web
-// Crypto getRandomValues, looked up on globalThis.crypto at call time.
+// The default random source is the global Web Crypto getRandomValues,
+// looked up on globalThis.crypto at call time.
 
 describe('ulid default random source', () => {
   afterEach(() => {

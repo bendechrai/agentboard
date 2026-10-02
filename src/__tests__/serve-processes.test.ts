@@ -2,13 +2,12 @@
  * `agentboard serve` against real processes (board-web: "Serve command"
  * scenario "Start and stop", "Live event stream" scenario "CLI write
  * reaches the browser", "Reads never block writers" scenario "Slow client
- * does not block writers"; add-board-web tasks 3.1 and 3.3). Runs the
- * built CLI through the multi-process harness; run `npm run build` first
+ * does not block writers"). Runs the built CLI through the multi-process harness; run `npm run build` first
  * when running vitest directly.
  *
  * Every server listens on 127.0.0.1 with port 0. Every child's stdout is
- * a pipe, so none of them opens a browser by default (add-serve-auto-open
- * task 1.1, checked with fake openers on PATH below).
+ * a pipe, so none of them opens a browser by default (checked with fake
+ * openers on PATH below).
  */
 
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -148,8 +147,7 @@ function fakeOpeners(): string {
   return bin;
 }
 
-// add-serve-auto-open task 1.1 (board-web: "Serve command" scenario "No
-// browser for a script"): every other test in this repository spawns serve
+// board-web: "Serve command" scenario "No browser for a script": every other test in this repository spawns serve
 // with a piped stdout, so none of them may ever run a system opener.
 describe('scenario: No browser for a script (built CLI, stdout a pipe)', () => {
   it.skipIf(process.platform === 'win32')(

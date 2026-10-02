@@ -1,6 +1,6 @@
 /**
- * Task 4.4 (board-concurrency: "Crash consistency"; board-cache: "Crash
- * between file and commit"): a writing CLI process is paused with
+ * Crash recovery (board-concurrency: "Crash consistency"; board-cache:
+ * "Crash between file and commit"): a writing CLI process is paused with
  * `AGENTBOARD_TEST_PAUSE` at a point of its event write and killed there
  * with SIGKILL; the next command must recover without human action.
  *
@@ -61,7 +61,7 @@ function temps(eventsDir: string): string[] {
 }
 
 // The tests run the built CLI as child processes (several for some), which
-// on a loaded machine has come close to vitest's 5 second default.
+// on a loaded machine can come close to vitest's 5 second default.
 const PROCESSES = { timeout: 30_000 };
 
 describe('scenario: killed after rename, before commit', PROCESSES, () => {

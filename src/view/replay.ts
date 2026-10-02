@@ -1,6 +1,6 @@
 /**
- * Replay (board-insights: "Replay"; add-board-insights task 1.2). Pure and
- * browser-safe; see `types.ts`.
+ * Replay (board-insights: "Replay"). Pure and browser-safe; see
+ * `types.ts`.
  *
  * Replay rebuilds the board at any position of the event log with the
  * store's own pure fold (`applyEvent` and `fold` from
@@ -100,7 +100,9 @@ export function replayState(
   checkpoints?: readonly ReplayCheckpoint[],
 ): ReplayState {
   if (!Number.isInteger(index) || index < 0 || index >= events.length) {
-    throw new RangeError(`replay index ${String(index)} is outside 0..${String(events.length - 1)}`);
+    throw new RangeError(
+      `replay index ${String(index)} is outside 0..${String(events.length - 1)}`,
+    );
   }
   const count = index + 1;
   // Start at or before `index`, so the event at `index` is folded here and

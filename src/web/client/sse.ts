@@ -1,9 +1,9 @@
 /**
  * A Server-Sent Events parser (board-web: "Live event stream";
- * `src/web/stream.ts` holds the server's framing; add-board-web task 4.2).
- * The client reads `/api/stream` with `fetch`, because `EventSource`
- * cannot send the `Authorization` header, and parses the body with this.
- * Pure: text in, events out.
+ * `src/web/stream.ts` holds the server's framing). The client reads
+ * `/api/stream` with `fetch`, because `EventSource` cannot send the
+ * `Authorization` header, and parses the body with this. Pure: text in, events
+ * out.
  *
  * It follows the event stream interpretation of the HTML standard
  * ("Server-sent events", "Interpreting an event stream"):

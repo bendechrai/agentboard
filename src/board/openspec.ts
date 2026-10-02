@@ -34,8 +34,8 @@ export const OPENSPEC_SOURCE = 'openspec';
  *   starting at column 0. `done` is true for `x` and `X`. `text` is the
  *   rest of the line with trailing whitespace removed (the task number is
  *   kept: `- [x] 1.1 Implement canonical` has text
- *   `1.1 Implement canonical`). These are exactly the lines `taskReminder`
- *   counted before the adapter existed, in the same order.
+ *   `1.1 Implement canonical`). These are the lines the `checklist tick`
+ *   reminder (`taskReminder`) counts, in the same order.
  * - Everything else is ignored: the document title and prose, blank lines,
  *   `###` sub-headings, indented lines (continuations and nested lists),
  *   lines before the first group, and the contents of a `## ` section that
@@ -165,8 +165,7 @@ function listChangeUnits(hostRoot: string, ref: string): TaskUnit[] {
  * - `locate(hostRoot, ref, item, index)`: the path, and the `line` of the
  *   `index`-th entry of the unit `item` from `listUnits`, or null when that
  *   throws (missing or malformed file) or has no such unit or entry
- *   (including a negative index). Gives the same results as
- *   `taskReminder` did before task 7.2.
+ *   (including a negative index).
  * - `labels(ref, unit)`: `['change:<ref>', 'group:<unit.item>']`.
  */
 export const openspecAdapter: SourceAdapter = {

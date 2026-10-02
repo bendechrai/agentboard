@@ -1,8 +1,7 @@
 /**
- * The agent lanes (board-web: "Board views"; board-view-model: "Agent
- * lanes"; add-board-web task 4.4): `agentLanes(model, now)`, with "last
- * seen" as `relativeTime(lastSeenMs)`, re-rendered whenever `now` changes
- * (every `REFRESH_MS`).
+ * The agent lanes (board-web: "Board views"; board-view-model: "Agent lanes"):
+ * `agentLanes(model, now)`, with "last seen" as `relativeTime(lastSeenMs)`,
+ * re-rendered whenever `now` changes (every `REFRESH_MS`).
  *
  * DOM contract (relied on by the component tests):
  * - one `section` with class `lane` and `data-actor="<actor>"` per lane,

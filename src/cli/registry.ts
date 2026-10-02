@@ -1,15 +1,10 @@
 /**
- * The single command registry (board-cli: "Command surface"; design.md:
+ * The single command registry (board-cli: "Command surface"; add-board-core design.md:
  * "Library first, CLI second"). Every command, its positional arguments,
  * flags, mutually exclusive flag sets, whether it writes, its summary and
  * the library operation it calls are defined here once. The parser
- * (`parseArgs`) is driven by it, and task group 9 generates the MCP tools
- * from it.
- *
- * Task group 3 registered the ticket lifecycle commands plus `version` and
- * the `mcp` placeholder; task group 4 adds `rebuild`, task group 5 adds
- * `inbox` and `watch`, task group 6 adds `sync` and task group 7 adds
- * `import-change` and `close-merged`; add-board-insights adds `health`.
+ * (`parseArgs`) is driven by it, and the MCP tools (`src/mcp/tools.ts`)
+ * are generated from it.
  */
 
 import {
@@ -490,8 +485,7 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  * `list`, `claim`, `release`, `move`, `comment`, `handoff`, `link`,
  * `checklist tick`, `checklist untick`, `close`, `inbox`, `watch`, `serve`, `top`, `health`, `rebuild`,
  * `sync`, `import-change`, `close-merged`, `mcp` (the board-cli order), then
- * `agents install` and `agents check`, `version` and `help`
- * (add-agent-guidance).
+ * `agents install` and `agents check`, `version` and `help`.
  *
  * Every entry carries the help data of record (`description`, `group`,
  * `examples`, `exitCodes`; see `CommandSpec`), rendered by

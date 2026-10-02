@@ -1,11 +1,11 @@
 /**
  * The installed guidance text (board-agent-guidance: "Installing guidance
- * into a host project"; design.md: "Installed text is a pointer, not a
- * copy"; add-agent-guidance group 3): the skill frontmatter and marker, the
- * five rules and the pointer to `agentboard help agents` in both the skill
- * and the AGENTS.md block, the OpenSpec entries, the manual lines and the
- * MCP entry. Every `agentboard ...` command the text shows parses against
- * the registry, so the installed text cannot drift from the CLI.
+ * into a host project"; add-agent-guidance design.md: "Installed text is a
+ * pointer, not a copy"): the skill frontmatter and marker, the five rules
+ * and the pointer to `agentboard help agents` in both the skill and the
+ * AGENTS.md block, the OpenSpec entries, the manual lines and the MCP entry.
+ * Every `agentboard ...` command the text shows parses against the registry,
+ * so the installed text cannot drift from the CLI.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -266,7 +266,7 @@ describe('the MCP server entry', () => {
   });
 });
 
-describe('mcpEntry (add-mcp-command 1.1)', () => {
+describe('mcpEntry', () => {
   it('is a copy of the npx entry without a command', () => {
     const entry = mcpEntry();
     expect(entry).toEqual(MCP_ENTRY);

@@ -1,7 +1,6 @@
 /**
  * `agentboard agents check` (board-agent-guidance: "Checking installed
- * guidance"; add-agent-guidance task 3.3; "Managed MCP entry",
- * add-mcp-command task 1.2).
+ * guidance", "Managed MCP entry").
  *
  * Inspects the guidance installed in the current working tree and reports
  * each target found as `current`, `stale` or `modified`, so a host project
@@ -110,14 +109,13 @@ export interface CheckOptions {
  *   `OPENSPEC_GUIDANCE[op]` in order `current`; else `modified`.
  * - `mcp-json`: found when `.mcp.json` parses as an object whose
  *   `mcpServers` object has an `agentboard` key. `installedVersion` null.
- *   State (add-mcp-command; board-agent-guidance: "Managed MCP entry"):
+ *   State (board-agent-guidance: "Managed MCP entry"):
  *   `current` when the entry is a managed entry of either shape
  *   (`isManagedMcpEntry`: the default `npx` entry, or exactly `{command:
  *   <non-empty string>, args: ["mcp"]}`), else `modified` (extra keys such
  *   as `env`, other arguments). Never `stale`.
  *
- * Paths `agents install` would refuse (orchestrator ruling, group 3 round
- * 2), for every target:
+ * Paths `agents install` would refuse, for every target:
  * - outside the tree (see `RefusalReason` `outside-tree`: the path with
  *   symlinks resolved is not inside the working tree root): never read and
  *   not reported, like a file agentboard does not own. A symlink that

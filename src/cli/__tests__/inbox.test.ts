@@ -1,7 +1,7 @@
 /**
  * `inbox` and `watch` through the CLI (board-cli: "Command surface",
  * "Actor is explicit", "Output conventions", "Exit codes";
- * board-openspec-integration: "Inbox shows a handoff"). Task group 5.
+ * board-openspec-integration: "Inbox shows a handoff").
  */
 
 import { readdirSync } from 'node:fs';

@@ -28,7 +28,7 @@ import {
   type Opts,
 } from './helpers.js';
 
-// add-board-insights task 1.1; board-insights: "Health report", "Durations".
+// board-insights: "Health report", "Durations".
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -89,9 +89,8 @@ describe('parseDuration', () => {
     expect(parseDuration(text)).toBe(ms);
   });
 
-  // Ruling on add-board-insights group 1: leading zeros are accepted on a
-  // positive value (still at most 5 digits); a zero value is refused
-  // however many zeros it is written with.
+  // Leading zeros are accepted on a positive value (still at most 5
+  // digits); a zero value is refused however many zeros it is written with.
   it.each([
     ['01h', HOUR],
     ['007m', 7 * MINUTE],

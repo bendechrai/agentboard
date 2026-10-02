@@ -1,5 +1,5 @@
 /**
- * Task 7.3: `closeMerged` with a stubbed `gh` (board-openspec-integration:
+ * `closeMerged` with a stubbed `gh` (board-openspec-integration:
  * "Close merged", "Decisions are promoted, not buried"). The library tests
  * inject a fake `GhRunner`; `runGh` is exercised against a fake `gh`
  * script on a PATH built for the test, never the real one.

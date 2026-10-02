@@ -2,9 +2,8 @@
  * `agents install`, `agents check` and the `init` suggestion at the CLI
  * (board-agent-guidance: "Installing guidance into a host project",
  * "Installed guidance never clobbers user content", "Checking installed
- * guidance"; add-agent-guidance group 3): exit codes, stdout and stderr,
- * `--json` documents, no board and no actor needed, and the spec scenarios
- * through the built CLI. The per-target behavior is covered through the
+ * guidance"): exit codes, stdout and stderr, `--json` documents, no board
+ * and no actor needed, and the spec scenarios through the built CLI. The per-target behavior is covered through the
  * library in src/guidance/__tests__/install.test.ts and check.test.ts.
  */
 
@@ -357,7 +356,7 @@ describe('filesystem problems exit 1 with a refusal, never 5', SPAWNS, () => {
   });
 });
 
-describe('symlink cycles through the built CLI (round 3)', SPAWNS, () => {
+describe('symlink cycles through the built CLI', SPAWNS, () => {
   it('install exits 1 refusing the cycle and installs the rest; check exits 0', () => {
     const root = plainProject();
     symlinkCycle(root, AGENTS, 'two-node');
@@ -381,7 +380,7 @@ describe('symlink cycles through the built CLI (round 3)', SPAWNS, () => {
   });
 });
 
-describe('agents install --mcp-command through the built CLI (add-mcp-command)', SPAWNS, () => {
+describe('agents install --mcp-command through the built CLI', SPAWNS, () => {
   function mcpWith(entry: unknown): string {
     return `${JSON.stringify({ mcpServers: { agentboard: entry } }, null, 2)}\n`;
   }

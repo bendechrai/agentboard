@@ -2,10 +2,9 @@
  * The write actions of `agentboard serve --as <actor>` racing real CLI
  * processes (board-web-actions: "Action endpoints": "run by the command's
  * own operation in its single `BEGIN IMMEDIATE` transaction";
- * board-concurrency: "Claim race has exactly one winner";
- * add-board-web-actions task 1.2 Verify: "ten concurrent claims (five
- * through the server, five by CLI child processes) giving exactly one
- * winner"). Runs the built CLI through the multi-process harness; run
+ * board-concurrency: "Claim race has exactly one winner"): ten concurrent
+ * claims, five through the server and five by CLI child processes, give
+ * exactly one winner. Runs the built CLI through the multi-process harness; run
  * `npm run build` first when running vitest directly.
  *
  * The server is itself a child process (`serve --as ben`), so the server's

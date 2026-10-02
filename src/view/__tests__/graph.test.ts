@@ -5,7 +5,7 @@ import type { TaskRef } from '../../events/schema.js';
 import { handoffGraph, type HandoffRef } from '../graph.js';
 import { E, T1, T2, T3, T4, T5, T6, T7, TASK, model } from './helpers.js';
 
-// add-board-insights task 1.2; board-insights: "Hand-off graph".
+// board-insights: "Hand-off graph".
 
 function refOf(input: FoldInput): HandoffRef {
   const { event } = input;

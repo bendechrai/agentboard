@@ -1,8 +1,7 @@
 /**
- * The live board (board-web: "Board views"; board-view-model: "Board
- * columns and cards"; add-board-web task 4.3): `boardColumns(model.tickets,
- * now, filters)` rendered as columns of cards, with the filters of the
- * route.
+ * The live board (board-web: "Board views"; board-view-model: "Board columns
+ * and cards"): `boardColumns(model.tickets, now, filters)` rendered as columns
+ * of cards, with the filters of the route.
  *
  * DOM contract (relied on by the component tests):
  * - one `section` with class `column` and `data-status="<status>"` per

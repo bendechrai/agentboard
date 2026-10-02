@@ -1,15 +1,14 @@
 /**
- * Multi-process test harness for the concurrency and crash properties
- * (task group 4; design.md: "Tests ... spawn the built CLI for the
- * concurrency and crash properties").
+ * Multi-process test harness for the concurrency and crash properties: the
+ * tests spawn the built CLI.
  *
  * Build: the harness runs the built CLI (`dist/cli.js`, `BUILT_CLI`) and
  * never builds it itself. `make check` (and `npm run check`) run the build
  * before the tests, and `make check-in-docker` / `make check-floor` run
  * `make check`, so the tests always see a fresh build there. When running
  * vitest directly, run `npm run build` first; a missing build fails the
- * test with that instruction (`requireBuiltCli`). Building once per test
- * file from vitest was rejected: it would race when vitest runs files in
+ * test with that instruction (`requireBuiltCli`). The harness does not build
+ * once per test file from vitest: that would race when vitest runs files in
  * parallel and would double the build time of `make check`.
  *
  * Processes: every child is `node [nodeArgs] dist/cli.js <argv>` spawned

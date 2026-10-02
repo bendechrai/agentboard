@@ -1,7 +1,6 @@
 /**
  * `agentboard health` as a library operation (board-insights: "Health
- * command"; design.md: "The `health` command"; add-board-insights task
- * 2.1). The checks themselves are the pure `healthReport` of
+ * command"; add-board-insights design.md: "The `health` command"). The checks themselves are the pure `healthReport` of
  * `src/view/health.ts`; this module only gathers its input from a board
  * and, on request, runs the store's `checkCache`.
  */

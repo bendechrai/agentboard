@@ -1,6 +1,6 @@
 /**
  * Per-actor inbox cursors (board-concurrency: "Inbox never misses an
- * event"; board-cache: "Cache is derived and disposable"; design.md:
+ * event"; board-cache: "Cache is derived and disposable"; add-board-core design.md:
  * "Cursors as position plus seen set").
  *
  * A cursor records what one actor has acknowledged through `inbox`. It is
@@ -35,8 +35,8 @@
  * ```
  *
  * `cursor_seen` is treated exactly like `cursors`: `openCache` creates it
- * (with `CREATE TABLE IF NOT EXISTS` on every open, so a cache created
- * before this table existed gains it without a schema version change) and
+ * (with `CREATE TABLE IF NOT EXISTS` on every open, so a version 1 cache
+ * without it gains it without a schema version change) and
  * drops it with every other table when the schema version differs;
  * `rebuild` keeps its rows; `dumpCache`, `diffCaches` and `rebuild --check`
  * do not cover it. A cursor with no `cursors` row is the empty cursor

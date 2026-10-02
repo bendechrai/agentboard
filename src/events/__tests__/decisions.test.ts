@@ -5,8 +5,8 @@ import * as library from '../../index.js';
 import { DECISION_PREFIX, RETRACTED_PREFIX, openDecisions } from '../decisions.js';
 import * as decisions from '../decisions.js';
 
-// add-board-web task 1.1: openDecisions and the prefixes live in the pure
-// module src/events/decisions.ts and are re-exported, unchanged, from
+// openDecisions and the prefixes live in the pure module
+// src/events/decisions.ts and are re-exported, as the same bindings, from
 // src/board/actions.ts and the library entry.
 
 const c = (actor: string, text: string): { actor: string; text: string } => ({ actor, text });
@@ -77,7 +77,7 @@ describe('src/events/decisions.ts', () => {
   });
 });
 
-describe('re-exports (no-behavior refactor)', () => {
+describe('re-exports', () => {
   it('src/board/actions.ts re-exports the same bindings', () => {
     expect(actions.openDecisions).toBe(decisions.openDecisions);
     expect(actions.DECISION_PREFIX).toBe(decisions.DECISION_PREFIX);

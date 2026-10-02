@@ -1,12 +1,12 @@
 /**
- * The per-request security checks of `agentboard serve` (board-web:
- * "Access token", "Host header check", "No cross-origin access and
- * security headers", "Read-only server"; design.md: "An access token on
+ * The per-request security checks of `agentboard serve` (board-web: "Access
+ * token", "Host header check", "No cross-origin access and security
+ * headers", "Read-only server"; add-board-web design.md: "An access token on
  * every API request, sent only as a bearer header", "Host header check and
- * no cross-origin access"; add-board-web task 3.1, reworked in round 2
- * after the security review: no cookie, no `?token=` entry URL, exactly
- * one Host header; task 5.3 adds `Cross-Origin-Opener-Policy`,
- * `Cross-Origin-Resource-Policy` and exactly one `Authorization` header).
+ * no cross-origin access"): no cookie, no `?token=` entry URL, exactly one
+ * Host header, exactly one `Authorization` header, and
+ * `Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy` on every
+ * response.
  *
  * Every function here is a pure function of the request line and headers
  * (plus the server's port and token), except `newToken`, which draws
@@ -14,7 +14,7 @@
  * before any route and adds `securityHeaders` to every response, so the
  * whole policy is in this one audited module.
  *
- * Decisions recorded here (test author, add-board-web group 3):
+ * Design notes:
  * - The HTTP refusal reasons (`unauthorized`, `forbidden-host`,
  *   `method-not-allowed`, and in the server `not-found` and
  *   `too-many-streams`) are `BoardError`s of exit class 1, like every
@@ -61,8 +61,8 @@ export const CONTENT_SECURITY_POLICY =
 export const ALLOWED_METHOD = 'GET';
 
 /**
- * The prefix of the action paths (board-web-actions: "Action endpoints";
- * add-board-web-actions task 1.2): `POST /api/actions/<action>` is the
+ * The prefix of the action paths (board-web-actions: "Action endpoints"):
+ * `POST /api/actions/<action>` is the
  * one request with a method other than `GET` that passes `checkRequest`.
  */
 export const ACTIONS_PREFIX = '/api/actions/';
@@ -267,8 +267,8 @@ export type Verdict =
     };
 
 /**
- * Every check of one request, in this order (design.md: "Order of checks
- * for every request: Host, then (on `/api/*` only) token, then method,
+ * Every check of one request, in this order (add-board-web design.md: "Order of
+ * checks for every request: Host, then (on `/api/*` only) token, then method,
  * then route"):
  * 1. `hostAllowed(headersDistinct.host, port)` (exactly one allowed Host
  *    header; `headers.host` is not used, because `node:http` keeps only
@@ -276,18 +276,17 @@ export type Verdict =
  *    `BoardError(1, 'forbidden-host')`, on every path; no other header is
  *    looked at.
  * 2. On an API path only: `presentedTokens(head, guard)` non-empty (one
- *    `Authorization` header, a valid bearer token), else refuse 401 with `BoardError(1,
- *    'unauthorized')` whose message tells the user to open the URL printed
- *    at start-up. The message never contains a token (not the server's,
- *    not the one presented). Other paths skip this step.
- * 3. The method (board-web: "Read-only server", as modified by
- *    add-board-web-actions): on an action path (`isActionPath`) it must
- *    be `POST`, on every other path `GET`; else refuse 405 with
- *    `BoardError(1, 'method-not-allowed')` and `allow` `POST` on an action
- *    path, `GET` elsewhere. (A `GET` of an action path is therefore 405
- *    with `Allow: POST`, and a `POST` of `/api/board` or `/` 405 with
- *    `Allow: GET`.) Whether the server is writable is not looked at here:
- *    a read-only server refuses an action later, with `read-only`.
+ *    `Authorization` header, a valid bearer token), else refuse 401 with
+ *    `BoardError(1, 'unauthorized')` whose message tells the user to open
+ *    the URL printed at start-up. The message never contains a token (not
+ *    the server's, not the one presented). Other paths skip this step.
+ * 3. The method (board-web: "Read-only server"): on an action path
+ *    (`isActionPath`) it must be `POST`, on every other path `GET`; else refuse
+ *    405 with `BoardError(1, 'method-not-allowed')` and `allow` `POST` on an
+ *    action path, `GET` elsewhere. (A `GET` of an action path is therefore 405
+ *    with `Allow: POST`, and a `POST` of `/api/board` or `/` 405 with `Allow:
+ *    GET`.) Whether the server is writable is not looked at here: a read-only
+ *    server refuses an action later, with `read-only`.
  * 4. `route` with the method, the path and query of `head.url` (a `token`
  *    query parameter is left in `query` and means nothing).
  * `api` is `isApiPath` of the path. Never returns `enter`. Pure.

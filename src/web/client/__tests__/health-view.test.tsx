@@ -1,13 +1,12 @@
 // @vitest-environment happy-dom
 /**
- * The health view (board-insights: "Health report", "Durations", "Health
- * in the web app"; add-board-insights task 3.2), driven through the real
- * app on a fake API and a fake clock: every section rendered from
- * `healthReport`, the threshold inputs (kept in the URL hash, invalid
- * values flagged without changing the report), re-evaluation on model and
- * clock changes, the late arrivals of `/api/health`, the cache check run
- * only by its button, the close-merged note, text never rendered as
- * markup and no inline style.
+ * The health view (board-insights: "Health report", "Durations", "Health in the
+ * web app"), driven through the real app on a fake API and a fake clock: every
+ * section rendered from `healthReport`, the threshold inputs (kept in the URL
+ * hash, invalid values flagged without changing the report), re-evaluation on
+ * model and clock changes, the late arrivals of `/api/health`, the cache check
+ * run only by its button, the close-merged note, text never rendered as markup
+ * and no inline style.
  */
 
 import { act, cleanup, fireEvent, waitFor } from '@testing-library/preact';

@@ -1,7 +1,7 @@
 /**
  * `readInbox` (board-concurrency: "Inbox never misses an event";
  * board-openspec-integration: "Orchestrator inbox protocol"; board-cache:
- * losing cursors only causes redelivery). Task group 5.1.
+ * losing cursors only causes redelivery).
  */
 
 import { rmSync } from 'node:fs';
@@ -439,7 +439,7 @@ describe('--since', () => {
   });
 });
 
-describe('a reset never parks the cursor on a rejected event (review B1)', () => {
+describe('a reset never parks the cursor on a rejected event', () => {
   it('delivers a rejected event at the reset point once it becomes effective', () => {
     const X = '01BX5ZZKBKACTAV9WEVGEMMVRZ';
     const {

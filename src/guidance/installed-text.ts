@@ -1,8 +1,8 @@
 /**
  * The text `agentboard agents install` writes into a host project
  * (board-agent-guidance: "Installing guidance into a host project";
- * design.md: "Installed text is a pointer, not a copy", "Ownership
- * markers").
+ * add-agent-guidance design.md: "Installed text is a pointer, not a copy",
+ * "Ownership markers").
  *
  * The installed text is deliberately thin: when to use the board, the five
  * rules an agent must never break, and a pointer to `agentboard help
@@ -244,14 +244,15 @@ export const MCP_ENTRY: McpServerEntry = {
 
 /**
  * The arguments of a local managed entry, written by `agents install
- * --mcp-command <executable>` (add-mcp-command; board-agent-guidance:
- * "Managed MCP entry"): exactly `["mcp"]`, whatever the executable.
+ * --mcp-command <executable>` (board-agent-guidance: "Managed MCP entry"):
+ * exactly `["mcp"]`, whatever the executable.
  */
 export const MCP_LOCAL_ARGS: readonly string[] = ['mcp'];
 
 /**
- * The `mcpServers.agentboard` entry `agents install` writes (add-mcp-command
- * design.md: "The flag names an executable, not a command line"):
+ * The `mcpServers.agentboard` entry `agents install` writes
+ * (add-mcp-command design.md: "The flag names an executable, not a command
+ * line"):
  * - `command` undefined (no `--mcp-command`): a copy of `MCP_ENTRY` (`npx
  *   -y @bendechrai/agentboard mcp`), deep-equal to it;
  * - otherwise `{ command, args: ["mcp"] }` (`MCP_LOCAL_ARGS`), `command`

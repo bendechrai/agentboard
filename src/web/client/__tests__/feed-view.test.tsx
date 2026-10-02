@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 /**
- * The activity feed view (board-web: "Board views"; board-view-model:
- * "Activity feed entries", scenario "Filter by actor and kind";
- * add-board-web task 4.3): entries newest first, filters by change, actor
- * and kind through the controls, kept in the URL hash, and live appends.
+ * The activity feed view (board-web: "Board views"; board-view-model: "Activity
+ * feed entries", scenario "Filter by actor and kind"): entries newest first,
+ * filters by change, actor and kind through the controls, kept in the URL hash,
+ * and live appends.
  */
 
 import { cleanup, fireEvent, screen, waitFor } from '@testing-library/preact';

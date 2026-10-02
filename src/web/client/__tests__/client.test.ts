@@ -1,10 +1,9 @@
 /**
- * The client model (design.md: "Client model"; board-web: "Board views",
- * "Access token"; add-board-web task 4.2): loading the snapshot through
- * every page of the events API with the Bearer token, following the stream
- * read with `fetch`, appends, resync reloads with late entries, problems,
- * 401s, the 10 second refresh. No DOM is needed: these run in the Node
- * environment.
+ * The client model (add-board-web design.md of add-board-web: "Client model"; board-web:
+ * "Board views", "Access token"): loading the snapshot through every page of
+ * the events API with the Bearer token, following the stream read with `fetch`,
+ * appends, resync reloads with late entries, problems, 401s, the 10 second
+ * refresh. No DOM is needed: these run in the Node environment.
  */
 
 import { describe, expect, it, vi } from 'vitest';

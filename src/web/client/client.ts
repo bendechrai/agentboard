@@ -1,10 +1,10 @@
 /**
- * The client model of the web app (design.md: "Client model"; board-web:
- * "Board views"; add-board-web task 4.2): loads a snapshot, follows the
- * live stream, and tells its subscribers whenever what they show changed.
- * Framework free; the Preact `App` subscribes to it.
+ * The client model of the web app (add-board-web design.md of add-board-web: "Client model";
+ * board-web: "Board views"): loads a snapshot, follows the live stream, and
+ * tells its subscribers whenever what they show changed. Framework free; the
+ * Preact `App` subscribes to it.
  *
- * Decisions recorded here (test author, add-board-web group 4):
+ * Design notes:
  * - A reload (after a `resync`, or on the first feed message after a
  *   `problem`) closes the current stream first and opens a new one with
  *   `since` the reloaded model's id, so no append read on the old stream

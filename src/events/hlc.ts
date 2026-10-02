@@ -1,6 +1,6 @@
 /**
  * Hybrid timestamps (board-events: "Hybrid timestamp construction",
- * "Deterministic ordering"; design.md: "Hybrid timestamp").
+ * "Deterministic ordering"; add-board-core design.md: "Hybrid timestamp").
  *
  * Pure: the wall clock is always passed in.
  */

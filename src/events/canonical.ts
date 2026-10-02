@@ -1,6 +1,6 @@
 /**
  * Canonical JSON for board events (board-events: "Event files are immutable
- * and content-addressed"; design.md: "Canonical JSON").
+ * and content-addressed"; add-board-core design.md: "Canonical JSON").
  *
  * The canonical encoding of a value is the byte sequence that names an event
  * file, so it must be identical for equal values regardless of how they were

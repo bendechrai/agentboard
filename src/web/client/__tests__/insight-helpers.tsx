@@ -1,10 +1,10 @@
 /**
- * Test doubles for the insight views (add-board-insights group 3): a fake
- * clock whose timers fire by advancing time (the views' play and
- * animation timers go through `ClientDeps`, so these are the fake timers
- * of the component tests), client dependencies wired to it and to a
- * `FakeApi` (with an optional hook for single requests), health bodies
- * for `/api/health` and `/api/health/check`, and small DOM helpers.
+ * Test doubles for the insight views: a fake clock whose timers fire by
+ * advancing time (the views' play and animation timers go through `ClientDeps`,
+ * so these are the fake timers of the component tests), client dependencies
+ * wired to it and to a `FakeApi` (with an optional hook for single requests),
+ * health bodies for `/api/health` and `/api/health/check`, and small DOM
+ * helpers.
  */
 
 import { act, render, type RenderResult } from '@testing-library/preact';

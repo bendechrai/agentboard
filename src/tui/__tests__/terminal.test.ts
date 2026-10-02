@@ -2,13 +2,13 @@
  * The `top` driver (`runTop`) on a fake terminal, with the snapshot loader
  * and the board feed replaced by test doubles serving the fixture board
  * (board-tui: "Top command", "Keys", "Live updates", "Frame rendering",
- * "Terminal restoration"; add-board-tui task 2.1). A real board, the real
+ * "Terminal restoration"). A real board, the real
  * feed and a writer in another process are in `top-live.test.ts`; the
  * command and the CLI in `top-command.test.ts`.
  *
  * Every screen is compared, cell by cell and style by style, with
  * `renderFrame` of the model and UI state the test computes itself with
- * the group 1 functions (`initialUi`, `reconcileUi`, `reduceKey`,
+ * the pure functions (`initialUi`, `reconcileUi`, `reduceKey`,
  * `applyFeedMessage`), through the test-only interpreter of the permitted
  * escape sequences (`screen.ts`).
  */
@@ -597,8 +597,7 @@ describe('scenario: Terminal restoration on every exit path', () => {
     ],
     [
       'a failed reload',
-      (run) =>
-        run.feed.deliver({ type: 'resync', id: AFTER.id, late: [], removed: [] }),
+      (run) => run.feed.deliver({ type: 'resync', id: AFTER.id, late: [], removed: [] }),
       'rejected',
     ],
   ];

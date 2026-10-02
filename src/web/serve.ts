@@ -1,6 +1,6 @@
 /**
  * The `serve` command (board-web: "Serve command"; board-cli: "Command
- * surface", "Exit codes"; add-board-web task 3.1): starts the server
+ * surface", "Exit codes"): starts the server
  * (`startServer`, `src/web/server.ts`) for the board found by discovery,
  * prints the start-up line, optionally opens a browser, and runs until
  * the stop signal (SIGINT or SIGTERM from `src/cli.ts`).
@@ -82,7 +82,7 @@ export function openInBrowser(url: string, options: OpenOptions = {}): Promise<v
 
 /**
  * Whether `serve` opens the start-up URL in a browser (add-serve-auto-open
- * design.md: "Deciding whether to open"):
+ * add-serve-auto-open design.md: "Deciding whether to open"):
  * - `always`: `--open`; an attempt is made whatever the environment;
  * - `never`: `--no-open`; no attempt is ever made;
  * - `auto`: neither flag; an attempt is made only when `shouldAutoOpen`
@@ -122,7 +122,7 @@ export interface AutoOpenInput {
 
 /**
  * Whether `serve` in `auto` mode opens the browser (board-web: "Serve
- * command", as modified by add-serve-auto-open). True exactly when every
+ * command"). True exactly when every
  * one of these holds, where a variable "is set" when its value is defined
  * and not the empty string (an undefined value or an absent key is unset):
  * 1. `stdoutIsTTY` is true;

@@ -1,8 +1,9 @@
 /**
  * Help rendered from the command registry (board-agent-guidance: "Generated
- * help"; design.md: "Help is rendered from the registry"). No command has
- * hand-written help: everything below is built from `CommandSpec` fields,
- * so a flag cannot be added without appearing in help.
+ * help"; add-agent-guidance design.md: "Help is rendered from the
+ * registry"). No command has hand-written help: everything below is built
+ * from `CommandSpec` fields, so a flag cannot be added without appearing in
+ * help.
  *
  * This module imports no runtime value from `src/cli/registry.ts` (the
  * registry's `help` command calls it), so every function takes the
@@ -96,8 +97,7 @@ export interface CommandHelpDocument {
  * 4. `--as <actor>` when the command writes or tracks a cursor; otherwise
  *    `[--as <actor>]` when the command has `actorHelp` (`serve`, where
  *    `--as` enables the write actions, and `mcp`: board-cli "Command
- *    surface" scenario "Serve has help", as modified by
- *    add-board-web-actions task 1.1); nothing on every other command;
+ *    surface" scenario "Serve has help"); nothing on every other command;
  * 5. `[--json]`.
  * Pure.
  */
@@ -322,8 +322,8 @@ export function overviewDocument(source: HelpSource): CommandHelpDocument[] {
  *   `agentsHelpOutput(source.version, role)` from `src/guidance/guide.ts`,
  *   which also handles an unknown role. This is checked before any
  *   command lookup, so it holds even when the registry has commands whose
- *   first word is `agents` (add-agent-guidance task group 3 adds
- *   `agents install` and `agents check`): `help agents` is always the
+ *   first word is `agents` (`agents install` and `agents check`):
+ *   `help agents` is always the
  *   guide, while `help agents install` is that command's help like any
  *   other two-word command. No command may be named `agents` alone.
  *

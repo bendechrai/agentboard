@@ -1,10 +1,9 @@
 /**
- * The web client's side of the write actions of `agentboard serve --as
- * <actor>` (board-web-actions: "Action endpoints", "Action controls in the
- * web app", "Cross-site request forgery protection"; design.md of
- * add-board-web-actions: "One endpoint per command, MCP-shaped bodies, the
- * MCP conversion", "Status codes", "The page"; add-board-web-actions task
- * 2.1). `src/web/actions.ts` holds the server's contract.
+ * The web client's side of the write actions of `agentboard serve --as <actor>`
+ * (board-web-actions: "Action endpoints", "Action controls in the web app",
+ * "Cross-site request forgery protection"; add-board-web-actions design.md of add-board-web-actions:
+ * "One endpoint per command, MCP-shaped bodies, the MCP conversion", "Status
+ * codes", "The page"). `src/web/actions.ts` holds the server's contract.
  *
  * Every action is `POST /api/actions/<action>` on the page's own origin,
  * with the JSON body the command's MCP tool takes, `Content-Type:
@@ -14,7 +13,7 @@
  * URL or the body; the body never holds `as`, `json` or
  * `allow-secret-like` (the server refuses them).
  *
- * Decisions recorded here (test author, add-board-web-actions group 2):
+ * Design notes:
  * - `postAction` never rejects: every outcome, a network failure included,
  *   is an `ActionResult`, so a control always has something to show.
  * - A refusal whose body is not an `ErrorDocument` gets a document of its

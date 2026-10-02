@@ -1,10 +1,9 @@
 /**
- * Error hints (board-agent-guidance: "Error hints"; add-agent-guidance task
- * 2.2): every refusal carries one line naming what moves the caller
- * forward, printed by the CLI on stderr as `hint: <hint>` and carried by
- * MCP tool errors as the `hint` field.
+ * Error hints (board-agent-guidance: "Error hints"): every refusal carries one
+ * line naming what moves the caller forward, printed by the CLI on stderr as
+ * `hint: <hint>` and carried by MCP tool errors as the `hint` field.
  *
- * Decisions recorded here (test author, task group 2):
+ * Design notes:
  * - Every reason token the board can throw has a hint, not only the exit 1
  *   and exit 4 ones the spec names: exit 2, 3 and 5 reasons get one too
  *   (for example `board-not-found` hints `agentboard init`). An error with
@@ -15,7 +14,7 @@
  *   argument and `agentboard mcp --as <actor>` instead of the `--as` flag
  *   and `AGENTBOARD_ACTOR`, which an agent talking to a running server
  *   cannot set.
- * - The error message itself is unchanged by this group: board-cli says a
+ * - The error message itself is the same on both surfaces: board-cli says a
  *   tool call without an actor "SHALL fail exactly as the CLI does", so the
  *   MCP `missing-actor` message stays the CLI one and the hint carries the
  *   MCP-specific advice.
@@ -300,7 +299,7 @@ export function hintStep(
  * - `port-in-use`: another process listens on that port; step `serve`
  *   with `port` `0` (a free port chosen by the system), so `--port`
  *   appears.
- * - The web server's refusals (add-board-web group 3), whose command is
+ * - The web server's refusals, whose command is
  *   always `serve` and which each end with step `help serve`:
  *   `unauthorized`: open the URL `agentboard serve` printed at start-up
  *   (the token changes at every start) or send `Authorization: Bearer
@@ -314,17 +313,15 @@ export function hintStep(
  *   `read-only` appear); `too-many-streams`: close
  *   other board tabs or clients, at most 64 streams are open at once (the
  *   number `64` appears), then reconnect.
- * - The refusals of the write actions (add-board-web-actions task 1.2),
- *   whose command is `serve` and which each end with step `help serve`:
- *   `read-only`: the server was started without `--as` and is read-only
- *   (the word `read-only` appears); step `serve` with `as` A, so with no
- *   known actor `'agentboard serve --as <actor>'` appears (board-web
- *   scenario "Read-only server refuses actions"); `csrf-failed`: an action
- *   must be posted by the page of this server, or by a script with no
+ * - The refusals of the write actions, whose command is `serve` and which each
+ *   end with step `help serve`: `read-only`: the server was started without
+ *   `--as` and is read-only (the word `read-only` appears); step `serve` with
+ *   `as` A, so with no known actor `'agentboard serve --as <actor>'` appears
+ *   (board-web scenario "Read-only server refuses actions"); `csrf-failed`: an
+ *   action must be posted by the page of this server, or by a script with no
  *   `Origin` header, as `Content-Type: application/json` (the texts
- *   `Content-Type: application/json` and `Origin` appear);
- *   `body-too-large`: an action body is at most 64 KiB (the text `64 KiB`
- *   appears).
+ *   `Content-Type: application/json` and `Origin` appear); `body-too-large`: an
+ *   action body is at most 64 KiB (the text `64 KiB` appears).
  * - `unsupported-source`: only the `openspec` adapter ships; step `new`
  *   with `title` `<title>`, `task` `<source>:<ref>#<item>`, A.
  * - `tasks-not-found`, `malformed-tasks`: fix the tasks file named in the

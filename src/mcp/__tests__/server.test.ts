@@ -1,12 +1,9 @@
 /**
- * Task 9.2, in process (board-cli: "MCP server"): the server built by
+ * The MCP server in process (board-cli: "MCP server"): the server built by
  * `createMcpServer`, driven by the SDK client over an in-memory transport
  * and through `callTool` directly, and `serveMcp` over in-memory streams.
  * The child-process versions of the same scenarios are in spawn.test.ts;
  * these give the coverage a spawned server cannot.
- *
- * `board_inbox` tests need task group 5 and are red until it is in the
- * branch.
  */
 
 import { rmSync, utimesSync, writeFileSync } from 'node:fs';
@@ -94,7 +91,7 @@ function ok(result: ToolCallResult): Record<string, unknown> {
 /**
  * The structured content of a failed call. Its text content is the
  * message, then `hint: <hint>` on a second line when there is a hint
- * (add-agent-guidance task 2.2).
+ * (board-agent-guidance: "Error hints").
  */
 function failed(result: ToolCallResult): {
   exitCode: number;
@@ -238,7 +235,7 @@ describe('callTool', () => {
     expect(err.message).toContain('--as');
     expect(err.message).toContain('AGENTBOARD_ACTOR');
     // Exactly the CLI's exit code, reason and message; the hint is written
-    // for a tool caller (add-agent-guidance task 2.2), so it differs.
+    // for a tool caller, so it differs.
     const cli = (
       oneJson(run(['comment', id, 'hi', '--json'], h.root)) as {
         error: { exitCode: number; reason: string; message: string; hint: string };
@@ -396,7 +393,7 @@ describe('callTool', () => {
     expect(h.stderr()).toContain(`agentboard: removed stale temporary file ${tmp}`);
   });
 
-  it('board_inbox needs an actor and returns the inbox document (needs task group 5)', () => {
+  it('board_inbox needs an actor and returns the inbox document', () => {
     const h = serve();
     newId(h);
     expect(failed(h.server.callTool('board_inbox', {}))).toMatchObject({
@@ -576,7 +573,7 @@ describe('serveMcp', () => {
   });
 });
 
-describe('help words in tool arguments (add-agent-guidance group 1 ruling)', () => {
+describe('help words in tool arguments', () => {
   it('writes a comment whose text is --help or -h, not a help request', () => {
     const h = serve();
     const id = newId(h);

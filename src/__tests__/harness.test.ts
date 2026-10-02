@@ -1,5 +1,5 @@
 /**
- * Task 4.1: the multi-process harness itself. It must run 20 CLI processes
+ * The multi-process harness itself. It must run 20 CLI processes
  * at once, on macOS and Linux, well within the test timeout, and its
  * waiting and killing helpers must behave as documented.
  */

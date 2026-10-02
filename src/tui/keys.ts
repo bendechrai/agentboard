@@ -1,11 +1,10 @@
 /**
- * Decoding raw terminal input bytes into keys (board-tui: "Keys";
- * add-board-tui task 1.1).
+ * Decoding raw terminal input bytes into keys (board-tui: "Keys").
  *
  * Pure and browser-safe like the view-model: no IO, no clock, no
  * randomness, and no `node:` import, directly or transitively (the layering
  * test in `src/__tests__/layering.test.ts` enforces this). The terminal
- * driver (group 2) feeds every chunk it reads from stdin in raw mode to
+ * driver (`terminal.ts`) feeds every chunk it reads from stdin in raw mode to
  * `decodeKeys`, keeps the returned `pending` bytes for the next chunk, and
  * calls `flushKeys` when no further byte arrives shortly after a chunk
  * that left bytes pending (so a lone Escape key press is not held back).

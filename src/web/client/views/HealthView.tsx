@@ -1,11 +1,11 @@
 /**
- * The health view (board-insights: "Health report", "Durations", "Health
- * in the web app"; design.md: "Health checks and their definitions",
- * "Server additions"; add-board-insights task 3.2): `healthReport`
- * computed in the browser from the client's model, re-evaluated on every
- * model change and whenever `now` changes (the client refreshes it every
- * `REFRESH_MS`, 10 seconds), with what only the server knows (the observed
- * late arrivals and the last cache check) from `GET /api/health`.
+ * The health view (board-insights: "Health report", "Durations", "Health in the
+ * web app"; add-board-insights design.md of add-board-insights: "Health checks and their
+ * definitions", "Server additions"): `healthReport` computed in the browser
+ * from the client's model, re-evaluated on every model change and whenever
+ * `now` changes (the client refreshes it every `REFRESH_MS`, 10 seconds), with
+ * what only the server knows (the observed late arrivals and the last cache
+ * check) from `GET /api/health`.
  *
  * Behavior:
  * - On mount, and again whenever `model.id` changes, it requests

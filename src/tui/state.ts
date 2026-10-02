@@ -1,6 +1,6 @@
 /**
  * The UI state of `agentboard top` and its pure reducers (board-tui:
- * "Keys", "Views"; add-board-tui task 1.1).
+ * "Keys", "Views").
  *
  * Pure and browser-safe like the view-model: no IO, no clock, no
  * randomness, and no `node:` import, directly or transitively (the layering

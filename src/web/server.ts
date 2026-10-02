@@ -2,23 +2,23 @@
  * The local web server of `agentboard serve` (board-web: "Serve command",
  * "Loopback only", "Access token", "Host header check", "No cross-origin
  * access and security headers", "Read-only server", "Reads never block
- * writers", "JSON API", "Live event stream"; design.md: "The server is
- * `node:http`, with a small router of our own" and the sections after
- * it; add-board-web tasks 3.1 to 3.3).
+ * writers", "JSON API", "Live event stream"; add-board-web design.md: "The
+ * server is `node:http`, with a small router of our own" and the sections
+ * after it).
  *
- * Decisions recorded here (test author, add-board-web group 3):
+ * Design notes:
  * - Assets. The page, script and stylesheet are served from one flat
  *   directory, `assetsDir`, by default `defaultAssetsDir()`: the directory
  *   `web` next to the running module, which is `dist/web` in the built
  *   package (the CLI bundle and its chunks live in `dist/`). Tests pass
- *   their own `assetsDir`. Until the client is built (add-board-web group
- *   4), `dist/web` may not exist: when `<assetsDir>/index.html` cannot be
+ *   their own `assetsDir`. Before the client is built, `dist/web` may
+ *   not exist: when `<assetsDir>/index.html` cannot be
  *   read, `GET /` answers 200 with `PLACEHOLDER_PAGE`, a short built-in
  *   HTML page with no script that says the web assets are not built
  *   (naming `dist/web` and `npm run build`), so `serve` and the whole API
  *   still work.
- * - Only direct children of `assetsDir` are served, without a token (round
- *   2): `/` serves `index.html`, and `/<name>` serves the file `<name>`
+ * - Only direct children of `assetsDir` are served, without a token:
+ *   `/` serves `index.html`, and `/<name>` serves the file `<name>`
  *   when `<name>` matches `ASSET_NAME` (no `/`, `\` or `%`, no leading
  *   dot, so no traversal and no hidden file). The file is opened once with
  *   `O_RDONLY | O_NONBLOCK | O_NOFOLLOW` and served only when `fstat` of
@@ -198,7 +198,7 @@ export interface ServerOptions {
   readonly checkCache?: (board: Board) => CacheCheckOutcome | Promise<CacheCheckOutcome>;
   /**
    * The write actor (board-web-actions: "Write mode is opt-in with an
-   * explicit actor"; add-board-web-actions task 1.1): a non-empty string
+   * explicit actor"): a non-empty string
    * makes the server writable as that actor, recorded on every event
    * written through it; undefined or null (the default) makes it read-only.
    * An empty string rejects with `BoardError(1, 'usage')` before
@@ -285,14 +285,13 @@ export interface RunningServer {
  * is false whenever the server writes to a response), and no transaction
  * is ever held across network IO or a timer.
  *
- * Health (board-insights: "Health in the web app"; add-board-insights
- * task 3.1). The server keeps one `ObservedLog` (`createObservedLog()`,
- * `src/web/health.ts`) and one `CacheChecker` (`createCacheChecker({
- * check: () => checkCache(board), now })`, with `options.checkCache` when
- * given) for its whole life. Every message of its feed is passed to
- * `log.observe(message, now())` before it is written to the streams (a
- * joiner's own first message is not a feed message and is not observed).
- * Behind the same Host, token and method checks as every API route:
+ * Health (board-insights: "Health in the web app"). The server keeps one
+ * `ObservedLog` (`createObservedLog()`, `src/web/health.ts`) and one
+ * `CacheChecker` (`createCacheChecker({ check: () => checkCache(board), now
+ * })`, with `options.checkCache` when given) for its whole life. Every message
+ * of its feed is passed to `log.observe(message, now())` before it is written
+ * to the streams (a joiner's own first message is not a feed message and is not
+ * observed). Behind the same Host, token and method checks as every API route:
  * - `GET /api/health`: 200 with `HealthResponse` `{ late: log.list(),
  *   check: checker.last() }`; never runs the comparison;
  * - `GET /api/health/check`: 200 with the `HealthCheck` of

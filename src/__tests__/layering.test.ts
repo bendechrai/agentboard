@@ -62,7 +62,7 @@ describe('layering', () => {
   });
 });
 
-// add-board-web tasks 1.1 and 1.2 (board-view-model: "Pure view-model
+// Browser-safe modules (board-view-model: "Pure view-model
 // layer", scenario "No Node-only import"): the view-model and the pure
 // fold must be bundleable for the browser.
 
@@ -220,7 +220,7 @@ describe('layering: browser-safe modules', () => {
     );
   });
 
-  // add-board-insights tasks 1.1 and 1.2: the insight view-models are
+  // The insight view-models are
   // bundled into the web client, reuse the store's fold for replay and
   // `openDecisions` for the health report, and stay free of Node-only
   // imports.
@@ -257,9 +257,9 @@ describe('layering: browser-safe modules', () => {
   });
 });
 
-// add-board-tui tasks 1.1 and 1.2 (design.md, "Hand-rolled ANSI rather
-// than a library"): the key decoder, the UI state and the frame renderer
-// are pure. `src/tui/terminal.ts` (group 2) is the only IO module there, so
+// Pure terminal UI modules (add-board-tui design.md, "Hand-rolled ANSI
+// rather than a library"): the key decoder, the UI state and the frame
+// renderer are pure. `src/tui/terminal.ts` is the only IO module there, so
 // these three modules are listed rather than the whole directory.
 
 describe('layering: pure terminal UI modules', () => {

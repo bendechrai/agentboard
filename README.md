@@ -357,8 +357,8 @@ install` brings them up to date. `--json` prints an array of `{target,
 path, state, installedVersion, currentVersion}` (`installedVersion` is
 null when it is unknown, and always for `mcp-json`).
 
-This repository installs its own guidance the same way: see "Using
-agentboard in a project" in CONTRIBUTING.md.
+This repository installs its own guidance the same way: see "Coordinating
+on the board" in CONTRIBUTING.md.
 
 ## The actor rule
 
@@ -1615,14 +1615,13 @@ executable):
 }
 ```
 
-A hand-written entry pointing at the build is no longer needed; both
-entries are agentboard's own, so `agents check` reports either as
+Both entries are agentboard's own, so `agents check` reports either as
 `current` and a later `agents install` keeps it.
 
 Both entries have no actor: each call then passes `as`, or the server
 uses `AGENTBOARD_ACTOR`. To give the server a default actor, one per
 agent, add `--as` to the arguments by hand (for example `"args": ["mcp",
-"--as", "impl-1"]`). A hand-edited entry is no longer a managed one, so
+"--as", "impl-1"]`). An entry edited this way is not a managed one, so
 `agents check` reports it as `modified` and `agents install` refuses it
 as `entry-differs` unless `--force` is given, which replaces it.
 
@@ -1650,4 +1649,4 @@ as `entry-differs` unless `--force` is given, which replaces it.
 Behavior changes go through an OpenSpec change proposal under
 `openspec/changes/` before implementation; decisions are recorded in
 `docs/adr/`. See CONTRIBUTING.md for the workflow and `docs/STATUS.md` for
-where the build is.
+the current state of the project.

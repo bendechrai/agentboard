@@ -1,7 +1,6 @@
 /**
- * `applyFeedMessage` (board-view-model: "Applying feed messages";
- * add-board-web task 2.3), including the property "Append equals reload"
- * over seeded random boards.
+ * `applyFeedMessage` (board-view-model: "Applying feed messages"),
+ * including the property "Append equals reload" over seeded random boards.
  */
 
 import { describe, expect, it } from 'vitest';

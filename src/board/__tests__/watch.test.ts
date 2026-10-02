@@ -1,5 +1,5 @@
 /**
- * `watchInbox` (board-cli: `watch`; design.md: "`watch`"). Task group 5.2.
+ * `watchInbox` (board-cli: `watch`; add-board-core design.md: "`watch`").
  * In-process tests of the library function; the child-process test of the
  * built CLI is `src/cli/__tests__/watch-spawn.test.ts`.
  */
@@ -203,7 +203,7 @@ function countingReader(): {
 
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-describe('watchInbox bounds the work of each tick (round 2)', () => {
+describe('watchInbox bounds the work of each tick', () => {
   it(
     'reads one file per pending entry at first, none on a tick with nothing new, one per new event',
     { timeout: 10_000 },
@@ -304,7 +304,7 @@ describe('watchInbox bounds the work of each tick (round 2)', () => {
   );
 });
 
-describe('watchInbox and a busy cache (round 2)', () => {
+describe('watchInbox and a busy cache', () => {
   it(
     'warns and carries on after a tick that finds the cache busy',
     { timeout: 20_000 },
@@ -355,7 +355,7 @@ describe('watchInbox and a busy cache (round 2)', () => {
   );
 });
 
-describe('watchInbox and writes on its own connection (follow-up R2-N1)', () => {
+describe('watchInbox and writes on its own connection', () => {
   // SQLite never bumps `PRAGMA data_version` for a connection's own commits,
   // so these pin that the quiet-tick skip also notices a commit made on the
   // watch's own `Board` by another caller in the same process.

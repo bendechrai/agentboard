@@ -1,8 +1,8 @@
 /**
- * Types of the command registry (design.md: "Library first, CLI second").
- * The registry describes every command once; the CLI parser, the `mcp`
- * tool definitions (task group 9) and generated help (add-agent-guidance)
- * all read it, so a flag added to one surface is added to all of them.
+ * Types of the command registry (add-board-core design.md: "Library first, CLI second").
+ * The registry describes every command once; the CLI parser, the MCP
+ * tool definitions (`src/mcp/tools.ts`) and generated help
+ * (`src/guidance/help.ts`) all read it, so a flag added to one surface is added to all of them.
  */
 
 import type { Board } from '../store/board.js';
@@ -28,8 +28,8 @@ export interface ArgSpec {
   /**
    * Kebab-case name, unique among a command's positionals and flags. For a
    * flag it is the long option without dashes (`decision-recorded-in` is
-   * `--decision-recorded-in`); it is also the key in `ArgValues` and, in
-   * task group 9, the MCP input property name.
+   * `--decision-recorded-in`); it is also the key in `ArgValues` and the
+   * MCP input property name.
    */
   readonly name: string;
   readonly type: ValueType;
@@ -238,7 +238,7 @@ export interface ExitCodeSpec {
 export interface CommandSpec {
   /**
    * The command words separated by single spaces, e.g. `claim` or
-   * `checklist tick`. The MCP tool name (task group 9) is derived from it.
+   * `checklist tick`. The MCP tool name is derived from it.
    */
   readonly name: string;
   /** One-line ASCII summary. */
@@ -262,8 +262,8 @@ export interface CommandSpec {
    * `Accepted and ignored by this command` on the `--as` line of its help
    * (the line still reads `string, optional`). Only `serve` and `mcp`
    * have it: on `serve`, `--as` is the actor of the web app's write
-   * actions and the only way to enable them (add-board-web-actions task
-   * 1.1); on `mcp`, the server's default actor for tool calls. Absent on
+   * actions and the only way to enable them; on `mcp`, the server's
+   * default actor for tool calls. Absent on
    * every command that writes or tracks a cursor, and on every command
    * that ignores `--as`.
    */

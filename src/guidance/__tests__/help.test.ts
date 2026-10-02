@@ -1,6 +1,6 @@
 /**
  * Help rendered from the command registry (board-agent-guidance: "Generated
- * help"; add-agent-guidance task 1.1), in process, for breadth: the help
+ * help"), in process, for breadth: the help
  * data of record in every registry entry, every command's rendered help and
  * JSON form, the overview, and the drift guard that every example parses
  * with the real parser to its own command. Exit codes and stdout/stderr
@@ -103,7 +103,7 @@ describe('the help data of record in the registry', () => {
     expect(h.writes).toBe(false);
     expect(h.tracksCursor ?? false).toBe(false);
     expect(h.operation).toBeNull();
-    // --role (add-agent-guidance task group 2): the role checklist of help agents.
+    // --role: the role checklist of help agents.
     expect(h.flags.map((f) => [f.name, f.type, f.required, f.repeatable])).toEqual([
       ['role', 'string', false, false],
     ]);
@@ -211,8 +211,8 @@ describe('the help data of record in the registry', () => {
   });
 
   it('gives actorHelp to serve and mcp only, which neither write nor track a cursor', () => {
-    // add-board-web-actions task 1.1: serve --as is the actor of the web
-    // app's write actions, so its --as line is no longer "ignored".
+    // serve --as is the actor of the web app's write actions, so its --as
+    // line does not say "ignored".
     expect(COMMANDS.filter((c) => c.actorHelp !== undefined).map((c) => c.name)).toEqual([
       'serve',
       'mcp',
@@ -283,7 +283,7 @@ describe('the drift guard: every example parses to its own command', () => {
     expect(parsed.command.name).toBe(name);
   });
 
-  it('covers the agents install --mcp-command example (add-mcp-command 1.1)', () => {
+  it('covers the agents install --mcp-command example', () => {
     const line = 'agentboard agents install --mcp-command agentboard';
     expect(command('agents install').examples.map((e) => e.command)).toContain(line);
     expect(examples).toContainEqual(['agents install', line]);
@@ -292,7 +292,7 @@ describe('the drift guard: every example parses to its own command', () => {
     expect(parsed.values['mcp-command']).toBe('agentboard');
   });
 
-  it('covers a serve --no-open example (add-serve-auto-open 1.1)', () => {
+  it('covers a serve --no-open example', () => {
     const withNoOpen = command('serve').examples.filter((e) => / --no-open( |$)/.test(e.command));
     expect(withNoOpen.length).toBeGreaterThan(0);
     for (const example of withNoOpen) {
@@ -305,7 +305,7 @@ describe('the drift guard: every example parses to its own command', () => {
     }
   });
 
-  it('describes --no-open and its usage error in the serve help (add-serve-auto-open 1.1)', () => {
+  it('describes --no-open and its usage error in the serve help', () => {
     const serve = command('serve');
     const noOpen = serve.flags.find((f) => f.name === 'no-open');
     expect(noOpen).toMatchObject({ type: 'boolean', required: false, repeatable: false });
@@ -374,8 +374,7 @@ describe('synopsis', () => {
     ['show', 'agentboard show <id> [--raw] [--json]'],
     ['help', 'agentboard help [<topic>] [<subtopic>] [--role <role>] [--json]'],
     ['version', 'agentboard version [--json]'],
-    // add-board-web-actions task 1.1: an optional --as that means something.
-    // add-serve-auto-open task 1.1: --open and --no-open are exclusive.
+    // An optional --as that means something; --open and --no-open are exclusive.
     ['serve', 'agentboard serve [--port <port>] [--open | --no-open] [--as <actor>] [--json]'],
     ['mcp', 'agentboard mcp [--as <actor>] [--json]'],
     ['top', 'agentboard top [--json]'],

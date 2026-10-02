@@ -1,13 +1,13 @@
 /**
  * The read-only JSON API of `agentboard serve` (board-web: "JSON API",
- * "Reads never block writers"; add-board-web task 3.2). The server
+ * "Reads never block writers"). The server
  * (`src/web/server.ts`) calls `apiResponse` for every authenticated `GET`
  * of an API path other than `/api/stream`, after the security checks, and
  * writes the result: `apiResponse` returns only once every read
  * transaction it opened is committed, so nothing it read is held while
  * the response goes to the network.
  *
- * Decisions recorded here (test author, add-board-web group 3):
+ * Design notes:
  * - `/api/board` gives `tickets` as an array sorted by ascending id (like
  *   the `tickets` of a feed `append`), not keyed by id; a client keys them
  *   itself.
@@ -105,7 +105,7 @@ export function httpStatus(error: unknown): number {
  * - `/api/session`: `{ version, boardDir, writable, actor }` with the keys
  *   in this order: `VERSION`, `board.dir`, then `writable` true and `actor`
  *   `ctx.actor` when `ctx.actor` is a non-empty string, else false and
- *   null (board-web: "JSON API" as modified by add-board-web-actions). No
+ *   null (board-web: "JSON API"). No
  *   other key (no CSRF token or field of any kind). Reads nothing from the
  *   cache.
  * - `/api/board`: `{ tickets, meta, id }`: every ticket, open and closed,

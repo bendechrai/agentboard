@@ -52,9 +52,8 @@ export interface AsyncCliIo extends CliIo {
  * The `--json` document printed on stdout when a command fails, and (as
  * `error`) the structured content of a failed MCP tool call.
  *
- * Decision (add-agent-guidance task group 2): the CLI's `--json` error
- * document carries the `hint` too, so an agent reading JSON gets the same
- * advice as one reading stderr, and the MCP error content stays exactly
+ * The CLI's `--json` error document carries the `hint` too, so an agent
+ * reading JSON gets the same advice as one reading stderr, and the MCP error content stays exactly
  * `errorDocument(...).error`.
  */
 export interface ErrorDocument {
@@ -363,7 +362,7 @@ export async function runCliAsync(io: AsyncCliIo): Promise<ExitCode> {
   try {
     parsed = parseArgs(io.argv);
   } catch {
-    // runCli reports the usage error exactly as it always does.
+    // runCli reports the usage error, exactly as for a non-streaming command.
     return runCli(io);
   }
   const { command, values } = parsed;

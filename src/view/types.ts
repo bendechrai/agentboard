@@ -9,8 +9,8 @@
  * layering test in `src/__tests__/layering.test.ts` enforces this; only
  * `import type` is exempt, because it is erased at build time). Equal
  * inputs give deep-equal outputs. The web client, the terminal UI
- * (`add-board-tui`) and the insights (`add-board-insights`) all build their
- * view data with these functions.
+ * (`src/tui/`) and the insights (health, hand-off graph and replay) all
+ * build their view data with these functions.
  */
 
 import type { JsonValue } from '../events/json.js';
@@ -52,7 +52,7 @@ export interface EventView {
 /**
  * The client-side model of a board: what a snapshot (`/api/board` plus
  * every page of `/api/events`) gives, kept current by applying feed
- * messages (`applyFeedMessage`, add-board-web task 2.3).
+ * messages (`applyFeedMessage`).
  */
 export interface BoardModel {
   /** Every ticket, open and closed, keyed by id (as `BoardState.tickets`). */
