@@ -3,3 +3,5 @@ dist/
 coverage/
 .board/
 openspec/
+docs/
+site-tools/

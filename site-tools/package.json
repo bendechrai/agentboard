@@ -1,0 +1,9 @@
+{
+  "name": "agentboard-site-tools",
+  "description": "Captures the media of the agentboard landing site (docs/)",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "puppeteer": "^25.12.0"
+  }
+}

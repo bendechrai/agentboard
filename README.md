@@ -3,9 +3,11 @@
 A local, offline, conflict-free ticket board for AI agents working on one
 project.
 
-Status: early development, not yet released. Every command below, including
-the MCP server, is implemented and tested, but there is no npm release yet,
-and commands, flags and output may still change before the first one.
+Website: https://bendechrai.github.io/agentboard/
+
+Status: early development. Every command below, including the MCP server,
+is implemented and tested, but until 1.0 commands, flags and output may
+still change between minor versions.
 
 ## What it is
 
@@ -24,8 +26,8 @@ each other. A SQLite database (`.board/cache.sqlite`) is derived from the
 event log as a disposable read cache; it can be deleted at any time and is
 rebuilt from the events by the next command.
 
-See `docs/adr/` for the reasoning behind the design, starting with
-`docs/adr/0001-event-log-source-of-truth.md`.
+See `adr/` for the reasoning behind the design, starting with
+`adr/0001-event-log-source-of-truth.md`.
 
 ## Install and run
 
@@ -34,17 +36,24 @@ Requires Node 22.16 or later (the store uses `node:sqlite` and its
 PATH for board discovery and `sync`, and the GitHub CLI `gh` on the PATH
 only for `close-merged`.
 
-Once released, run it with `npx`, no install required:
+Run it with `npx`, no install required:
 
 ```
 npx @bendechrai/agentboard <command> [arguments]
+```
+
+or install it globally to get an `agentboard` command:
+
+```
+npm install -g @bendechrai/agentboard
 ```
 
 (The `agentboard` package name on npm was already taken by an unrelated
 project, so this ships as the scoped package `@bendechrai/agentboard`; the
 command it installs is still called `agentboard`.)
 
-Until the first release, build it from this repository:
+To run it from a checkout of this repository instead (for example while
+working on agentboard itself), build it:
 
 ```
 npm ci
@@ -69,8 +78,8 @@ agentboard agents install --mcp-command agentboard
 `--mcp-command agentboard` registers the MCP server in `.mcp.json` as
 the linked `agentboard` command. Without it, `agents install --target
 mcp-json` writes an entry that runs `npx -y @bendechrai/agentboard mcp`,
-which fails until the package is published, because `npx` fetches the
-package from the npm registry rather than using the link (see
+which fetches the published package from the npm registry rather than
+using the link (see
 "Installing agent guidance into a project" and "MCP server").
 
 `agentboard` with no command, `agentboard --help` and `agentboard help`
@@ -1052,7 +1061,7 @@ Start the server in one terminal with `agentboard serve --port 4477
 ```
 $ TOKEN=<token>
 $ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4477/api/session
-{"version":"0.0.1","boardDir":"/home/me/project/.board","writable":false,"actor":null}
+{"version":"0.1.0","boardDir":"/home/me/project/.board","writable":false,"actor":null}
 $ curl -s -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:4477/api/events?limit=100"
 $ curl -s -N -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4477/api/stream
 retry: 2000
@@ -1598,10 +1607,10 @@ writes the `npx` entry, which works once the package is published:
 }
 ```
 
-The package is not on npm yet. Until it is, build from source and `npm
-link` it (see "Install and run"), then run `agentboard agents install
---mcp-command agentboard`, which writes an entry that runs the linked
-command instead (`--mcp-command` also takes an absolute path to an
+To use a local build instead, for example while working on agentboard
+itself, `npm link` it (see "Install and run"), then run `agentboard agents
+install --mcp-command agentboard`, which writes an entry that runs the
+linked command (`--mcp-command` also takes an absolute path to an
 executable):
 
 ```json
@@ -1648,5 +1657,5 @@ as `entry-differs` unless `--force` is given, which replaces it.
 
 Behavior changes go through an OpenSpec change proposal under
 `openspec/changes/` before implementation; decisions are recorded in
-`docs/adr/`. See CONTRIBUTING.md for the workflow and `docs/STATUS.md` for
+`adr/`. See CONTRIBUTING.md for the workflow and `STATUS.md` for
 the current state of the project.
