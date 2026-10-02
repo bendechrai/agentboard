@@ -13,4 +13,4 @@ security-critical: it gets a second reviewer on the strongest model.
 
 ## 2. Documentation (`docs/description-markdown`)
 
-- [ ] 2.1 Update README.md ("Watching the board in a browser" and the security model's "Script in the page", which says board text is never rendered as markup), write ADR 0012 (Markdown descriptions rendered to elements, never HTML) noting what it changes in ADR 0006's reasoning, and update the ADR index and docs/STATUS.md. Verify: `make ascii`, `make validate-specs`
+- [ ] 2.1 Update README.md ("Watching the board in a browser" and the security model's "Script in the page", which says board text is never rendered as markup), write ADR 0012 (Markdown descriptions rendered to elements, never HTML) noting what it changes in ADR 0006's reasoning, and update the ADR index and STATUS.md. Verify: `make ascii`, `make validate-specs`
