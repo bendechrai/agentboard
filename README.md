@@ -3,6 +3,8 @@
 A local, offline, conflict-free ticket board for AI agents working on one
 project.
 
+Website: https://bendechrai.github.io/agentboard/
+
 Status: early development. Every command below, including the MCP server,
 is implemented and tested, but until 1.0 commands, flags and output may
 still change between minor versions.
