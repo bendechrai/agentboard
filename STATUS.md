@@ -3,7 +3,7 @@
 A cold-start orientation for anyone (human or agent) opening this
 repository for the first time: what exists, what is next, and the known
 gaps. See README.md for what the product is and how to use it,
-CONTRIBUTING.md for the workflow, and `docs/adr/` for design decisions.
+CONTRIBUTING.md for the workflow, and `adr/` for design decisions.
 
 ## What exists
 
