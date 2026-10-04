@@ -30,19 +30,19 @@ archiving whichever lands second.
 
 ## 3. Claude hooks target (`guidance/claude-hooks`)
 
-- [ ] 3.1 Test author: tests for "Hooks installed in Claude settings" and the settings.json clobber and check scenarios (preserved keys and user hooks, no duplicates, strict switch, local executable, invalid JSON refusal, hand-edit and missing-entry `modified`, stale). Verify: tests are red, pre-push subset passes
-- [ ] 3.2 Implementer: add the `claude-hooks` target to install, check and the marker module; `--hooks-strict`; auto-selection beside `claude`. Verify: group 3 tests pass and reinstall is byte-identical
+- [ ] 3.1 Test author: tests for "Hooks installed in Claude settings" and the settings.json clobber and check scenarios (preserved keys and user hooks, no duplicates, strict switch, local executable, invalid JSON refusal, hand-edit and missing-entry `modified`, stale). Also tests for the `--command` flag, the deprecated `--mcp-command` alias with its stderr notice, and that `claude-hooks` is never auto-selected. Verify: tests are red, pre-push subset passes
+- [ ] 3.2 Implementer: add the `claude-hooks` target to install, check and the marker module; `--hooks-strict`; never auto-selected, only by `--target claude-hooks`; add `--command` (setting the executable of every MCP entry and the hooks) with `--mcp-command` as a deprecated alias. Verify: group 3 tests pass and reinstall is byte-identical
 - [ ] 3.3 Reviewer: check non-destructive merge and marker round trip. Verify: report with verdict
 
 ## 4. Other harness targets (`guidance/harness-targets`)
 
-- [ ] 4.1 Test author: tests for `codex`, `cursor`, `gemini` and `copilot` install, auto-detection, refusal (foreign TOML table, markerless mdc, unmanaged MCP entry), `--mcp-command` reaching each MCP entry, check states, and "Harness MCP entries". Verify: tests are red, pre-push subset passes
+- [ ] 4.1 Test author: tests for `codex`, `cursor`, `gemini` and `copilot` install, auto-detection, refusal (foreign TOML table, markerless mdc, unmanaged MCP entry), `--command` reaching each MCP entry, check states, and "Harness MCP entries". Verify: tests are red, pre-push subset passes
 - [ ] 4.2 Implementer: implement the four targets with the existing block, owned-key and refusal helpers; the rendered rule text states the five rules and points to `agentboard help agents`. Verify: group 4 tests pass; every `agentboard ` line in the new texts parses against the registry
 - [ ] 4.3 Reviewer: check no user bytes change outside owned regions in any target. Verify: report with verdict
 
 ## 5. Prompts (`guidance/prompts`)
 
-- [ ] 5.1 Test author: tests for the bare-project prompt and "Init offers to install agent guidance" using a fake terminal (answers `1,3`, empty, unknown token, `y`, `n`, Enter) and real non-TTY runs (no stdin read, exit 1). Verify: tests are red, pre-push subset passes
+- [ ] 5.1 Test author: tests for the bare-project prompt and "Init offers to install agent guidance" using a fake terminal (answers `1,3`, empty, unknown token, `y`, `n`, Enter installing) and real non-TTY runs (no stdin read, exit 1). Verify: tests are red, pre-push subset passes
 - [ ] 5.2 Implementer: add the TTY prompt helper, the `init --agents/--no-agents` flags and the install-failure exit behavior. Verify: group 5 tests pass; `init --json` never prompts
 - [ ] 5.3 Reviewer: check TTY detection and that nothing reads stdin in a script. Verify: report with verdict
 

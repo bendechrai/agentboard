@@ -160,7 +160,8 @@ path as the CLI, so concurrent CLI and MCP writers obey the same guarantees.
 `agentboard init` SHALL, after creating or finding the board, offer to run
 `agents install` when stdin and stdout are both terminals and neither
 `--json`, `--agents` nor `--no-agents` is given: it asks `Install agent
-guidance now? [y/N]` and runs the install on `y` or `yes` (any case). `--agents` SHALL
+guidance now? [Y/n]` and runs the install on `y`, `yes` or an empty answer
+(any case) and skips it on `n` or `no`. `--agents` SHALL
 run the install without asking and `--no-agents` SHALL skip it silently;
 giving both SHALL exit 1 with reason `usage` before writing anything. When
 the install is not run, `init` SHALL end its output with the line
@@ -174,8 +175,12 @@ install's exit code.
 - **WHEN** `agentboard init` runs on a terminal with no flags and the user answers `y`
 - **THEN** the board is created and `agents install` runs with auto-detected targets
 
-#### Scenario: Declined or empty answer
-- **WHEN** the user answers `n` or presses Enter
+#### Scenario: Enter installs
+- **WHEN** the user presses Enter at the prompt
+- **THEN** the board is created and `agents install` runs with auto-detected targets
+
+#### Scenario: Declined
+- **WHEN** the user answers `n`
 - **THEN** the board is created, no guidance file is written, and the output ends with the hint line
 
 #### Scenario: Scripts get no prompt
