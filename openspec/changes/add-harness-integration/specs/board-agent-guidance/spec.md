@@ -1,0 +1,222 @@
+## MODIFIED Requirements
+
+### Requirement: Help is not an MCP tool
+The `help`, `agents install`, `agents check` and `hook` commands SHALL be excluded
+from the MCP server's tools, like the other setup commands: MCP clients
+receive the agent guide through the server's `instructions` and the
+`agentboard://guide` resource instead, and installing guidance writes files
+into the host project, which a tool call from any agent must not do.
+
+#### Scenario: No board_help tool
+- **WHEN** an MCP client lists the tools of `agentboard mcp`
+- **THEN** no tool named `board_help` is listed
+
+### Requirement: Installing guidance into a host project
+`agentboard agents install [--target <t>]... [--mcp-command <executable>]
+[--hooks-strict] [--force]` SHALL write agent
+guidance into the root of the current working tree (the output of
+`git rev-parse --show-toplevel`, or the current directory outside git),
+where `<t>` is one of:
+- `claude`: `.claude/skills/agentboard/SKILL.md`, a Claude Code skill with
+  frontmatter `name: agentboard` and a description that triggers on
+  coordinating work between agents, claiming or handing off tasks, and
+  checking what other agents are doing;
+- `agents-md`: a managed block in `AGENTS.md`, created if absent;
+- `openspec`: `guidance` entries under `operations.apply` and
+  `operations.archive` in `openspec/config.yaml` (apply: claim the task
+  group's ticket before implementing, hand off or block when stopping, tick
+  `tasks.md` in the implementing PR; archive: no open tickets may remain
+  for the change, run `close-merged` first);
+- `mcp-json`: an `agentboard` entry under `mcpServers` in `.mcp.json`
+  running `npx -y @bendechrai/agentboard mcp`, or, when `--mcp-command
+  <executable>` is given, `{"command": "<executable>", "args": ["mcp"]}`;
+- `claude-hooks`: the Claude Code hooks of board-harness-hooks, in
+  `.claude/settings.json`;
+- `codex`: an `agentboard` MCP server block in `.codex/config.toml`;
+- `cursor`: `.cursor/rules/agentboard.mdc`, an always-applied Cursor rule,
+  and an `agentboard` entry under `mcpServers` in `.cursor/mcp.json`;
+- `gemini`: a managed block in `GEMINI.md`, created if absent, and an
+  `agentboard` entry under `mcpServers` in `.gemini/settings.json`;
+- `copilot`: a managed block in `.github/copilot-instructions.md`, created
+  if absent.
+The MCP entries of `codex`, `cursor` and `gemini` follow "Harness MCP
+entries".
+The `claude`, `agents-md`, `cursor`, `gemini` and `copilot` text SHALL state the rules an agent must never
+break (always pass an actor; claim before working; hand off or block with a
+comment before stopping; never mark completion on the board instead of in
+the tasks file; promote `DECISION:` comments before closing) and SHALL
+direct the agent to `agentboard help agents` for everything else. With no
+`--target`, the command SHALL select `claude` and `claude-hooks` when
+`.claude/` exists, `agents-md` when `AGENTS.md` exists, `openspec` when
+`openspec/config.yaml` exists, `codex` when `.codex/` exists, `cursor` when
+`.cursor/` exists, `gemini` when `GEMINI.md` or `.gemini/` exists and
+`copilot` when `.github/copilot-instructions.md` exists, SHALL never
+auto-select `mcp-json`, and SHALL report each selected target and the
+reason. When nothing is selected and stdin and stdout are both terminals
+(and `--json` is not given), it SHALL list the targets numbered and ask
+which to create, as a comma-separated list of numbers or names; an empty
+answer or an unknown token SHALL exit 1 listing the targets and write
+nothing, and each chosen target is reported as selected by the prompt.
+When nothing is selected and the session is not interactive it SHALL exit 1
+listing the targets, as before. `--hooks-strict` SHALL write the hooks in
+strict mode (see board-harness-hooks) and has no effect without
+`claude-hooks`. Giving `--mcp-command` SHALL select the
+`mcp-json` target in addition to the explicit or auto-detected ones, and
+the output SHALL name `--mcp-command` as the reason. An empty
+`--mcp-command` value or one containing a newline SHALL exit 1 with reason
+`usage` and write nothing. The command SHALL NOT require a board and
+SHALL NOT run git commands that modify anything. `init` SHALL end its
+output with a line suggesting `agentboard agents install`.
+
+#### Scenario: Install the Claude skill
+- **WHEN** `agentboard agents install --target claude` runs in a project with no `.claude/skills/agentboard`
+- **THEN** `.claude/skills/agentboard/SKILL.md` exists with frontmatter name `agentboard`, the five rules, the text `agentboard help agents`, and the guidance version marker
+
+#### Scenario: Auto-detection
+- **WHEN** `agentboard agents install` runs in a project that has `.claude/` and `openspec/config.yaml` but no `AGENTS.md`
+- **THEN** the `claude` and `openspec` targets are installed, `agents-md` and `mcp-json` are not, and the output names each selected target and why
+
+#### Scenario: Bare project on a terminal
+- **WHEN** `agentboard agents install` runs on a terminal in a project with no `.claude/`, `AGENTS.md`, `openspec/config.yaml` or other detected target, and the answer is `1,3`
+- **THEN** exactly the first and third listed targets are installed and the output names the prompt as the reason
+
+#### Scenario: Bare project, empty answer
+- **WHEN** the same command runs and the answer is empty
+- **THEN** nothing is written and it exits 1 listing the targets
+
+#### Scenario: Bare project without a terminal
+- **WHEN** the same command runs with stdin from `/dev/null`
+- **THEN** it does not prompt, exits 1 listing the targets, and writes nothing
+
+#### Scenario: Reinstall is idempotent
+- **WHEN** `agents install` runs twice with the same targets and version
+- **THEN** the second run changes no file byte and reports each target as up to date
+
+#### Scenario: Local MCP command
+- **WHEN** `agentboard agents install --mcp-command agentboard` runs in a project with no `.mcp.json`
+- **THEN** `.mcp.json` contains `mcpServers.agentboard` equal to `{"command": "agentboard", "args": ["mcp"]}` and the output names `mcp-json` as selected by `--mcp-command`
+
+### Requirement: Installed guidance never clobbers user content
+Each target SHALL own only its marked region: the whole of `SKILL.md` only
+when it carries the `<!-- agentboard-guidance: v<N> -->` marker; the text
+between `<!-- agentboard:start v<N> -->` and `<!-- agentboard:end -->` in
+`AGENTS.md`; `guidance` list entries beginning with `agentboard:` in
+`openspec/config.yaml`; the `mcpServers.agentboard` key in `.mcp.json`, `.cursor/mcp.json` and
+`.gemini/settings.json`; hook entries of `.claude/settings.json` whose
+command ends with `# agentboard-hooks: v<N>`; the text between
+`# agentboard:start v<N>` and `# agentboard:end` in `.codex/config.toml`; the
+whole of `.cursor/rules/agentboard.mdc` only when it carries the
+`<!-- agentboard-guidance: v<N> -->` marker; and the same `AGENTS.md`
+markers in `GEMINI.md` and `.github/copilot-instructions.md`.
+In every markdown, TOML and text file, everything outside the owned region SHALL be
+preserved byte for byte. In `openspec/config.yaml` and every JSON file, which
+are rewritten through a YAML or JSON serializer, every key, value, entry,
+comment and their order outside the owned entries SHALL be preserved, while
+insignificant formatting (indentation, quoting style) MAY be normalized. A `SKILL.md` or `agentboard.mdc` at the target path without the marker, a
+malformed marker pair in `AGENTS.md`, `GEMINI.md`, the copilot file or
+`config.toml`, a `[mcp_servers.agentboard]` table in `config.toml` outside
+the markers, a `.claude/settings.json` that is not valid JSON or whose
+`hooks` value has an unexpected shape, a non-list value at a `guidance` key,
+or an existing `mcpServers.agentboard` entry that is not a managed entry
+(see "Managed MCP entry") SHALL cause that target to be refused with exit 1 and a message naming
+the file, unless `--force` is given, and other targets SHALL still be
+processed.
+
+#### Scenario: User content in AGENTS.md survives
+- **WHEN** `AGENTS.md` contains user text before and after an existing managed block and `agents install --target agents-md` runs with a newer guidance version
+- **THEN** only the text between the markers changes and the user text is byte-identical
+
+#### Scenario: OpenSpec config comments survive
+- **WHEN** `openspec/config.yaml` is the commented template OpenSpec generates and `agents install --target openspec` runs
+- **THEN** the file gains the agentboard guidance entries and every original comment line is still present in order
+
+#### Scenario: Existing settings and hooks survive
+- **WHEN** `.claude/settings.json` has `permissions` and a user `PreToolUse` hook and `agents install --target claude-hooks` runs
+- **THEN** the file keeps every key and the user hook in order and gains only the agentboard hook entries
+
+#### Scenario: Foreign Codex table is refused
+- **WHEN** `.codex/config.toml` already has a hand-written `[mcp_servers.agentboard]` table outside the markers
+- **THEN** `agents install --target codex` exits 1 naming the file, leaves it unchanged and still processes other targets
+
+#### Scenario: Foreign Cursor rule is refused
+- **WHEN** `.cursor/rules/agentboard.mdc` exists without the marker
+- **THEN** `agents install --target cursor` refuses that file, and with `--force` replaces it
+
+#### Scenario: Foreign skill file is not overwritten
+- **WHEN** `.claude/skills/agentboard/SKILL.md` exists without the agentboard marker
+- **THEN** `agents install --target claude` exits 1 naming the file and leaves it unchanged
+
+### Requirement: Checking installed guidance
+`agentboard agents check` SHALL inspect every target, including
+`claude-hooks`, `codex`, `cursor`, `gemini` and `copilot`, that has an
+agentboard marker or managed entry in the current working tree and report
+each as `current`, `stale` (installed with a different guidance version) or
+`modified` (the managed text differs from what its recorded version renders,
+or its version or markers cannot be read). It SHALL exit 0 when
+all found targets are current, and 1 otherwise, so it can run in a
+project's own checks. With `--json` it SHALL print an array of
+`{target, path, state, installedVersion, currentVersion}`.
+
+#### Scenario: Hand-edited hook is modified
+- **WHEN** an installed agentboard hook command in `.claude/settings.json` is edited but keeps its marker
+- **THEN** `agents check` reports `claude-hooks` as `modified` and exits 1
+
+#### Scenario: Missing hook is modified
+- **WHEN** the `Stop` agentboard hook is deleted but the other two remain
+- **THEN** `agents check` reports `claude-hooks` as `modified`
+
+#### Scenario: Stale skill after upgrade
+- **WHEN** the skill was installed with guidance version 1 and the running CLI has guidance version 2
+- **THEN** `agents check` reports the `claude` target as `stale` and exits 1
+
+## ADDED Requirements
+
+### Requirement: Harness MCP entries
+The `agentboard` MCP entries written for `codex` (`[mcp_servers.agentboard]`
+with `command` and `args`), `cursor` and `gemini` SHALL carry the same
+command and args as the `.mcp.json` entry would (the default `npx` entry,
+or `--mcp-command`), SHALL be managed under the rules of "Managed MCP
+entry", and `--mcp-command` SHALL update them without `--force`. An
+unmanaged entry SHALL be refused as `entry-differs`. `agents check` SHALL
+report them like the `.mcp.json` entry.
+
+#### Scenario: Local command reaches every harness
+- **WHEN** `agentboard agents install --target codex --target cursor --target gemini --mcp-command agentboard` runs
+- **THEN** each of the three MCP entries runs `agentboard` with args `mcp`
+
+#### Scenario: Unmanaged Gemini entry is refused
+- **WHEN** `.gemini/settings.json` has `mcpServers.agentboard` with an extra `env` key
+- **THEN** the `gemini` target is refused as `entry-differs` and the file is unchanged
+
+### Requirement: Harness targets are verified in a sandbox project
+No harness target SHALL ship until its verification passes in a scratch
+project: a temporary directory outside the repository, initialised as a git
+repository, in which the built CLI is run for real (not through mocks of
+the filesystem). For each of `claude-hooks`, `codex`, `cursor`, `gemini`
+and `copilot` the verification SHALL cover a fresh install, `agents check`
+reporting `current`, a second install changing no byte, preservation of
+pre-existing user content, refusal of foreign content without `--force`,
+and `stale` and `modified` detection. Where the harness CLI is installed
+the verification SHALL also run a smoke test that the harness loads the
+written configuration without error, and SHALL report the target as
+`skipped (harness not installed)` otherwise, never as passed.
+
+#### Scenario: Sandbox install and check
+- **WHEN** the sandbox suite installs each target into a fresh temporary project
+- **THEN** every expected file exists, `agents check --json` lists each target `current`, and the temporary project is removed afterwards
+
+#### Scenario: Sandbox idempotency
+- **WHEN** the sandbox suite installs a second time
+- **THEN** every file in the project is byte-identical to the first run's result
+
+#### Scenario: Sandbox refusal
+- **WHEN** the sandbox suite pre-creates a foreign file or key for each target
+- **THEN** each target is refused without `--force`, its file is byte-identical afterwards, and `--force` replaces it
+
+#### Scenario: Harness smoke test
+- **WHEN** the `claude` CLI is on the path and `claude-hooks` is installed in the sandbox
+- **THEN** the CLI starts a session in the sandbox without reporting a settings error, and the same holds for `codex` and `gemini` with their MCP config; a missing harness CLI is reported as skipped
+
+#### Scenario: Smoke test never reaches a model
+- **WHEN** a smoke test runs
+- **THEN** it uses only commands that load configuration and exit (for example listing MCP servers) and makes no model request
