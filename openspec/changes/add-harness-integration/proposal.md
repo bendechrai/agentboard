@@ -30,9 +30,9 @@ install`, and `init` only prints a hint.
 - A verification requirement: every target is exercised in a scratch
   project (install, check, idempotency, refusal, and a harness smoke test
   where the harness CLI exists) before it ships.
-- **BREAKING (minor, pre-1.0):** auto-detection with `.claude/` now also
-  installs `claude-hooks`, which makes `agents install` modify
-  `.claude/settings.json`. Hooks are warn-only unless `--hooks-strict`.
+- New neutral `--command <executable>` flag sets the executable for MCP
+  entries and hooks; `--mcp-command` stays as a deprecated alias.
+- `claude-hooks` is opt-in (`--target claude-hooks`), never auto-selected.
 
 ## Capabilities
 

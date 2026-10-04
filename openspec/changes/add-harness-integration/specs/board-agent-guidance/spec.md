@@ -12,7 +12,7 @@ into the host project, which a tool call from any agent must not do.
 - **THEN** no tool named `board_help` is listed
 
 ### Requirement: Installing guidance into a host project
-`agentboard agents install [--target <t>]... [--mcp-command <executable>]
+`agentboard agents install [--target <t>]... [--command <executable>]
 [--hooks-strict] [--force]` SHALL write agent
 guidance into the root of the current working tree (the output of
 `git rev-parse --show-toplevel`, or the current directory outside git),
@@ -28,7 +28,7 @@ where `<t>` is one of:
   `tasks.md` in the implementing PR; archive: no open tickets may remain
   for the change, run `close-merged` first);
 - `mcp-json`: an `agentboard` entry under `mcpServers` in `.mcp.json`
-  running `npx -y @bendechrai/agentboard mcp`, or, when `--mcp-command
+  running `npx -y @bendechrai/agentboard mcp`, or, when `--command
   <executable>` is given, `{"command": "<executable>", "args": ["mcp"]}`;
 - `claude-hooks`: the Claude Code hooks of board-harness-hooks, in
   `.claude/settings.json`;
@@ -46,12 +46,13 @@ break (always pass an actor; claim before working; hand off or block with a
 comment before stopping; never mark completion on the board instead of in
 the tasks file; promote `DECISION:` comments before closing) and SHALL
 direct the agent to `agentboard help agents` for everything else. With no
-`--target`, the command SHALL select `claude` and `claude-hooks` when
+`--target`, the command SHALL select `claude` when
 `.claude/` exists, `agents-md` when `AGENTS.md` exists, `openspec` when
 `openspec/config.yaml` exists, `codex` when `.codex/` exists, `cursor` when
 `.cursor/` exists, `gemini` when `GEMINI.md` or `.gemini/` exists and
 `copilot` when `.github/copilot-instructions.md` exists, SHALL never
-auto-select `mcp-json`, and SHALL report each selected target and the
+auto-select `mcp-json` or `claude-hooks` (hooks are opt-in with `--target
+claude-hooks`), and SHALL report each selected target and the
 reason. When nothing is selected and stdin and stdout are both terminals
 (and `--json` is not given), it SHALL list the targets numbered and ask
 which to create, as a comma-separated list of numbers or names; an empty
@@ -60,10 +61,13 @@ nothing, and each chosen target is reported as selected by the prompt.
 When nothing is selected and the session is not interactive it SHALL exit 1
 listing the targets, as before. `--hooks-strict` SHALL write the hooks in
 strict mode (see board-harness-hooks) and has no effect without
-`claude-hooks`. Giving `--mcp-command` SHALL select the
+`claude-hooks`. Giving `--command` SHALL select the
 `mcp-json` target in addition to the explicit or auto-detected ones, and
-the output SHALL name `--mcp-command` as the reason. An empty
-`--mcp-command` value or one containing a newline SHALL exit 1 with reason
+the output SHALL name `--command` as the reason. `--mcp-command <executable>` SHALL remain a deprecated alias of
+`--command`, behaving identically and printing a one-line deprecation notice
+on stderr. `--command` sets the executable for every MCP entry and for the
+hooks. An empty
+`--command` value or one containing a newline SHALL exit 1 with reason
 `usage` and write nothing. The command SHALL NOT require a board and
 SHALL NOT run git commands that modify anything. `init` SHALL end its
 output with a line suggesting `agentboard agents install`.
@@ -88,13 +92,21 @@ output with a line suggesting `agentboard agents install`.
 - **WHEN** the same command runs with stdin from `/dev/null`
 - **THEN** it does not prompt, exits 1 listing the targets, and writes nothing
 
+#### Scenario: Hooks are opt-in
+- **WHEN** `agentboard agents install` runs in a project that has `.claude/`
+- **THEN** `claude` is installed and `claude-hooks` is not, and `.claude/settings.json` is not created or modified
+
+#### Scenario: Deprecated alias
+- **WHEN** `agentboard agents install --mcp-command agentboard` runs
+- **THEN** the result is identical to `--command agentboard` and stderr has a deprecation line naming `--command`
+
 #### Scenario: Reinstall is idempotent
 - **WHEN** `agents install` runs twice with the same targets and version
 - **THEN** the second run changes no file byte and reports each target as up to date
 
 #### Scenario: Local MCP command
-- **WHEN** `agentboard agents install --mcp-command agentboard` runs in a project with no `.mcp.json`
-- **THEN** `.mcp.json` contains `mcpServers.agentboard` equal to `{"command": "agentboard", "args": ["mcp"]}` and the output names `mcp-json` as selected by `--mcp-command`
+- **WHEN** `agentboard agents install --command agentboard` runs in a project with no `.mcp.json`
+- **THEN** `.mcp.json` contains `mcpServers.agentboard` equal to `{"command": "agentboard", "args": ["mcp"]}` and the output names `mcp-json` as selected by `--command`
 
 ### Requirement: Installed guidance never clobbers user content
 Each target SHALL own only its marked region: the whole of `SKILL.md` only
@@ -175,13 +187,13 @@ project's own checks. With `--json` it SHALL print an array of
 The `agentboard` MCP entries written for `codex` (`[mcp_servers.agentboard]`
 with `command` and `args`), `cursor` and `gemini` SHALL carry the same
 command and args as the `.mcp.json` entry would (the default `npx` entry,
-or `--mcp-command`), SHALL be managed under the rules of "Managed MCP
-entry", and `--mcp-command` SHALL update them without `--force`. An
+or `--command`), SHALL be managed under the rules of "Managed MCP
+entry", and `--command` SHALL update them without `--force`. An
 unmanaged entry SHALL be refused as `entry-differs`. `agents check` SHALL
 report them like the `.mcp.json` entry.
 
 #### Scenario: Local command reaches every harness
-- **WHEN** `agentboard agents install --target codex --target cursor --target gemini --mcp-command agentboard` runs
+- **WHEN** `agentboard agents install --target codex --target cursor --target gemini --command agentboard` runs
 - **THEN** each of the three MCP entries runs `agentboard` with args `mcp`
 
 #### Scenario: Unmanaged Gemini entry is refused

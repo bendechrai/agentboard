@@ -145,7 +145,7 @@ The `claude-hooks` target SHALL merge three hook entries into the project's
 matcher `Edit|Write|MultiEdit|NotebookEdit` running `hook pre-tool-use`.
 Each is a `command` hook with a `timeout` of at most 5 seconds and a command
 ending in the comment `# agentboard-hooks: v<N>`, which marks it as owned.
-The executable is `npx -y @bendechrai/agentboard`, or the `--mcp-command`
+The executable is `npx -y @bendechrai/agentboard`, or the `--command`
 executable when given. The hooks SHALL be in warn mode unless `agents
 install --hooks-strict` is given, which appends `--strict`; reinstalling in
 the other mode SHALL update the owned entries without `--force`. Existing
@@ -165,5 +165,5 @@ SHALL add no duplicate entry.
 - **THEN** the second run changes no byte and the file has exactly three agentboard entries
 
 #### Scenario: Local executable
-- **WHEN** `agents install --target claude-hooks --mcp-command agentboard` runs
+- **WHEN** `agents install --target claude-hooks --command agentboard` runs
 - **THEN** the hook commands begin `agentboard hook`

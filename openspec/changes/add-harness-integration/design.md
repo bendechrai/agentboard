@@ -44,16 +44,19 @@ without hooks; the release workflow; a general TOML library.
    exists outside the markers (a line scan for the header). Avoids a
    dependency and preserves user bytes. Alternative: a TOML library that
    round-trips comments; none is dependency-free and comment-preserving.
-6. **Separate `claude-hooks` target**, auto-selected beside `claude`, so
-   `--target claude` alone still writes only the skill, and users can skip
-   hooks with an explicit `--target` list.
-7. **Hook executable.** Default `npx -y @bendechrai/agentboard hook ...`;
-   with `--mcp-command <exe>` the hooks run `<exe> hook ...`. `npx` adds
+6. **Separate, opt-in `claude-hooks` target**, never auto-selected, so
+   `agents install` never edits `.claude/settings.json` unless asked with
+   `--target claude-hooks`. Alternative: auto-select beside `claude`;
+   rejected because hooks change agent behavior.
+7. **Hook executable, set by `--command`.** `--command` is the neutral name
+   for what `--mcp-command` did; `--mcp-command` remains a deprecated alias.
+   Default `npx -y @bendechrai/agentboard hook ...`;
+   with `--command <exe>` the hooks run `<exe> hook ...`. `npx` adds
    hundreds of milliseconds per call, which matters for `PreToolUse`, so the
    README recommends a local executable when hooks are enabled.
 8. **Prompts only on a real terminal** (stdin and stdout TTY, no `--json`);
    anything else keeps today's non-interactive behavior, so scripts and CI
-   do not change. `init` defaults its question to No; the bare-project
+   do not change. `init` defaults its question to Yes (Enter installs); the bare-project
    prompt takes an explicit list and treats empty as none.
 9. **Verification is part of the product.** A sandbox suite creates a temp
    project per target, runs the built CLI for real and asserts files, `check`,
@@ -74,7 +77,7 @@ without hooks; the release workflow; a general TOML library.
   Never inferred from the OS user, matching board-cli.
 - **Work not tied to a ticket** (quick fixes, docs) -> the warning says
   carrying on is fine, strict mode is for projects that mean it, and
-  `--target` without `claude-hooks` or `AGENTBOARD_HOOKS=off` removes it.
+  not installing `claude-hooks` or `AGENTBOARD_HOOKS=off` removes it.
 - **Subagents and worktrees** -> they inherit the environment, so share the
   actor and its claims (a subagent edit counts as the parent's claimed
   work); board discovery uses the payload `cwd`, which finds the board
@@ -85,8 +88,6 @@ without hooks; the release workflow; a general TOML library.
 - **Harness config formats drift** (Codex, Cursor, Gemini change often) ->
   smoke tests in the sandbox suite and a recorded-doc date in each target's
   rendered text; a failing smoke test blocks release.
-- **Auto-selecting `claude-hooks` changes what `agents install` touches** ->
-  warn-only default, called out as BREAKING (minor) in the proposal.
 
 ## Migration Plan
 
@@ -96,7 +97,4 @@ three marked entries, or install with an explicit `--target` list.
 
 ## Open Questions
 
-- Should `--mcp-command` be renamed (for example `--command`) now that it
-  also sets the hook executable? Keeping it avoids a breaking rename; a
-  later alias is possible without changing these specs.
 - An ADR (0012) recording decisions 2 and 3 is planned in task group 1.
