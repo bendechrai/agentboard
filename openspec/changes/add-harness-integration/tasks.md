@@ -36,7 +36,7 @@ archiving whichever lands second.
 
 ## 4. Other harness targets (`guidance/harness-targets`)
 
-- [ ] 4.1 Test author: tests for `codex`, `cursor`, `gemini` and `copilot` install, auto-detection, refusal (foreign TOML table, markerless mdc, unmanaged MCP entry), `--command` reaching each MCP entry, check states, and "Harness MCP entries". Verify: tests are red, pre-push subset passes
+- [ ] 4.1 Test author: tests for `codex`, `cursor`, `antigravity` and `copilot` install, auto-detection, the printed `codex mcp add` / `agy mcp add` commands, `--global` (explicit target required, scratch `CODEX_HOME` and `HOME`, other entries untouched), refusal (foreign TOML table, markerless mdc, unmanaged MCP entries), `--command` reaching each MCP entry, the 4096 byte `AGENTS.md` block and the 24 KB warning, check states, and "Harness MCP entries". Verify: tests are red, pre-push subset passes
 - [ ] 4.2 Implementer: implement the four targets with the existing block, owned-key and refusal helpers; the rendered rule text states the five rules and points to `agentboard help agents`. Verify: group 4 tests pass; every `agentboard ` line in the new texts parses against the registry
 - [ ] 4.3 Reviewer: check no user bytes change outside owned regions in any target. Verify: report with verdict
 
@@ -48,9 +48,10 @@ archiving whichever lands second.
 
 ## 6. Sandbox verification (`guidance/sandbox-verification`)
 
-- [ ] 6.1 Test author: write the sandbox suite from "Harness targets are verified in a sandbox project": per target in a fresh `git init` temp project, real built CLI, install, `check --json`, second install byte comparison, pre-existing user content, foreign content refusal and `--force`, stale and modified; plus smoke tests (`claude`, `codex`, `gemini` config-loading commands, no model calls) that skip with an explicit message when the CLI is absent. Verify: suite runs red against stubs and skips cleanly without harness CLIs
-- [ ] 6.2 Implementer: make the suite green and wire it into `make check` (smoke tests opt out in `make check-in-docker` where the harness CLIs are absent). Verify: suite passes locally; the temp directories are gone afterwards; skipped smoke tests are listed in the output
-- [ ] 6.3 Reviewer: run each target by hand in a throwaway project with each harness CLI that is installed, confirm the harness loads the config, and record the harness versions in the PR description. Verify: report with a verdict and the versions
+- [ ] 6.1 Test author: write the sandbox suite from "Harness targets are verified in a sandbox project" and "Harness tests never reach a model or a real home": per target in a fresh `git init` temp project, real built CLI, install, `check --json`, second install byte comparison, pre-existing user content, foreign content refusal and `--force`, stale and modified, config-format validation, whether Codex reads `AGENTS.md`, and `--global` edits against a scratch `HOME` and `CODEX_HOME`. Add the guard that fails the suite when the real `~/.codex`, `~/.gemini`, `~/.cursor` or `~/.claude` changes (hash and mtime snapshot before and after). Verify: suite runs red against stubs; the guard test fails when a deliberate write to a fake real-home path is injected
+- [ ] 6.2 Test author: write the smoke tests with only non-model commands (`claude mcp list`, `codex mcp list`, `codex --version`, `agy mcp list` against a scratch `HOME`, `agy --help`, `cursor-agent --help`) that skip with `skipped (harness not installed)` when the binary is missing, and the manual live tests behind `AGENTBOARD_LIVE_HARNESS` (cursor-agent with `--model auto`, one short prompt; agy one short prompt; codex exec one short prompt; claude allowed by default). Verify: with the flag unset a test spy on process spawning shows no model-capable invocation of `codex exec`, `agy -p` or `cursor-agent`; Copilot has file-level tests only
+- [ ] 6.3 Implementer: make the suite green and wire it into `make check` (smoke tests are skipped in `make check-in-docker` where the harness CLIs are absent). Verify: suite passes locally with claude 2.1.289, cursor-agent 2026.10.01, codex 0.160.0 and agy 1.2.17 installed; skipped tests are listed in the output; temp directories are gone afterwards; the real home config files are unchanged
+- [ ] 6.4 Reviewer: run each target by hand in a throwaway project with each installed harness CLI and a scratch HOME, confirm the harness loads the config, and run the opt-in live tests once at most per harness. Verify: report with a verdict and the harness versions in the PR description
 
 ## 7. Docs and status (`docs/harness-integration`)
 
@@ -60,4 +61,4 @@ archiving whichever lands second.
 
 ## 8. Integration
 
-- [ ] 8.1 In a clean temporary project with `.claude/`, `AGENTS.md` and `.codex/`, run `agentboard init --agents`, `agents check`, one simulated session (`session-start`, an unclaimed `Edit` payload, a `stop` with a held ticket) and confirm warn-only behavior end to end. Verify: transcript attached to the final PR; `make check` and `make check-floor` pass
+- [ ] 8.1 In a clean temporary project with `.claude/`, `AGENTS.md` and `.codex/` (with a scratch `HOME` and `CODEX_HOME`), run `agentboard init --agents`, `agents check`, one simulated session (`session-start`, an unclaimed `Edit` payload, a `stop` with a held ticket) and confirm warn-only behavior end to end. Verify: transcript attached to the final PR; `make check` and `make check-floor` pass

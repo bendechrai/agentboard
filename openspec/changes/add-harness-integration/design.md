@@ -38,12 +38,25 @@ without hooks; the release workflow; a general TOML library.
    whole entry is owned if its command ends with the marker; `check` renders
    the three expected commands for the recorded version and mode and
    compares.
-5. **TOML by marked block, not parse.** `.codex/config.toml` gets a block
-   between `# agentboard:start v<N>` and `# agentboard:end` holding
+5. **Global MCP config is never edited by default.** Codex
+   (`$CODEX_HOME/config.toml`) and Antigravity (`~/.gemini/config/mcp_config.json`)
+   keep MCP servers in the user's global config, shared by all projects.
+   `agents install` prints the exact `codex mcp add` / `agy mcp add` command
+   instead, and edits the file only for an explicit `--target` with `--global`.
+   Alternative: write it silently; rejected as surprising and unsafe.
+   Under `--global`, Codex's `config.toml` gets a block between `# agentboard:start v<N>` and `# agentboard:end` holding
    `[mcp_servers.agentboard]`. Install refuses when a table of that name
    exists outside the markers (a line scan for the header). Avoids a
    dependency and preserves user bytes. Alternative: a TOML library that
    round-trips comments; none is dependency-free and comment-preserving.
+5a. **Antigravity reuses the `AGENTS.md` block.** `agy` reads `AGENTS.md` or
+   `GEMINI.md` workspace rules from the cwd up to the repo root (24 KB per file,
+   20000 tokens in total), so no new rules file is written and the block is
+   capped at 4096 bytes with a check warning for an oversized `AGENTS.md`.
+   `.agents/skills.json` and `.agents/plugins.json` are not written: `agy
+   --help` documents no schema for them (see Open Questions). The
+   global MCP file format is confirmed by the sandbox suite with `agy mcp add`
+   into a scratch HOME before the `--global` edit is implemented.
 6. **Separate, opt-in `claude-hooks` target**, never auto-selected, so
    `agents install` never edits `.claude/settings.json` unless asked with
    `--target claude-hooks`. Alternative: auto-select beside `claude`;
@@ -58,11 +71,17 @@ without hooks; the release workflow; a general TOML library.
    anything else keeps today's non-interactive behavior, so scripts and CI
    do not change. `init` defaults its question to Yes (Enter installs); the bare-project
    prompt takes an explicit list and treats empty as none.
-9. **Verification is part of the product.** A sandbox suite creates a temp
-   project per target, runs the built CLI for real and asserts files, `check`,
-   idempotency and refusal. Harness smoke tests use config-loading commands
-   only (for example `claude mcp list`, `codex mcp list`), never a model
-   call, and are reported as skipped, not passed, when the CLI is absent.
+9. **Verification is part of the product, and free of model calls.** A
+   sandbox suite creates a temp project per target, runs the built CLI for
+   real and asserts files, `check`, idempotency, refusal and config format.
+   Smoke tests use config-loading commands only (`claude mcp list`, `codex mcp
+   list`, `codex --version`, `agy mcp list`, `--help`), run with HOME and
+   CODEX_HOME in the sandbox, and are skipped, not passed, when the binary is
+   absent. A guard fails the suite on any change to the real `~/.codex`,
+   `~/.gemini`, `~/.cursor` or `~/.claude`. Live model tests are manual, behind
+   `AGENTBOARD_LIVE_HARNESS`; cursor-agent (about 25 free headless runs, use
+   `--model auto`) and agy (about 5 requests, then a week) have tiny quotas,
+   and `codex exec` costs money, so none runs by default; `claude` may.
 
 ## Risks / Trade-offs
 
@@ -85,9 +104,15 @@ without hooks; the release workflow; a general TOML library.
   its own `AGENTBOARD_ACTOR`.
 - **Editing the user's settings.json** -> merge only owned entries, refuse
   invalid JSON or an unexpected `hooks` shape, preserve everything else.
-- **Harness config formats drift** (Codex, Cursor, Gemini change often) ->
-  smoke tests in the sandbox suite and a recorded-doc date in each target's
-  rendered text; a failing smoke test blocks release.
+- **Harness config formats drift** (Codex, Cursor, Antigravity change often)
+  -> config-format validation and non-model smoke tests in the sandbox suite;
+  a failure blocks release.
+- **Editing a user's global config** -> never by default; `--global` plus an
+  explicit target, marked and refused when foreign, tests run on a scratch
+  HOME with a guard on the real one.
+- **Antigravity may prefer `GEMINI.md` over `AGENTS.md`** -> the sandbox suite
+  records which `agy` reads when both exist; the block is small enough for
+  either.
 
 ## Migration Plan
 
@@ -97,4 +122,9 @@ three marked entries, or install with an explicit `--target` list.
 
 ## Open Questions
 
+- Antigravity project registration (`.agents/skills.json`,
+  `.agents/plugins.json`) is left out because `--help` shows no schema; add it
+  in a follow-up if the schema is documented.
+- Whether Codex reads `AGENTS.md` is confirmed in the sandbox suite; if it does
+  not, the `codex` target only prints its command and the spec changes.
 - An ADR (0012) recording decisions 2 and 3 is planned in task group 1.
