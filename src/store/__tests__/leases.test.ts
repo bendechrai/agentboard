@@ -476,7 +476,7 @@ INSERT INTO meta (key, value) VALUES ('schema_version', '1'), ('last_position', 
     expect(board.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
       value: String(CACHE_SCHEMA_VERSION),
     });
-    expect(CACHE_SCHEMA_VERSION).toBe(2);
+    expect(CACHE_SCHEMA_VERSION).toBe(3);
     // Cursors are dropped: entries may be delivered again, none is skipped.
     expect(board.db.prepare('SELECT * FROM cursors').all()).toEqual([]);
     expect(board.db.prepare('SELECT * FROM cursor_seen').all()).toEqual([]);
@@ -489,6 +489,43 @@ INSERT INTO meta (key, value) VALUES ('schema_version', '1'), ('last_position', 
     expect(waiterRows(board).map((r) => r.actor)).toEqual(['a']);
     expect(dumpCache(board.db)).toBe(freshDump(events));
     expect(checkCache(board).ok).toBe(true);
+  });
+});
+
+describe('cache without the watermark is rebuilt (spec scenario)', () => {
+  it('drops a version 2 cache and rebuilds it with the grant watermark', () => {
+    const dir = tempBoard();
+    const events = join(dir, 'events');
+    put(
+      events,
+      ev(P.create(T1), 'orch', 0),
+      L.leased('h', 1000, 1_800_000),
+      L.join('b', 2000, 600_000),
+    );
+    const lapse = 1000 + 120_000 + 60_000 + 1;
+    openB(dir).close();
+    // A version 2 cache, as task group 1 left it: the lease and queue
+    // tables, every event recorded, no grant_watermark row, and a cursor.
+    const old = new DatabaseSync(join(dir, CACHE_FILE));
+    old.exec(`UPDATE meta SET value = '2' WHERE key = 'schema_version';
+      DELETE FROM meta WHERE key = 'grant_watermark';
+      INSERT INTO cursors (actor, last_wall, last_counter, last_actor, last_hash)
+        VALUES ('b', 0, 0, 'orch', 'x');`);
+    old.close();
+
+    const board = openB(dir);
+    expect(CACHE_SCHEMA_VERSION).toBe(3);
+    expect(board.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
+      value: '3',
+    });
+    expect(board.db.prepare('SELECT * FROM cursors').all()).toEqual([]);
+    expect(board.db.prepare("SELECT value FROM meta WHERE key = 'grant_watermark'").get()).toEqual({
+      value: String(lapse),
+    });
+    expect(dumpCache(board.db)).toBe(freshDump(events));
+    // So the grant is written once the clock reaches the slot.
+    expect(catchUp(board, { now: lapse }).applied).toHaveLength(1);
+    expect(readTicket(board.db, T1)).toMatchObject({ assignee: 'b', queue: [] });
   });
 });
 
