@@ -177,10 +177,12 @@ So:
   second finds the file already present (writing identical bytes is a
   no-op); two machines write identical files, so `sync` merges them as
   one;
-- the fold accepts a `ticket.grant` only when its bytes equal the grant
-  it derives at that position, and rejects it `stale-grant` otherwise
-  (for example when a renew or a leave from another machine, with an
-  earlier wall, arrives after the grant was written);
+- the fold accepts a `ticket.grant` only when it equals, field by field,
+  the grant `dueGrant` derives at that position, and rejects it
+  `stale-grant` otherwise (for example when a renew or a leave from
+  another machine, with an earlier wall, arrives after the grant was
+  written); the comparison is structural because the fold stays
+  browser-safe and does not import the canonical encoder;
 - `agentboard` is a reserved actor: commands refuse `--as agentboard`
   and the fold treats any other kind written by it, or a grant written
   by anyone else, as malformed.
@@ -242,7 +244,10 @@ milliseconds, written by a new `config set <key> <value>` (duration
 form, 30 seconds to 10 minutes) and read by `config get`. The claim
 records its grace in its own body; a grant reads `queue.window` as folded
 at its position, which every writer computes identically. `config` is a
-setup command and not an MCP tool.
+setup command and not an MCP tool. A cache fold session loads the
+`board.*` settings from the cache rows when it starts, and a refold clears
+them, so a grant folded incrementally or in a refold always sees the
+setting in effect at its position.
 
 ### Clock skew tolerance
 `LEASE_SKEW_MS` is a constant of 60 seconds in the fold rules. On one

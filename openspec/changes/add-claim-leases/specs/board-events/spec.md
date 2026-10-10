@@ -66,11 +66,19 @@ malformed.
 Folding SHALL produce, per ticket: id, title, description, status, assignee,
 lease (null, or its requested ttl, expiresAt, the hash of the event that set
 it and whether it is confirmed), the waiting queue (in order, each waiter's
-actor, requested ttl and join event), labels, task reference or ad hoc reason, checklist with done flags, ordered comments (each
+actor, requested ttl and join event), availability (null, or when and by
+which event the ticket becomes or became available for a grant), labels,
+task reference or ad hoc reason, checklist with done flags, ordered comments (each
 with actor, timestamp and text), links, closed flag with its decision record
 path or explicit no-decision marker, `version` (the count of folded events
 that changed the ticket), and `updated_at` (the timestamp of the last such
-event). A `ticket.create` SHALL be the first event for its id; any other event
+event). Availability SHALL be derived after every applied event: for an
+unassigned ticket, the wall and hash of the latest applied
+`ticket.release` or `ticket.release.force` (null when there has been
+none); for a ticket held under a lease, the lease's `expiresAt` plus
+`LEASE_SKEW_MS` and the hash of the event that set the lease; for a ticket
+held without a lease, null. It SHALL appear as `available` in the ticket's
+`--json` document, because that document is the folded ticket. A `ticket.create` SHALL be the first event for its id; any other event
 for an unknown ticket id SHALL be reported as rejected with reason
 `unknown-ticket` and held aside. A second `ticket.create` for an existing id
 SHALL be rejected with reason `duplicate-create`. A `ticket.move` to a status

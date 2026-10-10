@@ -348,8 +348,7 @@ export function isTransitionAllowed(from: Status, to: Status, blockedFrom: Statu
  * `Availability` documents; no kind other than claim, renew, release,
  * forced release, assign, handoff and grant changes `lease`, and only join,
  * leave, grant, and an assign or handoff to a queued actor change `queue`.
- * So the assignee is never in `queue` at any fold position. Every applied event of these kinds counts
- * in `version` like any other.
+ * So the assignee is never in `queue` at any fold position.
  * - `ticket.link`: `task` sets `task` (replacing any earlier one) and clears
  *   `adhoc`; `pr` and `decision` append to `links`.
  * - `ticket.close`: `invalid-transition` if the ticket is already closed or
