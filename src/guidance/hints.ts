@@ -85,8 +85,10 @@ export const HINT_REASONS: readonly string[] = [
   'forbidden-host',
   'gh-missing',
   'git-missing',
+  'holder-changed',
   'id-too-short',
   'integrity',
+  'invalid-queue',
   'invalid-transition',
   'malformed-event',
   'malformed-task-ref',
@@ -104,9 +106,11 @@ export const HINT_REASONS: readonly string[] = [
   'not-found',
   'path-outside-tree',
   'port-in-use',
+  'queued',
   'read-only',
   'schema-mismatch',
   'secret-like',
+  'stale-grant',
   'streaming-command',
   'sync-conflict',
   'sync-failed',
@@ -146,8 +150,10 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'forbidden-host': 1,
   'gh-missing': 1,
   'git-missing': 1,
+  'holder-changed': 4,
   'id-too-short': 1,
   integrity: 5,
+  'invalid-queue': 4,
   'invalid-transition': 4,
   'malformed-event': 1,
   'malformed-task-ref': 1,
@@ -165,9 +171,11 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'not-found': 1,
   'path-outside-tree': 1,
   'port-in-use': 1,
+  queued: 4,
   'read-only': 1,
   'schema-mismatch': 5,
   'secret-like': 1,
+  'stale-grant': 4,
   'streaming-command': 1,
   'sync-conflict': 3,
   'sync-failed': 3,
@@ -358,6 +366,9 @@ export function hintStep(
  *   run `agentboard inbox --as <itself>`).
  * - `not-assignee`: step `show` with I.
  * - `checklist-index`: step `show` with I.
+ * - `holder-changed`, `invalid-queue`, `stale-grant`: step `show` with I
+ *   (for the current holder, queue and lease).
+ * - `queued`: step `show` with I (for the queue).
  * - `needs-task-link`: step `link` with I, `task`
  *   `<source>:<ref>#<item>`, A.
  *
@@ -653,6 +664,14 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     `only the assignee can do this; see who holds the ticket with ${h.step('show', [['id', h.id]])}`,
   'checklist-index': (h) =>
     `checklist lines are numbered from 0; see them with ${h.step('show', [['id', h.id]])}`,
+  'holder-changed': (h) =>
+    `the ticket is no longer held by that holder; see who holds it now with ${h.step('show', [['id', h.id]])}`,
+  'invalid-queue': (h) =>
+    `that queue change does not apply to the ticket as it stands; see its holder and queue with ${h.step('show', [['id', h.id]])}`,
+  'stale-grant': (h) =>
+    `that grant is no longer the one due; see the ticket's holder, lease and queue with ${h.step('show', [['id', h.id]])}`,
+  queued: (h) =>
+    `other actors are waiting for this ticket and have priority; see the queue with ${h.step('show', [['id', h.id]])}`,
   'needs-task-link': (h) =>
     `an ad hoc ticket cannot enter implementing until it names a planned task: ${h.step('link', [
       ['id', h.id],

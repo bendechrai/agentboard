@@ -16,8 +16,18 @@
 import type { JsonValue } from './json.js';
 import { compareHlc, type Hlc } from './hlc.js';
 import {
+  GRACE_DEFAULT_MS,
+  LEASE_GRACE_KEY,
+  LEASE_SKEW_MS,
+  QUEUE_WINDOW_KEY,
+  SETTING_MAX_MS,
+  SETTING_MIN_MS,
+  SYSTEM_ACTOR,
+  WINDOW_DEFAULT_MS,
   isKnownEvent,
   type BoardEvent,
+  type GrantAfter,
+  type TicketClaimEvent,
   type TicketGrantEvent,
   type Status,
   type TaskRef,
@@ -411,7 +421,7 @@ export function applyEvent(state: BoardState, input: FoldInput): ApplyOutcome {
     state.meta[event.body.key] = event.body.value;
     return { status: 'applied' };
   }
-  const reason = applyTicketEvent(state.tickets, hash, event);
+  const reason = applyTicketEvent(state, hash, event);
   if (reason !== null) {
     return {
       status: 'rejected',
@@ -426,10 +436,11 @@ export function applyEvent(state: BoardState, input: FoldInput): ApplyOutcome {
  * null when it was applied (and counted in the ticket's version).
  */
 function applyTicketEvent(
-  tickets: Record<string, Ticket>,
+  state: BoardState,
   hash: string,
   event: TicketEvent,
 ): RejectionReason | null {
+  const { tickets } = state;
   const ticket: Ticket | undefined = tickets[event.ticket];
   if (event.kind === 'ticket.create') {
     if (ticket !== undefined) {
@@ -441,12 +452,122 @@ function applyTicketEvent(
   if (ticket === undefined) {
     return 'unknown-ticket';
   }
-  const reason = applyToTicket(ticket, hash, event);
+  const reason = applyToTicket(ticket, hash, event, state.meta);
   if (reason === null) {
     ticket.version += 1;
     ticket.updatedAt = { ...event.ts };
+    updateAvailability(ticket, hash, event);
   }
   return reason;
+}
+
+/**
+ * Recomputes `available` after an applied event, as `Availability`
+ * documents. An unassigned ticket became so only by a release or a forced
+ * release, so it keeps the availability that event set until it is held
+ * again.
+ */
+function updateAvailability(ticket: Ticket, hash: string, event: TicketEvent): void {
+  if (ticket.assignee !== null) {
+    const { lease } = ticket;
+    ticket.available =
+      lease === null ? null : { at: lease.expiresAt + LEASE_SKEW_MS, event: lease.event };
+  } else if (event.kind === 'ticket.release' || event.kind === 'ticket.release.force') {
+    ticket.available = { at: event.ts.wall, event: hash };
+  }
+}
+
+/** Removes `actor` from `ticket.queue` when it is queued, keeping the order of the rest. */
+function dequeue(ticket: Ticket, actor: string): void {
+  ticket.queue = ticket.queue.filter((waiter) => waiter.actor !== actor);
+}
+
+/**
+ * The `ticket.claim` rules of `fold`, in order: a retried claim, the queue,
+ * a free ticket, then a takeover of an expired lease.
+ */
+function claim(ticket: Ticket, hash: string, event: TicketClaimEvent): RejectionReason | null {
+  const { actor, body } = event;
+  if (ticket.assignee === actor) {
+    return 'already-assigned';
+  }
+  if (ticket.queue.length > 0) {
+    return 'queued';
+  }
+  if (ticket.assignee !== null && !takesOver(ticket, event)) {
+    return 'already-assigned';
+  }
+  ticket.assignee = actor;
+  ticket.lease =
+    body.lease === undefined
+      ? null
+      : { ttl: body.lease.ttl, expiresAt: body.lease.expiresAt, event: hash, confirmed: false };
+  return null;
+}
+
+/**
+ * Whether a claim on a ticket held by another actor takes over its lease:
+ * `supersedes` names the current holder and lease generation exactly, and
+ * the claim's wall is at least the tolerance past that lease's expiry.
+ */
+function takesOver(ticket: Ticket, event: TicketClaimEvent): boolean {
+  const { supersedes } = event.body;
+  const { lease } = ticket;
+  return (
+    supersedes !== undefined &&
+    lease !== null &&
+    supersedes.holder === ticket.assignee &&
+    supersedes.expiresAt === lease.expiresAt &&
+    supersedes.event === lease.event &&
+    event.ts.wall >= lease.expiresAt + LEASE_SKEW_MS
+  );
+}
+
+/** Whether two grant events are equal field by field (equal canonical bytes once validated). */
+function sameGrant(a: TicketGrantEvent, b: TicketGrantEvent): boolean {
+  return (
+    a.v === b.v &&
+    a.kind === b.kind &&
+    a.ticket === b.ticket &&
+    a.actor === b.actor &&
+    a.ts.wall === b.ts.wall &&
+    a.ts.counter === b.ts.counter &&
+    a.ts.actor === b.ts.actor &&
+    a.body.to === b.body.to &&
+    a.body.ttl === b.body.ttl &&
+    a.body.window === b.body.window &&
+    sameAfter(a.body.after, b.body.after)
+  );
+}
+
+function sameAfter(a: GrantAfter, b: GrantAfter): boolean {
+  if ('released' in a) {
+    return 'released' in b && a.released === b.released;
+  }
+  return (
+    'lease' in b &&
+    a.lease.holder === b.lease.holder &&
+    a.lease.expiresAt === b.lease.expiresAt &&
+    a.lease.event === b.lease.event
+  );
+}
+
+/** Applies a `ticket.grant` equal to the derived one, else `stale-grant`. */
+function grant(
+  ticket: Ticket,
+  hash: string,
+  event: TicketGrantEvent,
+  meta: Readonly<Record<string, JsonValue>>,
+): RejectionReason | null {
+  const derived = dueGrant(ticket, meta);
+  if (derived === null || !sameGrant(derived, event)) {
+    return 'stale-grant';
+  }
+  const { to, ttl, window } = event.body;
+  ticket.assignee = to;
+  dequeue(ticket, to);
+  ticket.lease = { ttl, expiresAt: event.ts.wall + window, event: hash, confirmed: false };
+  return null;
 }
 
 function createTicket(event: TicketCreateEvent): Ticket {
@@ -488,6 +609,7 @@ function applyToTicket(
   ticket: Ticket,
   hash: string,
   event: Exclude<TicketEvent, TicketCreateEvent>,
+  meta: Readonly<Record<string, JsonValue>>,
 ): RejectionReason | null {
   const { actor, ts } = event;
   switch (event.kind) {
@@ -498,28 +620,62 @@ function applyToTicket(
       return moveTo(ticket, event.body.to);
     case 'ticket.assign':
       ticket.assignee = event.body.to;
+      ticket.lease = null;
+      dequeue(ticket, event.body.to);
       return null;
     case 'ticket.claim':
-      if (event.body.lease !== undefined || event.body.supersedes !== undefined) {
-        throw new Error('not implemented');
+      return claim(ticket, hash, event);
+    case 'ticket.renew':
+      if (ticket.assignee !== actor) {
+        return 'not-assignee';
       }
-      if (ticket.assignee !== null) {
-        return 'already-assigned';
-      }
-      ticket.assignee = actor;
+      ticket.lease = {
+        ttl: event.body.ttl,
+        expiresAt: event.body.expiresAt,
+        event: hash,
+        confirmed: true,
+      };
       return null;
     case 'ticket.release':
       if (ticket.assignee !== actor) {
         return 'not-assignee';
       }
       ticket.assignee = null;
+      ticket.lease = null;
       return null;
+    case 'ticket.release.force':
+      if (ticket.assignee !== event.body.holder) {
+        return 'holder-changed';
+      }
+      ticket.assignee = null;
+      ticket.lease = null;
+      return null;
+    case 'ticket.queue.join':
+      if (
+        ticket.assignee === actor ||
+        ticket.queue.some((waiter) => waiter.actor === actor) ||
+        (ticket.assignee === null && ticket.queue.length === 0)
+      ) {
+        return 'invalid-queue';
+      }
+      ticket.queue.push({ actor, ttl: event.body.ttl, event: hash, joined: { ...ts } });
+      return null;
+    case 'ticket.queue.leave':
+      if (!ticket.queue.some((waiter) => waiter.actor === actor)) {
+        return 'invalid-queue';
+      }
+      dequeue(ticket, actor);
+      return null;
+    case 'ticket.grant':
+      return grant(ticket, hash, event, meta);
     case 'ticket.handoff': {
       const { to, status, note } = event.body;
       // A handoff to the current status is a reassignment, not a transition.
       const reason = status === ticket.status ? null : moveTo(ticket, status);
       if (reason === null) {
         ticket.assignee = to;
+        ticket.lease = null;
+        dequeue(ticket, to);
         ticket.comments.push({ actor, ts: { ...ts }, text: note, hash });
       }
       return reason;
@@ -557,12 +713,6 @@ function applyToTicket(
         ticket.checklist.push({ text: item.text, done: item.done });
       }
       return null;
-    case 'ticket.renew':
-    case 'ticket.release.force':
-    case 'ticket.queue.join':
-    case 'ticket.queue.leave':
-    case 'ticket.grant':
-      throw new Error('not implemented');
   }
 }
 
@@ -590,8 +740,18 @@ function moveTo(ticket: Ticket, to: Status): RejectionReason | null {
  * range, or not an integer) `GRACE_DEFAULT_MS`. Pure.
  */
 export function leaseGrace(meta: Readonly<Record<string, JsonValue>>): number {
-  void meta;
-  throw new Error('not implemented');
+  return setting(meta, LEASE_GRACE_KEY, GRACE_DEFAULT_MS);
+}
+
+/** `meta[key]` when it is a safe integer in the setting range, else `fallback`. */
+function setting(meta: Readonly<Record<string, JsonValue>>, key: string, fallback: number): number {
+  const value = Object.hasOwn(meta, key) ? meta[key] : undefined;
+  return typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= SETTING_MIN_MS &&
+    value <= SETTING_MAX_MS
+    ? value
+    : fallback;
 }
 
 /**
@@ -601,8 +761,7 @@ export function leaseGrace(meta: Readonly<Record<string, JsonValue>>): number {
  * `WINDOW_DEFAULT_MS`. Pure.
  */
 export function queueWindow(meta: Readonly<Record<string, JsonValue>>): number {
-  void meta;
-  throw new Error('not implemented');
+  return setting(meta, QUEUE_WINDOW_KEY, WINDOW_DEFAULT_MS);
 }
 
 /**
@@ -636,7 +795,26 @@ export function dueGrant(
   ticket: Ticket,
   meta: Readonly<Record<string, JsonValue>>,
 ): TicketGrantEvent | null {
-  void ticket;
-  void meta;
-  throw new Error('not implemented');
+  const [head] = ticket.queue;
+  const { available, assignee, lease } = ticket;
+  if (head === undefined || available === null) {
+    return null;
+  }
+  let after: GrantAfter;
+  if (assignee === null) {
+    after = { released: available.event };
+  } else if (lease === null) {
+    return null;
+  } else {
+    after = { lease: { holder: assignee, expiresAt: lease.expiresAt, event: lease.event } };
+  }
+  const wall = Math.max(available.at, head.joined.wall) + 1;
+  return {
+    v: 1,
+    kind: 'ticket.grant',
+    ticket: ticket.id,
+    actor: SYSTEM_ACTOR,
+    ts: { wall, counter: 0, actor: SYSTEM_ACTOR },
+    body: { to: head.actor, ttl: head.ttl, window: queueWindow(meta), after },
+  };
 }
