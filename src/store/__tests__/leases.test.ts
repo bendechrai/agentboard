@@ -30,8 +30,16 @@ import { P, T1, T2, canon, copyBoard, ev, foldDir, putEvent, tempBoard } from '.
 
 const open: Board[] = [];
 
+/**
+ * The clock every open and catch-up here runs at: before any slot time of
+ * these boards, so catch-up writes no grant (grant materialisation is
+ * tested in grant-catchup.test.ts) and each board holds exactly the events
+ * a test writes.
+ */
+const NOW = 0;
+
 function openB(dir: string): Board {
-  const board = openBoard(dir);
+  const board = openBoard(dir, { now: NOW });
   open.push(board);
   return board;
 }
@@ -497,13 +505,13 @@ describe('catch-up keeps lease and queue rows equal to a rebuild', () => {
     );
     const board = openB(dir);
     const [release] = put(events, L.release('h', 5000));
-    expect(catchUp(board).refolded).toBe(false);
+    expect(catchUp(board, { now: NOW }).refolded).toBe(false);
     expect(waiterRows(board).map((r) => r.actor)).toEqual(['a']);
     const [grant] = put(
       events,
       L.grant(5001, { to: 'a', ttl: 600_000, window: 300_000, after: { released: release ?? '' } }),
     );
-    const report = catchUp(board);
+    const report = catchUp(board, { now: NOW });
     expect(report.refolded).toBe(false);
     expect(report.applied).toEqual([grant]);
     expect(readTicket(board.db, T1)).toMatchObject({
@@ -545,7 +553,7 @@ describe('catch-up keeps lease and queue rows equal to a rebuild', () => {
 
     // a renewed in time on another machine; the renew arrives by sync.
     const [renew] = put(events, L.renew('a', 100_000, 600_000));
-    const report = catchUp(board);
+    const report = catchUp(board, { now: NOW });
     expect(report.refolded).toBe(true);
     expect(report.applied).toEqual([renew]);
     expect(folded(board, second ?? '')).toMatchObject({ folded: 0, reason: 'stale-grant' });
@@ -574,7 +582,7 @@ describe('catch-up keeps lease and queue rows equal to a rebuild', () => {
     ];
     for (const step of steps) {
       put(events, step);
-      catchUp(board);
+      catchUp(board, { now: NOW });
       expect(dumpCache(board.db)).toBe(freshDump(events));
     }
     expect(readTicket(board.db, T1)).toMatchObject({ assignee: null, lease: null });
