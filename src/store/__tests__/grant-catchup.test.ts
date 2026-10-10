@@ -11,7 +11,7 @@
  * of a copy of the events directory.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -541,5 +541,45 @@ describe('scenario: refused command keeps its catch-up', () => {
     ).toThrow(BoardError);
     expect(eventNames(events)).toEqual(before);
     expect(dumpCache(board.db)).toBe(dump);
+  });
+});
+
+describe('a writing command killed after its catch-up renamed a grant into place', () => {
+  it('the next catch-up folds the grant once, and the command left no event of its own', () => {
+    const { dir, events, chain } = seedReleased(['a']);
+    const board = openB(dir, 5000);
+    const before = eventNames(events);
+    const hash = canonicalHash(chain[0]);
+    const renamed: string[] = [];
+    // The hook throws where the process would die: after the first rename
+    // of the command, which is the grant written by its catch-up.
+    const crash = new Error('killed after rename');
+    expect(() =>
+      runCommand(board, 'z', propose(P.comment(T1, 'never written')), {
+        now: () => 5001,
+        hooks: {
+          afterRename: (path) => {
+            renamed.push(path);
+            throw crash;
+          },
+        },
+      }),
+    ).toThrow(crash);
+
+    expect(renamed).toEqual([fileOf(events, chain[0] as TicketGrantEvent)]);
+    // Only the grant is on disk: no comment event, no temporary file.
+    expect(eventNames(events)).toEqual([...before, `${hash}.json`].sort());
+    expect(readdirSync(events).filter((name) => name.startsWith('.tmp-'))).toEqual([]);
+    // The transaction was rolled back, so the grant is not folded yet.
+    expect(foldedRow(board, hash)).toBeUndefined();
+    expect(readTicket(board.db, T1)).toMatchObject({ assignee: null, queue: [{ actor: 'a' }] });
+
+    const report = catchUp(board, { now: 5001 });
+    expect(report.applied).toEqual([hash]);
+    expect(eventNames(events)).toEqual([...before, `${hash}.json`].sort());
+    expect(readTicket(board.db, T1)).toMatchObject({ assignee: 'a', queue: [] });
+    expect(dumpCache(board.db)).toBe(freshDump(events));
+    expect(catchUp(board, { now: 5002 }).applied).toEqual([]);
+    expect(checkCache(board).ok).toBe(true);
   });
 });
