@@ -308,3 +308,65 @@ describe('dueGrants: each grant is derived at its own fold position', () => {
     expect(after.rejected.map((r) => [r.hash, r.reason])).toEqual([[leave.hash, 'invalid-queue']]);
   });
 });
+
+describe('dueGrants: grants with equal timestamps', () => {
+  /**
+   * T1 and T2 are both released at 5000 with one waiter each, so both
+   * grants have the timestamp (5001, 0, agentboard) and only their hashes
+   * order them. T1 gains its waiter first; T2's waiter asks for `ttl`.
+   */
+  function tied(ttl: number): { inputs: FoldInput[]; g1: FoldInput; g2: FoldInput } {
+    const r1 = E.release('h', 5000, T1);
+    const r2 = E.release('k', 5000, T2);
+    const inputs = [
+      E.create(1000, T1),
+      E.create(1001, T2),
+      E.claim('h', 2000, T1),
+      E.claim('k', 2001, T2),
+      E.join('a', 3000, 600_000, T1),
+      E.join('b', 3001, ttl, T2),
+      r1,
+      r2,
+    ];
+    const g1 = input(
+      grant(5001, { to: 'a', ttl: 600_000, window: WINDOW, after: { released: r1.hash } }, T1),
+    );
+    const g2 = input(
+      grant(5001, { to: 'b', ttl, window: WINDOW, after: { released: r2.hash } }, T2),
+    );
+    return { inputs, g1, g2 };
+  }
+
+  /** The first T2 ttl (from 600000, in steps of 1000) giving the wanted hash order. */
+  function tiedWith(t1First: boolean): ReturnType<typeof tied> {
+    for (let ttl = 600_000; ttl < 700_000; ttl += 1000) {
+      const case_ = tied(ttl);
+      if (case_.g1.hash < case_.g2.hash === t1First) {
+        return case_;
+      }
+    }
+    throw new Error('no ttl gives that hash order');
+  }
+
+  for (const t1First of [true, false]) {
+    const label = t1First ? "T1's grant hashes lower" : "T2's grant hashes lower";
+
+    it(`orders them by hash when ${label}`, () => {
+      const { inputs, g1, g2 } = tiedWith(t1First);
+      expect(g1.event.ts).toEqual(g2.event.ts);
+      const expected = t1First ? [g1, g2] : [g2, g1];
+      expect(dueGrants(inputs, 6000)).toEqual(expected);
+      expect(dueGrants([...inputs].reverse(), 6000)).toEqual(expected);
+    });
+
+    it(`returns only the missing one when the other is present (${label})`, () => {
+      const { inputs, g1, g2 } = tiedWith(t1First);
+      expect(dueGrants([...inputs, g1], 6000)).toEqual([g2]);
+      expect(dueGrants([...inputs, g2], 6000)).toEqual([g1]);
+      const folded = fold([...inputs, g1, g2]);
+      expect(folded.rejected).toEqual([]);
+      expect(folded.state.tickets[T1]?.assignee).toBe('a');
+      expect(folded.state.tickets[T2]?.assignee).toBe('b');
+    });
+  }
+});

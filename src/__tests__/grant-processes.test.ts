@@ -31,8 +31,10 @@ import {
   boardProject,
   cliEnv,
   oneDocument,
+  readLogLines,
   runCliAsync,
   runTogether,
+  scratchDir,
   startCli,
   waitForPause,
 } from './harness/processes.js';
@@ -174,5 +176,24 @@ describe('scenario: killed after the grant file is renamed, before commit', PROC
     expect(grantFiles(eventsDir)).toEqual([`${hash}.json`]);
     const check = await runCliAsync(['rebuild', '--check'], root);
     expect(check.code, check.stderr).toBe(0);
+  });
+});
+
+describe('scenario: a due grant is the only reason to read the log', PROCESSES, () => {
+  it('a warm list before the slot opens no event file; at the slot it writes the grant', async () => {
+    const { root, eventsDir, g } = await seed();
+    const before = eventNames(eventsDir);
+    const log = join(scratchDir(), 'warm.log');
+    const warm = await startCli(
+      { argv: ['list', '--status', 'implementing', '--json'], readLog: log },
+      root,
+    ).exited;
+    expect(warm.code, warm.stderr).toBe(0);
+    expect(readLogLines(log)).toEqual([]);
+    expect(eventNames(eventsDir)).toEqual(before);
+
+    const due = await startCli({ argv: ['list', '--json'], clockOffsetMs: AHEAD }, root).exited;
+    expect(due.code, due.stderr).toBe(0);
+    expect(eventNames(eventsDir)).toEqual([...before, `${canonicalHash(g)}.json`].sort());
   });
 });

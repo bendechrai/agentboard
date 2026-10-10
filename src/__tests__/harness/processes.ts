@@ -44,6 +44,15 @@
  * for a negative offset). The variable is read by the preload module only,
  * never by agentboard itself.
  *
+ * Read log: a child started with `Invocation.readLog` (a file path)
+ * preloads a module that wraps `fs.readFileSync` and `fs.openSync` (and
+ * calls `syncBuiltinESMExports`, so the CLI's named imports of `node:fs`
+ * see the wrappers) and, when the child exits, writes to that file one line
+ * per call that opened an event file (`events/<64 hex>.json`), in call
+ * order. Listing the events directory is not logged. `readLogLines` reads
+ * the file back. Like the clock offset, the variable is read by the
+ * preload only.
+ *
  * Temporary directories made here (`boardProject`, the gate) are removed
  * after the test file (afterAll), not after each test, so one scenario can
  * be set up in `beforeAll` and asserted by several tests.
@@ -54,6 +63,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -93,6 +103,11 @@ export interface Invocation {
    * preload; omitted, the child runs on the real clock with no preload.
    */
   clockOffsetMs?: number;
+  /**
+   * Path of a file the read-log preload writes when the child exits: one
+   * line per event file the child opened (see the module comment).
+   */
+  readLog?: string;
 }
 
 /** A running child. */
@@ -181,7 +196,14 @@ export function startCli(
   if (offset !== undefined) {
     env[CLOCK_OFFSET_ENV] = String(offset);
   }
-  const child = spawn(process.execPath, [...clockArgs, ...nodeArgs, cli, ...invocation.argv], {
+  const { readLog } = invocation;
+  const readArgs =
+    readLog === undefined ? [] : ['--import', pathToFileURL(readLogModulePath()).href];
+  if (readLog !== undefined) {
+    env[READ_LOG_ENV] = readLog;
+  }
+  const preloads = [...clockArgs, ...readArgs, ...nodeArgs];
+  const child = spawn(process.execPath, [...preloads, cli, ...invocation.argv], {
     cwd,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -295,6 +317,58 @@ function clockPath(): string {
   return clockModule;
 }
 
+/** Environment variable naming the read log of a child, read by the read-log preload. */
+export const READ_LOG_ENV = 'AGENTBOARD_HARNESS_READ_LOG';
+
+const READ_LOG_MODULE = `import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const log = process.env.${READ_LOG_ENV};
+if (log) {
+  const pattern = /[\\/]events[\\/][0-9a-f]{64}\\.json$/;
+  const opened = [];
+  const note = (path) => {
+    const text = typeof path === 'string' ? path : path instanceof URL ? path.pathname : '';
+    if (pattern.test(text)) {
+      opened.push(text);
+    }
+  };
+  const { readFileSync, openSync, writeFileSync } = fs;
+  fs.readFileSync = function (path, ...rest) {
+    note(path);
+    return readFileSync.call(this, path, ...rest);
+  };
+  fs.openSync = function (path, ...rest) {
+    note(path);
+    return openSync.call(this, path, ...rest);
+  };
+  syncBuiltinESMExports();
+  process.on('exit', () => {
+    writeFileSync(log, opened.map((path) => path + '\\n').join(''));
+  });
+}
+`;
+
+let readLogModule: string | null = null;
+
+/** Path of the read-log preload module, written once per test file. */
+function readLogModulePath(): string {
+  if (readLogModule === null) {
+    readLogModule = join(scratchDir(), 'read-log.mjs');
+    writeFileSync(readLogModule, READ_LOG_MODULE);
+  }
+  return readLogModule;
+}
+
+/**
+ * The event files a child started with `readLog: path` opened, one per
+ * call, in call order. Throws when the child wrote no log (it was killed).
+ */
+export function readLogLines(path: string): string[] {
+  return readFileSync(path, 'utf8')
+    .split('\n')
+    .filter((line) => line !== '');
+}
+
 /** Environment variable naming the gate directory of a gated child. */
 export const GATE_ENV = 'AGENTBOARD_HARNESS_GATE';
 
@@ -395,6 +469,7 @@ export async function startGated(
         argv: inv.argv,
         env: { ...(inv.env ?? cliEnv()), [GATE_ENV]: gateDir, [PRELOAD_ENV]: preload },
         ...(inv.clockOffsetMs === undefined ? {} : { clockOffsetMs: inv.clockOffsetMs }),
+        ...(inv.readLog === undefined ? {} : { readLog: inv.readLog }),
       },
       cwd,
       nodeArgs,

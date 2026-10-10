@@ -4,6 +4,9 @@
  * waiting and killing helpers must behave as documented.
  */
 
+import { readdirSync, rmSync } from 'node:fs';
+import { basename, join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -11,8 +14,10 @@ import {
   boardProject,
   cliEnv,
   oneDocument,
+  readLogLines,
   runCliAsync,
   runTogether,
+  scratchDir,
   startCli,
   waitForPause,
   type ProcessResult,
@@ -83,6 +88,25 @@ describe('the multi-process harness', () => {
     expect(result?.code, result?.stderr).toBe(0);
     expect(wallOf(result)).toBeGreaterThanOrEqual(before + 2 * offset);
   }, 30_000);
+
+  it('logs the event files a child opens through the read-log preload', async () => {
+    const { root, eventsDir } = boardProject();
+    const created = await runCliAsync(
+      ['new', 'Logged', '--adhoc', 'reads', '--as', 'orch', '--json'],
+      root,
+    );
+    expect(created.code, created.stderr).toBe(0);
+    rmSync(join(eventsDir, '..', 'cache.sqlite'));
+    const log = join(scratchDir(), 'reads.log');
+    const cold = await startCli({ argv: ['list'], readLog: log }, root).exited;
+    expect(cold.code, cold.stderr).toBe(0);
+    // A cold cache is rebuilt from the one event file, so it was opened.
+    const [name] = readdirSync(eventsDir).filter((n) => n.endsWith('.json'));
+    expect(readLogLines(log).map((line) => basename(line))).toContain(name);
+    const quiet = join(scratchDir(), 'quiet.log');
+    expect((await startCli({ argv: ['version'], readLog: quiet }, root).exited).code).toBe(0);
+    expect(readLogLines(quiet)).toEqual([]);
+  });
 
   it('keeps children bounded by a per-child timeout shorter than the test timeouts', () => {
     expect(CHILD_TIMEOUT_MS).toBeLessThanOrEqual(30_000);

@@ -508,3 +508,38 @@ describe('a command transaction writes due grants before deciding', () => {
     expect((caught as BoardError).message).toContain('assigned to a');
   });
 });
+
+describe('scenario: refused command keeps its catch-up', () => {
+  it('a refused claim commits the grant its catch-up wrote, and nothing of its own', () => {
+    // One waiter: the grant to a is due at 5001 and not yet written.
+    const { dir, events, chain } = seedReleased(['a']);
+    const board = openB(dir, 5000);
+    const before = eventNames(events);
+    const hash = canonicalHash(chain[0]);
+    expect(() => runCommand(board, 'z', propose(P.claim(T1)), { now: () => 5001 })).toThrow(
+      BoardError,
+    );
+    // The only new event file is the grant.
+    expect(eventNames(events)).toEqual([...before, `${hash}.json`].sort());
+    expect(readFileSync(fileOf(events, chain[0] as TicketGrantEvent))).toEqual(
+      Buffer.from(canonicalEncode(chain[0])),
+    );
+    // The cache committed the catch-up: the grantee holds T1 with an empty queue.
+    expect(foldedRow(board, hash)).toEqual({ folded: 1, reason: null });
+    expect(readTicket(board.db, T1)).toMatchObject({ assignee: 'a', queue: [] });
+    expect(dumpCache(board.db)).toBe(freshDump(events));
+    expect(checkCache(board).ok).toBe(true);
+  });
+
+  it('a refusal with nothing to catch up writes nothing and leaves the cache unchanged', () => {
+    const { dir, events } = seedReleased(['a']);
+    const board = openB(dir, 5000);
+    const before = eventNames(events);
+    const dump = dumpCache(board.db);
+    expect(() =>
+      runCommand(board, 'z', propose(P.move(T1, 'merged')), { now: () => 5000 }),
+    ).toThrow(BoardError);
+    expect(eventNames(events)).toEqual(before);
+    expect(dumpCache(board.db)).toBe(dump);
+  });
+});
