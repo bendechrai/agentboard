@@ -114,7 +114,8 @@ export function newTicket(
   return { hash: result.hash, ticket: ticketOf(result.ticket) };
 }
 
-/** Result of `showTicket`; also the `show --json` document. */
+/** Result of `showTicket`; also the `show --json` document, with each ticket
+ * as its `ticketDocument` (see `src/board/document.ts`). */
 export interface ShowResult {
   ticket: Ticket;
   /**

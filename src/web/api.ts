@@ -17,6 +17,7 @@
  *   first `limit` count.
  */
 
+import { ticketDocument } from '../board/document.js';
 import type { EventCache } from '../board/feed.js';
 import { resolveTicketId } from '../board/resolve.js';
 import { loadSnapshot } from '../board/snapshot.js';
@@ -109,8 +110,9 @@ export function httpStatus(error: unknown): number {
  *   other key (no CSRF token or field of any kind). Reads nothing from the
  *   cache.
  * - `/api/board`: `{ tickets, meta, id }`: every ticket, open and closed,
- *   sorted by ascending id; the board meta; the snapshot's position id.
- * - `/api/tickets/<id>`: `{ ticket, events }` for a full id or a unique
+ *   as its `ticketDocument` (without `available`), sorted by ascending id; the board meta; the snapshot's position id.
+ * - `/api/tickets/<id>`: `{ ticket, events }`, the ticket as its
+ *   `ticketDocument`, for a full id or a unique
  *   prefix of at least 6 characters (resolved as `show` resolves it);
  *   `events` is every well-formed event of that ticket (`EventView.ticket`
  *   equal to its id: applied, rejected and unknown kinds) in fold order,
@@ -157,7 +159,7 @@ function route(ctx: ApiContext, path: string, query: URLSearchParams): unknown {
       const tickets = Object.values(snapshot.tickets).sort((a, b) =>
         a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
       );
-      return { tickets, meta: snapshot.meta, id: snapshot.id };
+      return { tickets: tickets.map(ticketDocument), meta: snapshot.meta, id: snapshot.id };
     }
     case '/api/events':
       return eventsPage(ctx, query);
@@ -193,7 +195,10 @@ function ticketDetail(ctx: ApiContext, text: string): unknown {
   const snapshot = loadSnapshot(ctx.board, { cache: ctx.cache });
   const id = resolveTicketId({ tickets: snapshot.tickets, meta: snapshot.meta }, text);
   const ticket = snapshot.tickets[id];
-  return { ticket, events: snapshot.events.filter((e) => e.ticket === id) };
+  return {
+    ticket: ticket === undefined ? undefined : ticketDocument(ticket),
+    events: snapshot.events.filter((e) => e.ticket === id),
+  };
 }
 
 /** A `limit` value: digits only, from 1 to `EVENTS_PAGE_MAX`. */

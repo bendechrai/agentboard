@@ -105,7 +105,8 @@ export interface ImportedTicket {
   ticket: Ticket;
 }
 
-/** Result of `importChange`; also the `import-change --json` document. */
+/** Result of `importChange`; also the `import-change --json` document, with each ticket
+ * as its `ticketDocument` (see `src/board/document.ts`). */
 export interface ImportResult {
   source: string;
   ref: string;

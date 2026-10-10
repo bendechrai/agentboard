@@ -27,6 +27,7 @@ import { syncBoard } from '../board/sync.js';
 import { TASK_RULE } from '../board/text.js';
 import { parseTaskFilter, taskRefFromArgs, type TaskFilter } from '../board/resolve.js';
 import { listTickets, newTicket, showRaw, showTicket } from '../board/tickets.js';
+import { ticketDocument } from '../board/document.js';
 import type { WriteOutcome } from '../board/types.js';
 import { watchInbox } from '../board/watch.js';
 import { STATUSES, type Status } from '../events/schema.js';
@@ -295,7 +296,10 @@ function actorOf(ctx: RunContext): string {
 /** The `--json` document and human text of a writing command. */
 function written(outcome: WriteOutcome, before = '', after = ''): CommandOutput {
   const line = renderListLine(outcome.ticket);
-  return { json: outcome, text: `${before}${line}\n${after}` };
+  return {
+    json: { ...outcome, ticket: ticketDocument(outcome.ticket) },
+    text: `${before}${line}\n${after}`,
+  };
 }
 
 /** The target of `link`. */
@@ -492,12 +496,14 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  * `src/guidance/help.ts`.
  *
  * `run` of each command calls the named operation and returns its result
- * as the `--json` document, with this human rendering:
+ * as the `--json` document, every ticket in it written as its
+ * `ticketDocument` (the `Ticket` without `available`, which is internal
+ * fold state), with this human rendering:
  * - `init`: `InitResult`; text: its `message`.
  * - `new`: `WriteOutcome`; text: `created <full id>` then the `list` line.
  * - `show`: `ShowResult` (`--raw`: `RawEvent[]`); text: `renderShow`
  *   (`--raw`: each raw event's `text` on its own line).
- * - `list`: `Ticket[]`; text: one `renderListLine` per ticket.
+ * - `list`: `TicketDocument[]`; text: one `renderListLine` per ticket.
  * - other writing commands: `WriteOutcome` (`ChecklistOutcome` for
  *   `checklist tick|untick`); text: the `list` line of the resulting
  *   ticket, preceded by `already claimed by <actor>` for a claim that
@@ -717,7 +723,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         return { json: raw, text: raw.map((r) => `${r.text}\n`).join('') };
       }
       const shown = showTicket(ctx.board(), id);
-      return { json: shown, text: renderShow(shown) };
+      return { json: { ...shown, ticket: ticketDocument(shown.ticket) }, text: renderShow(shown) };
     },
   },
   {
@@ -756,7 +762,10 @@ export const COMMANDS: readonly CommandSpec[] = [
         labels: list(values, 'label'),
         closed: bool(values, 'closed'),
       });
-      return { json: tickets, text: tickets.map((t) => `${renderListLine(t)}\n`).join('') };
+      return {
+        json: tickets.map(ticketDocument),
+        text: tickets.map((t) => `${renderListLine(t)}\n`).join(''),
+      };
     },
   },
   {
@@ -1530,7 +1539,11 @@ export const COMMANDS: readonly CommandSpec[] = [
           `${String(count('created'))} created, ${String(count('updated'))} updated, ` +
           `${String(count('unchanged'))} unchanged, ${String(result.events)} events`,
       );
-      return { json: result, text: `${lines.join('\n')}\n` };
+      const json = {
+        ...result,
+        tickets: result.tickets.map((t) => ({ ...t, ticket: ticketDocument(t.ticket) })),
+      };
+      return { json, text: `${lines.join('\n')}\n` };
     },
   },
   {
@@ -1578,7 +1591,12 @@ export const COMMANDS: readonly CommandSpec[] = [
         `close-merged: ${String(result.closed.length)} closed, ` +
           `${String(result.unmerged.length)} unmerged, ${String(result.skipped.length)} skipped`,
       ];
-      return { json: result, text: `${lines.join('\n')}\n` };
+      const json = {
+        closed: result.closed.map((c) => ({ ...c, ticket: ticketDocument(c.ticket) })),
+        unmerged: result.unmerged.map((u) => ({ ...u, ticket: ticketDocument(u.ticket) })),
+        skipped: result.skipped.map((k) => ({ ...k, ticket: ticketDocument(k.ticket) })),
+      };
+      return { json, text: `${lines.join('\n')}\n` };
     },
   },
   {
