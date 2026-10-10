@@ -11,7 +11,7 @@
  * of a copy of the events directory.
  */
 
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -24,7 +24,7 @@ import { catchUp, dumpCache, readTicket } from '../cache.js';
 import { BoardError } from '../errors.js';
 import { checkCache, rebuild } from '../rebuild.js';
 import { runCommand } from '../transaction.js';
-import { P, T1, copyBoard, ev, eventNames, propose, putEvent, tempBoard } from './helpers.js';
+import { P, T1, T2, copyBoard, ev, eventNames, propose, putEvent, tempBoard } from './helpers.js';
 
 const SKEW = 60_000;
 const WINDOW = 120_000;
@@ -581,5 +581,100 @@ describe('a writing command killed after its catch-up renamed a grant into place
     expect(dumpCache(board.db)).toBe(freshDump(events));
     expect(catchUp(board, { now: 5002 }).applied).toEqual([]);
     expect(checkCache(board).ok).toBe(true);
+  });
+});
+
+describe('recorded event files corrupted or deleted in place', () => {
+  /**
+   * `seedReleased(['a'])` (the grant to a due at 5001) plus T2 with a
+   * comment, and optionally a later comment on T2 at 9000 so that the
+   * grant sorts before `last_position` and is folded by a refold. Folded
+   * at 5000, so every file is recorded and nothing is due yet. Returns a
+   * fresh board handle (a new process), the seed and the T2 comment's file
+   * name.
+   */
+  function folded(later: boolean): { board: Board; seed: Seeded; comment: string } {
+    const seed = seedReleased(['a']);
+    putEvent(seed.events, ev(P.create(T2, 'Other'), 'orch', 1100));
+    const comment = `${putEvent(seed.events, ev(P.comment(T2, 'unrelated'), 'orch', 1200))}.json`;
+    if (later) {
+      putEvent(seed.events, ev(P.comment(T2, 'later'), 'orch', 9000));
+    }
+    openB(seed.dir, 5000).close();
+    // A fresh handle, as a new process: it has read no event file yet, and
+    // opening at 5000 (no new file, the clock before the watermark) reads none.
+    const board = openB(seed.dir, 5000);
+    return { board, seed, comment };
+  }
+
+  /** Changes a file's bytes in place, so its name no longer hashes them. */
+  function corrupt(events: string, name: string): void {
+    writeFileSync(join(events, name), `${readFileSync(join(events, name), 'utf8')} `);
+  }
+
+  for (const later of [false, true]) {
+    const how = later ? 'by a refold' : 'incrementally';
+    it(`reports a corrupted recorded file once and still writes the due grant (${how})`, () => {
+      const { board, seed, comment } = folded(later);
+      corrupt(seed.events, comment);
+      const hash = canonicalHash(seed.chain[0]);
+
+      const report = catchUp(board, { now: 5001 });
+
+      expect(report.corrupt.map((file) => file.name)).toEqual([comment]);
+      expect(report.corrupt[0]?.path).toBe(join(seed.events, comment));
+      expect(report.applied).toEqual([hash]);
+      expect(readFileSync(fileOf(seed.events, seed.chain[0] as TicketGrantEvent))).toEqual(
+        Buffer.from(canonicalEncode(seed.chain[0])),
+      );
+      expect(readTicket(board.db, T1)).toMatchObject({ assignee: 'a', queue: [] });
+      // rebuild --check skips the corrupt file. After a refold the cache
+      // already skips it too; after an incremental catch-up it still holds
+      // T2's comment, which is all the check flags.
+      const check = checkCache(board);
+      expect(check.report.corruptFiles.map((file) => file.name)).toEqual([comment]);
+      expect(check.ok).toBe(later);
+      for (const difference of check.differences) {
+        expect(difference.ticket === T2 || difference.key === comment.replace(/\.json$/, '')).toBe(
+          true,
+        );
+      }
+    });
+  }
+
+  it('reports corrupted files the grant needs on every walk, by name, each once', () => {
+    const { board, seed, comment } = folded(false);
+    const release = `${seed.release}.json`;
+    const dump = dumpCache(board.db);
+    corrupt(seed.events, release);
+    corrupt(seed.events, comment);
+    const expected = [release, comment].sort();
+    for (const now of [5001, 5002]) {
+      // Without the release no grant is derivable: nothing is written, but
+      // each walk shows why.
+      const report = catchUp(board, { now });
+      expect(report.corrupt.map((file) => file.name)).toEqual(expected);
+      expect(report.applied).toEqual([]);
+    }
+    expect(grantFiles(seed.events)).toEqual([]);
+    expect(dumpCache(board.db)).toBe(dump);
+    expect(checkCache(board).ok).toBe(false);
+  });
+
+  it('a recorded file deleted in place: no crash, and the derivable grant is written', () => {
+    const { board, seed, comment } = folded(false);
+    rmSync(join(seed.events, comment));
+    const report = catchUp(board, { now: 5001 });
+    expect(report.applied).toEqual([canonicalHash(seed.chain[0])]);
+    expect(readTicket(board.db, T1)).toMatchObject({ assignee: 'a', queue: [] });
+  });
+
+  it('the deleted release: no crash, nothing written, the cache unchanged', () => {
+    const { board, seed } = folded(false);
+    const dump = dumpCache(board.db);
+    rmSync(join(seed.events, `${seed.release}.json`));
+    expect(catchUp(board, { now: 5001 }).applied).toEqual([]);
+    expect(grantFiles(seed.events)).toEqual([]);
+    expect(dumpCache(board.db)).toBe(dump);
   });
 });
