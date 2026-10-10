@@ -1207,6 +1207,46 @@ describe('dueGrant and grants', () => {
       const grant = E.grant({ ...good, ticket: T2 });
       expect(reasonOf(fold([...base, release, grant]), grant)).toBe('unknown-ticket');
     });
+
+    // After a lapse: each part of after.lease is compared.
+    const claim = E.leased('h', 1_000_000, TTL, GRACE);
+    const waiter = E.join('b', 1_010_000, 900_000);
+    const lapsed = [E.create(), claim, waiter];
+    const lapseGrant: TicketGrantEvent = grantEvent(1_180_001, {
+      to: 'b',
+      ttl: 900_000,
+      window: WINDOW,
+      after: { lease: leaseRef('h', 1_120_000, claim) },
+    });
+    const withLease = (patch: Partial<LeaseRef>): TicketGrantEvent => ({
+      ...lapseGrant,
+      body: {
+        ...lapseGrant.body,
+        after: { lease: { ...leaseRef('h', 1_120_000, claim), ...patch } },
+      },
+    });
+    const lapseVariants: [string, TicketGrantEvent][] = [
+      ['a lapse grant naming the wrong holder', withLease({ holder: 'x' })],
+      ['a lapse grant naming the wrong expiresAt', withLease({ expiresAt: 1_120_001 })],
+      ['a lapse grant naming the wrong lease event', withLease({ event: 'e'.repeat(64) })],
+    ];
+
+    it.each(lapseVariants)('%s', (_name, event) => {
+      const grant = E.grant(event);
+      const result = fold([...lapsed, grant]);
+      expect(reasonOf(result, grant)).toBe('stale-grant');
+      expect(ticketOf(result).assignee).toBe('h');
+      expect(ticketOf(result).queue.map((w) => w.actor)).toEqual(['b']);
+      // The correct grant is still the one due.
+      expect(due([...lapsed, grant])).toEqual(lapseGrant);
+    });
+
+    it('the exact lapse grant is applied', () => {
+      const grant = E.grant(lapseGrant);
+      const result = fold([...lapsed, grant]);
+      expect(reasonOf(result, grant)).toBeNull();
+      expect(ticketOf(result).assignee).toBe('b');
+    });
   });
 
   it('window changed by a setting (spec scenario)', () => {
