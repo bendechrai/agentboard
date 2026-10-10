@@ -8,9 +8,9 @@
  * order in the array or of any clock. Every lease, queue and grant decision
  * is made from event timestamps and bodies alone (board-events: "Fold
  * semantics"). This module stays browser-safe: nothing it reaches may
- * import a `node:` specifier (src/__tests__/layering.test.ts), so the grant
- * comparison cannot reach `canonical.ts` as it stands (it imports
- * `node:crypto` for hashing).
+ * import a `node:` specifier (src/__tests__/layering.test.ts), so a written
+ * grant is compared with the derived one structurally, field by field, and
+ * never through `canonical.ts` (which imports `node:crypto`).
  */
 
 import type { JsonValue } from './json.js';
@@ -277,8 +277,9 @@ export function isTransitionAllowed(from: Status, to: Status, blockedFrom: Statu
  *   to, blockedFrom)`; then `needs-task-link` if `to` is `implementing` and
  *   `task` is null. Moving to `blocked` records the previous status in
  *   `blockedFrom`; leaving `blocked` clears it.
- * - `ticket.assign`: sets `assignee` to `body.to` unconditionally and
- *   clears `lease`.
+ * - `ticket.assign`: sets `assignee` to `body.to` unconditionally, clears
+ *   `lease`, and removes `body.to` from `queue` when it is queued (the
+ *   assignee is never queued; the order of the other waiters is kept).
  * - `ticket.claim` by actor `A` (board-events: "Claim leases", "Waiting
  *   queue"), checked in this order:
  *   1. `assignee` is `A`: `already-assigned` (a retried claim).
@@ -309,9 +310,13 @@ export function isTransitionAllowed(from: Status, to: Status, blockedFrom: Statu
  *   `queue` (which therefore stays in fold order of the joins).
  * - `ticket.queue.leave` by `A`: `invalid-queue` unless `A` is queued;
  *   otherwise removes `A` from `queue`.
- * - `ticket.grant`: `stale-grant` unless the event's canonical bytes (as
- *   `canonicalEncode` writes them) equal those of `dueGrant(ticket,
- *   state.meta)` for the state at its position (a null derivation is stale
+ * - `ticket.grant`: `stale-grant` unless the event equals `dueGrant(ticket,
+ *   state.meta)` for the state at its position, compared structurally:
+ *   every envelope field (`v`, `kind`, `ticket`, `actor`, `ts.wall`,
+ *   `ts.counter`, `ts.actor`) and every body field (`to`, `ttl`, `window`,
+ *   and `after` with exactly the same key, `released` or `lease`, and the
+ *   same `holder`, `expiresAt` and `event`) equal, which for validated
+ *   events is the same as equal canonical bytes (a null derivation is stale
  *   too); otherwise `assignee` =
  *   `body.to`, the head waiter is removed from `queue`, and `lease` =
  *   `{ttl: body.ttl, expiresAt: ts.wall + body.window, event: <grant
@@ -325,12 +330,15 @@ export function isTransitionAllowed(from: Status, to: Status, blockedFrom: Statu
  *   moves as for `ticket.move` (if it changes), and a comment with `text` =
  *   `body.note` by the event actor is appended. No assign, move or comment
  *   event is synthesized; version goes up by exactly 1. The queue does not
- *   constrain a handoff.
+ *   constrain a handoff, but an applied handoff whose `body.to` is queued
+ *   removes it from `queue` in the same step (the other waiters keep their
+ *   order); one to an actor not queued leaves `queue` unchanged.
  *
  * After every applied ticket event `available` is recomputed as
  * `Availability` documents; no kind other than claim, renew, release,
  * forced release, assign, handoff and grant changes `lease`, and only join,
- * leave and grant change `queue`. Every applied event of these kinds counts
+ * leave, grant, and an assign or handoff to a queued actor change `queue`.
+ * So the assignee is never in `queue` at any fold position. Every applied event of these kinds counts
  * in `version` like any other.
  * - `ticket.link`: `task` sets `task` (replacing any earlier one) and clears
  *   `adhoc`; `pr` and `decision` append to `links`.
@@ -602,8 +610,8 @@ export function queueWindow(meta: Readonly<Record<string, JsonValue>>): number {
  * ticket and the board settings as folded at the grant's position, or null
  * when none is due. Pure: reads no clock; whether the grant's slot time
  * has come is the caller's question. The fold calls it with the state just
- * before a `ticket.grant` and applies that grant only when it is
- * byte-identical (`canonicalEncode`) to the result; catch-up uses it to
+ * before a `ticket.grant` and applies that grant only when it is equal to
+ * the result, compared field by field (see `fold`); catch-up uses it to
  * write grants.
  *
  * Null when `ticket.queue` is empty, or `ticket.available` is null (an

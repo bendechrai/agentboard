@@ -138,7 +138,9 @@ it instead) are rejected `invalid-queue`.
 While the queue is not empty, a plain claim or a takeover by anyone on
 that ticket is rejected `queued`: waiters have priority, and the only way
 the ticket passes to a new holder is a grant (or a hand-off by the
-holder, which the queue does not constrain).
+holder, which the queue does not constrain). A hand-off or assign to a
+queued actor removes that actor from the queue in the same step, so the
+assignee is never queued and a later grant never goes to the holder.
 
 ### Grants: derived, backdated, identical from every writer
 A grant is due when the queue is not empty and the ticket has become

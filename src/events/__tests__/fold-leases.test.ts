@@ -714,12 +714,94 @@ describe('fold: the waiting queue', () => {
     expect(ticketOf(result).queue.map((w) => w.actor)).toEqual(['a', 'b']);
   });
 
-  it('hand-off is not constrained by the queue', () => {
+  it('hand-off is not constrained by the queue: to a non-queued actor it leaves the queue', () => {
     const handoff = E.handoff('h', 2000, 'x', 'todo');
     const result = fold([...held(), E.join('a', 1000), handoff]);
     expect(reasonOf(result, handoff)).toBeNull();
     expect(ticketOf(result).assignee).toBe('x');
     expect(ticketOf(result).queue.map((w) => w.actor)).toEqual(['a']);
+  });
+
+  it('assign to a non-queued actor leaves the queue unchanged', () => {
+    const a = E.join('a', 1000);
+    const t = ticketOf(fold([...held(), a, E.join('b', 1100), E.assign('orch', 2000, 'x')]));
+    expect(t.assignee).toBe('x');
+    expect(t.queue.map((w) => w.actor)).toEqual(['a', 'b']);
+    expect(t.queue[0]?.event).toBe(a.hash);
+  });
+
+  /** h holds T1; a, b and c are queued in that order. */
+  function threeWaiters(): FoldInput[] {
+    return [
+      ...held(),
+      E.join('a', 1000, 60_000),
+      E.join('b', 1100, 90_000),
+      E.join('c', 1200, 120_000),
+    ];
+  }
+
+  it('hand-off to a waiter removes it from the queue (spec scenario)', () => {
+    const handoff = E.handoff('h', 2000, 'b', 'todo');
+    const result = foldEveryOrder([...threeWaiters(), handoff]);
+    const t = ticketOf(result);
+    expect(reasonOf(result, handoff)).toBeNull();
+    expect(t.assignee).toBe('b');
+    expect(t.queue.map((w) => [w.actor, w.ttl])).toEqual([
+      ['a', 60_000],
+      ['c', 120_000],
+    ]);
+    expect(t.version).toBe(6);
+    // A later release grants to the next remaining waiter, not the new holder.
+    const release = E.release('b', 3000);
+    expect(due([...threeWaiters(), handoff, release])).toEqual(
+      grantEvent(3001, { to: 'a', ttl: 60_000, window: WINDOW, after: { released: release.hash } }),
+    );
+  });
+
+  it('hand-off to the head waiter removes it, and the next grant goes to the second', () => {
+    const handoff = E.handoff('h', 2000, 'a', 'tests');
+    const t = ticketOf(fold([...threeWaiters(), handoff]));
+    expect(t.assignee).toBe('a');
+    expect(t.status).toBe('tests');
+    expect(t.queue.map((w) => w.actor)).toEqual(['b', 'c']);
+    const release = E.release('a', 3000);
+    expect(due([...threeWaiters(), handoff, release])?.body.to).toBe('b');
+  });
+
+  it('assign to a waiter removes it from the queue, keeping the order of the rest', () => {
+    const assign = E.assign('orch', 2000, 'c');
+    const result = foldEveryOrder([...threeWaiters(), assign]);
+    const t = ticketOf(result);
+    expect(t.assignee).toBe('c');
+    expect(t.queue.map((w) => w.actor)).toEqual(['a', 'b']);
+    const release = E.release('c', 3000);
+    expect(due([...threeWaiters(), assign, release])).toEqual(
+      grantEvent(3001, { to: 'a', ttl: 60_000, window: WINDOW, after: { released: release.hash } }),
+    );
+  });
+
+  it('assign to a waiter of a freed ticket removes it, and no grant goes to it', () => {
+    const assign = E.assign('orch', 2500, 'a');
+    const release = E.release('h', 2000);
+    const t = ticketOf(fold([...threeWaiters(), release, assign]));
+    expect(t.assignee).toBe('a');
+    expect(t.queue.map((w) => w.actor)).toEqual(['b', 'c']);
+    // Held without a lease: no grant is due until it is released.
+    expect(due([...threeWaiters(), release, assign])).toBeNull();
+  });
+
+  it('a rejected hand-off to a waiter leaves it queued', () => {
+    const handoff = E.handoff('h', 2000, 'b', 'merged');
+    const result = fold([...threeWaiters(), handoff]);
+    expect(reasonOf(result, handoff)).toBe('invalid-transition');
+    expect(ticketOf(result).assignee).toBe('h');
+    expect(ticketOf(result).queue.map((w) => w.actor)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('a waiter that was handed the ticket can no longer leave the queue', () => {
+    const leave = E.leave('b', 3000);
+    const result = fold([...threeWaiters(), E.handoff('h', 2000, 'b', 'todo'), leave]);
+    expect(reasonOf(result, leave)).toBe('invalid-queue');
   });
 
   it('joins and leaves count in version and never change status or assignee', () => {

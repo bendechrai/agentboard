@@ -168,4 +168,5 @@ None.
   the preserved events fold correctly with no migration.
 - README.md, a new ADR, STATUS.md, and this repository's own
   installed guidance (reinstalled at version 2).
-- No new dependencies.
+- No new runtime dependencies; fast-check is added as a dev dependency for
+  the property tests.

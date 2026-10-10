@@ -202,7 +202,11 @@ SHALL remove its actor from the queue, and SHALL be rejected with reason
 `invalid-queue` when the actor is not queued. While the queue is not
 empty, a `ticket.claim` by any actor SHALL be rejected with reason
 `queued`, except a claim by the assignee, which is handled as before.
-`ticket.handoff` SHALL NOT be constrained by the queue.
+`ticket.handoff` SHALL NOT be constrained by the queue. An applied
+`ticket.handoff` or `ticket.assign` whose `to` is a queued actor SHALL
+remove that actor from the queue in the same fold step, so the assignee
+is never queued; one whose `to` is not queued SHALL leave the queue
+unchanged.
 
 #### Scenario: Join order is fold order
 - **WHEN** `a` joins at wall 1000 and `b` joins at wall 900, arriving in the order a then b
@@ -215,6 +219,10 @@ empty, a `ticket.claim` by any actor SHALL be rejected with reason
 #### Scenario: Queue-jumping claim is refused
 - **WHEN** T1 has waiters and `x`, not queued, writes a claim with a valid `supersedes` after the holder's lease lapsed
 - **THEN** the claim is rejected with reason `queued`
+
+#### Scenario: Hand-off to a waiter removes it from the queue
+- **WHEN** `h` holds T1, `a`, `b` and `c` are queued in that order, and `h` hands T1 off to `b`
+- **THEN** T1 is assigned to `b`, the queue is `a`, `c`, and when `b` later releases the derived grant is to `a`
 
 #### Scenario: Join on a free ticket
 - **WHEN** T1 is unassigned with no waiters and `a` writes a join

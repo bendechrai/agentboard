@@ -258,6 +258,16 @@ class Model {
         this.queue.splice(index, 1);
         return null;
       }
+      case 'ticket.handoff':
+      case 'ticket.assign': {
+        // The simulation hands off only within the current status (todo),
+        // so no transition check applies: always applied.
+        const to = e.body.to;
+        this.assignee = to;
+        this.lease = null;
+        this.queue = this.queue.filter((w) => w.actor !== to);
+        return null;
+      }
       case 'ticket.grant': {
         const derived = this.due();
         if (derived === null || !sameBytes(derived, e)) {
@@ -339,6 +349,8 @@ type Act =
   | { op: 'force'; actor: number; holder: number | null }
   | { op: 'join'; actor: number; ttl: number }
   | { op: 'leave'; actor: number }
+  | { op: 'handoff'; actor: number | null; to: number }
+  | { op: 'assign'; to: number }
   | { op: 'window'; value: number }
   | { op: 'materialise' }
   | { op: 'deliver' };
@@ -394,6 +406,15 @@ const actArb: fc.Arbitrary<Act> = fc.oneof(
     arbitrary: fc.record({ op: fc.constant('join' as const), actor: actorIndex, ttl: ttlArb }),
   },
   { weight: 1, arbitrary: fc.record({ op: fc.constant('leave' as const), actor: actorIndex }) },
+  {
+    weight: 1,
+    arbitrary: fc.record({
+      op: fc.constant('handoff' as const),
+      actor: holderOrAnyone,
+      to: actorIndex,
+    }),
+  },
+  { weight: 1, arbitrary: fc.record({ op: fc.constant('assign' as const), to: actorIndex }) },
   {
     weight: 1,
     arbitrary: fc.record({
@@ -540,6 +561,24 @@ function simulate(steps: readonly Step[]): Run {
           body: {},
         };
         break;
+      case 'handoff':
+        event = {
+          v: 1,
+          kind: 'ticket.handoff',
+          ticket: T1,
+          ...at(actorOr(act.actor, view), wall),
+          body: { to: ACTORS[act.to] as string, status: 'todo', note: 'over to you' },
+        };
+        break;
+      case 'assign':
+        event = {
+          v: 1,
+          kind: 'ticket.assign',
+          ticket: T1,
+          ...at('orch', wall),
+          body: { to: ACTORS[act.to] as string },
+        };
+        break;
       case 'window':
         event = {
           v: 1,
@@ -571,6 +610,7 @@ const seen = {
   rejectedTakeovers: 0,
   forcedReleases: 0,
   queuedRefusals: 0,
+  handoffsToWaiters: 0,
 };
 
 /** The `expiresAt` of the lease set by `setter`, recomputed from its own body. */
@@ -684,9 +724,17 @@ function checkWalk(all: readonly FoldInput[]): BoardState {
       seen.forcedReleases += 1;
     }
 
-    // The fold's ticket agrees with the model at every position.
+    if ((e.kind === 'ticket.handoff' || e.kind === 'ticket.assign') && reason === null) {
+      if (prior.queue.some((w) => w.actor === e.body.to)) {
+        seen.handoffsToWaiters += 1;
+      }
+    }
+
+    // The fold's ticket agrees with the model at every position, and the
+    // assignee is never queued.
     const ticket = state.tickets[T1];
     if (ticket !== undefined) {
+      expect(ticket.queue.some((w) => w.actor === ticket.assignee)).toBe(false);
       expect(snapshot(ticket)).toEqual({
         assignee: model.assignee,
         lease: model.lease,
