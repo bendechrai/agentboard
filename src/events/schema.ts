@@ -548,15 +548,12 @@ export function validateEvent(value: unknown): ValidationResult {
     report('actor', 'must be a non-empty string');
   }
   checkTs(value.ts, actor, report);
-  if (actor === SYSTEM_ACTOR || kind === 'ticket.grant') {
-    // The reserved actor rule is part of this change's stubs.
-    throw new Error('not implemented');
-  }
+  checkReservedActor(kind, actor, report);
   const body = value.body;
   if (!isObject(body)) {
     report('body', 'must be a JSON object');
   } else if (kind !== null && isKnownKind(kind)) {
-    BODY_CHECKS[kind](body, report);
+    BODY_CHECKS[kind](body, report, validWall(value.ts));
   }
   reportExtraKeys(value, ENVELOPE_KEYS, '', report);
 
@@ -571,6 +568,27 @@ export function validateEvent(value: unknown): ValidationResult {
 
 type JsonRecord = Record<string, unknown>;
 type Report = (field: string, message: string) => void;
+
+/**
+ * The reserved actor rule: only `ticket.grant` may be written by
+ * `SYSTEM_ACTOR`, and a grant only by it. Checked only for a valid actor; a
+ * grant's actor is checked whatever the rest of the event holds.
+ */
+function checkReservedActor(kind: string | null, actor: string | null, report: Report): void {
+  if (actor === null) {
+    return;
+  }
+  if (kind === 'ticket.grant' && actor !== SYSTEM_ACTOR) {
+    report('actor', `a ticket.grant must be written by ${SYSTEM_ACTOR}`);
+  } else if (kind !== 'ticket.grant' && actor === SYSTEM_ACTOR) {
+    report('actor', `${SYSTEM_ACTOR} is reserved for ticket.grant`);
+  }
+}
+
+/** `ts.wall` when `ts` is an object with a valid wall, else null (no cascade). */
+function validWall(ts: unknown): number | null {
+  return isObject(ts) && isNonNegativeSafeInteger(ts.wall) ? (ts.wall as number) : null;
+}
 
 const ENVELOPE_KEYS = ['v', 'kind', 'ticket', 'actor', 'ts', 'body'];
 const TS_KEYS = ['wall', 'counter', 'actor'];
@@ -753,12 +771,95 @@ function fieldCheck(key: string, rule: FieldRule): (value: unknown, report: Repo
   };
 }
 
-/** Body check of a kind whose rules are not implemented yet. */
-function notImplemented(): never {
-  throw new Error('not implemented');
+/** True for a safe integer in `min`..`max` inclusive. */
+function inRange(min: number, max: number): FieldRule {
+  return (value) =>
+    Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max;
 }
 
-const BODY_CHECKS: Record<KnownKind, (body: JsonRecord, report: Report) => void> = {
+const isTtl = inRange(TTL_MIN_MS, TTL_MAX_MS);
+const isSetting = inRange(SETTING_MIN_MS, SETTING_MAX_MS);
+const isEventHash: FieldRule = (value) =>
+  typeof value === 'string' && EVENT_HASH_PATTERN.test(value);
+
+/**
+ * Checks a nested object at `path` against field rules, all required:
+ * reports `path` when it is not an object, `<path>.<key>` for a missing or
+ * invalid field and for any unlisted key. Returns the object when it is one.
+ */
+function checkNested(
+  value: unknown,
+  path: string,
+  rules: Record<string, FieldRule>,
+  report: Report,
+): JsonRecord | null {
+  if (!isObject(value)) {
+    report(path, 'must be a JSON object');
+    return null;
+  }
+  for (const [key, rule] of Object.entries(rules)) {
+    if (!Object.hasOwn(value, key) || !rule(value[key])) {
+      report(`${path}.${key}`, 'missing or invalid');
+    }
+  }
+  reportExtraKeys(value, Object.keys(rules), `${path}.`, report);
+  return value;
+}
+
+/** Checks a `LeaseRef` (a claim's `supersedes`, a grant's `after.lease`) at `path`. */
+function checkLeaseRef(value: unknown, path: string, report: Report): void {
+  checkNested(
+    value,
+    path,
+    { holder: nonEmptyString, expiresAt: isNonNegativeSafeInteger, event: isEventHash },
+    report,
+  );
+}
+
+/**
+ * Checks a claim's `lease` at `body.lease`, including `expiresAt = wall +
+ * min(ttl, grace)` when `ttl`, `grace` and `wall` are all valid.
+ */
+function checkClaimLease(value: unknown, wall: number | null, report: Report): void {
+  const lease = checkNested(
+    value,
+    'body.lease',
+    { ttl: isTtl, grace: isSetting, expiresAt: isNonNegativeSafeInteger },
+    report,
+  );
+  if (lease === null || wall === null || !isTtl(lease.ttl) || !isSetting(lease.grace)) {
+    return;
+  }
+  const expected = wall + Math.min(lease.ttl as number, lease.grace as number);
+  if (isNonNegativeSafeInteger(lease.expiresAt) && lease.expiresAt !== expected) {
+    report('body.lease.expiresAt', `must be ts.wall + min(ttl, grace) = ${String(expected)}`);
+  }
+}
+
+/** Checks a grant's `after`: exactly one of `released` (an event hash) or `lease`. */
+function checkGrantAfter(value: unknown, report: Report): void {
+  if (!isObject(value)) {
+    report('body.after', 'must be a JSON object');
+    return;
+  }
+  const hasReleased = Object.hasOwn(value, 'released');
+  const hasLease = Object.hasOwn(value, 'lease');
+  if (hasReleased === hasLease) {
+    report('body.after', 'must have exactly one of released, lease');
+  } else if (hasReleased) {
+    if (!isEventHash(value.released)) {
+      report('body.after.released', 'must be an event hash');
+    }
+  } else {
+    checkLeaseRef(value.lease, 'body.after.lease', report);
+  }
+  reportExtraKeys(value, ['released', 'lease'], 'body.after.', report);
+}
+
+/** A body check; `wall` is the event's valid `ts.wall`, or null. */
+type BodyCheck = (body: JsonRecord, report: Report, wall: number | null) => void;
+
+const BODY_CHECKS: Record<KnownKind, BodyCheck> = {
   'ticket.create': (body, report) => {
     checkFields(
       body,
@@ -790,20 +891,47 @@ const BODY_CHECKS: Record<KnownKind, (body: JsonRecord, report: Report) => void>
   'ticket.assign': (body, report) => {
     checkFields(body, { to: nonEmptyString }, {}, report);
   },
-  'ticket.claim': (body, report) => {
-    if (Object.hasOwn(body, 'lease') || Object.hasOwn(body, 'supersedes')) {
-      throw new Error('not implemented');
+  'ticket.claim': (body, report, wall) => {
+    if (Object.hasOwn(body, 'lease')) {
+      checkClaimLease(body.lease, wall, report);
     }
-    checkFields(body, {}, {}, report);
+    if (Object.hasOwn(body, 'supersedes')) {
+      checkLeaseRef(body.supersedes, 'body.supersedes', report);
+    }
+    reportExtraKeys(body, ['lease', 'supersedes'], 'body.', report);
   },
-  'ticket.renew': notImplemented,
+  'ticket.renew': (body, report, wall) => {
+    checkFields(body, { ttl: isTtl, expiresAt: isNonNegativeSafeInteger }, {}, report);
+    if (wall !== null && isTtl(body.ttl) && isNonNegativeSafeInteger(body.expiresAt)) {
+      const expected = wall + (body.ttl as number);
+      if (body.expiresAt !== expected) {
+        report('body.expiresAt', `must be ts.wall + ttl = ${String(expected)}`);
+      }
+    }
+  },
   'ticket.release': (body, report) => {
     checkFields(body, {}, {}, report);
   },
-  'ticket.release.force': notImplemented,
-  'ticket.queue.join': notImplemented,
-  'ticket.queue.leave': notImplemented,
-  'ticket.grant': notImplemented,
+  'ticket.release.force': (body, report) => {
+    checkFields(body, { holder: nonEmptyString, reason: nonEmptyString }, {}, report);
+  },
+  'ticket.queue.join': (body, report) => {
+    checkFields(body, { ttl: isTtl }, {}, report);
+  },
+  'ticket.queue.leave': (body, report) => {
+    checkFields(body, {}, {}, report);
+  },
+  'ticket.grant': (body, report) => {
+    checkFields(
+      body,
+      { to: nonEmptyString, ttl: isTtl, window: isSetting, after: anyValue },
+      {},
+      report,
+    );
+    if (Object.hasOwn(body, 'after')) {
+      checkGrantAfter(body.after, report);
+    }
+  },
   'ticket.handoff': (body, report) => {
     checkFields(body, { to: nonEmptyString, status: isStatus, note: nonEmptyString }, {}, report);
   },
