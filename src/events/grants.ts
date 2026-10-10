@@ -12,7 +12,10 @@
  * (`fold.ts` never imports it).
  */
 
-import type { FoldInput } from './fold.js';
+import { canonicalHash, type JsonValue } from './canonical.js';
+import { applyEvent, compareFoldOrder, dueGrant, type BoardState, type FoldInput } from './fold.js';
+import { compareHlc } from './hlc.js';
+import { isKnownEvent } from './schema.js';
 
 /**
  * The grants that are due at clock reading `now` (milliseconds since the
@@ -46,7 +49,84 @@ import type { FoldInput } from './fold.js';
  * Pure: reads no clock (only `now`), no file and no cache.
  */
 export function dueGrants(inputs: readonly FoldInput[], now: number): FoldInput[] {
-  void inputs;
-  void now;
-  throw new Error('not implemented');
+  const byHash = new Map<string, FoldInput>();
+  for (const input of inputs) {
+    if (!byHash.has(input.hash)) {
+      byHash.set(input.hash, input);
+    }
+  }
+  const ordered = [...byHash.values()].sort(compareFoldOrder);
+  // A null prototype keeps a meta key such as "__proto__" an ordinary entry, as in `fold`.
+  const state: BoardState = { tickets: {}, meta: Object.create(null) as Record<string, JsonValue> };
+  // Only a ticket with waiters can have a grant due, so only those are checked.
+  const waiting = new Set<string>();
+  const result: FoldInput[] = [];
+  for (let i = 0; i <= ordered.length; i += 1) {
+    const next = ordered[i];
+    for (let grant = missingGrant(state, waiting, next, now); grant !== null; ) {
+      result.push(grant);
+      if (!apply(state, waiting, grant)) {
+        // dueGrant derived it from this very state, so the fold must apply it.
+        throw new Error(`the derived grant ${grant.hash} was not applied`);
+      }
+      grant = missingGrant(state, waiting, next, now);
+    }
+    if (next !== undefined) {
+      apply(state, waiting, next);
+    }
+  }
+  return result;
+}
+
+/**
+ * `applyEvent`, keeping `waiting` equal to the ids of the tickets with a
+ * non-empty queue. Returns whether the event was applied.
+ */
+function apply(state: BoardState, waiting: Set<string>, input: FoldInput): boolean {
+  const { event } = input;
+  if (applyEvent(state, input).status !== 'applied') {
+    return false;
+  }
+  if (isKnownEvent(event) && event.kind !== 'board.meta') {
+    if ((state.tickets[event.ticket]?.queue.length ?? 0) > 0) {
+      waiting.add(event.ticket);
+    } else {
+      waiting.delete(event.ticket);
+    }
+  }
+  return true;
+}
+
+/**
+ * The grant that is due at `now` in `state` and sorts strictly before
+ * `next` (any position when `next` is undefined), choosing the first in
+ * fold order when several tickets have one; null when there is none.
+ */
+function missingGrant(
+  state: BoardState,
+  waiting: ReadonlySet<string>,
+  next: FoldInput | undefined,
+  now: number,
+): FoldInput | null {
+  let first: FoldInput | null = null;
+  for (const id of waiting) {
+    const ticket = state.tickets[id];
+    const event = ticket === undefined ? null : dueGrant(ticket, state.meta);
+    if (event === null || event.ts.wall > now) {
+      continue;
+    }
+    // The hash only matters when the timestamps tie, so it is computed
+    // only for a grant that does not already sort after `next`.
+    if (next !== undefined && compareHlc(event.ts, next.event.ts) > 0) {
+      continue;
+    }
+    const grant = { hash: canonicalHash(event), event };
+    if (next !== undefined && compareFoldOrder(grant, next) >= 0) {
+      continue;
+    }
+    if (first === null || compareFoldOrder(grant, first) < 0) {
+      first = grant;
+    }
+  }
+  return first;
 }
