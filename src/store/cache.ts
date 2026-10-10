@@ -475,7 +475,11 @@ export interface CatchUpOptions {
  * Brings the cache up to date with the events directory.
  *
  * Reaps stale temporary files (`reapStaleTemps`), then reads every event file
- * whose hash is not in `folded` and records it. When every newly read
+ * (each file at most once per open board, since files are immutable and
+ * named by their hash) and records every one whose hash is not in
+ * `folded`. A file whose name is a recorded hash is never folded again or
+ * reported, even when it was changed in place (only `rebuild` and `rebuild
+ * --check` report that). When every newly read
  * well-formed event sorts after `last_position` in fold order, they are
  * applied incrementally in fold order; otherwise all derived tables
  * (everything but `cursors`) are refolded from every event file. Either way,
@@ -485,13 +489,15 @@ export interface CatchUpOptions {
  *
  * Runs inside the caller's transaction when `board.db.isTransaction` is
  * true. Otherwise it first looks without taking the write lock (a plain read
- * of `folded`, a listing of `events/` and of stale temporaries): when there
- * is no stale temporary file to reap and no unrecorded file to record
- * (every unrecorded name, if any, is corrupt), it returns at once without
+ * of `folded`, a read of `events/` and a listing of stale temporaries): when
+ * there is no stale temporary file to reap, no unrecorded file to record
+ * (every unrecorded name, if any, is corrupt) and no grant due (see Grants
+ * below), it returns at once without
  * ever taking the write lock, with empty event arrays, `reaped` empty,
  * `refolded` false and `corrupt` listing the corrupt files; a concurrent
  * writer holding `BEGIN IMMEDIATE` therefore never blocks it. Only when
- * there is something to fold or reap does it take `BEGIN IMMEDIATE` (with
+ * there is something to fold, reap or grant does it call `onWriteLock` and
+ * take `BEGIN IMMEDIATE` (with
  * the busy retry, then `BoardError(5, 'busy')`), redo the work above under
  * the lock, and `COMMIT` (rolled back on error). A call that finds nothing
  * new changes no rows.
@@ -534,11 +540,16 @@ export interface CatchUpOptions {
  */
 export function catchUp(board: Board, options?: CatchUpOptions): CatchUpReport {
   const now = options?.now ?? Date.now();
+  const hooks = options?.hooks;
   if (board.db.isTransaction) {
-    return catchUpLocked(board, now);
+    return catchUpLocked(board, now, hooks);
   }
   const quiet = catchUpUnlocked(board, now);
-  return quiet ?? inImmediate(board.db, () => catchUpLocked(board, now));
+  if (quiet !== null) {
+    return quiet;
+  }
+  options?.onWriteLock?.();
+  return inImmediate(board.db, () => catchUpLocked(board, now, hooks));
 }
 
 /**

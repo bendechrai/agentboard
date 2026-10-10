@@ -105,7 +105,11 @@ export function openBoard(dir: string, options?: OpenBoardOptions): Board {
   };
   if (prepare && options?.catchUp !== false) {
     try {
-      board.opened = catchUp(board, { now: options?.now ?? Date.now() });
+      board.opened = catchUp(board, {
+        now: options?.now ?? Date.now(),
+        ...(options?.onWriteLock === undefined ? {} : { onWriteLock: options.onWriteLock }),
+        ...(options?.hooks === undefined ? {} : { hooks: options.hooks }),
+      });
     } catch (error) {
       board.close();
       throw error;

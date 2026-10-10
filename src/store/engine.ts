@@ -25,6 +25,7 @@ import {
   type UnknownReport,
   type Waiter,
 } from '../events/fold.js';
+import { dueGrants } from '../events/grants.js';
 import { compareHlc, decodeHlc, encodeHlc, type Hlc } from '../events/hlc.js';
 import { isKnownEvent, type Status } from '../events/schema.js';
 import type { Board } from './board.js';
@@ -34,10 +35,15 @@ import { BoardError } from './errors.js';
 import {
   STALE_TEMP_MS,
   TEMP_PREFIX,
+  listEventFiles,
+  readEventFile,
   readEventLog,
   reapStaleTemps,
+  writeEventFile,
+  type ReadOutcome,
   type CorruptFile,
   type MalformedFile,
+  type WriteHooks,
 } from './eventfile.js';
 import { recordedPositions } from './folded.js';
 import { staleTemps } from './temps.js';
@@ -637,9 +643,11 @@ export function refold(db: DatabaseSync, eventsDir: string): RefoldResult {
 
 /**
  * The lock-free first look of `catchUp`: when there is no stale temporary
- * file to reap and no unrecorded event or malformed file to record, returns
- * the (empty) report, with the corrupt files, without taking the write
- * lock. Returns null when there is work, which must then be redone under the
+ * file to reap, no unrecorded event or malformed file to record and no
+ * grant due at `now` and missing (`dueGrants` over every well-formed event
+ * file, so a grant due by the passage of time alone is seen), returns the
+ * (empty) report, with the corrupt files, without taking the write lock.
+ * Returns null when there is work, which must then be redone under the
  * lock by `catchUpLocked` (another process may have done it meanwhile).
  */
 export function catchUpUnlocked(board: Board, now: number): CatchUpReport | null {
@@ -647,8 +655,11 @@ export function catchUpUnlocked(board: Board, now: number): CatchUpReport | null
   if (staleTemps(eventsDir, TEMP_PREFIX, now - STALE_TEMP_MS).length > 0) {
     return null;
   }
-  const log = readEventLog(eventsDir, recordedHashes(board.db));
-  if (log.inputs.length > 0 || log.malformed.length > 0) {
+  const log = readBoardLog(board, recordedHashes(board.db));
+  if (log.fresh.length > 0 || log.malformed.length > 0) {
+    return null;
+  }
+  if (dueGrants(log.inputs, now).length > 0) {
     return null;
   }
   const report: CatchUpReport = {
@@ -662,6 +673,66 @@ export function catchUpUnlocked(board: Board, now: number): CatchUpReport | null
   };
   return report;
 }
+
+/** The event files as catch-up sees them (see `readBoardLog`). */
+interface BoardLog {
+  /** Every well-formed event file, recorded or not: what grants are derived from. */
+  inputs: FoldInput[];
+  /** The well-formed event files not yet recorded in `folded`. */
+  fresh: FoldInput[];
+  /** The malformed files not yet recorded. */
+  malformed: MalformedFile[];
+  /**
+   * The corrupt files whose name is not a recorded hash. A recorded file
+   * changed in place stays invisible to catch-up (only `rebuild` and
+   * `rebuild --check` report it), as when catch-up read only new files.
+   */
+  corrupt: CorruptFile[];
+}
+
+/**
+ * Reads every event file: grants are derived from the whole log, each at
+ * its own fold position, so the recorded files are needed as well as the
+ * new ones. Event files are immutable and named by the hash of their bytes,
+ * so the outcome of reading a well-formed or malformed file is kept for the
+ * life of `board` (`readOutcomes`), and a process that catches up
+ * repeatedly (the web server, `watch`) reads each file once. Corrupt
+ * outcomes are not kept, so such a file is read again every time.
+ */
+function readBoardLog(board: Board, recorded: ReadonlySet<string>): BoardLog {
+  let known = readOutcomes.get(board);
+  if (known === undefined) {
+    known = new Map();
+    readOutcomes.set(board, known);
+  }
+  const log: BoardLog = { inputs: [], fresh: [], malformed: [], corrupt: [] };
+  for (const name of listEventFiles(board.eventsDir)) {
+    let outcome = known.get(name);
+    if (outcome === undefined) {
+      outcome = readEventFile(board.eventsDir, name);
+      if (outcome.status !== 'corrupt') {
+        known.set(name, outcome);
+      }
+    }
+    const isNew = !recorded.has(name.replace(/\.json$/, ''));
+    if (outcome.status === 'ok') {
+      log.inputs.push(outcome.input);
+      if (isNew) {
+        log.fresh.push(outcome.input);
+      }
+    } else if (!isNew) {
+      continue;
+    } else if (outcome.status === 'malformed') {
+      log.malformed.push(outcome.file);
+    } else {
+      log.corrupt.push(outcome.file);
+    }
+  }
+  return log;
+}
+
+/** The read outcomes of `readBoardLog`, per open board, by file name. */
+const readOutcomes = new WeakMap<Board, Map<string, ReadOutcome>>();
 
 function recordedHashes(db: DatabaseSync): Set<string> {
   return new Set(
@@ -707,27 +778,37 @@ export function refoldWithCursors(
   return { result, late: resetLateCursors(db, becameEffective(db, prior)) };
 }
 
-/** `catchUp` with the transaction already held by the caller. */
-export function catchUpLocked(board: Board, now: number): CatchUpReport {
+/**
+ * `catchUp` with the transaction already held by the caller: reaps stale
+ * temporaries, writes the grants due at `now` and missing (`writeDueGrants`,
+ * with `hooks`), then folds every file not yet recorded, the grants just
+ * written included, incrementally when all of them sort after
+ * `last_position` and by a full refold otherwise, moving inbox cursors back
+ * for the events that became effective.
+ */
+export function catchUpLocked(board: Board, now: number, hooks?: WriteHooks): CatchUpReport {
   const { db, eventsDir } = board;
   const reaped = reapStaleTemps(eventsDir, { now });
   const prior = recordedFlags(db);
   const recorded = new Set(prior.keys());
-  const log = readEventLog(eventsDir, recorded);
+  const log = readBoardLog(board, recorded);
+  const grants = writeDueGrants(eventsDir, log.inputs, now, hooks);
+  const inputs = [...log.fresh, ...grants];
+  const { malformed } = log;
   const last = readLastPosition(db);
-  const late = last !== null && log.inputs.some((input) => compareToPosition(input, last) < 0);
+  const late = last !== null && inputs.some((input) => compareToPosition(input, last) < 0);
   if (!late) {
-    const batch = applyBatch(db, log.inputs, log.malformed);
+    const batch = applyBatch(db, inputs, malformed);
     const applied = new Set(batch.applied);
     resetLateCursors(
       db,
-      log.inputs
+      inputs
         .filter((input) => applied.has(input.hash))
         .map((input) => ({ hash: input.hash, ts: input.event.ts })),
     );
     return {
       ...batch,
-      malformed: log.malformed,
+      malformed,
       corrupt: log.corrupt,
       reaped,
       refolded: false,
@@ -735,16 +816,37 @@ export function catchUpLocked(board: Board, now: number): CatchUpReport {
   }
   const full = refold(db, eventsDir);
   resetLateCursors(db, becameEffective(db, prior));
-  const isNew = (hash: string): boolean => !recorded.has(hash);
+  const isNew = (file: { hash: string }): boolean => !recorded.has(file.hash);
   return {
-    applied: full.applied.filter(isNew),
-    rejected: full.rejected.filter((r) => isNew(r.hash)),
-    unknown: full.unknown.filter((u) => isNew(u.hash)),
-    malformed: full.malformed.filter((m) => isNew(m.hash)),
+    applied: full.applied.filter((hash) => !recorded.has(hash)),
+    rejected: full.rejected.filter(isNew),
+    unknown: full.unknown.filter(isNew),
+    malformed: full.malformed.filter(isNew),
     corrupt: full.corrupt,
     reaped,
     refolded: true,
   };
+}
+
+/**
+ * Writes every grant `dueGrants` returns for `inputs` (the well-formed
+ * events of the board) at `now`, as `canonicalEncode` of the derived event
+ * named by its hash (`writeEventFile` with `hooks`), in fold order, and
+ * returns them. The caller holds the write lock, so no other agentboard
+ * process writes a grant meanwhile; a file of the same name that is
+ * already there (synced in) holds the same bytes and is left as it is.
+ */
+function writeDueGrants(
+  eventsDir: string,
+  inputs: readonly FoldInput[],
+  now: number,
+  hooks: WriteHooks | undefined,
+): FoldInput[] {
+  const grants = dueGrants(inputs, now);
+  for (const grant of grants) {
+    writeEventFile(eventsDir, grant.event, hooks);
+  }
+  return grants;
 }
 
 /**

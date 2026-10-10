@@ -7,6 +7,8 @@
 
 import { openBoard, type Board } from '../store/board.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
+import type { WriteHooks } from '../store/eventfile.js';
+import { pauseHooks } from '../store/transaction.js';
 import { findBoard } from '../store/locate.js';
 import { hintFor, type HintContext } from '../guidance/hints.js';
 import { ACTOR_ENV, parseArgs, resolveActor, type ParsedCommand } from './parse.js';
@@ -167,16 +169,20 @@ export class LazyBoard {
   private board: Board | null = null;
   private readonly locate: () => string;
   private readonly stderr: (text: string) => void;
+  private readonly hooks: WriteHooks;
 
   /**
    * @param locate returns the board directory (discovery for the CLI, the
    *   directory fixed at start-up for the MCP server); called by `dir` and
    *   on first open.
    * @param stderr receives the reaped and corrupt file diagnostics.
+   * @param hooks write hooks for the grants the opening catch-up writes
+   *   (the CLI passes `pauseHooks` of its environment); none by default.
    */
-  constructor(locate: () => string, stderr: (text: string) => void) {
+  constructor(locate: () => string, stderr: (text: string) => void, hooks: WriteHooks = {}) {
     this.locate = locate;
     this.stderr = stderr;
+    this.hooks = hooks;
   }
 
   /** The board directory, without opening anything. */
@@ -190,6 +196,7 @@ export class LazyBoard {
       this.board = openBoard(this.dir(), {
         catchUp: options?.catchUp !== false,
         prepare: options?.prepare !== false,
+        hooks: this.hooks,
       });
       for (const path of this.board.opened?.reaped ?? []) {
         this.stderr(`agentboard: removed stale temporary file ${path}\n`);
@@ -207,13 +214,18 @@ export class LazyBoard {
   }
 }
 
-/** The CLI's `LazyBoard`: discovery with `io.cwd` and `io.env`. */
+/**
+ * The CLI's `LazyBoard`: discovery with `io.cwd` and `io.env`, and the
+ * crash-injection hooks of `io.env` (`AGENTBOARD_TEST_PAUSE`) for a grant
+ * written when the board is opened.
+ */
 function cliBoard(io: CliIo): LazyBoard {
   return new LazyBoard(
     () => findBoard({ cwd: io.cwd, env: io.env }).dir,
     (text) => {
       io.stderr(text);
     },
+    pauseHooks(io.env),
   );
 }
 
