@@ -925,7 +925,8 @@ export function catchUpLocked(board: Board, now: number, options?: LockedOptions
   if (watermark === null || now < watermark) {
     return { ...first, corrupt: first.corrupt ?? fresh.corrupt, reaped };
   }
-  const grants = dueGrants(readAllFiles(board, probe).inputs, now);
+  const walked = readAllFiles(board, probe);
+  const grants = dueGrants(walked.inputs, now);
   for (const grant of grants) {
     writeEventFile(board.eventsDir, grant.event, options?.hooks);
   }
@@ -943,10 +944,17 @@ export function catchUpLocked(board: Board, now: number, options?: LockedOptions
     rejected: [...first.rejected, ...second.rejected].sort(byFoldOrder),
     unknown: [...first.unknown, ...second.unknown].sort(byFoldOrder),
     malformed: first.malformed,
-    corrupt: second.corrupt ?? first.corrupt ?? fresh.corrupt,
+    // The walk reads recorded files too, so it also sees one corrupted in place.
+    corrupt: byName([...(second.corrupt ?? first.corrupt ?? fresh.corrupt), ...walked.corrupt]),
     reaped,
     refolded: first.refolded || second.refolded,
   };
+}
+
+/** `files` without repeated names, in name order. */
+function byName(files: readonly CorruptFile[]): CorruptFile[] {
+  const unique = new Map(files.map((file): [string, CorruptFile] => [file.name, file]));
+  return [...unique.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
 /** What `foldNew` did; `corrupt` is set only by a refold, which lists every corrupt file. */

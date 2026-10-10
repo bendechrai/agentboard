@@ -491,10 +491,11 @@ export interface CatchUpOptions {
  * Brings the cache up to date with the events directory.
  *
  * Reaps stale temporary files (`reapStaleTemps`), then reads every event
- * file whose hash is not in `folded` and records it. A file whose name is
- * a recorded hash is not read, so one changed in place after it was
- * recorded is never folded again or reported (only `rebuild` and `rebuild
- * --check` report it). When every newly read well-formed event sorts after
+ * file whose hash is not in `folded` and records it. A recorded file is
+ * not read at this step, so one changed in place after it was recorded is
+ * never folded again; it is reported when the grant walk below reads it
+ * (`corrupt` is then deduplicated and in name order), and by `rebuild` and
+ * `rebuild --check`. When every newly read well-formed event sorts after
  * `last_position` in fold order, they are applied incrementally in fold
  * order; otherwise all derived tables (everything but `cursors`) are
  * refolded from every event file. Either way, afterwards

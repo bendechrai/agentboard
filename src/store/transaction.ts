@@ -261,8 +261,9 @@ function decide(board: Board, actor: string, operation: Operation, t: number): D
  * (when the board is opened or inside the command transaction), so a
  * read-only command that writes a due grant pauses too: it prints
  * `agentboard: paused at <point> <path>` plus a newline to stderr and then
- * blocks synchronously (never returning) until the process is killed. A test kills it with SIGKILL there. Any other
- * value, and the empty string, is ignored.
+ * blocks synchronously (never returning) until the process is killed. A
+ * test kills it with SIGKILL there. Any other value, and the empty string,
+ * is ignored.
  */
 export const TEST_PAUSE_ENV = 'AGENTBOARD_TEST_PAUSE';
 
