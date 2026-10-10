@@ -469,6 +469,17 @@ export interface CatchUpOptions {
    * command's catch-up.
    */
   hooks?: WriteHooks;
+  /**
+   * Read probe: called with the file name (`<hash>.json`) each time this
+   * call reads the bytes of an event file from disk, whether for folding or
+   * for deriving grants, and never for listing the events directory or for
+   * a file whose outcome was already read earlier on the same board handle.
+   * A call that finds no unrecorded file name, no stale temporary file and
+   * a clock before the cache's `grant_watermark` (or no watermark) calls it
+   * zero times (board-cache: "Cache schema", scenario "List reads the
+   * cache").
+   */
+  onReadEventFile?: (name: string) => void;
 }
 
 /**

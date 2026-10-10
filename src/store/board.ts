@@ -59,6 +59,8 @@ export interface OpenBoardOptions {
   onWriteLock?: () => void;
   /** Passed to `catchUp` as `hooks` (crash injection in grant writes). */
   hooks?: WriteHooks;
+  /** Passed to `catchUp` as `onReadEventFile` (the read probe). */
+  onReadEventFile?: (name: string) => void;
 }
 
 /**
