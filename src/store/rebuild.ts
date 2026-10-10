@@ -96,10 +96,11 @@ export interface CacheDifference {
   table: DumpTable;
   /**
    * The row's primary key as text: the id for `tickets`, `<ticket>#<seq>`
-   * for `comments` and `links`, the hash for `folded`, the key for `meta`.
+   * for `comments` and `links`, `<ticket>#<position>` for `waiters`, the
+   * hash for `folded`, the key for `meta`.
    */
   key: string;
-  /** The ticket id for `tickets`, `comments` and `links` rows; else null. */
+  /** The ticket id for `tickets`, `comments`, `links` and `waiters` rows; else null. */
   ticket: string | null;
   /** The live row (column name to value), or null when only the rebuild has it. */
   live: Record<string, JsonValue> | null;

@@ -5,7 +5,12 @@
  * board-openspec-integration: "Tickets reference tasks").
  *
  * Pure: the result is a function of the set of inputs only, never of their
- * order in the array or of any clock.
+ * order in the array or of any clock. Every lease, queue and grant decision
+ * is made from event timestamps and bodies alone (board-events: "Fold
+ * semantics"). This module stays browser-safe: nothing it reaches may
+ * import a `node:` specifier (src/__tests__/layering.test.ts), so the grant
+ * comparison cannot reach `canonical.ts` as it stands (it imports
+ * `node:crypto` for hashing).
  */
 
 import type { JsonValue } from './json.js';
@@ -13,6 +18,7 @@ import { compareHlc, type Hlc } from './hlc.js';
 import {
   isKnownEvent,
   type BoardEvent,
+  type TicketGrantEvent,
   type Status,
   type TaskRef,
   type TicketCreateEvent,
@@ -40,7 +46,11 @@ export type RejectionReason =
   | 'already-assigned'
   | 'not-assignee'
   | 'checklist-index'
-  | 'needs-task-link';
+  | 'needs-task-link'
+  | 'queued'
+  | 'holder-changed'
+  | 'invalid-queue'
+  | 'stale-grant';
 
 /** An event the fold refused. It stays in the log and in this report. */
 export interface Rejected {
@@ -81,6 +91,51 @@ export interface ChecklistItem {
   done: boolean;
 }
 
+/**
+ * A ticket's lease (board-events: "Claim leases"). Set by an applied leased
+ * `ticket.claim` (`ttl` and `expiresAt` from its `body.lease`, unconfirmed),
+ * an applied `ticket.renew` (its `ttl` and `expiresAt`, confirmed) or an
+ * applied `ticket.grant` (its `ttl`, `expiresAt` = grant wall + `window`,
+ * unconfirmed).
+ */
+export interface Lease {
+  /** The ttl the holder asked for, in milliseconds. */
+  ttl: number;
+  /** When the lease expires, in milliseconds since the epoch. */
+  expiresAt: number;
+  /** Hash of the event that set this lease. */
+  event: string;
+  /** False until the holder's first renew; true after any applied renew. */
+  confirmed: boolean;
+}
+
+/** One waiter of a ticket's queue, from its applied `ticket.queue.join`. */
+export interface Waiter {
+  actor: string;
+  /** The `ttl` of the join, given to the grant. */
+  ttl: number;
+  /** Hash of the join event. */
+  event: string;
+  /** `ts` of the join event. */
+  joined: Hlc;
+}
+
+/**
+ * When, and by which event, the ticket becomes or became available for a
+ * grant (board-cache: `available_at`, `available_event`). Derived from the
+ * other fields after every applied event:
+ * - unassigned: the latest applied `ticket.release` or
+ *   `ticket.release.force` (`at` its wall, `event` its hash), or null when
+ *   there has been none;
+ * - assigned with a lease: `at` = `lease.expiresAt + LEASE_SKEW_MS`, `event`
+ *   = `lease.event` (the lease lapses then);
+ * - assigned without a lease: null (it never lapses).
+ */
+export interface Availability {
+  at: number;
+  event: string;
+}
+
 /** How a ticket was closed: exactly the body of its `ticket.close` event. */
 export type CloseDisposition = { decision: string } | { noDecision: true };
 
@@ -99,6 +154,12 @@ export interface Ticket {
   /** While `status` is `blocked`: the status it was blocked from; else null. */
   blockedFrom: Status | null;
   assignee: string | null;
+  /** The current lease, or null (see `Lease`); null at create. */
+  lease: Lease | null;
+  /** Waiters in fold order of their join events; `[]` at create. */
+  queue: Waiter[];
+  /** See `Availability`; null at create. */
+  available: Availability | null;
   /** From create, as given; `[]` when not given. */
   labels: string[];
   /** From create or the latest `ticket.link` with a task; else null. */
@@ -216,21 +277,61 @@ export function isTransitionAllowed(from: Status, to: Status, blockedFrom: Statu
  *   to, blockedFrom)`; then `needs-task-link` if `to` is `implementing` and
  *   `task` is null. Moving to `blocked` records the previous status in
  *   `blockedFrom`; leaving `blocked` clears it.
- * - `ticket.assign`: sets `assignee` to `body.to` unconditionally.
- * - `ticket.claim`: `already-assigned` if `assignee` is not null (even when
- *   it is the claiming actor); otherwise `assignee` becomes the event actor.
+ * - `ticket.assign`: sets `assignee` to `body.to` unconditionally and
+ *   clears `lease`.
+ * - `ticket.claim` by actor `A` (board-events: "Claim leases", "Waiting
+ *   queue"), checked in this order:
+ *   1. `assignee` is `A`: `already-assigned` (a retried claim).
+ *   2. `queue` is not empty: `queued`.
+ *   3. `assignee` is null: applied; `assignee` = `A`, `lease` = the
+ *      claim's own lease (`{ttl, expiresAt, event: <claim hash>,
+ *      confirmed: false}`) or null without one; any `supersedes` is ignored.
+ *   4. Otherwise (held by another actor) a takeover: applied only when
+ *      `body.supersedes` is present, `supersedes.holder` equals `assignee`,
+ *      `lease` is not null with `expiresAt` equal to `supersedes.expiresAt`
+ *      and `event` equal to `supersedes.event`, and `ts.wall >=
+ *      lease.expiresAt + LEASE_SKEW_MS`; then as in 3. Else
+ *      `already-assigned`.
+ * - `ticket.renew`: `not-assignee` unless `assignee` equals the event
+ *   actor; otherwise `lease` = `{ttl, expiresAt, event: <renew hash>,
+ *   confirmed: true}`, whether or not the previous lease expired or
+ *   existed.
  * - `ticket.release`: `not-assignee` unless `assignee` equals the event
  *   actor (so releasing an unassigned ticket is refused); otherwise
- *   `assignee` becomes null.
+ *   `assignee` and `lease` become null.
+ * - `ticket.release.force`: `holder-changed` unless `assignee` equals
+ *   `body.holder` (an unassigned ticket included); otherwise `assignee` and
+ *   `lease` become null. Status is unchanged. The event actor is not
+ *   checked.
+ * - `ticket.queue.join` by `A`: `invalid-queue` when `A` is the assignee,
+ *   `A` is already queued, or the ticket is unassigned with an empty queue;
+ *   otherwise appends `{actor: A, ttl, event: <hash>, joined: ts}` to
+ *   `queue` (which therefore stays in fold order of the joins).
+ * - `ticket.queue.leave` by `A`: `invalid-queue` unless `A` is queued;
+ *   otherwise removes `A` from `queue`.
+ * - `ticket.grant`: `stale-grant` unless the event's canonical bytes (as
+ *   `canonicalEncode` writes them) equal those of `dueGrant(ticket,
+ *   state.meta)` for the state at its position (a null derivation is stale
+ *   too); otherwise `assignee` =
+ *   `body.to`, the head waiter is removed from `queue`, and `lease` =
+ *   `{ttl: body.ttl, expiresAt: ts.wall + body.window, event: <grant
+ *   hash>, confirmed: false}`.
  * - `ticket.handoff`: when `body.status` equals the current status (any
  *   status, `blocked` and `merged` included) it is a reassignment: no
  *   transition checks, status and `blockedFrom` untouched. Otherwise the
  *   same checks as a move to `body.status`, in the same order; if either
  *   fails the whole event is rejected and none of its effects apply. When
- *   applied, as one event: `assignee` = `body.to`, status moves as for
- *   `ticket.move` (if it changes), and a comment with `text` = `body.note`
- *   by the event actor is appended. No assign, move or comment event is
- *   synthesized; version goes up by exactly 1.
+ *   applied, as one event: `assignee` = `body.to`, `lease` = null, status
+ *   moves as for `ticket.move` (if it changes), and a comment with `text` =
+ *   `body.note` by the event actor is appended. No assign, move or comment
+ *   event is synthesized; version goes up by exactly 1. The queue does not
+ *   constrain a handoff.
+ *
+ * After every applied ticket event `available` is recomputed as
+ * `Availability` documents; no kind other than claim, renew, release,
+ * forced release, assign, handoff and grant changes `lease`, and only join,
+ * leave and grant change `queue`. Every applied event of these kinds counts
+ * in `version` like any other.
  * - `ticket.link`: `task` sets `task` (replacing any earlier one) and clears
  *   `adhoc`; `pr` and `decision` append to `links`.
  * - `ticket.close`: `invalid-transition` if the ticket is already closed or
@@ -357,6 +458,9 @@ function createTicket(event: TicketCreateEvent): Ticket {
     links: [],
     closed: false,
     disposition: null,
+    lease: null,
+    queue: [],
+    available: null,
     createdBy: event.actor,
     createdAt: { ...event.ts },
     version: 1,
@@ -388,6 +492,9 @@ function applyToTicket(
       ticket.assignee = event.body.to;
       return null;
     case 'ticket.claim':
+      if (event.body.lease !== undefined || event.body.supersedes !== undefined) {
+        throw new Error('not implemented');
+      }
       if (ticket.assignee !== null) {
         return 'already-assigned';
       }
@@ -442,6 +549,12 @@ function applyToTicket(
         ticket.checklist.push({ text: item.text, done: item.done });
       }
       return null;
+    case 'ticket.renew':
+    case 'ticket.release.force':
+    case 'ticket.queue.join':
+    case 'ticket.queue.leave':
+    case 'ticket.grant':
+      throw new Error('not implemented');
   }
 }
 
@@ -460,4 +573,62 @@ function moveTo(ticket: Ticket, to: Status): RejectionReason | null {
   ticket.blockedFrom = to === 'blocked' ? ticket.status : null;
   ticket.status = to;
   return null;
+}
+
+/**
+ * The grace a leased claim records (board-events: "Board lease settings"):
+ * `meta['lease.grace']` when it is a safe integer in
+ * `SETTING_MIN_MS`..`SETTING_MAX_MS` inclusive, otherwise (missing, out of
+ * range, or not an integer) `GRACE_DEFAULT_MS`. Pure.
+ */
+export function leaseGrace(meta: Readonly<Record<string, JsonValue>>): number {
+  void meta;
+  throw new Error('not implemented');
+}
+
+/**
+ * The acceptance window of a grant (board-events: "Board lease settings"):
+ * `meta['queue.window']` when it is a safe integer in
+ * `SETTING_MIN_MS`..`SETTING_MAX_MS` inclusive, otherwise
+ * `WINDOW_DEFAULT_MS`. Pure.
+ */
+export function queueWindow(meta: Readonly<Record<string, JsonValue>>): number {
+  void meta;
+  throw new Error('not implemented');
+}
+
+/**
+ * The grant due for `ticket` (board-events: "Grants"), derived from the
+ * ticket and the board settings as folded at the grant's position, or null
+ * when none is due. Pure: reads no clock; whether the grant's slot time
+ * has come is the caller's question. The fold calls it with the state just
+ * before a `ticket.grant` and applies that grant only when it is
+ * byte-identical (`canonicalEncode`) to the result; catch-up uses it to
+ * write grants.
+ *
+ * Null when `ticket.queue` is empty, or `ticket.available` is null (an
+ * assigned ticket without a lease never lapses). Otherwise, with `head =
+ * ticket.queue[0]`, `F = ticket.available.at` and `S = max(F,
+ * head.joined.wall) + 1`, the event
+ *
+ * ```
+ * { v: 1, kind: 'ticket.grant', ticket: ticket.id, actor: SYSTEM_ACTOR,
+ *   ts: { wall: S, counter: 0, actor: SYSTEM_ACTOR },
+ *   body: { to: head.actor, ttl: head.ttl, window: queueWindow(meta),
+ *           after } }
+ * ```
+ *
+ * where `after` is `{ released: ticket.available.event }` when the ticket
+ * is unassigned, and `{ lease: { holder: ticket.assignee, expiresAt:
+ * ticket.lease.expiresAt, event: ticket.lease.event } }` when it is held
+ * under a lease (whose lapse is `F`). The result is a fresh object that
+ * shares nothing with `ticket` or `meta`.
+ */
+export function dueGrant(
+  ticket: Ticket,
+  meta: Readonly<Record<string, JsonValue>>,
+): TicketGrantEvent | null {
+  void ticket;
+  void meta;
+  throw new Error('not implemented');
 }

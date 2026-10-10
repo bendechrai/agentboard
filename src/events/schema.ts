@@ -14,6 +14,50 @@ import { isUlid } from './ulid.js';
 /** The schema version this code writes and folds. */
 export const SCHEMA_VERSION = 1;
 
+/**
+ * Clock skew tolerance of the lease rules, in milliseconds (board-events:
+ * "Claim leases", "Grants"). A lease that expires at `expiresAt` can be
+ * taken over, and makes a grant due, only from `expiresAt + LEASE_SKEW_MS`.
+ */
+export const LEASE_SKEW_MS = 60_000;
+
+/** Smallest `ttl` (claim lease, renew, queue join, grant), inclusive: 30 seconds. */
+export const TTL_MIN_MS = 30_000;
+
+/** Largest `ttl`, inclusive: 7 days. */
+export const TTL_MAX_MS = 604_800_000;
+
+/**
+ * Smallest grace (a claim lease's `grace`, the `lease.grace` setting) and
+ * window (a grant's `window`, the `queue.window` setting), inclusive: 30
+ * seconds.
+ */
+export const SETTING_MIN_MS = 30_000;
+
+/** Largest grace or window, inclusive: 10 minutes. */
+export const SETTING_MAX_MS = 600_000;
+
+/** Grace of a leased claim when `lease.grace` is missing or out of range: 2 minutes. */
+export const GRACE_DEFAULT_MS = 120_000;
+
+/** Window of a grant when `queue.window` is missing or out of range: 2 minutes. */
+export const WINDOW_DEFAULT_MS = 120_000;
+
+/** `board.meta` key of the grace given to a leased claim (board-events: "Board lease settings"). */
+export const LEASE_GRACE_KEY = 'lease.grace';
+
+/** `board.meta` key of the acceptance window given to a grant. */
+export const QUEUE_WINDOW_KEY = 'queue.window';
+
+/**
+ * The reserved system actor (board-events: "Reserved system actor"). It is
+ * the actor of every `ticket.grant` and of no other event.
+ */
+export const SYSTEM_ACTOR = 'agentboard';
+
+/** Pattern of an event hash: 64 lowercase hex characters. */
+export const EVENT_HASH_PATTERN = /^[0-9a-f]{64}$/;
+
 /** Ticket statuses, in board order. `merged` is terminal. */
 export const STATUSES = ['todo', 'tests', 'implementing', 'review', 'merged', 'blocked'] as const;
 
@@ -109,8 +153,89 @@ export interface TicketAssignBody {
   to: string;
 }
 
-/** `ticket.claim` and `ticket.release` carry an empty body `{}`. */
+/** `ticket.release` and `ticket.queue.leave` carry an empty body `{}`. */
 export type EmptyBody = Record<string, never>;
+
+/**
+ * The lease a `ticket.claim` asks for. All three are integer milliseconds:
+ * `ttl` in `TTL_MIN_MS`..`TTL_MAX_MS`, `grace` in
+ * `SETTING_MIN_MS`..`SETTING_MAX_MS`, and `expiresAt` exactly the event's
+ * `ts.wall + min(ttl, grace)`.
+ */
+export interface ClaimLease {
+  ttl: number;
+  grace: number;
+  expiresAt: number;
+}
+
+/**
+ * The lease generation a takeover claim replaces: the holder, the lease's
+ * `expiresAt` and the hash of the event that set the lease (64 lowercase
+ * hex characters).
+ */
+export interface LeaseRef {
+  /** Non-empty actor name. */
+  holder: string;
+  /** Non-negative safe integer. */
+  expiresAt: number;
+  /** Matches `EVENT_HASH_PATTERN`. */
+  event: string;
+}
+
+/**
+ * `ticket.claim`: the event's actor claims the ticket. Both fields are
+ * optional; a claim with neither has the empty body `{}`, byte for byte the
+ * claim written before leases existed.
+ */
+export interface TicketClaimBody {
+  lease?: ClaimLease;
+  supersedes?: LeaseRef;
+}
+
+/**
+ * `ticket.renew`: the assignee confirms or resets its lease. `ttl` in
+ * `TTL_MIN_MS`..`TTL_MAX_MS`; `expiresAt` exactly `ts.wall + ttl`.
+ */
+export interface TicketRenewBody {
+  ttl: number;
+  expiresAt: number;
+}
+
+/** `ticket.release.force`: an actor breaks `holder`'s hold, saying why. */
+export interface TicketReleaseForceBody {
+  /** Non-empty actor name of the holder being released. */
+  holder: string;
+  /** Non-empty. */
+  reason: string;
+}
+
+/** `ticket.queue.join`: the actor waits for the ticket, asking for a lease of `ttl`. */
+export interface TicketQueueJoinBody {
+  /** In `TTL_MIN_MS`..`TTL_MAX_MS`. */
+  ttl: number;
+}
+
+/**
+ * What made the ticket available for a grant: exactly one of `released`
+ * (the hash of the applied `ticket.release` or `ticket.release.force`) or
+ * `lease` (the lapsed lease).
+ */
+export type GrantAfter = { released: string } | { lease: LeaseRef };
+
+/**
+ * `ticket.grant`, written only by `SYSTEM_ACTOR`: the ticket passes to the
+ * head waiter `to`, with the `ttl` of its join and the acceptance `window`
+ * (in `SETTING_MIN_MS`..`SETTING_MAX_MS`).
+ */
+export interface TicketGrantBody {
+  /** Non-empty actor name. */
+  to: string;
+  /** In `TTL_MIN_MS`..`TTL_MAX_MS`. */
+  ttl: number;
+  /** In `SETTING_MIN_MS`..`SETTING_MAX_MS`. */
+  window: number;
+  after: GrantAfter;
+}
 
 /** `ticket.handoff`: assign, move and comment in one event. */
 export interface TicketHandoffBody {
@@ -178,8 +303,16 @@ export type TicketCreateEvent = TicketEnvelope<'ticket.create', TicketCreateBody
 export type TicketCommentEvent = TicketEnvelope<'ticket.comment', TicketCommentBody>;
 export type TicketMoveEvent = TicketEnvelope<'ticket.move', TicketMoveBody>;
 export type TicketAssignEvent = TicketEnvelope<'ticket.assign', TicketAssignBody>;
-export type TicketClaimEvent = TicketEnvelope<'ticket.claim', EmptyBody>;
+export type TicketClaimEvent = TicketEnvelope<'ticket.claim', TicketClaimBody>;
+export type TicketRenewEvent = TicketEnvelope<'ticket.renew', TicketRenewBody>;
 export type TicketReleaseEvent = TicketEnvelope<'ticket.release', EmptyBody>;
+export type TicketReleaseForceEvent = TicketEnvelope<
+  'ticket.release.force',
+  TicketReleaseForceBody
+>;
+export type TicketQueueJoinEvent = TicketEnvelope<'ticket.queue.join', TicketQueueJoinBody>;
+export type TicketQueueLeaveEvent = TicketEnvelope<'ticket.queue.leave', EmptyBody>;
+export type TicketGrantEvent = TicketEnvelope<'ticket.grant', TicketGrantBody>;
 export type TicketHandoffEvent = TicketEnvelope<'ticket.handoff', TicketHandoffBody>;
 export type TicketLinkEvent = TicketEnvelope<'ticket.link', TicketLinkBody>;
 export type TicketCloseEvent = TicketEnvelope<'ticket.close', TicketCloseBody>;
@@ -205,7 +338,12 @@ export type TicketEvent =
   | TicketMoveEvent
   | TicketAssignEvent
   | TicketClaimEvent
+  | TicketRenewEvent
   | TicketReleaseEvent
+  | TicketReleaseForceEvent
+  | TicketQueueJoinEvent
+  | TicketQueueLeaveEvent
+  | TicketGrantEvent
   | TicketHandoffEvent
   | TicketLinkEvent
   | TicketCloseEvent
@@ -222,7 +360,12 @@ export const KNOWN_KINDS = [
   'ticket.move',
   'ticket.assign',
   'ticket.claim',
+  'ticket.renew',
   'ticket.release',
+  'ticket.release.force',
+  'ticket.queue.join',
+  'ticket.queue.leave',
+  'ticket.grant',
   'ticket.handoff',
   'ticket.link',
   'ticket.close',
@@ -318,7 +461,40 @@ export type ValidationResult =
  * - `ticket.comment`: `text` required non-empty string.
  * - `ticket.move`: `to` required, one of `STATUSES`.
  * - `ticket.assign`: `to` required non-empty string.
- * - `ticket.claim`, `ticket.release`: no keys.
+ * - `ticket.claim`: two optional keys.
+ *   - `lease`: not an object is `body.lease`. `ttl` missing, not a safe
+ *     integer or outside `TTL_MIN_MS`..`TTL_MAX_MS` is `body.lease.ttl`;
+ *     `grace` likewise outside `SETTING_MIN_MS`..`SETTING_MAX_MS` is
+ *     `body.lease.grace`; `expiresAt` missing or not a non-negative safe
+ *     integer is `body.lease.expiresAt`, and so is an `expiresAt` that is
+ *     not exactly `ts.wall + min(ttl, grace)`, a check made only when
+ *     `ttl`, `grace` and `ts.wall` are themselves valid (no cascade). Any
+ *     other key of the lease is `body.lease.<key>`.
+ *   - `supersedes`: not an object is `body.supersedes`; `holder` not a
+ *     non-empty string is `body.supersedes.holder`; `expiresAt` not a
+ *     non-negative safe integer is `body.supersedes.expiresAt`; `event` not
+ *     matching `EVENT_HASH_PATTERN` is `body.supersedes.event`; any other
+ *     key is `body.supersedes.<key>`. Missing parts are reported the same
+ *     way.
+ * - `ticket.renew`: `ttl` (safe integer in `TTL_MIN_MS`..`TTL_MAX_MS`,
+ *   else `body.ttl`) and `expiresAt` (non-negative safe integer, else
+ *   `body.expiresAt`), both required; an `expiresAt` that is not exactly
+ *   `ts.wall + ttl` is `body.expiresAt`, checked only when `ttl` and
+ *   `ts.wall` are valid.
+ * - `ticket.release`, `ticket.queue.leave`: no keys.
+ * - `ticket.release.force`: `holder` and `reason` non-empty strings, both
+ *   required.
+ * - `ticket.queue.join`: `ttl` required, as for `ticket.renew`.
+ * - `ticket.grant`: `to` non-empty string, `ttl` as for `ticket.renew`,
+ *   `window` a safe integer in `SETTING_MIN_MS`..`SETTING_MAX_MS` (else
+ *   `body.window`) and `after`, all required. `after` missing or not an
+ *   object is `body.after`; zero or both of `released` and `lease` is one
+ *   reason `body.after`; `released` not matching `EVENT_HASH_PATTERN` is
+ *   `body.after.released`; `lease` is checked like `supersedes` above under
+ *   `body.after.lease` (not an object: `body.after.lease`; parts:
+ *   `body.after.lease.holder`, `.expiresAt`, `.event`, other keys
+ *   `body.after.lease.<key>`); any other key of `after` is
+ *   `body.after.<key>`.
  * - `ticket.handoff`: `to` non-empty string, `status` one of `STATUSES`,
  *   `note` non-empty string; all required.
  * - `ticket.link`: exactly one of `task` (TaskRef, reported as for create),
@@ -339,7 +515,13 @@ export type ValidationResult =
  * - `board.meta`: `key` non-empty string and `value` (any JSON value,
  *   including null) both required.
  *
- * Unknown kinds: only the envelope is checked, and `body` must be an object.
+ * Reserved actor (board-events: "Reserved system actor"): an event of any
+ * kind other than `ticket.grant`, known or unknown, whose `actor` is
+ * `SYSTEM_ACTOR`, and a `ticket.grant` whose valid `actor` is anything
+ * else, are malformed with one reason `actor`.
+ *
+ * Unknown kinds: only the envelope (including the reserved actor rule) is
+ * checked, and `body` must be an object.
  *
  * Every applicable reason is returned (a missing field yields exactly one
  * reason, not a cascade); order is unspecified.
@@ -366,6 +548,10 @@ export function validateEvent(value: unknown): ValidationResult {
     report('actor', 'must be a non-empty string');
   }
   checkTs(value.ts, actor, report);
+  if (actor === SYSTEM_ACTOR || kind === 'ticket.grant') {
+    // The reserved actor rule is part of this change's stubs.
+    throw new Error('not implemented');
+  }
   const body = value.body;
   if (!isObject(body)) {
     report('body', 'must be a JSON object');
@@ -567,6 +753,11 @@ function fieldCheck(key: string, rule: FieldRule): (value: unknown, report: Repo
   };
 }
 
+/** Body check of a kind whose rules are not implemented yet. */
+function notImplemented(): never {
+  throw new Error('not implemented');
+}
+
 const BODY_CHECKS: Record<KnownKind, (body: JsonRecord, report: Report) => void> = {
   'ticket.create': (body, report) => {
     checkFields(
@@ -600,11 +791,19 @@ const BODY_CHECKS: Record<KnownKind, (body: JsonRecord, report: Report) => void>
     checkFields(body, { to: nonEmptyString }, {}, report);
   },
   'ticket.claim': (body, report) => {
+    if (Object.hasOwn(body, 'lease') || Object.hasOwn(body, 'supersedes')) {
+      throw new Error('not implemented');
+    }
     checkFields(body, {}, {}, report);
   },
+  'ticket.renew': notImplemented,
   'ticket.release': (body, report) => {
     checkFields(body, {}, {}, report);
   },
+  'ticket.release.force': notImplemented,
+  'ticket.queue.join': notImplemented,
+  'ticket.queue.leave': notImplemented,
+  'ticket.grant': notImplemented,
   'ticket.handoff': (body, report) => {
     checkFields(body, { to: nonEmptyString, status: isStatus, note: nonEmptyString }, {}, report);
   },

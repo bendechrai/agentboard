@@ -19,6 +19,12 @@
  *   status       TEXT NOT NULL,
  *   blocked_from TEXT,            -- Ticket.blockedFrom
  *   assignee     TEXT,
+ *   lease_ttl        INTEGER,     -- Ticket.lease: the four lease_* columns
+ *   lease_expires_at INTEGER,     --   are all null (no lease) or all
+ *   lease_event      TEXT,        --   non-null; lease_confirmed is 0 or 1
+ *   lease_confirmed  INTEGER,
+ *   available_at     INTEGER,     -- Ticket.available: both null or both
+ *   available_event  TEXT,        --   non-null
  *   version      INTEGER NOT NULL,
  *   updated_at   TEXT NOT NULL,   -- encodeHlc(Ticket.updatedAt)
  *   created_by   TEXT NOT NULL,
@@ -32,6 +38,15 @@
  *   decision     TEXT,            -- decision path when closed with one;
  *                                 --   null when open or closed with noDecision
  *   checklist    TEXT NOT NULL    -- JSON array of {"done":bool,"text":string}
+ * );
+ * CREATE TABLE waiters (
+ *   ticket   TEXT NOT NULL REFERENCES tickets(id),
+ *   position INTEGER NOT NULL,    -- 0-based index in Ticket.queue
+ *   actor    TEXT NOT NULL,
+ *   ttl      INTEGER NOT NULL,
+ *   hash     TEXT NOT NULL,       -- Waiter.event, the join event
+ *   ts       TEXT NOT NULL,       -- encodeHlc(Waiter.joined)
+ *   PRIMARY KEY (ticket, position)
  * );
  * CREATE TABLE comments (
  *   ticket TEXT NOT NULL REFERENCES tickets(id),
@@ -122,7 +137,11 @@ import type { CorruptFile, MalformedFile } from './eventfile.js';
 /** File name of the cache inside the board directory. */
 export const CACHE_FILE = 'cache.sqlite';
 
-/** Version of the cache schema above, stored in `meta.schema_version`. */
+/**
+ * Version of the cache schema above, stored in `meta.schema_version`. It is
+ * 2 from the lease and queue columns and the `waiters` table on (board-cache:
+ * "Cache schema"), so a version 1 cache is rebuilt on first open.
+ */
 export const CACHE_SCHEMA_VERSION = 1;
 
 /** Minimum busy timeout on every connection, in milliseconds. */
@@ -489,7 +508,11 @@ export function readState(db: DatabaseSync): BoardState {
   return inSnapshot(db, () => loadState(db));
 }
 
-/** Tables covered by the canonical dump, in dump key order. */
+/**
+ * Tables covered by the canonical dump, in dump key order: `comments`,
+ * `folded`, `links`, `meta`, `tickets` and `waiters` (by ticket, then
+ * position; a `CacheDifference` key `<ticket>#<position>`).
+ */
 export const DUMP_TABLES = ['comments', 'folded', 'links', 'meta', 'tickets'] as const;
 
 /** A table covered by the canonical dump. */

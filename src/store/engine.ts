@@ -240,6 +240,9 @@ function toTicket(row: Row, comments: Row[], links: Row[]): Ticket {
     status: text(row, 'status') as Status,
     blockedFrom: nullableText(row, 'blocked_from') as Status | null,
     assignee: nullableText(row, 'assignee'),
+    lease: null,
+    queue: [],
+    available: null,
     labels: JSON.parse(text(row, 'labels')) as string[],
     task:
       source === null ? null : { source, ref: text(row, 'task_ref'), item: text(row, 'task_item') },
