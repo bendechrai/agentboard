@@ -319,7 +319,9 @@ Every command that catches up (every command except `rebuild` and
 write each grant that is due (its slot time at or before the local clock)
 and not yet present, exactly as the fold derives it, and fold it like a
 late-arriving event. A read-only command SHALL take the write lock only
-when there is something to fold, reap or grant.
+when there is something to fold, reap or grant. Catch-up SHALL read event
+files to derive grants only when the local clock has reached the cache's
+grant watermark (see board-cache "Cache schema").
 
 #### Scenario: Inbox writes the due grant
 - **WHEN** `merger-1` released T1 with `merger-2` queued, no other command has run, and `inbox --as merger-2` runs
