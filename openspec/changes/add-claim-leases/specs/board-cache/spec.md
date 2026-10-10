@@ -23,7 +23,10 @@ SHALL read event files only when an event file name is not recorded in
 `folded`, a temporary file is stale, or the local clock has reached
 `grant_watermark`; otherwise it lists the event file names and reads the
 cache only. Adding the lease and queue state SHALL increase the cache
-schema version, so an older cache is rebuilt on first open. Query commands SHALL read ticket state only from the
+schema version, so an older cache is rebuilt on first open. Adding
+`grant_watermark` SHALL increase it again, so a cache written before that
+row existed, whose missing row would read as no grant ever being due, is
+rebuilt on first open too. Query commands SHALL read ticket state only from the
 cache, inside one read transaction so that every field comes from one
 snapshot; `show` MAY additionally read the event files that `folded` marks
 as unknown kinds (to report them) and, with `--raw`, the ticket's event
@@ -45,6 +48,10 @@ of the ticket to display them.
 #### Scenario: Old cache is rebuilt
 - **WHEN** a cache written by a version without leases is opened
 - **THEN** it is rebuilt from the events before the command proceeds, and inbox entries may be delivered again but none is skipped
+
+#### Scenario: Cache without the watermark is rebuilt
+- **WHEN** a cache written with the lease and queue state but without `grant_watermark` is opened on a board with a held lease and a waiter
+- **THEN** it is rebuilt from the events before the command proceeds, its `grant_watermark` is the slot of the waiter's grant, and the grant is written once the clock reaches it
 
 #### Scenario: Queue survives a rebuild
 - **WHEN** a ticket has three waiters, one of whom left and rejoined, and `agentboard rebuild` runs
