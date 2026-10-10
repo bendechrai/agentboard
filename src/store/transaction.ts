@@ -164,10 +164,10 @@ export function runCommand(
   try {
     const t = now();
     // 1. Catch-up, under the write lock, writing the grants due at t.
-    const catchUp = catchUpLocked(board, t, hooks);
+    const catchUp = catchUpLocked(board, t, { hooks });
 
     // 2 to 4. Decide. A refusal commits what catch-up did (folded files and
-    // written grants, which no longer depend on this command) and nothing else.
+    // written grants, which do not depend on this command) and nothing else.
     let decided: Decided;
     try {
       decided = decide(board, actor, operation, t);
@@ -255,13 +255,13 @@ function decide(board: Board, actor: string, operation: Operation, t: number): D
 }
 
 /**
- * Environment variable for crash injection. When set to one of
- * the `PausePoint` values, a command pauses at that point of the first
- * event file it writes, whether its own event or a grant written by its
- * catch-up (when the board is opened or inside the command transaction),
- * so a read-only command that writes a due grant pauses too: it prints `agentboard: paused at <point> <path>` plus a
- * newline to stderr and then blocks synchronously (never returning) until
- * the process is killed. A test kills it with SIGKILL there. Any other
+ * Environment variable for crash injection. When set to one of the
+ * `PausePoint` values, a command pauses at that point of the first event
+ * file it writes, whether its own event or a grant written by its catch-up
+ * (when the board is opened or inside the command transaction), so a
+ * read-only command that writes a due grant pauses too: it prints
+ * `agentboard: paused at <point> <path>` plus a newline to stderr and then
+ * blocks synchronously (never returning) until the process is killed. A test kills it with SIGKILL there. Any other
  * value, and the empty string, is ignored.
  */
 export const TEST_PAUSE_ENV = 'AGENTBOARD_TEST_PAUSE';

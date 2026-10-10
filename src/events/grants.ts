@@ -63,7 +63,7 @@ export function dueGrants(inputs: readonly FoldInput[], now: number): FoldInput[
   const result: FoldInput[] = [];
   for (let i = 0; i <= ordered.length; i += 1) {
     const next = ordered[i];
-    for (let grant = missingGrant(state, waiting, next, now); grant !== null; ) {
+    for (let grant = missingGrant(state, waiting, next, now); grant !== null;) {
       result.push(grant);
       if (!apply(state, waiting, grant)) {
         // dueGrant derived it from this very state, so the fold must apply it.
