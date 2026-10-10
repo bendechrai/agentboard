@@ -190,11 +190,54 @@ function permutations<T>(items: readonly T[]): T[][] {
   return out;
 }
 
-/** Asserts every read order of `inputs` folds to the same bytes, and returns the fold. */
-function foldEveryOrder(inputs: readonly FoldInput[]): FoldResult {
+/** Largest input set whose read orders are all enumerated (6! = 720 folds). */
+const EXHAUSTIVE_MAX = 6;
+
+/** Number of seeded random orders sampled for a larger input set. */
+const SAMPLED_ORDERS = 300;
+
+/** A seeded shuffle (mulberry32), so a sample is the same on every run. */
+function seededShuffle<T>(items: readonly T[], seed: number): T[] {
+  let a = seed >>> 0;
+  const rand = (): number => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(rand() * (i + 1));
+    const tmp = out[i] as T;
+    out[i] = out[j] as T;
+    out[j] = tmp;
+  }
+  return out;
+}
+
+/**
+ * Read orders of `inputs` to fold: every permutation when there are at most
+ * `EXHAUSTIVE_MAX` inputs; otherwise a deterministic sample of the identity
+ * order, the reverse order and `SAMPLED_ORDERS` seeded random orders
+ * (tasks.md 1.3: "sampled permutations").
+ */
+function readOrders(inputs: readonly FoldInput[]): FoldInput[][] {
+  if (inputs.length <= EXHAUSTIVE_MAX) {
+    return permutations(inputs);
+  }
+  const orders = [[...inputs], [...inputs].reverse()];
+  for (let seed = 1; seed <= SAMPLED_ORDERS; seed += 1) {
+    orders.push(seededShuffle(inputs, seed));
+  }
+  return orders;
+}
+
+/** Asserts every sampled read order of `inputs` folds to the same bytes, and returns the fold. */
+function foldReadOrders(inputs: readonly FoldInput[]): FoldResult {
   const reference = fold(inputs);
   const expected = bytesOf(reference);
-  for (const order of permutations(inputs)) {
+  for (const order of readOrders(inputs)) {
     expect(bytesOf(fold(order))).toBe(expected);
   }
   return reference;
@@ -312,7 +355,7 @@ describe('fold: claim leases', () => {
     const claim = E.leased('h', 1_000_000, 600_000, 600_000);
     const renew = E.renew('h', 1_500_000, TTL);
     const takeover = E.claim('c', 1_700_000, { supersedes: leaseRef('h', 1_600_000, claim) });
-    const result = foldEveryOrder([E.create(), claim, renew, takeover]);
+    const result = foldReadOrders([E.create(), claim, renew, takeover]);
     expect(reasonOf(result, renew)).toBeNull();
     expect(reasonOf(result, takeover)).toBe('already-assigned');
     expect(ticketOf(result).assignee).toBe('h');
@@ -375,7 +418,7 @@ describe('fold: claim leases', () => {
     const ref = leaseRef('h', 1_120_000, claim);
     const first = E.claim('c', 1_200_000, { supersedes: ref });
     const second = E.claim('d', 1_200_001, { supersedes: ref });
-    const result = foldEveryOrder([E.create(), claim, second, first]);
+    const result = foldReadOrders([E.create(), claim, second, first]);
     expect(ticketOf(result).assignee).toBe('c');
     expect(reasonOf(result, first)).toBeNull();
     expect(reasonOf(result, second)).toBe('already-assigned');
@@ -438,7 +481,7 @@ describe('fold: claim leases', () => {
     const claim = E.leased('h', 1_000_000);
     const takeover = E.claim('c', 1_180_000, { supersedes: leaseRef('h', 1_120_000, claim) });
     const renew = E.renew('h', 1_190_000);
-    const result = foldEveryOrder([E.create(), claim, takeover, renew]);
+    const result = foldReadOrders([E.create(), claim, takeover, renew]);
     expect(reasonOf(result, renew)).toBe('not-assignee');
   });
 
@@ -535,7 +578,7 @@ describe('fold: forced release', () => {
 
   it('is rejected holder-changed after the holder handed off (spec scenario)', () => {
     const force = E.force('orch', 2_000_000, 'h');
-    const result = foldEveryOrder([
+    const result = foldReadOrders([
       E.create(),
       E.claim('h', 1_000_000),
       E.handoff('h', 1_500_000, 'r', 'todo'),
@@ -567,7 +610,7 @@ describe('fold: forced release', () => {
     const claim = E.leased('h', 1_000_000);
     const takeover = E.claim('c', 1_180_000, { supersedes: leaseRef('h', 1_120_000, claim) });
     const force = E.force('orch', 1_190_000, 'h');
-    const result = foldEveryOrder([E.create(), claim, takeover, force]);
+    const result = foldReadOrders([E.create(), claim, takeover, force]);
     expect(reasonOf(result, force)).toBe('holder-changed');
     expect(ticketOf(result).assignee).toBe('c');
   });
@@ -631,10 +674,10 @@ describe('fold: the waiting queue', () => {
   it('same wall ties break on the timestamp, the same in every read order (spec scenario)', () => {
     const b = E.join('b', 1000);
     const a = E.join('a', 1000);
-    const result = foldEveryOrder([...held(), b, a]);
+    const result = foldReadOrders([...held(), b, a]);
     expect(ticketOf(result).queue.map((w) => w.actor)).toEqual(['a', 'b']);
     const late = E.join('a', 1000, TTL, 1);
-    const result2 = foldEveryOrder([...held(), late, E.join('b', 1000, TTL, 0)]);
+    const result2 = foldReadOrders([...held(), late, E.join('b', 1000, TTL, 0)]);
     expect(ticketOf(result2).queue.map((w) => w.actor)).toEqual(['b', 'a']);
   });
 
@@ -742,7 +785,7 @@ describe('fold: the waiting queue', () => {
 
   it('hand-off to a waiter removes it from the queue (spec scenario)', () => {
     const handoff = E.handoff('h', 2000, 'b', 'todo');
-    const result = foldEveryOrder([...threeWaiters(), handoff]);
+    const result = foldReadOrders([...threeWaiters(), handoff]);
     const t = ticketOf(result);
     expect(reasonOf(result, handoff)).toBeNull();
     expect(t.assignee).toBe('b');
@@ -770,7 +813,7 @@ describe('fold: the waiting queue', () => {
 
   it('assign to a waiter removes it from the queue, keeping the order of the rest', () => {
     const assign = E.assign('orch', 2000, 'c');
-    const result = foldEveryOrder([...threeWaiters(), assign]);
+    const result = foldReadOrders([...threeWaiters(), assign]);
     const t = ticketOf(result);
     expect(t.assignee).toBe('c');
     expect(t.queue.map((w) => w.actor)).toEqual(['a', 'b']);
@@ -831,7 +874,7 @@ describe('dueGrant and grants', () => {
     });
     expect(due([...base, release])).toEqual(expected);
     const grant = E.grant(expected);
-    const result = foldEveryOrder([...base, release, grant]);
+    const result = foldReadOrders([...base, release, grant]);
     const t = ticketOf(result);
     expect(reasonOf(result, grant)).toBeNull();
     expect(t.assignee).toBe('a');
@@ -918,7 +961,7 @@ describe('dueGrant and grants', () => {
       }),
     );
     const second = E.grant(next ?? grantEvent(0, GRANT_PLACEHOLDER));
-    const result = foldEveryOrder([...base, release, first, second]);
+    const result = foldReadOrders([...base, release, first, second]);
     expect(ticketOf(result).assignee).toBe('b');
     expect(ticketOf(result).queue).toEqual([]);
     expect(result.rejected).toEqual([]);
@@ -971,7 +1014,7 @@ describe('dueGrant and grants', () => {
     expect(due([E.create(), claim, b, renew])?.ts.wall).toBe(1_700_000 + 60_000 + 1);
   });
 
-  it('stale grant after a late renew, on every replica (spec scenario)', () => {
+  it('stale grant after a late renew, in every sampled read order (spec scenario)', () => {
     const { base } = queued();
     const release = E.release('h', 5000);
     const first = E.grant(
@@ -986,7 +1029,7 @@ describe('dueGrant and grants', () => {
     const toB = E.grant(due([...base, release, first]) ?? grantEvent(0, GRANT_PLACEHOLDER));
     // a's renew, synced late, with a wall before the grant's slot time.
     const renew = E.renew('a', 100_000, 600_000);
-    const result = foldEveryOrder([...base, release, first, toB, renew]);
+    const result = foldReadOrders([...base, release, first, toB, renew]);
     expect(reasonOf(result, renew)).toBeNull();
     expect(reasonOf(result, toB)).toBe('stale-grant');
     expect(ticketOf(result).assignee).toBe('a');
@@ -1068,7 +1111,7 @@ describe('dueGrant and grants', () => {
     expect(due([...base, release])).toEqual(g1.event);
     expect(due([...base, release, g1])).toEqual(g2.event);
     expect(due([...base, release, g1, g2])).toEqual(g3.event);
-    const result = foldEveryOrder([...base, release, g3, g1, g2]);
+    const result = foldReadOrders([...base, release, g3, g1, g2]);
     expect(result.rejected).toEqual([]);
     expect(ticketOf(result).assignee).toBe('c');
     expect(ticketOf(result).queue).toEqual([]);
@@ -1101,7 +1144,7 @@ describe('dueGrant and grants', () => {
       }),
     );
     const leave = E.leave('a', 5000);
-    const result = foldEveryOrder([...base, release, leave, grant]);
+    const result = foldReadOrders([...base, release, leave, grant]);
     expect(reasonOf(result, grant)).toBe('stale-grant');
     expect(ticketOf(result).assignee).toBeNull();
     expect(ticketOf(result).queue.map((w) => w.actor)).toEqual(['b']);
@@ -1201,7 +1244,7 @@ describe('dueGrant and grants', () => {
     const written = E.grant(due([E.create(), claim, a]) ?? grantEvent(0, GRANT_PLACEHOLDER));
     expect(written.event.kind === 'ticket.grant' && written.event.body.window).toBe(WINDOW);
     const setting = E.meta('queue.window', 300_000, 1_150_000);
-    const result = foldEveryOrder([E.create(), claim, a, written, setting]);
+    const result = foldReadOrders([E.create(), claim, a, written, setting]);
     expect(reasonOf(result, written)).toBe('stale-grant');
   });
 
