@@ -68,13 +68,13 @@ export interface OpenBoardOptions {
  *
  * `dir` is resolved to an absolute path. Opens `<dir>/cache.sqlite` with
  * `openCache` (creating it when absent), then, unless `catchUp` is false,
- * runs `catchUp` (with `now`, `onWriteLock` and `hooks` from the options),
- * whose report becomes `opened`, so opening also writes the grants due at
- * `now`. A deleted cache therefore
- * comes back with the same rows as before, as long as the event files are
- * unchanged. Opening a cache that already has the current schema, when
- * catch-up finds nothing to fold, reap or grant, never takes the write lock, so a
- * reader is not blocked by a writer holding `BEGIN IMMEDIATE`. With
+ * runs `catchUp` (with `now`, `onWriteLock`, `hooks` and `onReadEventFile`
+ * from the options), whose report becomes `opened`, so opening also writes
+ * the grants due at `now`. A deleted cache therefore comes back with the
+ * same rows as before, as long as the event files are unchanged. Opening a
+ * cache that already has the current schema, when catch-up finds nothing
+ * to fold, reap or grant, never takes the write lock, so a reader is not
+ * blocked by a writer holding `BEGIN IMMEDIATE`. With
  * `prepare: false` the cache is only inspected (`openCache` with `prepare:
  * false`) and catch-up never runs.
  *
@@ -111,6 +111,9 @@ export function openBoard(dir: string, options?: OpenBoardOptions): Board {
         now: options?.now ?? Date.now(),
         ...(options?.onWriteLock === undefined ? {} : { onWriteLock: options.onWriteLock }),
         ...(options?.hooks === undefined ? {} : { hooks: options.hooks }),
+        ...(options?.onReadEventFile === undefined
+          ? {}
+          : { onReadEventFile: options.onReadEventFile }),
       });
     } catch (error) {
       board.close();
