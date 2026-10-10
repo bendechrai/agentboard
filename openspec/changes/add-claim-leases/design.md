@@ -172,7 +172,10 @@ So:
 - any command that catches up (every command except `rebuild` and
   `rebuild --check`, including `list`, `show`, `inbox`, `watch` and a
   waiting `claim --wait`) writes the grants that are due, in the same
-  transaction as its catch-up;
+  transaction as its catch-up; a grant so written is a derived event
+  independent of the command, never deleted, and a command refused after
+  its catch-up commits that catch-up (grant included) without writing its
+  own event;
 - two writers on one machine are serialised by the write lock, and the
   second finds the file already present (writing identical bytes is a
   no-op); two machines write identical files, so `sync` merges them as
