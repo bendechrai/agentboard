@@ -53,8 +53,11 @@ const PINNED: Readonly<Record<string, number>> = {
   'forbidden-host': 1,
   'gh-missing': 1,
   'git-missing': 1,
+  // The fold rejections of leases, the queue and grants (add-claim-leases).
+  'holder-changed': 4,
   'id-too-short': 1,
   integrity: 5,
+  'invalid-queue': 4,
   'invalid-transition': 4,
   'malformed-event': 1,
   'malformed-task-ref': 1,
@@ -72,12 +75,14 @@ const PINNED: Readonly<Record<string, number>> = {
   'not-found': 1,
   'path-outside-tree': 1,
   'port-in-use': 1,
+  queued: 4,
   'read-only': 1,
   'schema-mismatch': 5,
   'secret-like': 1,
   'streaming-command': 1,
   'sync-conflict': 3,
   'sync-failed': 3,
+  'stale-grant': 4,
   'sync-in-progress': 3,
   'tasks-not-found': 1,
   'too-many-streams': 1,
@@ -357,6 +362,16 @@ describe('hint contracts (CLI)', () => {
     expect(hint).toContain("'agentboard inbox --as <actor>'");
   });
 
+  it.each(['holder-changed', 'invalid-queue', 'stale-grant'])(
+    '%s hints show <id> (board-cli: "Lease and queue hints")',
+    (reason) => {
+      expect(cli(reason, 'release', { id: '01J9K3', actor: 'orch' })).toContain(
+        "'agentboard show 01J9K3'",
+      );
+      expect(cli(reason, null)).toContain("'agentboard show <id>'");
+    },
+  );
+
   it('scenario: missing actor names --as and AGENTBOARD_ACTOR, not the MCP server', () => {
     const hint = cli('missing-actor', 'comment', { id: '01J9K3' });
     expect(hint).toContain('--as <actor>');
@@ -538,6 +553,15 @@ describe('hint contracts (MCP)', () => {
     expect(hint).not.toContain("'agentboard show");
     expect(hint).not.toContain("'agentboard inbox");
   });
+
+  it.each(['holder-changed', 'invalid-queue', 'stale-grant'])(
+    '%s hints board_show {id}',
+    (reason) => {
+      expect(mcp(reason, 'release', { id: '01J9K3', actor: 'orch' })).toContain(
+        'board_show {"id":"01J9K3"}',
+      );
+    },
+  );
 
   it('scenario: missing actor names the as argument and agentboard mcp --as, not AGENTBOARD_ACTOR', () => {
     const hint = mcp('missing-actor', 'comment', { id: '01J9K3' });

@@ -257,6 +257,34 @@ describe('layering: browser-safe modules', () => {
   });
 });
 
+// The fold reads no clock (board-events: "Fold semantics"): every lease,
+// queue and grant decision comes from event timestamps and bodies.
+
+describe('layering: the fold reads no clock', () => {
+  // ulid.ts is reached through schema.ts for `isUlid`; its id generator
+  // reads the clock and random bytes, which the fold never calls.
+  it('no module reachable from src/events/fold.ts but ulid.ts reads a clock or draws random numbers', () => {
+    const offenders: string[] = [];
+    const reached = walk([join(SRC, 'events', 'fold.ts')]).reached;
+    expect(reached).toEqual(expect.arrayContaining(['events/fold.ts', 'events/schema.ts']));
+    for (const name of reached.filter((n) => n !== join('events', 'ulid.ts'))) {
+      const source = readFileSync(join(SRC, name), 'utf8');
+      for (const pattern of [
+        /\bDate\.now\s*\(/,
+        /\bnew\s+Date\s*\(/,
+        /\bMath\.random\s*\(/,
+        /\bperformance\.now\s*\(/,
+        /\bprocess\./,
+      ]) {
+        if (pattern.test(source)) {
+          offenders.push(`${name}: ${String(pattern)}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
 // Pure terminal UI modules (add-board-tui design.md, "Hand-rolled ANSI
 // rather than a library"): the key decoder, the UI state and the frame
 // renderer are pure. `src/tui/terminal.ts` is the only IO module there, so
