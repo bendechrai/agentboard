@@ -11,6 +11,7 @@ export * from './events/ulid.js';
 export * from './events/hlc.js';
 export * from './events/schema.js';
 export * from './events/fold.js';
+export * from './events/grants.js';
 export * from './store/errors.js';
 export * from './store/locate.js';
 export * from './store/eventfile.js';

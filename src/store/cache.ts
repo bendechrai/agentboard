@@ -132,7 +132,7 @@ import {
   stmt,
   tableRows,
 } from './engine.js';
-import type { CorruptFile, MalformedFile } from './eventfile.js';
+import type { CorruptFile, MalformedFile, WriteHooks } from './eventfile.js';
 
 /** File name of the cache inside the board directory. */
 export const CACHE_FILE = 'cache.sqlite';
@@ -445,8 +445,30 @@ export interface CatchUpReport {
 
 /** Options for `catchUp`. */
 export interface CatchUpOptions {
-  /** Clock for temp reaping, in ms since the epoch. Defaults to `Date.now()`. */
+  /**
+   * The local clock reading, in ms since the epoch, used both for temp
+   * reaping and for deciding which grants are due (a grant is written when
+   * its slot time `ts.wall` is at or before it). Defaults to `Date.now()`,
+   * read once per call.
+   */
   now?: number;
+  /**
+   * Lock probe: called exactly once, with no arguments, immediately before
+   * this call itself issues `BEGIN IMMEDIATE`, that is whenever it found
+   * something to fold, reap or grant. Never called when the call returns
+   * from its lock-free first look, and never when it runs inside the
+   * caller's transaction (`board.db.isTransaction`), whose lock the caller
+   * took. An exception it throws propagates before the lock is taken.
+   */
+  onWriteLock?: () => void;
+  /**
+   * Crash-injection hooks passed to `writeEventFile` for every grant file
+   * this call writes (see `WriteHooks`). Defaults to none. The CLI passes
+   * the hooks of `pauseHooks` for its environment, so
+   * `AGENTBOARD_TEST_PAUSE` also pauses inside the grant write of a
+   * command's catch-up.
+   */
+  hooks?: WriteHooks;
 }
 
 /**
@@ -482,6 +504,33 @@ export interface CatchUpOptions {
  * seen-set window (late itself, or made effective by a late event) moves
  * that cursor back and is delivered by the next `inbox`. The report does
  * not list them; `rebuild` does.
+ *
+ * Grants (board-cli: "Due grants are written during catch-up"). After the
+ * new files are folded, and in the same transaction, every grant that
+ * `dueGrants` (`src/events/grants.ts`) returns for the board's well-formed
+ * events and the clock `now` is written with `writeEventFile` (so its file
+ * holds exactly `canonicalEncode` of the derived grant, named by its hash,
+ * and a file already present with those bytes is not rewritten) and folded
+ * exactly like a late-arriving event: when it sorts before
+ * `last_position` the derived tables are refolded, and `resetLateCursors`
+ * is called for it (and for every event a refold made effective), so an
+ * actor whose cursor is past the grant and outside its seen window gets it
+ * from the next `inbox`. Afterwards `dumpCache(board.db)` equals the dump
+ * of a fresh rebuild of the events directory, grant files included, and no
+ * grant due at `now` is missing. Each grant written is recorded in
+ * `folded` by this call and so listed in `applied`, in fold order. A grant
+ * whose slot time is after `now` is not written. Grants are derived from
+ * the state at their own fold position (see `dueGrants`), never from the
+ * latest state alone, so an event sorting after a grant's slot never
+ * changes or suppresses it.
+ *
+ * The lock-free first look also covers grants: a call with nothing to
+ * fold or reap takes the write lock only when a grant is due at `now` and
+ * missing, and otherwise returns without taking it (and without calling
+ * `onWriteLock`). Under the lock the grants are derived again, because
+ * another process may have written them meanwhile.
+ *
+ * `rebuild` and `rebuild --check` never call this and never write grants.
  */
 export function catchUp(board: Board, options?: CatchUpOptions): CatchUpReport {
   const now = options?.now ?? Date.now();

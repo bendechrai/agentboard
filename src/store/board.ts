@@ -8,6 +8,7 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import { CACHE_FILE, catchUp, openCache, type CatchUpReport } from './cache.js';
 import { BoardError } from './errors.js';
+import type { WriteHooks } from './eventfile.js';
 import { boardExists } from './locate.js';
 
 /** An open board. Obtain with `openBoard`; release with `close`. */
@@ -49,8 +50,15 @@ export interface OpenBoardOptions {
    * never run, whatever `catchUp` says. `rebuild --check` opens this way.
    */
   prepare?: boolean;
-  /** Clock for temp reaping, in ms since the epoch. Defaults to `Date.now()`. */
+  /**
+   * The clock reading passed to `catchUp` as `now`: for temp reaping and
+   * for deciding which grants are due. Defaults to `Date.now()`.
+   */
   now?: number;
+  /** Passed to `catchUp` as `onWriteLock` (the lock probe). */
+  onWriteLock?: () => void;
+  /** Passed to `catchUp` as `hooks` (crash injection in grant writes). */
+  hooks?: WriteHooks;
 }
 
 /**
@@ -58,10 +66,12 @@ export interface OpenBoardOptions {
  *
  * `dir` is resolved to an absolute path. Opens `<dir>/cache.sqlite` with
  * `openCache` (creating it when absent), then, unless `catchUp` is false,
- * runs `catchUp`, whose report becomes `opened`. A deleted cache therefore
+ * runs `catchUp` (with `now`, `onWriteLock` and `hooks` from the options),
+ * whose report becomes `opened`, so opening also writes the grants due at
+ * `now`. A deleted cache therefore
  * comes back with the same rows as before, as long as the event files are
  * unchanged. Opening a cache that already has the current schema, when
- * catch-up finds nothing to fold or reap, never takes the write lock, so a
+ * catch-up finds nothing to fold, reap or grant, never takes the write lock, so a
  * reader is not blocked by a writer holding `BEGIN IMMEDIATE`. With
  * `prepare: false` the cache is only inspected (`openCache` with `prepare:
  * false`) and catch-up never runs.

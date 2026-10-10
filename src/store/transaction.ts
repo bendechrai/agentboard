@@ -102,7 +102,9 @@ export interface CommandResult {
  *
  * 1. Catch-up (`catchUp` with `now: t`, so stale temp reaping uses the same
  *    clock), so files written by other processes, or left by a command
- *    that crashed after its rename, are folded before validation.
+ *    that crashed after its rename, are folded before validation, and the
+ *    grants due at `t` are written and folded (with the command's write
+ *    hooks), so the operation decides against the granted state.
  * 2. `operation(ctx)`. A refusal rolls back and throws
  *    `BoardError(decision.exitCode, decision.reason, decision.message)`.
  * 3. Builds the event: `{ v: 1, ...proposed, actor, ts }` with
@@ -221,8 +223,10 @@ export function runCommand(
 
 /**
  * Environment variable for crash injection. When set to one of
- * the `PausePoint` values, a writing command pauses at that point of the
- * event write: it prints `agentboard: paused at <point> <path>` plus a
+ * the `PausePoint` values, a command pauses at that point of the first
+ * event file it writes, whether its own event or a grant written by its
+ * catch-up (when the board is opened or inside the command transaction),
+ * so a read-only command that writes a due grant pauses too: it prints `agentboard: paused at <point> <path>` plus a
  * newline to stderr and then blocks synchronously (never returning) until
  * the process is killed. A test kills it with SIGKILL there. Any other
  * value, and the empty string, is ignored.
