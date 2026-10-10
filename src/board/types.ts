@@ -20,8 +20,7 @@ export type WriteOptions = CommandOptions;
 /**
  * Result of a writing operation, and the `--json` document of every
  * writing command (board-cli: "Output conventions": "for writing commands
- * an object containing the event hash and the resulting ticket"), with
- * the ticket written as its `ticketDocument` (see `src/board/document.ts`).
+ * an object containing the event hash and the resulting ticket").
  *
  * - `hash`: the hash (file name without `.json`) of the event written, or
  *   `null` when the operation succeeded without writing an event (the only

@@ -138,8 +138,7 @@ export interface SkippedByMerge {
   ticket: Ticket;
 }
 
-/** Result of `closeMerged`; also the `close-merged --json` document, with each ticket
- * as its `ticketDocument` (see `src/board/document.ts`). */
+/** Result of `closeMerged`; also the `close-merged --json` document. */
 export interface CloseMergedResult {
   /** Each list is in ascending ticket id order. */
   closed: ClosedByMerge[];

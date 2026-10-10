@@ -6,7 +6,6 @@
  * the open streams; this module is the wire format and the limits. Pure.
  */
 
-import { ticketDocument } from '../board/document.js';
 import type { ErrorDocument } from '../cli/main.js';
 import type { FeedMessage } from '../view/types.js';
 
@@ -32,20 +31,14 @@ export function sseRetry(): string {
 
 /**
  * One feed message as an SSE event, exactly
- * `event: <type>\nid: <message.id>\ndata: <JSON.stringify(message)>\n\n`,
- * with each ticket of an `append` written as its `ticketDocument` (without
- * `available`), where `<type>` is `append` or `resync` (the data is one line: JSON text
+ * `event: <type>\nid: <message.id>\ndata: <JSON.stringify(message)>\n\n`
+ * where `<type>` is `append` or `resync` (the data is one line: JSON text
  * has no raw newline). So `EventSource` reports it with the type as its
  * event name and the id as `lastEventId`, and sends that id back as
  * `Last-Event-ID` on reconnect.
  */
 export function sseMessage(message: FeedMessage): string {
-  const data = JSON.stringify(
-    message.type === 'append'
-      ? { ...message, tickets: message.tickets.map(ticketDocument) }
-      : message,
-  );
-  return `event: ${message.type}\nid: ${message.id}\ndata: ${data}\n\n`;
+  return `event: ${message.type}\nid: ${message.id}\ndata: ${JSON.stringify(message)}\n\n`;
 }
 
 /**
