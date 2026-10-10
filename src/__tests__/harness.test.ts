@@ -15,6 +15,7 @@ import {
   runTogether,
   startCli,
   waitForPause,
+  type ProcessResult,
 } from './harness/processes.js';
 
 describe('the multi-process harness', () => {
@@ -37,6 +38,51 @@ describe('the multi-process harness', () => {
     // Generous bound: the point is that 20 processes finish, not a benchmark.
     expect(elapsedMs).toBeLessThan(20_000);
   });
+
+  it('runs a child with its clock offset by the clock preload, gated or not', async () => {
+    const { root } = boardProject();
+    const offset = 3_600_000;
+    const wallOf = (result: ProcessResult | undefined): number => {
+      if (result === undefined) {
+        throw new Error('no result');
+      }
+      return (oneDocument(result) as { ticket: { createdAt: { wall: number } } }).ticket.createdAt
+        .wall;
+    };
+    const before = Date.now();
+    const direct = await startCli(
+      {
+        argv: ['new', 'Ahead', '--adhoc', 'clock', '--as', 'orch', '--json'],
+        clockOffsetMs: offset,
+      },
+      root,
+    ).exited;
+    expect(direct.code, direct.stderr).toBe(0);
+    expect(wallOf(direct)).toBeGreaterThanOrEqual(before + offset);
+    expect(wallOf(direct)).toBeLessThanOrEqual(Date.now() + offset);
+    const behind = await startCli(
+      {
+        argv: ['new', 'Behind', '--adhoc', 'clock', '--as', 'orch', '--json'],
+        clockOffsetMs: -offset,
+      },
+      root,
+    ).exited;
+    expect(behind.code, behind.stderr).toBe(0);
+    // The hybrid clock never goes backwards on one board.
+    expect(wallOf(behind)).toBeGreaterThanOrEqual(wallOf(direct));
+    const gated = await runTogether(
+      [
+        {
+          argv: ['new', 'Gated', '--adhoc', 'clock', '--as', 'orch', '--json'],
+          clockOffsetMs: 2 * offset,
+        },
+      ],
+      root,
+    );
+    const [result] = gated.results;
+    expect(result?.code, result?.stderr).toBe(0);
+    expect(wallOf(result)).toBeGreaterThanOrEqual(before + 2 * offset);
+  }, 30_000);
 
   it('keeps children bounded by a per-child timeout shorter than the test timeouts', () => {
     expect(CHILD_TIMEOUT_MS).toBeLessThanOrEqual(30_000);

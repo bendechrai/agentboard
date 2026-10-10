@@ -35,6 +35,15 @@
  * returns the path, and `CliProcess.kill` sends SIGKILL and waits for the
  * exit.
  *
+ * Clock offset: a child started with `Invocation.clockOffsetMs` preloads a
+ * small module (`node --import <clock>`, written to a temporary directory
+ * at run time) that replaces `Date.now` with the real clock plus the
+ * offset read from `AGENTBOARD_HARNESS_CLOCK_OFFSET_MS`, before the CLI
+ * loads. The CLI reads its clock only through `Date.now`, so the child
+ * behaves exactly as on a machine whose clock is that far ahead (or behind,
+ * for a negative offset). The variable is read by the preload module only,
+ * never by agentboard itself.
+ *
  * Temporary directories made here (`boardProject`, the gate) are removed
  * after the test file (afterAll), not after each test, so one scenario can
  * be set up in `beforeAll` and asserted by several tests.
@@ -79,6 +88,11 @@ export interface Invocation {
   argv: readonly string[];
   /** Environment; defaults to `cliEnv()` (no actor, no board override). */
   env?: RunEnv;
+  /**
+   * Milliseconds added to the child's clock (`Date.now`) by the clock
+   * preload; omitted, the child runs on the real clock with no preload.
+   */
+  clockOffsetMs?: number;
 }
 
 /** A running child. */
@@ -161,9 +175,15 @@ export function startCli(
   nodeArgs: readonly string[] = [],
 ): CliProcess {
   const cli = requireBuiltCli();
-  const child = spawn(process.execPath, [...nodeArgs, cli, ...invocation.argv], {
+  const offset = invocation.clockOffsetMs;
+  const clockArgs = offset === undefined ? [] : ['--import', pathToFileURL(clockPath()).href];
+  const env = definedEnv(invocation.env ?? cliEnv());
+  if (offset !== undefined) {
+    env[CLOCK_OFFSET_ENV] = String(offset);
+  }
+  const child = spawn(process.execPath, [...clockArgs, ...nodeArgs, cli, ...invocation.argv], {
     cwd,
-    env: definedEnv(invocation.env ?? cliEnv()),
+    env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let out = '';
@@ -252,6 +272,27 @@ export function runCliAsync(
   env?: RunEnv,
 ): Promise<ProcessResult> {
   return startCli(env === undefined ? { argv } : { argv, env }, cwd).exited;
+}
+
+/** Environment variable holding the clock offset of a child, read by the clock preload. */
+export const CLOCK_OFFSET_ENV = 'AGENTBOARD_HARNESS_CLOCK_OFFSET_MS';
+
+const CLOCK_MODULE = `const offset = Number(process.env.${CLOCK_OFFSET_ENV} ?? '0');
+if (Number.isFinite(offset) && offset !== 0) {
+  const real = Date.now.bind(Date);
+  Date.now = () => real() + offset;
+}
+`;
+
+let clockModule: string | null = null;
+
+/** Path of the clock preload module, written once per test file. */
+function clockPath(): string {
+  if (clockModule === null) {
+    clockModule = join(scratchDir(), 'clock.mjs');
+    writeFileSync(clockModule, CLOCK_MODULE);
+  }
+  return clockModule;
 }
 
 /** Environment variable naming the gate directory of a gated child. */
@@ -353,6 +394,7 @@ export async function startGated(
       {
         argv: inv.argv,
         env: { ...(inv.env ?? cliEnv()), [GATE_ENV]: gateDir, [PRELOAD_ENV]: preload },
+        ...(inv.clockOffsetMs === undefined ? {} : { clockOffsetMs: inv.clockOffsetMs }),
       },
       cwd,
       nodeArgs,
