@@ -29,6 +29,7 @@ import {
   type GrantAfter,
   type TicketClaimEvent,
   type TicketGrantEvent,
+  type TicketReconcileBody,
   type Status,
   type TaskRef,
   type TicketCreateEvent,
@@ -743,7 +744,7 @@ function applyToTicket(
       return null;
     case 'ticket.checklist': {
       const item: ChecklistItem | undefined = ticket.checklist[event.body.index];
-      if (item === undefined) {
+      if (item === undefined || item.removed === true) {
         return 'checklist-index';
       }
       item.done = event.body.done;
@@ -755,10 +756,62 @@ function applyToTicket(
       }
       return null;
     case 'ticket.reconcile':
-    case 'ticket.renumber':
+      return reconcile(ticket, event.body);
+    case 'ticket.renumber': {
+      const { from, to } = event.body;
+      if (ticket.superseded !== null || ticket.task?.item !== from) {
+        return 'stale-import';
+      }
+      ticket.task.item = to;
+      const fromLabel = `group:${from}`;
+      const toLabel = `group:${to}`;
+      if (ticket.labels.includes(fromLabel)) {
+        ticket.labels = ticket.labels.map((label) => (label === fromLabel ? toLabel : label));
+      } else {
+        ticket.labels.push(toLabel);
+      }
+      return null;
+    }
     case 'ticket.supersede':
-      throw new Error('not implemented');
+      if (ticket.superseded !== null) {
+        return 'stale-import';
+      }
+      ticket.superseded = event.body.reason;
+      return null;
   }
+}
+
+/**
+ * Applies a `ticket.reconcile` in one step, or returns `checklist-index`
+ * without touching the ticket when an index of `updated` or `removed` is out
+ * of range, names a removed line, or appears twice.
+ */
+function reconcile(ticket: Ticket, body: TicketReconcileBody): RejectionReason | null {
+  const indices = [...body.updated.map((line) => line.index), ...body.removed];
+  const seen = new Set<number>();
+  for (const index of indices) {
+    const line: ChecklistItem | undefined = ticket.checklist[index];
+    if (line === undefined || line.removed === true || seen.has(index)) {
+      return 'checklist-index';
+    }
+    seen.add(index);
+  }
+  if (body.title !== undefined) {
+    ticket.title = body.title;
+  }
+  for (const { index, text, done } of body.updated) {
+    ticket.checklist[index] = { text, done };
+  }
+  for (const index of body.removed) {
+    const line = ticket.checklist[index];
+    if (line !== undefined) {
+      ticket.checklist[index] = { text: line.text, done: line.done, removed: true };
+    }
+  }
+  for (const { text, done } of body.added) {
+    ticket.checklist.push({ text, done });
+  }
+  return null;
 }
 
 /**

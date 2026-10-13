@@ -956,6 +956,89 @@ function checkGrantAfter(value: unknown, report: Report): void {
   reportExtraKeys(value, ['released', 'lease'], 'body.after.', report);
 }
 
+/** Checks one `updated` line of a `ticket.reconcile` at `field`. */
+function checkReconcileUpdate(item: unknown, field: string, report: Report): void {
+  if (!isObject(item)) {
+    report(field, 'must be an object with index, text and done');
+    return;
+  }
+  if (!Number.isSafeInteger(item.index)) {
+    report(`${field}.index`, 'missing or not an integer');
+  }
+  if (!isNonEmptyString(item.text)) {
+    report(`${field}.text`, 'missing or not a non-empty string');
+  }
+  if (typeof item.done !== 'boolean') {
+    report(`${field}.done`, 'missing or not a boolean');
+  }
+  reportExtraKeys(item, ['index', 'text', 'done'], `${field}.`, report);
+}
+
+/**
+ * Checks the array `body.<key>` with `element` for each item. Returns the
+ * array's length, or null when it is not an array (reported).
+ */
+function checkArray(
+  body: JsonRecord,
+  key: string,
+  element: (item: unknown, field: string, report: Report) => void,
+  report: Report,
+): number | null {
+  const value = body[key];
+  if (!Array.isArray(value)) {
+    report(`body.${key}`, 'missing or not an array');
+    return null;
+  }
+  value.forEach((item: unknown, i) => {
+    element(item, `body.${key}.${String(i)}`, report);
+  });
+  return value.length;
+}
+
+/** Checks a `ticket.reconcile` body (see `validateEvent`). */
+function checkReconcile(body: JsonRecord, report: Report): void {
+  const hasTitle = Object.hasOwn(body, 'title');
+  if (hasTitle && !isNonEmptyString(body.title)) {
+    report('body.title', 'must be a non-empty string');
+  }
+  const lengths = [
+    checkArray(body, 'updated', checkReconcileUpdate, report),
+    checkArray(
+      body,
+      'removed',
+      (item, field, r) => {
+        if (!Number.isSafeInteger(item)) {
+          r(field, 'must be an integer');
+        }
+      },
+      report,
+    ),
+    checkArray(body, 'added', checkChecklistAddItem, report),
+  ];
+  if (typeof body.forced !== 'boolean') {
+    report('body.forced', 'missing or not a boolean');
+  }
+  if (Object.hasOwn(body, 'holder')) {
+    if (!isNonEmptyString(body.holder)) {
+      report('body.holder', 'must be a non-empty string');
+    } else if (body.forced !== true) {
+      report('body.holder', 'only allowed when forced is true');
+    }
+  }
+  if (!isNonEmptyString(body.source)) {
+    report('body.source', 'missing or not a non-empty string');
+  }
+  if (!hasTitle && lengths.every((length) => length === 0)) {
+    report('body', 'a reconcile must change the title or at least one line');
+  }
+  reportExtraKeys(
+    body,
+    ['title', 'updated', 'removed', 'added', 'forced', 'holder', 'source'],
+    'body.',
+    report,
+  );
+}
+
 /** A body check; `wall` is the event's valid `ts.wall`, or null. */
 type BodyCheck = (body: JsonRecord, report: Report, wall: number | null) => void;
 
@@ -1078,14 +1161,12 @@ const BODY_CHECKS: Record<KnownKind, BodyCheck> = {
     }
     reportExtraKeys(body, ['items'], 'body.', report);
   },
-  'ticket.reconcile': () => {
-    throw new Error('not implemented');
+  'ticket.reconcile': checkReconcile,
+  'ticket.renumber': (body, report) => {
+    checkFields(body, { from: nonEmptyString, to: nonEmptyString }, {}, report);
   },
-  'ticket.renumber': () => {
-    throw new Error('not implemented');
-  },
-  'ticket.supersede': () => {
-    throw new Error('not implemented');
+  'ticket.supersede': (body, report) => {
+    checkFields(body, { reason: nonEmptyString }, {}, report);
   },
   'board.meta': (body, report) => {
     checkFields(body, { key: nonEmptyString, value: anyValue }, {}, report);

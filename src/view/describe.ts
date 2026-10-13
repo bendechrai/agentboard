@@ -9,6 +9,7 @@ import {
   type BoardEvent,
   type TicketLinkBody,
   type TicketCloseBody,
+  type TicketReconcileBody,
   type UnknownKindEvent,
 } from '../events/schema.js';
 
@@ -25,6 +26,15 @@ function describeLink(body: TicketLinkBody): string {
     return `linked pr ${oneLine(String(body.pr))}`;
   }
   return `linked decision ${oneLine(body.decision)}`;
+}
+
+function describeReconcile(body: TicketReconcileBody): string {
+  const counts =
+    `${String(body.updated.length)} updated, ${String(body.removed.length)} removed, ` +
+    `${String(body.added.length)} added`;
+  const renamed = body.title === undefined ? '' : ', renamed';
+  const forced = body.forced ? ', forced' : '';
+  return `reconciled with tasks (${counts}${renamed}${forced})`;
 }
 
 function describeClose(body: TicketCloseBody): string {
@@ -98,11 +108,11 @@ export function describeEvent(event: BoardEvent | UnknownKindEvent): string {
     case 'board.meta':
       return `set ${oneLine(event.body.key)}`;
     case 'ticket.reconcile':
+      return describeReconcile(event.body);
     case 'ticket.renumber':
+      return `renumbered from group ${oneLine(event.body.from)} to ${oneLine(event.body.to)}`;
     case 'ticket.supersede':
-      // Not implemented yet. It must not throw: this module is bundled into
-      // the web client.
-      return event.kind;
+      return `superseded: ${oneLine(event.body.reason)}`;
     case 'ticket.renew':
     case 'ticket.release.force':
     case 'ticket.queue.join':
