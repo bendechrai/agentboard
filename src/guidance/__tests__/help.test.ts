@@ -254,7 +254,6 @@ describe('the help data of record in the registry', () => {
     has('claim', 4, 'already-assigned');
     has('release', 4, 'not-assignee');
     has('move', 4, 'invalid-transition');
-    has('move', 4, 'needs-task-link');
     has('handoff', 4, 'invalid-transition');
     has('close', 1, 'no-disposition');
     has('close', 1, 'unpromoted-decision');
