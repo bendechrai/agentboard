@@ -22,7 +22,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { canonicalDump, expectCheckClean } from '../../__tests__/harness/host-sync.js';
 import { openBoard } from '../../store/board.js';
 import { P, T1, T2, ev, putEvent } from '../../store/__tests__/helpers.js';
-import { AGENTBOARD_GIT_SUBDIR, WORKTREE_LOCK_REASON } from '../host-init.js';
+import { AGENTBOARD_GIT_SUBDIR, BOARD_GITIGNORE_LINES, WORKTREE_LOCK_REASON } from '../host-init.js';
 import {
   MIGRATING_DIR,
   MIGRATING_REF,
@@ -72,7 +72,7 @@ import {
   worktreeEntry,
   worktrees,
 } from './sharing-helpers.js';
-import { bareRemote, revParse, syncEnv, type Env } from './sync-helpers.js';
+import { bareRemote, rebaseInProgress, revParse, syncEnv, unmerged, type Env } from './sync-helpers.js';
 
 // Every test runs git many times; keep well clear of the 5 s default.
 vi.setConfig({ testTimeout: 90_000, hookTimeout: 90_000 });
@@ -648,45 +648,115 @@ describe('integrating board refs that already exist', () => {
     expectCheckClean(b.root, env);
   });
 
-  it('a conflict while integrating the host remote ref: exit 3 sync-conflict naming the temporary worktree, the old .board untouched, a re-run refuses again', () => {
-    const env = syncEnv();
+  /**
+   * Clone A published a host-model board whose `.gitignore` gained `foo`
+   * and one event; clone B has a standalone board with one event whose
+   * committed `.gitignore` gained `bar` instead. B's move stops on
+   * `.gitignore`.
+   */
+  function conflictingClones(env: Env): {
+    bRoot: string;
+    bDir: string;
+    fromA: string;
+    fromB: string[];
+    before: ReturnType<typeof untouched>;
+  } {
     const { root: aRoot, remote } = project('a');
     const a = hostBoard(env, aRoot);
+    const fromA = commitHostEvent(a.dir, ev(P.create(T2, 'From A'), 'a', 2000), env);
     commitIgnoreLine(a.dir, 'foo');
     git(a.dir, 'update-ref', BOARD_REF, 'HEAD');
     pushBoardRef(a.root);
     const bRoot = cloneProject(remote, 'b');
     const bDir = standaloneBoard(bRoot);
     git(bDir, 'symbolic-ref', 'HEAD', 'refs/heads/main');
-    writeEvents(bDir, 1);
+    const fromB = writeEvents(bDir, 1);
     syncStandalone(bDir, env);
     commitIgnoreLine(bDir, 'bar');
-    const before = untouched(bRoot, bDir);
+    return { bRoot, bDir, fromA, fromB, before: untouched(bRoot, bDir) };
+  }
+
+  /** The registered worktrees of `root` under `agentboard/migrating/`. */
+  function registeredMigrating(root: string): string[] {
+    return worktrees(root)
+      .split('\n')
+      .filter((line) => line.startsWith('worktree ') && line.includes(`/${MIGRATING_DIR}/`))
+      .map((line) => line.slice('worktree '.length));
+  }
+
+  it('scenario: Migration stopped on a conflict: exit 3 sync-conflict naming the temporary worktree and the human steps, the old .board untouched, nothing removed', () => {
+    const env = syncEnv();
+    const { bRoot, bDir, before } = conflictingClones(env);
 
     const err = expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
 
     expect(err.message).toContain('.gitignore');
     expect(err.message).toContain(join(agentboardDir(bRoot), MIGRATING_DIR));
-    expect(err.message).toContain('rebase --continue');
+    expect(err.message).toContain('git rebase --continue');
+    expect(err.message).toContain('agentboard init --into-host');
     expect(snapshotDir(bDir)).toEqual(before.board);
     expect(detectBoardModel(bDir, { env }).model).toBe('standalone');
     expect(refCommit(bRoot)).toBeNull();
+    expect(refCommit(bRoot, MIGRATING_REF)).not.toBeNull();
     expect(keptRepositories(bRoot)).toEqual([]);
-    const registered = worktrees(bRoot)
-      .split('\n')
-      .filter((line) => line.startsWith('worktree ') && line.includes(`/${MIGRATING_DIR}/`));
-    expect(registered).toHaveLength(1);
+    const [temporary] = registeredMigrating(bRoot);
+    expect(registeredMigrating(bRoot)).toHaveLength(1);
+    expect(err.message).toContain(String(temporary));
+    expect(rebaseInProgress(String(temporary))).toBe(true);
+    expect(unmerged(String(temporary))).toEqual(['.gitignore']);
+  });
 
-    const again = expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
-    expect(again.message).toContain('.gitignore');
+  it('a re-run while the temporary worktree is still rebasing exits 3 sync-in-progress naming its path with the same steps, and removes nothing', () => {
+    const env = syncEnv();
+    const { bRoot, bDir, before } = conflictingClones(env);
+    expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+    const [temporary] = registeredMigrating(bRoot);
+    const temporaryFiles = snapshotDir(String(temporary));
+    const migratingRef = refCommit(bRoot, MIGRATING_REF);
+
+    const again = expectBoardError(() => move(bRoot, env), 3, 'sync-in-progress');
+
+    expect(again.message).toContain(String(temporary));
+    expect(again.message).toContain('git rebase --continue');
+    expect(again.message).toContain('agentboard init --into-host');
     expect(snapshotDir(bDir)).toEqual(before.board);
+    expect(detectBoardModel(bDir, { env }).model).toBe('standalone');
     expect(refCommit(bRoot)).toBeNull();
-    expect(
-      worktrees(bRoot)
-        .split('\n')
-        .filter((line) => line.startsWith('worktree ') && line.includes(`/${MIGRATING_DIR}/`)),
-    ).toHaveLength(1);
+    expect(refCommit(bRoot, MIGRATING_REF)).toBe(migratingRef);
+    expect(registeredMigrating(bRoot)).toEqual([temporary]);
+    expect(snapshotDir(String(temporary))).toEqual(temporaryFiles);
+    expect(rebaseInProgress(String(temporary))).toBe(true);
     expect(migratingEntries(bRoot)).toHaveLength(1);
+    expect(keptRepositories(bRoot)).toEqual([]);
+  });
+
+  it('scenario: Migration completes after the conflict is resolved: the re-run adopts the finished worktree and ends with every event', () => {
+    const env = syncEnv();
+    const { bRoot, bDir, fromA, fromB } = conflictingClones(env);
+    const tip = revParse(bDir);
+    const files = eventFiles(bDir);
+    expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+    const [temporary] = registeredMigrating(bRoot);
+    const resolved = [...BOARD_GITIGNORE_LINES, 'foo', 'bar'].map((line) => `${line}\n`).join('');
+    // The human keeps both lines and continues until the rebase is finished.
+    for (let step = 0; rebaseInProgress(String(temporary)); step += 1) {
+      expect(step).toBeLessThan(5);
+      writeFileSync(join(String(temporary), '.gitignore'), resolved);
+      git(String(temporary), 'add', '--', '.gitignore');
+      git(String(temporary), '-c', 'core.editor=true', 'rebase', '--continue');
+    }
+    expect(revParse(String(temporary))).not.toBe(refCommit(bRoot, MIGRATING_REF));
+
+    const result = move(bRoot, env);
+
+    expect(result).toMatchObject({ action: 'moved', model: 'host', joined: true, events: 2 });
+    expectMoved(bRoot, env);
+    expect(eventFiles(bDir)).toEqual([`${fromA}.json`, ...fromB.map((h) => `${h}.json`)].sort());
+    expect(refEvents(bRoot)).toEqual(eventFiles(bDir));
+    expect(readFileSync(join(bDir, '.gitignore'), 'utf8')).toBe(resolved);
+    expect(existsSync(String(temporary))).toBe(false);
+    expectKept(String(result.keptAt), tip, files);
+    expectCheckClean(bRoot, env);
   });
 
   it('an unreachable host remote: the move completes, exits 3 sync-failed from the sync, and the next sync publishes', () => {
@@ -772,16 +842,25 @@ describe('the temporary worktree helpers', () => {
     mkdirSync(plain);
     const junk = join(agentboardDir(root), MIGRATING_DIR, 'junk');
     mkdirSync(junk);
+    const rebasing = temporary(root, DEAD_PID + 1, commit);
+    mkdirSync(join(git(rebasing, 'rev-parse', '--absolute-git-dir').trim(), 'rebase-merge'));
 
     const found = findMigratingWorktrees(root, { env });
 
-    expect(found.map((w) => w.path)).toEqual([plain, dead, alive, junk].sort());
+    expect(found.map((w) => w.path)).toEqual([plain, dead, alive, junk, rebasing].sort());
     expect(found.find((w) => w.path === dead)).toEqual({
       path: dead,
       pid: DEAD_PID,
       alive: false,
       registered: true,
       head: commit,
+      rebasing: false,
+    });
+    expect(found.find((w) => w.path === rebasing)).toMatchObject({
+      pid: DEAD_PID + 1,
+      alive: false,
+      registered: true,
+      rebasing: true,
     });
     expect(found.find((w) => w.path === alive)).toMatchObject({
       pid: process.pid,
@@ -794,17 +873,19 @@ describe('the temporary worktree helpers', () => {
       alive: false,
       registered: false,
       head: null,
+      rebasing: false,
     });
     expect(found.find((w) => w.path === junk)).toMatchObject({
       pid: null,
       alive: false,
       registered: false,
       head: null,
+      rebasing: false,
     });
     expect(findMigratingWorktrees(bareHost('empty'), { env })).toEqual([]);
   });
 
-  it('removeDeadMigratingWorktrees removes only dead-pid leftovers (registered or plain), keeps a live one, and reports what it removed', () => {
+  it('removeDeadMigratingWorktrees removes only dead-pid leftovers with nothing in them, keeps a live, a rebasing and a rebased one, and reports what it removed', () => {
     const env = syncEnv();
     const { root, commit } = hostWithRefOnly(env);
     git(root, 'update-ref', MIGRATING_REF, commit);
@@ -815,6 +896,12 @@ describe('the temporary worktree helpers', () => {
     const junk = join(agentboardDir(root), MIGRATING_DIR, 'junk');
     mkdirSync(junk);
     writeFileSync(join(junk, 'note'), 'x');
+    const rebasing = temporary(root, DEAD_PID + 1, commit);
+    mkdirSync(join(git(rebasing, 'rev-parse', '--absolute-git-dir').trim(), 'rebase-merge'));
+    const rebased = temporary(root, DEAD_PID + 2, commit);
+    writeFileSync(join(rebased, 'events', 'x'), '');
+    git(rebased, 'add', '-A');
+    git(rebased, 'commit', '-q', '--no-verify', '-m', 'a finished rebase');
 
     const removed = removeDeadMigratingWorktrees(root, { env });
 
@@ -823,14 +910,20 @@ describe('the temporary worktree helpers', () => {
     expect(existsSync(plain)).toBe(false);
     expect(existsSync(junk)).toBe(false);
     expect(existsSync(alive)).toBe(true);
+    expect(existsSync(rebasing)).toBe(true);
+    expect(existsSync(rebased)).toBe(true);
     expect(worktreeEntry(root, dead)).toBeNull();
     expect(worktreeEntry(root, alive)).not.toBeNull();
-    // A live move still needs the temporary ref.
+    expect(worktreeEntry(root, rebasing)).not.toBeNull();
+    expect(worktreeEntry(root, rebased)).not.toBeNull();
+    // Moves still in flight, stopped or finished keep the temporary ref.
     expect(refCommit(root, MIGRATING_REF)).toBe(commit);
     expect(refCommit(root)).toBe(commit);
 
-    git(root, 'worktree', 'remove', '--force', alive);
-    rmSync(alive, { recursive: true, force: true });
+    for (const path of [alive, rebasing, rebased]) {
+      git(root, 'worktree', 'remove', '--force', '--force', path);
+      rmSync(path, { recursive: true, force: true });
+    }
     expect(removeDeadMigratingWorktrees(root, { env })).toEqual([]);
     expect(refCommit(root, MIGRATING_REF)).toBeNull();
     expect(refCommit(root)).toBe(commit);
@@ -873,14 +966,21 @@ describe('the temporary worktree helpers', () => {
     expect(adoptMigratingWorktree(live.root, live.dir, { env })).toBe(false);
     expect(existsSync(live.dir)).toBe(false);
     expect(existsSync(liveTemp)).toBe(true);
+
+    const stopped = hostWithRefOnly(env);
+    const stoppedTemp = temporary(stopped.root, DEAD_PID, stopped.commit);
+    mkdirSync(join(git(stoppedTemp, 'rev-parse', '--absolute-git-dir').trim(), 'rebase-merge'));
+    expect(adoptMigratingWorktree(stopped.root, stopped.dir, { env })).toBe(false);
+    expect(existsSync(stopped.dir)).toBe(false);
+    expect(existsSync(stoppedTemp)).toBe(true);
   });
 
   it('a leftover temporary worktree of a dead move beside a standalone .board is removed and the move starts again, naming it', () => {
     const env = syncEnv();
     const { root, dir, tip } = standaloneProject(env, 2);
     const files = eventFiles(dir);
-    const leftover = temporary(root, DEAD_PID, 'HEAD');
     git(root, 'update-ref', MIGRATING_REF, 'HEAD');
+    const leftover = temporary(root, DEAD_PID, MIGRATING_REF);
 
     const result = move(root, env);
 

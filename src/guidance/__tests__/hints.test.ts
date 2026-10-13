@@ -467,6 +467,12 @@ describe('hint contracts (CLI)', () => {
     ['not-a-board', 'init', ['events', "'agentboard init --remote <url>'"]],
     ['remote-mismatch', 'init', ['remote set-url', "'agentboard remote'"]],
     ['board-in-host', 'init', ['refs/agentboard/board', "'agentboard remote'"]],
+    // init --into-host (add-board-sharing group 5).
+    ['unsynced', 'init', ["'agentboard sync'", "'agentboard init --into-host'"]],
+    ['no-host-repository', 'init', ['git repository', "'agentboard init --into-host'"]],
+    ['git-too-old', 'init', ['2.32', "'agentboard init --into-host'"]],
+    ['sync-in-progress', 'init', ['git rebase --continue', "'agentboard init --into-host'"]],
+    ['sync-conflict', 'init', ['git rebase --continue', "'agentboard init --into-host'"]],
     ['integrity', 'show', ["'agentboard rebuild --check'"]],
     ['no-cache', 'rebuild', ["'agentboard rebuild'"]],
     ['schema-mismatch', 'rebuild', ["'agentboard rebuild'"]],

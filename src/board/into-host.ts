@@ -92,6 +92,12 @@ export interface MigratingWorktree {
    * present, else null.
    */
   readonly head: string | null;
+  /**
+   * True when a rebase is stopped in the worktree (`rebase-merge` or
+   * `rebase-apply` exists in its git directory): a move that stopped on a
+   * conflict in step 3, left for a human. False when not registered.
+   */
+  readonly rebasing: boolean;
 }
 
 /**
@@ -110,14 +116,21 @@ export function findMigratingWorktrees(
 
 /**
  * Removes every temporary worktree under `<git common dir>/agentboard/migrating/`
- * whose pid is not running (`MigratingWorktree.alive` false, which a pid
- * that is not a number counts as): unregistered (unlocked and removed by
- * force when registered, as `removeLeftoverWorktree` does) and deleted
- * from disk. One whose pid is alive (another move in progress on this
- * host, beyond the init lock's 60 second stale limit) is left alone. Also
- * deletes `MIGRATING_REF` when no live worktree remains. Returns the paths
- * removed, ascending. Never throws for a missing directory; nothing else
- * in the repository changes.
+ * that holds nothing a re-run needs: its pid is not running
+ * (`MigratingWorktree.alive` false, which a pid that is not a number
+ * counts as), it has no rebase state (`rebasing` false), and it is either
+ * not registered (a plain directory) or registered with a HEAD equal to
+ * `MIGRATING_REF` (nothing was integrated in it yet). Each is
+ * unregistered (unlocked and removed by force when registered, as
+ * `removeLeftoverWorktree` does) and deleted from disk. Left alone: one
+ * whose pid is alive (another move in progress on this host, beyond the
+ * init lock's 60 second stale limit); one with a rebase stopped in it (a
+ * conflict a human resolves there, see `moveBoardIntoHost` step 3); one
+ * whose HEAD differs from `MIGRATING_REF` or whose ref is gone (a rebase
+ * finished in it, which the re-run adopts). Also deletes `MIGRATING_REF`
+ * when no temporary worktree remains at all. Returns the paths removed,
+ * ascending. Never throws for a missing directory; nothing else in the
+ * repository changes.
  */
 export function removeDeadMigratingWorktrees(hostDir: string, options?: HostInitOptions): string[] {
   void hostDir;
@@ -130,11 +143,14 @@ export function removeDeadMigratingWorktrees(hostDir: string, options?: HostInit
  * away and before the temporary worktree was moved into place (design.md
  * decision 9, "Resuming"): when `dir` (`<hostDir>/.board`) is missing and
  * exactly one temporary worktree under `<git common dir>/agentboard/migrating/`
- * is registered, present, has a dead pid and a HEAD equal to
- * `refs/agentboard/board`, `git worktree move` it to `dir` and lock it
- * with `WORKTREE_LOCK_REASON`; returns true. Otherwise changes nothing and
- * returns false (also when `dir` exists, when the worktree's HEAD differs
- * from the ref, or when its pid is alive).
+ * is registered, present, has a dead pid, no rebase state and a HEAD
+ * equal to `refs/agentboard/board`, `git worktree move` it to `dir` and
+ * lock it with `WORKTREE_LOCK_REASON`; returns true. Otherwise changes
+ * nothing and returns false (also when `dir` exists, when the worktree's
+ * HEAD differs from the ref, when a rebase is stopped in it, or when its
+ * pid is alive). The other adoption, of a temporary worktree whose rebase
+ * finished while `.board` is still standalone, is part of
+ * `moveBoardIntoHost` (step 3).
  */
 export function adoptMigratingWorktree(
   hostDir: string,
@@ -312,10 +328,24 @@ export interface IntoHostResult extends InitResult {
  * 2: `<git common dir>/agentboard/init.lock`), so two moves or an `init`
  * and a move on one host take turns. Under the lock the model is read
  * again; a `.board` that is a host-model board by then is `unchanged`.
- * First, leftovers: `removeDeadMigratingWorktrees(hostRoot)` (a temporary
- * worktree of a move killed before the rename, while `.board` is still
- * standalone, holds nothing that is not in the old board or the refs; the
- * message names what was removed). Then the host `.gitignore` entry
+ * First, leftovers (`findMigratingWorktrees(hostRoot)`): a dead-pid
+ * temporary worktree with a rebase stopped in it (a move that stopped on
+ * a conflict in step 3) is never removed: `BoardError(3,
+ * 'sync-in-progress')` whose message names its path and the human steps
+ * of step 3 (resolve, `git add`, `git rebase --continue` in that
+ * worktree, then `agentboard init --into-host` again; the texts
+ * `git rebase --continue` and `agentboard init --into-host` appear),
+ * with nothing changed: the old `.board` untouched, the worktree, its
+ * rebase state and `MIGRATING_REF` as they were. Otherwise
+ * `removeDeadMigratingWorktrees(hostRoot)` removes the temporaries that
+ * hold nothing (the message names what was removed), and a dead-pid
+ * temporary worktree without rebase state whose HEAD differs from
+ * `MIGRATING_REF` (or whose ref is gone: a rebase finished in it, by the
+ * move before it was killed or by a human's `git rebase --continue`) is
+ * adopted: steps 2 and the `worktree add` of step 3 are skipped and the
+ * move goes on in it from the integration of step 3 (its rebases are
+ * no-ops for what is already integrated), through steps 4 to 7; `action`
+ * is `moved`. Then the host `.gitignore` entry
  * (`ignoreBoardInHost(hostRoot)` when the parent of `dir` is the top level
  * of a working tree, as `initBoard`). Each git command line below is given
  * as the move runs it, after the runner's `-c` prefix, so a shim on the
@@ -346,10 +376,18 @@ export interface IntoHostResult extends InitResult {
  *    `syncHostBoard` does. A rebase that stops on a conflict is left in
  *    place in the temporary worktree for a human and is
  *    `BoardError(3, 'sync-conflict')` whose message names every unmerged
- *    path, the temporary worktree's path and `git rebase --continue` (or
- *    `--abort`); the old `.board` is untouched and still standalone,
- *    `refs/agentboard/board` keeps the value it had (absent stays absent),
- *    and a re-run removes the temporary worktree and starts again. A
+ *    path, the temporary worktree's path and the human steps: resolve
+ *    the paths, `git add` them and `git rebase --continue` in that
+ *    worktree (or `git rebase --abort`), then run
+ *    `agentboard init --into-host` again (the texts `git rebase
+ *    --continue` and `agentboard init --into-host` appear); the old
+ *    `.board` is untouched and still standalone, `refs/agentboard/board`
+ *    keeps the value it had (absent stays absent), and `MIGRATING_REF`
+ *    and the temporary worktree stay. A re-run while the rebase is still
+ *    stopped exits 3 `sync-in-progress` with the same instructions and
+ *    removes nothing (see "leftovers" above); a re-run after the human
+ *    finished the rebase adopts the worktree and completes the move with
+ *    every event (the resolved `.gitignore` as the human left it). A
  *    rebase that fails for another reason is `BoardError(3, 'sync-failed')`
  *    with git's first error line, the temporary worktree removed.
  * 4. `update-ref refs/agentboard/board <HEAD of the worktree> <old>` in
@@ -387,7 +425,9 @@ export interface IntoHostResult extends InitResult {
  * into place, step 7 runs and the action is `resumed`, `keptAt` the newest
  * `standalone-*` directory under `<git common dir>/agentboard/` (null when
  * there is none), `oldRemoteUrl` read from it. When `dir` is missing and
- * nothing can be adopted, `BoardError(2, 'board-not-found')`.
+ * nothing can be adopted, `BoardError(2, 'board-not-found')`. The
+ * adoption of a temporary worktree whose rebase finished while `.board`
+ * is still standalone is described under "leftovers" above.
  *
  * Result for `moved`: `action` `moved`, `keptAt`, `oldRemoteUrl`, `sync`
  * as `IntoHostResult` says, and a message whose lines name `dir` and the

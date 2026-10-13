@@ -345,9 +345,19 @@ nothing and exit 0 (repairing a broken link as `init` does). After the
 move it SHALL run `sync`, so the board is published on the host's remote;
 when that `sync` fails, the move stays done and `init` exits with the
 failure's code and reason. Its output SHALL name the kept old repository,
-the old remote's URL, and say that every other clone runs
-`agentboard init --into-host` too and that the old remote can be retired
-once they have.
+the old remote's URL as written in the board's configuration, and say that
+every other clone runs `agentboard init --into-host` too and that the old
+remote can be retired once they have. With `--json` it SHALL print the
+`init` document plus `action` (`moved`, `resumed` after an interrupted
+move, `unchanged` on a board already in the host, `repaired` for a broken
+link), `keptAt` (the kept repository's path, else null), `oldRemoteUrl`
+(else null) and `sync` (the result of the `sync` it ran, else null). It
+SHALL exit 1 with reason `no-host-repository` also when the host's git
+directory is not inside its working tree, exit 3 as `sync` does
+(`sync-in-progress`, `detached-head`, `sync-failed`, `sync-conflict`) and
+exit 4 `unsynced` as board-concurrency "Moving a board into the host
+repository loses no event" says, and every such refusal SHALL print the
+hint of its reason.
 
 #### Scenario: Move reports what it kept
 - **WHEN** `agentboard init --into-host` moves a standalone board whose remote is `git@example.com:me/board.git`

@@ -510,15 +510,67 @@ the host's `git status` never shows them and nothing can `git add` them):
    lock it.
 7. `sync` (publishes the ref) and catch up the cache.
 
+The temporary worktree is `<git common dir>/agentboard/migrating/<pid>`,
+one subdirectory per move named by the pid of the process that made it,
+and `refs/agentboard/migrating` is one ref, deleted at the end of step 4
+and when no temporary worktree remains at all. A leftover of an earlier
+move is touched only when its pid is dead (the group 4 review of
+`init --remote`, whose cleanup of every `.board-clone-*` can make a
+concurrent run fail): a live-pid temporary is left alone. The step 1
+checks run before the init lock, so a refusal creates no
+`<git common dir>/agentboard` directory; steps 2 to 7 run under it.
+
+Conflicts are not a dead end (orchestrator ruling, group 5): a rebase of
+step 3 that stops on a conflict exits 3 `sync-conflict` with the
+temporary worktree left as git left it, the old `.board` untouched and
+`refs/agentboard/board` unchanged, and the message names the worktree's
+path and the human steps: resolve, `git add`, `git rebase --continue` in
+that worktree, then `agentboard init --into-host` again. A re-run never
+removes a dead-pid temporary worktree that has rebase state: it exits 3
+`sync-in-progress` naming the path with the same instructions and changes
+nothing. A dead-pid temporary worktree without rebase state whose HEAD
+differs from `refs/agentboard/migrating` (its rebase finished, by the move
+before it was killed or by a human) is adopted: the move goes on in it
+from the integration of step 3 (whose rebases are no-ops for what is
+already integrated) through step 7. Only dead-pid temporaries with no
+rebase state and nothing integrated (HEAD still at the temporary ref, or
+not registered at all) are removed, and the output names them.
+
 Resuming: a re-run that finds `.board` missing and a registered worktree
-at `<git common dir>/agentboard/migrating` whose HEAD equals
-`refs/agentboard/board` finishes step 6; one that finds the temporary
-worktree while the old `.board` is still standalone removes it (it holds
-nothing that is not in the old board or the refs) and starts again.
+under `<git common dir>/agentboard/migrating/` with a dead pid, no rebase
+state and a HEAD equal to `refs/agentboard/board` finishes step 6 and
+runs step 7.
+
+Other details of step 1: a committed event file whose content differs
+from its committed blob (a content-addressed file modified in place) is
+exit 5 `integrity`, not `unsynced`; a standalone board with no commit yet
+is exit 4 `unsynced`, telling the user to run `agentboard sync` first; a
+host whose git directory is not in its working tree (a bare repository
+with worktrees, a `--separate-git-dir` repository, a submodule) is exit 1
+`no-host-repository`, as is a board found outside a git repository or
+with `AGENTBOARD_DIR`; `git-too-old` is checked before everything else,
+also outside a git repository and on a host-model board. The standalone
+remote's tip is fetched with
+`git fetch --no-tags <remote> +refs/heads/<branch>:refs/remotes/<remote>/<branch>`,
+and step 2 fetches that tracking ref (`refs/heads/<branch>` without a
+remote) from the standalone repository as a local path. In step 3 a host
+remote whose `ls-remote` fails is treated as having no board ref, with a
+warning naming it; the move completes and the `sync` of step 7 then fails
+with exit 3 `sync-failed`, the move done, the next `sync` publishing. A
+compare-and-swap failure in step 4 and an `integrity` refusal in step 5
+remove the temporary worktree and `refs/agentboard/migrating`, leave the
+old `.board` untouched and leave `refs/agentboard/board` at whatever
+value step 4 gave it (a correct board history either way).
 
 The old repository is kept rather than deleted: it is the only copy of
 anything a bug in steps 2 to 5 might miss, and inside the git directory it
-costs nothing visible. The output names it and the old remote's URL.
+costs nothing visible. The output names it and the old remote's URL as
+written in the board's configuration (the raw `remote.<name>.url`, so a
+URL rewritten by `insteadOf` is reported the way the user wrote it). With
+`--json` the document is the ten keys of `init` plus `action` (`moved`,
+`resumed`, `unchanged` for a board already in the host, `repaired` for a
+broken link repaired as `init` does), `keptAt`, `oldRemoteUrl` and `sync`
+(the result of step 7, null when no `sync` ran).
 
 ### 10. Showing the configuration: `agentboard remote`
 
