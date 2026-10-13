@@ -23,6 +23,7 @@ export * from './store/cursors.js';
 export * from './board/types.js';
 export * from './board/secrets.js';
 export * from './board/init.js';
+export * from './board/init-remote.js';
 export * from './board/resolve.js';
 export * from './board/paths.js';
 export * from './board/reminder.js';
