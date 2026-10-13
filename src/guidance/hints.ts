@@ -133,6 +133,7 @@ export const HINT_REASONS: readonly string[] = [
   'needs-task-or-adhoc',
   'no-cache',
   'no-disposition',
+  'no-host-repository',
   'no-targets',
   'not-a-board',
   'not-a-tty',
@@ -158,6 +159,7 @@ export const HINT_REASONS: readonly string[] = [
   'unknown-ticket',
   'unpromoted-decision',
   'unsupported-source',
+  'unsynced',
   'usage',
 ];
 
@@ -206,6 +208,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'needs-task-or-adhoc': 1,
   'no-cache': 5,
   'no-disposition': 1,
+  'no-host-repository': 1,
   'no-targets': 1,
   'not-a-board': 1,
   'not-a-tty': 1,
@@ -231,6 +234,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'unknown-ticket': 4,
   'unpromoted-decision': 1,
   'unsupported-source': 1,
+  unsynced: 4,
   usage: 1,
 };
 

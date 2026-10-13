@@ -936,3 +936,33 @@ describe('the hints of the scope disposition (add-adhoc-ticket-lifecycle task 2.
     expect(HINT_EXIT_CODES['already-linked']).toBe(4);
   });
 });
+
+describe('the hints of the move into the host repository (add-board-sharing group 5)', () => {
+  it('unsynced says to sync first, then run init --into-host again, on both surfaces, in CLI form', () => {
+    for (const surface of SURFACES) {
+      for (const context of [ctx(surface, 'init'), ctx(surface, null)]) {
+        const hint = renderHint('unsynced', context) ?? '';
+        expect(hint, surface).not.toBe('');
+        const steps = cliSteps(hint).map((step) => parseStep(step));
+        expect(steps.map((step) => step.command)).toEqual(['sync', 'init']);
+        expect(steps[1]?.values['into-host']).toBe(true);
+        expect(toolSteps(hint)).toEqual([]);
+      }
+    }
+  });
+
+  it('no-host-repository names a git repository, AGENTBOARD_DIR and the main checkout, then init --into-host', () => {
+    for (const surface of SURFACES) {
+      for (const context of [ctx(surface, 'init'), ctx(surface, null)]) {
+        const hint = renderHint('no-host-repository', context) ?? '';
+        expect(hint, surface).toContain('git repository');
+        expect(hint).toContain('AGENTBOARD_DIR');
+        expect(hint).toMatch(/main checkout/);
+        const steps = cliSteps(hint).map((step) => parseStep(step));
+        expect(steps.map((step) => step.command)).toContain('init');
+        expect(steps.some((step) => step.values['into-host'] === true)).toBe(true);
+        expect(toolSteps(hint)).toEqual([]);
+      }
+    }
+  });
+});
