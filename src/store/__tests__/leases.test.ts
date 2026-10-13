@@ -476,7 +476,7 @@ INSERT INTO meta (key, value) VALUES ('schema_version', '1'), ('last_position', 
     expect(board.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
       value: String(CACHE_SCHEMA_VERSION),
     });
-    expect(CACHE_SCHEMA_VERSION).toBe(3);
+    expect(CACHE_SCHEMA_VERSION).toBe(4);
     // Cursors are dropped: entries may be delivered again, none is skipped.
     expect(board.db.prepare('SELECT * FROM cursors').all()).toEqual([]);
     expect(board.db.prepare('SELECT * FROM cursor_seen').all()).toEqual([]);
@@ -514,9 +514,9 @@ describe('cache without the watermark is rebuilt (spec scenario)', () => {
     old.close();
 
     const board = openB(dir);
-    expect(CACHE_SCHEMA_VERSION).toBe(3);
+    expect(CACHE_SCHEMA_VERSION).toBe(4);
     expect(board.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: '3',
+      value: '4',
     });
     expect(board.db.prepare('SELECT * FROM cursors').all()).toEqual([]);
     expect(board.db.prepare("SELECT value FROM meta WHERE key = 'grant_watermark'").get()).toEqual({
