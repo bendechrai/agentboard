@@ -22,7 +22,7 @@ import { openBoard } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
 import { boardExists, locateBoard, type LocateOptions } from '../store/locate.js';
 import { gitRunner, gitVersion, isGitFailure, meetsGitFloor, type GitVersion } from './git.js';
-import { MIGRATING_DIR, cleanDeadMigratingWorktrees } from './into-host.js';
+import { MIGRATING_DIR, cleanDeadMigratingWorktrees, pendingMove } from './into-host.js';
 import {
   AGENTBOARD_GIT_SUBDIR,
   BOARD_GITIGNORE_LINES,
@@ -431,6 +431,13 @@ function existingBoard(
         lines.push(
           `removed ${removed.map((p) => asciiText(p)).join(', ')}, left by an interrupted ` +
             'agentboard init --into-host',
+        );
+      }
+      if (pendingMove(dirname(dir), { env })) {
+        lines.push(
+          'an agentboard init --into-host was interrupted before its sync completed (the old ' +
+            'board repository is kept under .git/agentboard); run agentboard init --into-host ' +
+            'to finish it',
         );
       }
     }

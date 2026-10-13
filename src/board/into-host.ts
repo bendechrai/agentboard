@@ -34,6 +34,7 @@ import {
   readdirSync,
   realpathSync,
   renameSync,
+  rmSync,
   rmdirSync,
   statSync,
   utimesSync,
@@ -298,8 +299,26 @@ export function cleanDeadMigratingWorktrees(hostDir: string, options?: HostInitO
   if (refValue(git, MIGRATING_REF) !== '' && findMigratingWorktrees(hostDir, options).length === 0) {
     git.attempt('update-ref', '-d', MIGRATING_REF);
   }
-  removeEmptyMigratingDir(hostDir, options);
+  if (!pendingMove(hostDir, options)) {
+    removeEmptyMigratingDir(hostDir, options);
+  }
   return removed.sort();
+}
+
+/**
+ * True when the `migrating` directory of the host at `hostDir` exists,
+ * holds no entry and a kept repository (`standalone-*`) exists beside it:
+ * the marker of a move whose `sync` has not completed (design.md decision
+ * 9, "Resuming"), which `moveBoardIntoHost` resumes and plain `init`
+ * reports. Read-only.
+ */
+export function pendingMove(hostDir: string, options?: HostInitOptions): boolean {
+  const base = migratingDir(hostDir, options);
+  return (
+    existsSync(base) &&
+    readdirSync(base).length === 0 &&
+    newestKept(join(commonDir(gitRunner(hostDir, { env: options?.env }), hostDir), AGENTBOARD_GIT_SUBDIR)) !== null
+  );
 }
 
 /**
@@ -925,6 +944,8 @@ interface MovePlan {
    * ruling 6: still an ancestor of, or equal to, the HEAD found then).
    */
   readonly gitDir: string | null;
+  /** The HEAD commit of the standalone repository at step 1, still an ancestor of its HEAD at the rename. */
+  readonly head: string;
 }
 
 /**
@@ -1000,13 +1021,14 @@ function checkStandalone(dir: string, info: BoardModelInfo, env: Env): MovePlan 
   }
 
   const gitDir = boardGitDir(git);
+  const head = git.run('rev-parse', 'HEAD').trim();
   const choice = boardRemote(info, { env });
   if (choice.ambiguous) {
     throw ambiguousRemoteError(choice, 'init');
   }
   const remote = choice.chosen;
   if (remote === null) {
-    return { sourceTip: `refs/heads/${branch.trim()}`, oldRemoteUrl: null, gitDir };
+    return { sourceTip: `refs/heads/${branch.trim()}`, oldRemoteUrl: null, gitDir, head };
   }
   const name = remote.name;
   const tracking = `refs/remotes/${name}/${branch.trim()}`;
@@ -1029,7 +1051,7 @@ function checkStandalone(dir: string, info: BoardModelInfo, env: Env): MovePlan 
     );
   }
   const url = git.attempt('config', '--get', `remote.${name}.url`);
-  return { sourceTip: tracking, oldRemoteUrl: isGitFailure(url) ? null : url.trim(), gitDir };
+  return { sourceTip: tracking, oldRemoteUrl: isGitFailure(url) ? null : url.trim(), gitDir, head };
 }
 
 /** Step 1, check 6: the host repository's remote, refused when ambiguous. */
@@ -1073,15 +1095,12 @@ function hostBoardUnderLock(
   env: Env,
 ): IntoHostResult {
   const info = detectBoardModel(dir, { env });
-  const scratch = join(commonDir(gitRunner(hostRoot, { env }), hostRoot), AGENTBOARD_GIT_SUBDIR);
-  const marker = migratingDir(hostRoot, { env });
-  const resume = existsSync(marker) && newestKept(scratch) !== null;
-  const removed = resume ? [] : cleanDeadMigratingWorktrees(hostRoot, { env });
-  if (resume && findMigratingWorktrees(hostRoot, { env }).length === 0) {
+  const removed = cleanDeadMigratingWorktrees(hostRoot, { env });
+  if (pendingMove(hostRoot, { env })) {
     if (!boardWorktreeLocked(hostRoot, dir, { env })) {
       addBoardWorktree(hostRoot, dir, { env });
     }
-    return resumedMove(dir, hostRoot, remote, env);
+    return resumedMove(dir, hostRoot, remote, env, removed);
   }
   return unchangedBoard(dir, info, env, removed);
 }
@@ -1152,13 +1171,37 @@ function lockedMove(
   let temp: string;
   if (adoptable === undefined) {
     temp = migratingWorktreePath(hostRoot, process.pid, { env });
-    mkdirSync(dirname(temp), { recursive: true });
-    host.run('worktree', 'add', '--detach', temp, MIGRATING_REF);
+    const marker = dirname(temp);
+    const hadMarker = existsSync(marker);
+    mkdirSync(marker, { recursive: true });
+    const added = host.attempt('worktree', 'add', '--detach', temp, MIGRATING_REF);
+    if (isGitFailure(added)) {
+      // The temporary ref is gone when another init took this move's
+      // stale lock and finished; nothing of this run stays behind.
+      rmSync(temp, { recursive: true, force: true });
+      if (findMigratingWorktrees(hostRoot, { env }).length === 0) {
+        host.attempt('update-ref', '-d', MIGRATING_REF);
+      }
+      if (!hadMarker && existsSync(marker) && readdirSync(marker).length === 0) {
+        rmdirSync(marker);
+      }
+      throw new BoardError(
+        3,
+        'sync-failed',
+        `adding the temporary worktree at ${asciiText(temp)} failed (${firstErrorLine(added)}): ` +
+          'this move lost its init lock to another init that finished meanwhile, or git ' +
+          `refused the worktree; nothing of this run remains; run ${AGAIN} again`,
+      );
+    }
   } else {
     temp = adoptable.path;
   }
   const worktree = gitRunner(temp, { env, disableHooks: true });
-  if (adopted && !isAncestor(worktree, MIGRATING_REF, 'HEAD')) {
+  if (
+    adopted &&
+    refValue(host, MIGRATING_REF) !== oldSource &&
+    !isAncestor(worktree, MIGRATING_REF, 'HEAD')
+  ) {
     // Source commits the adopted worktree lacks (synced to the old remote
     // since it was made) are replayed onto what it already integrated.
     const base = replayBase(worktree, oldSource);
@@ -1224,7 +1267,6 @@ function lockedMove(
         "the ref's new value",
     );
   }
-  host.run('update-ref', '-d', MIGRATING_REF);
   const hostGitignore = ignoreBoardInHost(hostRoot);
 
   // 5. Every old event file, carried over hash-verified.
@@ -1235,7 +1277,12 @@ function lockedMove(
 
   // 6. Keep the old repository, move the worktree into place, lock it,
   // carry over what landed in the rename window.
-  if (boardGitDir(gitRunner(dir, { env })) !== plan.gitDir || registeredAt(host, dir) !== null) {
+  const board = gitRunner(dir, { env });
+  if (
+    boardGitDir(board) !== plan.gitDir ||
+    !isAncestor(board, plan.head, 'HEAD') ||
+    registeredAt(host, dir) !== null
+  ) {
     throw new BoardError(
       3,
       'sync-failed',
@@ -1248,6 +1295,7 @@ function lockedMove(
   renameSync(dir, keptAt);
   host.run('worktree', 'move', temp, dir);
   addBoardWorktree(hostRoot, dir, { env });
+  host.run('update-ref', '-d', MIGRATING_REF);
   const late = carryOverEventFiles(join(keptAt, 'events'), join(dir, 'events'));
   if (late.mismatched.length > 0) {
     throw mismatchedEvents(late.mismatched, join(keptAt, 'events'), dir, true);
@@ -1293,12 +1341,12 @@ function lockedMove(
  * called when the fresh tip equals `oldSource` (nothing to replay).
  */
 function replayBase(worktree: GitRunner, oldSource: string): string {
+  if (oldSource !== '' && isAncestor(worktree, oldSource, MIGRATING_REF)) {
+    return oldSource;
+  }
   const base = worktree.attempt('merge-base', 'HEAD', MIGRATING_REF);
   if (!isGitFailure(base) && base.trim() !== '') {
     return base.trim();
-  }
-  if (oldSource !== '' && isAncestor(worktree, oldSource, MIGRATING_REF)) {
-    return oldSource;
   }
   return '--root';
 }
@@ -1334,10 +1382,13 @@ function resumedMove(
   hostRoot: string,
   remote: ChosenRemote | null,
   env: Env,
+  removed: readonly string[] = [],
 ): IntoHostResult {
   const scratch = join(commonDir(gitRunner(hostRoot, { env }), hostRoot), AGENTBOARD_GIT_SUBDIR);
   const keptAt = newestKept(scratch);
   const oldRemoteUrl = keptAt === null ? null : keptRemoteUrl(keptAt, env);
+  // A kill before the deletion of step 6 leaves the temporary ref behind.
+  hostGit(hostRoot, { env }).attempt('update-ref', '-d', MIGRATING_REF);
   if (keptAt !== null) {
     const late = carryOverEventFiles(join(keptAt, 'events'), join(dir, 'events'));
     if (late.mismatched.length > 0) {
@@ -1352,6 +1403,9 @@ function resumedMove(
       ? ['no kept copy of the old board repository was found']
       : keptLines(keptAt, oldRemoteUrl)),
   ];
+  if (removed.length > 0) {
+    lines.push(`removed ${removed.map((p) => asciiText(p)).join(', ')}, left by an interrupted move`);
+  }
   const sync = syncOrFail(dir, hostRoot, lines, keptAt, oldRemoteUrl, env);
   lines.push(...sync.message.split('\n'));
   return {
