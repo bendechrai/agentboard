@@ -194,10 +194,20 @@ Steps:
 
 1. Stage and commit exactly as ADR 0005 (`--no-verify`, own paths only).
 2. Integrate the local ref: if `refs/agentboard/board` is not an ancestor
-   of HEAD, `git rebase --no-verify refs/agentboard/board` (conflict:
-   exit 3 `sync-conflict`). Then `update-ref` with the old value read
-   before the rebase; a failed compare-and-swap repeats this step once,
-   then exits 3 `sync-failed`.
+   of HEAD and holds a commit this worktree's HEAD never pointed at (the
+   worktree HEAD's reflog, `git rev-list -g HEAD`, does not list it:
+   someone fetched into the ref by hand),
+   `git rebase --no-verify refs/agentboard/board` (conflict: exit 3
+   `sync-conflict`). A ref value the reflog does list is a stale value of
+   this worktree, left by a `sync` killed between a rebase and its
+   `update-ref`, or by a human who finished a conflicted rebase with
+   `git rebase --continue`: its commits were replayed into HEAD, so no
+   rebase runs and the ref is simply moved. (Without this rule the `sync`
+   after a resolved conflict replays the local commits onto the ref and
+   conflicts again on the same path.) Then `update-ref` with the old value
+   read before the rebase (the empty string when the ref was deleted by
+   hand, which creates it again from HEAD); a failed compare-and-swap
+   repeats this step once, then exits 3 `sync-failed`.
 3. Remote: chosen as in board-concurrency "Sync converges". No remote ends
    here, exit 0. The main worktree's branch is used for the upstream rule
    (not the branch of the linked worktree the command happens to run in)
@@ -271,8 +281,11 @@ half-made board is never mistaken for a board. An `init` interrupted after
 next `init` finds it healthy, restores the lock and says so (the only
 change `init` makes to an existing board). A board re-created from the
 local ref after its directory was deleted reports that it was restored
-from the local ref with the number of event files; only a board whose ref
-was written fresh is reported as a new empty board.
+from the local ref with the number of event files; a board whose ref was
+written fresh, or whose ref holds nothing but the deterministic
+empty-board commit (the loser of two racing `init`s, or an empty board
+whose directory was deleted), is reported as a new empty board, since it
+has no history to restore.
 
 The standalone fallbacks (old git, a host whose git directory is not in
 its working tree) put the reason in both `message` and `warnings`, so the
