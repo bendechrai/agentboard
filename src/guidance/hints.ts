@@ -384,7 +384,9 @@ export function hintStep(
  *   stream step `watch` with `as` A.
  *
  * Exit 2: `board-not-found`: step `init`, and `AGENTBOARD_DIR`;
- * `board-not-a-repository`: step `help sync`; `board-link-broken`: step
+ * `board-not-a-repository`: step `help sync` (from `init`: move `.board`
+ * aside, or step `init` first when it holds event files, then step `init`
+ * with `remote` `<url>`); `board-link-broken`: step
  * `init`, which repairs the board's link to the host repository.
  *
  * Exit 3: `sync-in-progress`, `detached-head`, `board-on-branch`,
@@ -696,7 +698,9 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
   'board-not-found': (h) =>
     `create the board with ${h.step('init')} at the root of the main checkout, or set AGENTBOARD_DIR to an existing board`,
   'board-not-a-repository': (h) =>
-    `the board directory must be the top level of its own git repository; see ${h.step('help', [['topic', 'sync']])}`,
+    h.command?.name === 'init'
+      ? `.board exists but is not a board repository; move it aside (run ${h.step('init')} first instead when it holds event files you want to keep), then run ${h.step('init', [['remote', '<url>']])} again`
+      : `the board directory must be the top level of its own git repository; see ${h.step('help', [['topic', 'sync']])}`,
   'board-link-broken': (h) =>
     `the board is a worktree of the host repository whose link is broken; run ${h.step('init')} at the root of the main checkout to repair it`,
   // Exit 3.
