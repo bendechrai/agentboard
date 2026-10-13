@@ -55,6 +55,16 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
    reconciling tickets when `import-change` is re-run. Groups 1 to 5 are
    concurrency-critical, so they get a second reviewer (see
    CONTRIBUTING.md, "Three roles per task group").
+3. `add-board-sharing` (proposed, in `openspec/changes/`): in a git
+   project the board's history lives in the host repository under the
+   hidden ref `refs/agentboard/board`, with `.board/` as a locked worktree,
+   so a second clone joins with `agentboard init` alone; `sync` fetches,
+   rebases and pushes that ref; `init --remote <url>` keeps a board in a
+   separate repository; `init --into-host` moves an existing board in with
+   its history; `agentboard remote` shows how a board is shared. It closes
+   the gap that sharing a board needs manual git setup (a second
+   repository, `git -C .board remote add` and `git clone <url> .board` on
+   every machine). ADR 0012. Groups 3 and 5 are concurrency-critical.
 
 ## Known gaps
 
