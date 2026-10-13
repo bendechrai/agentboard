@@ -153,19 +153,44 @@ Run `init` once at the root of the project's main checkout:
 
 ```
 $ agentboard init
-created the board at /path/to/project/.board
+created the board at /path/to/project/.board (host model: a worktree of the host repository at refs/agentboard/board); a new empty board; agentboard sync publishes it to origin, where everyone who can fetch the remote can read it
 Next: run 'agentboard agents install' so this project's coding agents learn to use the board.
 ```
 
-This creates `.board/`, which is itself a small git repository holding
-`events/` (with an empty `.gitkeep`) and a `.gitignore` that excludes the
-cache (`cache.sqlite` and its `-wal` and `-shm` files). `init` also adds a
-`.board/` entry to the host project's `.gitignore` when it is missing, so
-board activity never touches the host project's history; commit that
-`.gitignore` change. Running `init` again changes nothing and exits 0.
-Either way its last line suggests `agentboard agents install` (see
+A board's history is kept in git in one of two models:
+
+- **Host model**, the default inside a git repository with git 2.32 or
+  later: the board's commits live in the project's own repository under
+  the hidden ref `refs/agentboard/board`, and `.board/` is a linked
+  worktree of that repository on a detached HEAD, locked with the reason
+  `agentboard board` so `git worktree prune` and `git worktree remove`
+  leave it alone. The ref is not a branch: it triggers no CI, falls under
+  no branch protection, appears in no branch list, and a plain `git clone`
+  or `git fetch` never transfers it, so contributors who do not use
+  agentboard never see it. Sharing needs no setup: the board travels over
+  the project's remote and credentials (see "Sync between machines").
+- **Standalone model**: `.board/` is a small git repository of its own.
+  `init` creates one outside a git repository, when `AGENTBOARD_DIR` is
+  set, or when git is older than 2.32 (it says so), and every board made
+  before the host model existed is one. `init --remote <url>` creates a
+  standalone board shared through a repository of its own, for a board
+  that must stay out of a public project.
+
+In both models `.board/` holds `events/` (with an empty `.gitkeep`) and a
+`.gitignore` that excludes the cache (`cache.sqlite` and its `-wal` and
+`-shm` files). Inside a git repository `init` also adds a `.board/` entry
+to the host project's `.gitignore` when it is missing, so board activity
+never touches the host project's history; commit that `.gitignore`
+change. Running `init` again changes nothing and exits 0, naming the
+board's model, where its history lives and the remote `sync` would use;
+an interrupted `init` is completed by running it again. With several
+remotes and none chosen (no `origin`, no upstream on the main checkout's
+branch, no `agentboard.remote`), `init` exits 1 (`ambiguous-remote`) and
+creates nothing: set `git config agentboard.remote <name>` and run it
+again. Either way its last line suggests `agentboard agents install` (see
 "Installing agent guidance into a project"); `init --json` prints only
-its JSON document.
+its JSON document, with `dir`, `created`, `model`, `joined`, `remote`,
+`events`, `hostGitignore`, `warnings`, `repair` and `message`.
 
 Every command finds the board without being told where it is:
 
@@ -599,9 +624,48 @@ never close because they have no `pr` link (see "Board health").
 
 ## Sync between machines
 
-`.board/` is its own git repository, so the board moves between machines
-(a desktop and a laptop, say) without touching the host project. Give it a
-remote once:
+A host-model board rides along with the project's own remote. On the
+machine that created it:
+
+```
+agentboard sync
+```
+
+commits the new event files and pushes `refs/agentboard/board` to the
+remote. On another machine (or in a second clone), clone the project and
+run `agentboard init` at its root: it finds `refs/agentboard/board` on
+the remote, fetches it, creates the `.board` worktree at it and folds the
+events, so `agentboard list` shows the tickets before any `sync`:
+
+```
+$ git clone <project-url> project && cd project
+$ agentboard init
+created the board at /path/to/project/.board (host model: a worktree of the host repository at refs/agentboard/board); joined 5 events from origin
+```
+
+When the remote has no board yet, or cannot be reached (`init` warns and
+carries on), `init` creates a new empty board whose first commit is the
+same in every clone, and the first `sync` publishes it or joins the board
+that appeared in the meantime. Everyone who can fetch the project's remote
+can fetch the board: a project whose repository is public, or whose git
+host refuses pushes to custom refs, keeps its board in a repository of its
+own with `init --remote <url>`. The host model needs git 2.32 or later on
+every machine that shares the board; `init` on an older git falls back to
+a standalone board and says so, and older agentboard versions refuse to
+sync a host-model board. Never `git push --mirror` from a working clone:
+it rewinds the remote ref to that clone's board (other clones restore
+their own events on their next `sync`).
+
+`init` also repairs a host-model `.board` whose link to the repository is
+broken: a checkout moved to another directory is relinked in place, and a
+`.board` copied from another clone is rebuilt as a fresh worktree of this
+clone with every event file carried over (one whose content does not match
+its name is skipped and reported), the copy kept under
+`.git/agentboard/stale-board-<timestamp>`.
+
+A standalone board (`.board/` as a repository of its own) moves between
+machines (a desktop and a laptop, say) without touching the host project.
+Give it a remote once:
 
 ```
 git -C .board remote add origin <url-of-an-empty-repository>
