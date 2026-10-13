@@ -494,7 +494,8 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *
  * `run` of each command calls the named operation and returns its result
  * as the `--json` document, with this human rendering:
- * - `init`: `InitResult`; text: its `message`.
+ * - `init`: `InitResult`; text: its `message`; `warnings`: the result's
+ *   `warnings`, printed to stderr by `runCli`.
  * - `new`: `WriteOutcome`; text: `created <full id>` then the `list` line.
  * - `show`: `ShowResult` (`--raw`: `RawEvent[]`); text: `renderShow`
  *   (`--raw`: each raw event's `text` on its own line).
@@ -623,6 +624,12 @@ export const COMMANDS: readonly CommandSpec[] = [
       { code: 0, meaning: 'The board was created, or already existed' },
       EXIT_USAGE,
       { code: 1, reason: 'git-missing', meaning: 'git could not be run' },
+      {
+        code: 1,
+        reason: 'ambiguous-remote',
+        meaning:
+          'The host repository has several remotes and none is origin or the upstream of its branch; nothing was created',
+      },
       EXIT_INTEGRITY,
     ],
     positionals: [],
@@ -632,7 +639,11 @@ export const COMMANDS: readonly CommandSpec[] = [
     operation: 'initBoard',
     run: (ctx) => {
       const result = initBoard({ cwd: ctx.cwd, env: ctx.env });
-      return { json: result, text: `${result.message}\n${INIT_SUGGESTION}\n` };
+      return {
+        json: result,
+        text: `${result.message}\n${INIT_SUGGESTION}\n`,
+        warnings: result.warnings,
+      };
     },
   },
   {

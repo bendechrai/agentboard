@@ -192,15 +192,17 @@ export function boardRemote(info: BoardModelInfo, options?: GitRunnerOptions): R
  * has `ambiguous` true): `BoardError(1, 'ambiguous-remote')` whose message
  * names every remote of `choice.remotes` (through `asciiText`), says that
  * none is `origin` and no upstream chose one, and says to set one with
- * `git config agentboard.remote <name>` (that text appears literally). Pure.
+ * `git config agentboard.remote <name>` (that text appears literally) and
+ * run `agentboard <command>` again (`sync` by default; `init` passes
+ * `init`, so the text `agentboard init` appears). Pure.
  */
-export function ambiguousRemoteError(choice: RemoteChoice): Error {
+export function ambiguousRemoteError(choice: RemoteChoice, command: 'sync' | 'init' = 'sync'): Error {
   return new BoardError(
     1,
     'ambiguous-remote',
     `the repository that holds the board's history has several remotes (${remoteNames(choice.remotes)}), ` +
       `none of them origin and none the upstream of the branch; choose one with ${SET_REMOTE} ` +
-      'in that repository and run agentboard sync again',
+      `in that repository and run agentboard ${command} again`,
   );
 }
 

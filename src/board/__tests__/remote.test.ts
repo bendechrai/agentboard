@@ -10,7 +10,7 @@
  * process. Every remote is a bare repository on local disk.
  */
 
-import { cpSync, existsSync } from 'node:fs';
+import { cpSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -45,6 +45,7 @@ import {
   hostRepo,
   real,
   separateGitDirBoard,
+  submoduleBoard,
   withGitShim,
 } from './sharing-helpers.js';
 import { bareRemote, commitCount, initMachine, revParse, syncEnv } from './sync-helpers.js';
@@ -754,7 +755,38 @@ describe('remoteReport', () => {
       remote: null,
       remotes: [],
     });
-    expect(report.problems.some((p) => /\bgit\b/.test(p))).toBe(true);
+    // Exactly one problem, and it names git (scenario "Remote when git cannot be run").
+    expect(report.problems).toHaveLength(1);
+    expect(report.problems[0]).toMatch(/\bgit\b/);
+    expect(renderRemote(report)).toBe(
+      `board: ${dir}\nmodel: not a repository\nproblem: ${report.problems[0] ?? ''}\n`,
+    );
+  });
+
+  it('scenario: submodule board is standalone (the git directory the .git file names, not a broken link)', () => {
+    const env = syncEnv();
+    const { host, dir, gitDir, source } = submoduleBoard(env);
+    expect(readFileSync(join(dir, '.git'), 'utf8')).toMatch(/^gitdir: /);
+
+    const report = remoteReport(dir, { env });
+
+    expect(report).toMatchObject({
+      dir,
+      model: 'standalone',
+      gitDir: real(gitDir),
+      ref: null,
+      refCommit: null,
+      branch: 'main',
+      remote: { name: 'origin', url: source, rule: 'upstream' },
+      remotes: [{ name: 'origin', url: source }],
+      problems: [],
+    });
+    expect(report.head).toBe(revParse(dir));
+    expect(report.gitDir).toBe(real(join(host, '.git', 'modules', '.board')));
+    const text = renderRemote(report);
+    expect(text).toContain('model: standalone\n');
+    expect(text).toContain(`history: branch main at ${report.head ?? ''} in ${real(gitDir)}\n`);
+    expect(text).not.toMatch(/broken|problem/);
   });
 
   it('never opens the board: no cache file is created and git state is unchanged', () => {
