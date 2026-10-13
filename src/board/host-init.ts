@@ -406,6 +406,34 @@ export function adoptRepairingWorktree(
 }
 
 /**
+ * True when `dir` is a registered worktree of the repository at `hostDir`
+ * and is locked (any reason); false when it is unlocked or not registered.
+ * Read-only.
+ */
+export function boardWorktreeLocked(
+  hostDir: string,
+  dir: string,
+  options?: HostInitOptions,
+): boolean {
+  return registeredAt(hostGit(hostDir, options), dir)?.locked === true;
+}
+
+/**
+ * The newest kept-aside board directory (`stale-board-*`, the greatest
+ * name, which is the latest timestamp) under `<git common dir>/agentboard/`
+ * of the repository at `hostDir`, as an absolute path, or null when there
+ * is none.
+ */
+export function newestStaleBoard(hostDir: string, options?: HostInitOptions): string | null {
+  const scratch = agentboardGitDir(hostGit(hostDir, options), hostDir);
+  const names = readdirSync(scratch)
+    .filter((name) => name.startsWith(STALE_BOARD_PREFIX))
+    .sort();
+  const newest = names[names.length - 1];
+  return newest === undefined ? null : join(scratch, newest);
+}
+
+/**
  * Runs `fn` while holding `<git common dir>/agentboard/init.lock` of the
  * repository at `hostDir`, so that two `init` processes on one host make
  * or repair the board one after the other (design.md decision 2: the loser

@@ -171,8 +171,10 @@ A board's history is kept in git in one of two models:
   the project's remote and credentials (see "Sync between machines").
 - **Standalone model**: `.board/` is a small git repository of its own.
   `init` creates one outside a git repository, when `AGENTBOARD_DIR` is
-  set, or when git is older than 2.32 (it says so), and every board made
-  before the host model existed is one. `init --remote <url>` creates a
+  set, when git is older than 2.32, or when the repository's `.git`
+  directory is not inside its working tree (a bare repository with linked
+  worktrees, `git init --separate-git-dir`, a submodule); it says so in
+  each case. Every board made before the host model existed is one. `init --remote <url>` creates a
   standalone board shared through a repository of its own, for a board
   that must stay out of a public project.
 

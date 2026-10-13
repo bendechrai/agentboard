@@ -13,19 +13,22 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { openBoard } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
-import { boardExists, locateBoard, type BoardSource, type LocateOptions } from '../store/locate.js';
+import { boardExists, locateBoard, type LocateOptions } from '../store/locate.js';
 import { gitRunner, gitVersion, isGitFailure, meetsGitFloor, type GitVersion } from './git.js';
 import {
   BOARD_GITIGNORE_LINES,
   addBoardWorktree,
   adoptRepairingWorktree,
+  boardWorktreeLocked,
   ensureBoardRef,
+  newestStaleBoard,
   repairBoardLink,
   withInitLock,
   type BoardRefSource,
@@ -239,7 +242,8 @@ export interface InitResult {
 export function initBoard(options?: LocateOptions): InitResult {
   const { dir, source } = locateBoard(options);
   const env: Env = options?.env ?? process.env;
-  const version = gitVersion(env, options?.cwd);
+  const cwd = options?.cwd ?? process.cwd();
+  const version = gitVersion(env, cwd);
   if (version === null) {
     throw new BoardError(
       1,
@@ -247,14 +251,30 @@ export function initBoard(options?: LocateOptions): InitResult {
       'agentboard init needs git (the board is kept in a git repository), but git could not be run',
     );
   }
-  const hostModel = source === 'git' && meetsGitFloor(version);
-  const warnings =
-    source === 'git' && !hostModel
-      ? [
-          `git ${formatVersion(version)} was found, but a board in the host repository needs ` +
-            'git 2.32 or later; created a standalone board (a repository of its own) instead',
-        ]
-      : [];
+  // The host model needs a host whose git directory is inside its working
+  // tree; the decision is taken before anything is written.
+  const inTree = source === 'git' && hasInTreeGitDir(dirname(dir), env);
+  const hostModel = inTree && meetsGitFloor(version);
+  const warnings: string[] = [];
+  let why = '';
+  if (source === 'git' && !inTree) {
+    const gitDir = resolve(
+      cwd,
+      gitRunner(cwd, { env }).run('rev-parse', '--git-common-dir').trim(),
+    );
+    why = "; the host model needs the repository's .git directory inside its working tree";
+    warnings.push(
+      `the git directory of this repository is ${asciiText(gitDir)}, outside its working tree, ` +
+        "but a board in the host repository needs the repository's .git directory inside its " +
+        'working tree; created a standalone board (a repository of its own) instead',
+    );
+  } else if (source === 'git' && !hostModel) {
+    why = '; the host model needs git 2.32 or later';
+    warnings.push(
+      `git ${formatVersion(version)} was found, but a board in the host repository needs ` +
+        'git 2.32 or later; created a standalone board (a repository of its own) instead',
+    );
+  }
 
   if (boardExists(dir)) {
     const info = detectBoardModel(dir, { env });
@@ -265,7 +285,39 @@ export function initBoard(options?: LocateOptions): InitResult {
   if (hostModel) {
     return existsSync(dir) ? repairBoard(dir, env) : createHostBoard(dir, env);
   }
-  return createStandaloneBoard(dir, source, warnings, env);
+  return createStandaloneBoard(dir, inTree, warnings, why, env);
+}
+
+/**
+ * True when `hostRoot` is the top level of a working tree whose git common
+ * directory is `<hostRoot>/.git`, compared as realpaths (`git rev-parse
+ * --show-toplevel --git-common-dir` run in `hostRoot`). False for a bare
+ * repository's container, a `--separate-git-dir` repository's container,
+ * the `.git/modules` directory of a superproject, and anything git cannot
+ * run in.
+ */
+function hasInTreeGitDir(hostRoot: string, env: Env): boolean {
+  const out = gitRunner(hostRoot, { env }).attempt(
+    'rev-parse',
+    '--show-toplevel',
+    '--git-common-dir',
+  );
+  if (isGitFailure(out)) {
+    return false;
+  }
+  const [top = '', common = ''] = out.split('\n').map((line) => line.trim());
+  return (
+    realpathOrSelf(resolve(hostRoot, top)) === realpathOrSelf(hostRoot) &&
+    realpathOrSelf(resolve(hostRoot, common)) === realpathOrSelf(join(hostRoot, '.git'))
+  );
+}
+
+function realpathOrSelf(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
 }
 
 /** The existing-board report (`initBoard`): nothing is created or modified. */
@@ -280,13 +332,15 @@ function existingBoard(
   const remoteText = remote === null ? 'no remote configured' : `remote: ${asciiText(remote)}`;
   const lines: string[] = [];
   if (info.model === 'host') {
-    if (hostModel) {
-      // Finishes an init interrupted after `git worktree add`: locks an unlocked worktree.
+    let changed = 'nothing changed';
+    if (hostModel && !boardWorktreeLocked(dirname(dir), dir, { env })) {
+      // Finishes an init interrupted after `git worktree add`: locks the worktree.
       addBoardWorktree(dirname(dir), dir, { env });
+      changed = 'restored the worktree lock that an interrupted init had not set';
     }
     lines.push(
       `board already exists at ${asciiText(dir)} (host model: its history is ${BOARD_REF} ` +
-        `in the host repository; ${remoteText}); nothing changed`,
+        `in the host repository; ${remoteText}); ${changed}`,
     );
   } else {
     const history =
@@ -330,35 +384,58 @@ function createHostBoard(dir: string, env: Env): InitResult {
   const hostRoot = dirname(dir);
   const remote = hostRemote(hostRoot, env);
   const hostGitignore = ignoreBoardInHost(hostRoot);
-  const ref = withInitLock(
+  const { ref, adopted } = withInitLock(
     hostRoot,
     () => {
       const outcome = ensureBoardRef(hostRoot, remote, { env });
-      adoptRepairingWorktree(hostRoot, dir, { env });
+      const moved = adoptRepairingWorktree(hostRoot, dir, { env });
       addBoardWorktree(hostRoot, dir, { env });
-      return outcome;
+      return { ref: outcome, adopted: moved };
     },
     { env },
   );
   openBoard(dir).close();
   const events = countEvents(dir);
-  const where = `created the board at ${asciiText(dir)} (host model: a worktree of the host repository at ${BOARD_REF})`;
-  const how =
-    ref.source === 'remote'
-      ? `joined ${plural(events, 'event')} from ${asciiText(remote ?? '')}`
-      : remote === null
-        ? 'a new empty board; agentboard sync publishes it once the repository has a remote'
-        : `a new empty board; agentboard sync publishes it to ${asciiText(remote)}, ` +
-          'where everyone who can fetch the remote can read it';
-  return {
+  const base = {
     dir,
-    created: true,
-    model: 'host',
-    joined: ref.source === 'remote',
+    model: 'host' as const,
     remote,
     events,
     hostGitignore,
     warnings: [...ref.warnings],
+  };
+  if (adopted) {
+    // A repair interrupted between keeping the old directory aside and moving
+    // the fresh worktree into place: finished now, reported as that repair.
+    const keptAt = newestStaleBoard(hostRoot, { env });
+    const kept =
+      keptAt === null
+        ? 'no kept copy of the old directory was found'
+        : `the old directory is kept at ${asciiText(keptAt)}`;
+    return {
+      ...base,
+      created: false,
+      joined: false,
+      repair: { method: 'fresh-worktree', copied: [], skipped: [], keptAt, source: null },
+      message:
+        `repaired the board at ${asciiText(dir)}: moved the fresh worktree of an interrupted ` +
+        `repair into place; ${kept}`,
+    };
+  }
+  const where = `created the board at ${asciiText(dir)} (host model: a worktree of the host repository at ${BOARD_REF})`;
+  const how =
+    ref.source === 'remote'
+      ? `joined ${plural(events, 'event')} from ${asciiText(remote ?? '')}`
+      : ref.source === 'local'
+        ? `restored it from the local ${BOARD_REF} with ${plural(events, 'event file')}`
+        : remote === null
+          ? 'a new empty board; agentboard sync publishes it once the repository has a remote'
+          : `a new empty board; agentboard sync publishes it to ${asciiText(remote)}, ` +
+            'where everyone who can fetch the remote can read it';
+  return {
+    ...base,
+    created: true,
+    joined: ref.source === 'remote',
     repair: null,
     message: `${where}; ${how}`,
   };
@@ -411,8 +488,9 @@ function sourceText(source: BoardRefSource | null, remote: string | null): strin
 /** A new standalone board at `dir` (`initBoard`, "New standalone board"), completing what is there. */
 function createStandaloneBoard(
   dir: string,
-  source: BoardSource,
+  writeHostGitignore: boolean,
   warnings: string[],
+  why: string,
   env: Env,
 ): InitResult {
   // The events directory is created last: it is what makes the board exist,
@@ -424,8 +502,7 @@ function createStandaloneBoard(
   writeIfMissing(join(dir, '.gitignore'), BOARD_GITIGNORE_LINES.map((l) => `${l}\n`).join(''));
   mkdirSync(join(dir, 'events'), { recursive: true });
   writeIfMissing(join(dir, 'events', '.gitkeep'), '');
-  const hostGitignore = source === 'git' ? ignoreBoardInHost(dirname(dir)) : null;
-  const why = warnings.length === 0 ? '' : '; the host model needs git 2.32 or later';
+  const hostGitignore = writeHostGitignore ? ignoreBoardInHost(dirname(dir)) : null;
   return {
     dir,
     created: true,
