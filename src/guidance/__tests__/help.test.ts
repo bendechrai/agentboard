@@ -267,6 +267,12 @@ describe('the help data of record in the registry', () => {
     has('sync', 3, 'sync-conflict');
     has('sync', 2, 'board-link-broken');
     has('sync', 1, 'ambiguous-remote');
+    has('init', 1, 'ambiguous-remote');
+    has('init', 3, 'remote-unreachable');
+    has('init', 1, 'not-a-board');
+    has('init', 1, 'remote-mismatch');
+    has('init', 1, 'board-in-host');
+    has('init', 2, 'board-not-a-repository');
     has('inbox', 1, 'unknown-cursor');
     has('close-merged', 1, 'gh-missing');
     has('import-change', 1, 'tasks-not-found');

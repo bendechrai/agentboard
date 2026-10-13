@@ -395,9 +395,10 @@ export function syncBoard(board: Board, options?: SyncOptions): SyncResult {
 /**
  * Precondition 2: the board's link to the host is not broken, and the
  * board directory is the top level of a repository or worktree. Returns
- * what `detectBoardModel` found (`host` or `standalone`).
+ * what `detectBoardModel` found (`host` or `standalone`). `init --remote`
+ * refuses an existing board the same way.
  */
-function checkRepository(dir: string, env: Env): BoardModelInfo {
+export function checkRepository(dir: string, env: Env): BoardModelInfo {
   const info = detectBoardModel(dir, { env });
   if (info.model === 'broken-host-link') {
     throw new BoardError(

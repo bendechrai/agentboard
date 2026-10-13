@@ -339,9 +339,9 @@ function hostModelBoard(dir: string, remote: string | null, env: Env): InitResul
  * --show-toplevel --git-common-dir` run in `hostRoot`). False for a bare
  * repository's container, a `--separate-git-dir` repository's container,
  * the `.git/modules` directory of a superproject, and anything git cannot
- * run in.
+ * run in. Decides whether `init` writes the host `.gitignore` entry.
  */
-function hasInTreeGitDir(hostRoot: string, env: Env): boolean {
+export function hasInTreeGitDir(hostRoot: string, env: Env): boolean {
   const out = gitRunner(hostRoot, { env }).attempt(
     'rev-parse',
     '--show-toplevel',
@@ -531,15 +531,7 @@ function createStandaloneBoard(
   why: string,
   env: Env,
 ): InitResult {
-  // The events directory is created last: it is what makes the board exist,
-  // so an interrupted init is completed by running init again.
-  mkdirSync(dir, { recursive: true });
-  if (!existsSync(join(dir, '.git'))) {
-    gitRunner(dir, { env }).run('init', '-q');
-  }
-  writeIfMissing(join(dir, '.gitignore'), BOARD_GITIGNORE_LINES.map((l) => `${l}\n`).join(''));
-  mkdirSync(join(dir, 'events'), { recursive: true });
-  writeIfMissing(join(dir, 'events', '.gitkeep'), '');
+  writeStandaloneRepository(dir, env);
   const hostGitignore = writeHostGitignore ? ignoreBoardInHost(dirname(dir)) : null;
   return {
     dir,
@@ -555,6 +547,24 @@ function createStandaloneBoard(
   };
 }
 
+/**
+ * Steps 1 to 3 of "New standalone board" (`initBoard`): `dir`, a git
+ * repository in it when `dir/.git` is missing (`git init`, no commit), the
+ * board `.gitignore` and `events/.gitkeep`, each created only when missing
+ * and never overwritten. `init --remote` makes its new board with this too.
+ */
+export function writeStandaloneRepository(dir: string, env: Env): void {
+  // The events directory is created last: it is what makes the board exist,
+  // so an interrupted init is completed by running init again.
+  mkdirSync(dir, { recursive: true });
+  if (!existsSync(join(dir, '.git'))) {
+    gitRunner(dir, { env }).run('init', '-q');
+  }
+  writeIfMissing(join(dir, '.gitignore'), BOARD_GITIGNORE_LINES.map((l) => `${l}\n`).join(''));
+  mkdirSync(join(dir, 'events'), { recursive: true });
+  writeIfMissing(join(dir, 'events', '.gitkeep'), '');
+}
+
 /** `<major>.<minor>.<patch>`. */
 function formatVersion(version: GitVersion): string {
   return `${String(version.major)}.${String(version.minor)}.${String(version.patch)}`;
@@ -566,7 +576,7 @@ function plural(n: number, noun: string): string {
 }
 
 /** The number of event files (`<64 hex>.json`) in `<dir>/events`. */
-function countEvents(dir: string): number {
+export function countEvents(dir: string): number {
   return readdirSync(join(dir, 'events')).filter((name) => /^[0-9a-f]{64}\.json$/.test(name))
     .length;
 }
@@ -584,9 +594,9 @@ const HOST_ENTRIES = new Set(['.board/', '.board', '/.board/', '/.board']);
 /**
  * Adds `HOST_GITIGNORE_ENTRY` to `<hostRoot>/.gitignore` unless a line
  * already ignores the board; returns the file's path when it was created or
- * appended to, else null.
+ * appended to, else null ("Host `.gitignore`" in `initBoard`).
  */
-function ignoreBoardInHost(hostRoot: string): string | null {
+export function ignoreBoardInHost(hostRoot: string): string | null {
   const path = join(hostRoot, '.gitignore');
   if (!existsSync(path)) {
     writeFileSync(path, `${HOST_GITIGNORE_ENTRY}\n`);

@@ -21,6 +21,7 @@ import {
 import { importChange, parseImportTarget } from '../board/import.js';
 import { readInbox } from '../board/inbox.js';
 import { initBoard } from '../board/init.js';
+import { initBoardWithRemote } from '../board/init-remote.js';
 import { boardHealth } from '../board/health.js';
 import { closeMerged } from '../board/merged.js';
 import { remoteReport, renderRemote } from '../board/remote.js';
@@ -495,7 +496,10 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  * `run` of each command calls the named operation and returns its result
  * as the `--json` document, with this human rendering:
  * - `init`: `InitResult`; text: its `message`; `warnings`: the result's
- *   `warnings`, printed to stderr by `runCli`.
+ *   `warnings`, printed to stderr by `runCli`. With `--remote <url>`:
+ *   `initBoardWithRemote(url, ...)` and its `InitRemoteResult` (the same
+ *   ten keys plus `action`, `remoteUrl` and `sync`), rendered the same
+ *   way; an empty `--remote` value is a usage error.
  * - `new`: `WriteOutcome`; text: `created <full id>` then the `list` line.
  * - `show`: `ShowResult` (`--raw`: `RawEvent[]`); text: `renderShow`
  *   (`--raw`: each raw event's `text` on its own line).
@@ -617,9 +621,19 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'init',
     summary: 'Create the board for this project',
     description:
-      'Creates the board for the project containing the current directory: a .board directory that is a git repository of its own, ignored by the host project. Running it again on an existing board changes nothing. Needs git; needs no actor.',
+      'Creates the board for the project containing the current directory: a .board directory that is a git repository of its own, ignored by the host project. Running it again on an existing board changes nothing. With --remote <url> the board is a standalone board shared through the repository at <url>, kept out of the host repository (for a public project, or a git host that refuses custom refs): an existing board there is cloned, an empty repository receives the new board on the first sync, a missing local path is created as a bare repository first, and a standalone board without a remote gets <url> as origin and is synced. Needs git; needs no actor.',
     group: 'setup',
-    examples: [{ command: 'agentboard init', summary: 'Create the board for this project' }],
+    examples: [
+      { command: 'agentboard init', summary: 'Create the board for this project' },
+      {
+        command: 'agentboard init --remote git@example.com:me/board.git',
+        summary: 'Keep the board in a repository of its own, shared through that URL',
+      },
+      {
+        command: 'agentboard init --remote ../boards/project.git',
+        summary: 'Share the board through a local bare repository, created when it is missing',
+      },
+    ],
     exitCodes: [
       { code: 0, meaning: 'The board was created, or already existed' },
       EXIT_USAGE,
@@ -630,15 +644,66 @@ export const COMMANDS: readonly CommandSpec[] = [
         meaning:
           'The host repository has several remotes and none is origin or the upstream of its branch; nothing was created',
       },
+      {
+        code: 1,
+        reason: 'not-a-board',
+        meaning:
+          'The repository at --remote <url> has a branch without an events/ directory; nothing was created',
+      },
+      {
+        code: 1,
+        reason: 'remote-mismatch',
+        meaning: 'The existing standalone board already has a remote with another URL; nothing changed',
+      },
+      {
+        code: 1,
+        reason: 'board-in-host',
+        meaning:
+          'The existing board is in the host repository (refs/agentboard/board), so --remote does not apply; nothing changed',
+      },
+      {
+        code: 2,
+        reason: 'board-not-a-repository',
+        meaning:
+          'With --remote: .board exists but is not a board (a directory with other content, a file, a dangling link); move it aside; nothing was created',
+      },
+      {
+        code: 3,
+        reason: 'remote-unreachable',
+        meaning:
+          'The repository at --remote <url> cannot be read: create an empty repository there and check your access; nothing was created',
+      },
+      {
+        code: 3,
+        reason: 'sync-failed',
+        meaning:
+          'The sync that --remote runs failed (the remote rejected the push, or is unreachable); the board and its remote are kept',
+      },
+      {
+        code: 3,
+        reason: 'sync-conflict',
+        meaning:
+          'The sync that --remote runs stopped on a conflict, left in the board repository for a human',
+      },
       EXIT_INTEGRITY,
     ],
     positionals: [],
-    flags: [],
+    flags: [
+      flag(
+        'remote',
+        'string',
+        'URL or local path of the repository that holds the board (keeps the board out of the host repository)',
+      ),
+    ],
     exclusive: [],
     writes: false,
     operation: 'initBoard',
-    run: (ctx) => {
-      const result = initBoard({ cwd: ctx.cwd, env: ctx.env });
+    run: (ctx, values) => {
+      const url = str(values, 'remote');
+      const result =
+        url === undefined
+          ? initBoard({ cwd: ctx.cwd, env: ctx.env })
+          : initBoardWithRemote(url, { cwd: ctx.cwd, env: ctx.env });
       return {
         json: result,
         text: `${result.message}\n${INIT_SUGGESTION}\n`,

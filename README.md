@@ -665,17 +665,11 @@ its name is skipped and reported), the copy kept under
 `.git/agentboard/stale-board-<timestamp>`.
 
 A standalone board (`.board/` as a repository of its own) moves between
-machines (a desktop and a laptop, say) without touching the host project.
-Give it a remote once:
-
-```
-git -C .board remote add origin <url-of-an-empty-repository>
-agentboard sync
-```
-
-On another machine, clone the host project, then clone the board into it
-with `git clone <board-url> .board` (the host `.gitignore` already ignores
-it).
+machines without touching the host project: it is shared through a
+repository of its own, set up on every machine with
+`agentboard init --remote <url>` ("Keeping the board in a separate
+repository", below). Boards made before the host model existed are
+standalone and keep working as they are.
 
 `agentboard sync` stages only new event files and `.board/.gitignore`,
 commits them as the fixed identity `agentboard <agentboard@localhost>`
@@ -740,7 +734,8 @@ What `sync` does when it cannot finish, and what a human does next:
   `refs/agentboard/*`; GitHub and GitLab accept them) fails here on the
   first push, is not retried, and the message carries the remote's own
   reason (a hook's text): keep such a board in a repository of its own
-  with `init --remote <url>`.
+  with `init --remote <url>` ("Keeping the board in a separate
+  repository", below).
 - 2 `board-link-broken` (host model): `.board` is a worktree whose link
   to the host repository is broken (the checkout was moved, or `.board`
   was copied from another clone); `agentboard init` repairs it. 2
@@ -767,8 +762,8 @@ from a backup clone made with `git clone --mirror` carries the board, as
 intended). And a board in a public repository is readable by anyone who
 can clone it; a project that needs a private board, or whose git host
 refuses custom refs, keeps it in a repository of its own with
-`init --remote <url>` (`agentboard init --into-host` moves it the other
-way, into the host repository).
+`init --remote <url>`, described next (`agentboard init --into-host`
+moves it the other way, into the host repository).
 
 To see how a board is shared without changing anything:
 
@@ -791,6 +786,70 @@ tool.
 
 Sync is for machines that take turns, not for several people editing at
 once.
+
+### Keeping the board in a separate repository
+
+A board in the host repository is readable by anyone who can fetch the
+project, and needs a git host that accepts pushes to custom refs. When
+either rules the host model out (a public project whose board should stay
+private; a host that refuses custom refs), keep the board in a repository
+of its own: a standalone board (`.board/` as a git repository of its own,
+as every board was before the host model) shared through any empty git
+repository you can push to. Create that repository first (a private one on
+your git host, or a local bare repository on a shared disk), then, at the
+root of the project:
+
+```
+agentboard init --remote <url>
+```
+
+`<url>` is anything `git clone` accepts: an SSH or HTTPS URL, or a local
+path, absolute or relative (a relative path is resolved against the
+project's top level, from any worktree, and stored absolute, so `sync`
+reaches it from any directory). A local path that does not exist is
+created as a bare repository first, so two checkouts on one machine, or on
+one shared disk, need nothing but the path. What `init --remote` does
+depends on what it finds:
+
+- The repository is empty: it creates a standalone board, adds `<url>` as
+  `origin` and runs `sync`, whose first push creates the branch there.
+- The repository already holds a board (another clone pushed it): it
+  clones it into `.board` and folds the events, so `agentboard list`
+  shows the tickets before any `sync`; nothing is pushed.
+- `.board` is already a standalone board with no remote (made before this
+  command existed, or offline): `<url>` becomes its `origin` and `sync`
+  commits and pushes its events. Existing standalone boards join in with
+  the same command and are otherwise unchanged.
+- `.board` already has that remote: nothing changes, exit 0.
+
+It exits 3 `remote-unreachable` when the repository cannot be read (create
+it and check your access: a git host answers the same for a missing
+repository and for one you cannot read), 1 `not-a-board` when the
+repository holds a branch without an `events/` directory (nothing is left
+behind), 1 `remote-mismatch` when `.board` already has a remote with
+another URL (the message names `git -C .board remote set-url`), and 1
+`board-in-host` when `.board` is in the host repository. When the `sync`
+it runs fails (the first push refused, say), `init` exits with that
+failure's code and reason; the board and its `origin` are kept, so the
+next `sync` finishes the job.
+
+On every other machine, clone the project and run the same command:
+
+```
+$ git clone <project-url> project && cd project
+$ agentboard init --remote ../boards/project.git
+cloned the board at /path/to/project/.board from /path/to/boards/project.git (standalone model: a git repository of its own) with 5 events
+```
+
+Inside a git project the board is still a standalone board, never a
+host-model one, whatever the git version: `init --remote` writes the host
+`.gitignore` entry and nothing else to the host repository (no ref, no
+worktree, and the project's own remote is never contacted). `agentboard
+remote` then reports `model: standalone` with `origin` at the stored URL,
+and `sync` runs the standalone steps above. `git -C .board remote add
+origin <url>` followed by `sync` still works too. This repository's own
+board stays standalone for exactly this reason (CONTRIBUTING.md,
+"Coordinating on the board").
 
 ## Watching the board in a browser
 

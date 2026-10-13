@@ -48,6 +48,8 @@ const PINNED: Readonly<Record<string, number>> = {
   'board-not-found': 2,
   // The refusals of the write actions.
   'body-too-large': 1,
+  // An existing board already shared through the host repository (add-board-sharing group 4).
+  'board-in-host': 1,
   busy: 5,
   'checklist-index': 4,
   'csrf-failed': 1,
@@ -77,12 +79,18 @@ const PINNED: Readonly<Record<string, number>> = {
   'no-disposition': 1,
   'no-targets': 1,
   'not-a-tty': 1,
+  // The repository given to init --remote has a branch without events/ (add-board-sharing group 4).
+  'not-a-board': 1,
   'not-assignee': 4,
   'not-found': 1,
   'path-outside-tree': 1,
   'port-in-use': 1,
   queued: 4,
   'read-only': 1,
+  // The existing standalone board has a remote with another URL (add-board-sharing group 4).
+  'remote-mismatch': 1,
+  // The repository given to init --remote cannot be read (add-board-sharing group 4).
+  'remote-unreachable': 3,
   'schema-mismatch': 5,
   'secret-like': 1,
   'streaming-command': 1,
@@ -448,6 +456,7 @@ describe('hint contracts (CLI)', () => {
     ['git-missing', 'sync', ['PATH']],
     ['gh-missing', 'close-merged', ['PATH', 'gh auth login']],
     ['ambiguous-remote', 'sync', ['origin', "'agentboard sync'"]],
+    ['ambiguous-remote', 'init', ['origin', "'agentboard init'"]],
     ['board-not-found', 'list', ["'agentboard init'", 'AGENTBOARD_DIR']],
     ['board-not-a-repository', 'sync', ["'agentboard help sync'"]],
     ['sync-in-progress', 'sync', ["'agentboard sync'"]],
@@ -456,6 +465,11 @@ describe('hint contracts (CLI)', () => {
     ['git-too-old', 'sync', ['2.32', "'agentboard sync'"]],
     ['sync-conflict', 'sync', ['git rebase --continue', "'agentboard sync'"]],
     ['sync-failed', 'sync', ["'agentboard sync'"]],
+    // init --remote <url> (add-board-sharing group 4).
+    ['remote-unreachable', 'init', ['create', 'access', "'agentboard init --remote <url>'"]],
+    ['not-a-board', 'init', ['events', "'agentboard init --remote <url>'"]],
+    ['remote-mismatch', 'init', ['remote set-url', "'agentboard remote'"]],
+    ['board-in-host', 'init', ['refs/agentboard/board', "'agentboard remote'"]],
     ['integrity', 'show', ["'agentboard rebuild --check'"]],
     ['no-cache', 'rebuild', ["'agentboard rebuild'"]],
     ['schema-mismatch', 'rebuild', ["'agentboard rebuild'"]],
