@@ -77,7 +77,7 @@ const PINNED: Readonly<Record<string, number>> = {
   'port-in-use': 1,
   queued: 4,
   'read-only': 1,
-  // The re-import refusals and the stale renumber or supersede (add-claim-leases group 8).
+  // The re-import refusals and the stale renumber or supersede.
   'reconcile-ambiguous': 4,
   'reconcile-blocked': 4,
   'schema-mismatch': 5,
@@ -717,7 +717,7 @@ describe('hintFor', () => {
   });
 });
 
-describe('re-import hints (add-claim-leases group 8)', () => {
+describe('re-import hints', () => {
   const hint = (surface: HintSurface, reason: string, actor?: string): string =>
     renderHint(reason, ctx(surface, 'import-change', actor === undefined ? {} : { actor })) ?? '';
 

@@ -51,6 +51,9 @@ tasks-file order. Active lines SHALL keep their existing order and added
 lines SHALL be appended, so that checklist indices never change meaning.
 The event SHALL record the tasks file and the SHA-256 of its bytes in
 `source`, as `<root-relative path>@sha256:<64 lowercase hex>`.
+The hash is taken from a second read of the file after it is parsed, so a
+file edited between the two reads is recorded with the newer hash; the
+next import reconciles against the file as it then is.
 
 An import SHALL write its events in this order: the renumbers, by
 ascending old number; then, for each group in tasks-file order, the new
