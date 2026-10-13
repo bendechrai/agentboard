@@ -15,3 +15,4 @@ design, in MADR format. Index:
 - [0010. Open the browser by default](0010-open-the-browser-by-default.md)
 - [0011. Hosted CI on GitHub Actions](0011-hosted-ci-on-github-actions.md)
 - [0012. Board history in the host repository, under a hidden ref](0012-board-in-host-repository-refs.md)
+- [0013. Unplanned scope is disclosed, not blocked](0013-unplanned-scope-is-disclosed-not-blocked.md)

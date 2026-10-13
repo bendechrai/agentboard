@@ -65,6 +65,15 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
    the gap that sharing a board needs manual git setup (a second
    repository, `git -C .board remote add` and `git clone <url> .board` on
    every machine). ADR 0012. Groups 3 and 5 are concurrency-critical.
+4. `add-adhoc-ticket-lifecycle` (proposed, in `openspec/changes/`): ad hoc
+   tickets move through every status like any other; the
+   `needs-task-link` gate at `implementing` is removed, and moving an ad
+   hoc ticket to `merged` or closing it needs a scope disposition on the
+   same command (`--task <ref>`, or `--unplanned <reason>`, recorded as a
+   new `ticket.unplanned` event), refused otherwise with
+   `needs-scope-disposition`. `health` and the web Health view list
+   unplanned scope as information. ADR 0013 (amends ADR 0004). Group 1
+   (fold and events) gets a second reviewer.
 
 ## Known gaps
 

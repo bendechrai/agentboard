@@ -1,0 +1,66 @@
+# Tasks
+
+Overlap with in-flight changes: `add-claim-leases` restates board-cli
+"Command surface" and "MCP server", board-events "Event kinds" and "Fold
+semantics" (its text still names `needs-task-link`), board-cache "Cache
+schema" and "One command, one transaction", board-view-model "Activity feed
+entries" and board-agent-guidance "Agent guide"; `add-board-sharing`
+restates "Command surface" and "MCP server"; the draft
+`add-harness-integration` restates "Command surface" and "MCP server" too.
+This change's MODIFIED text restates the main specs as they are now.
+Whichever change is archived later re-syncs each shared requirement with
+the main spec first, keeping the other changes' additions (see design.md,
+"Overlap with in-flight changes"). This proposal ships ADR 0013, so the
+ADR `add-claim-leases` plans in its group 7 takes the next free number.
+
+Every group is delivered by a test author, an implementer and a reviewer
+in turn (see CONTRIBUTING.md), on one branch per group named
+`<area>/<group-slug>` and cut from `origin/staging`; the test author's
+first commit defines the group's exported API as stubs. Verification for
+every task includes `make check` passing with coverage at or above 90
+percent. Group 1 changes the fold, which is the source of truth, and the
+command transaction: it is concurrency-adjacent, so the orchestrator runs
+a second reviewer on the strongest model, and `make check-floor` and
+`make check-in-docker` also pass. Groups run in order 1, 2, then 3, 4 and
+5 in any order or in parallel, then 6.
+
+## 1. Fold, events and the two-event transaction (`events/scope-disposition`)
+
+- [ ] 1.1 Add `ticket.unplanned` (`{reason}`, non-empty, no other field) to `src/events/schema.ts` and the event kind list, and the `unplanned` field (`{reason, actor, ts}` or null) to `Ticket`. Verify: schema tests for a well-formed body, an empty `reason`, a missing `reason` and an extra field (each malformed naming the field); the scenario "Unplanned body is checked"; a golden test that `ticket.move`, `ticket.close` and `ticket.link` canonical bytes are unchanged from fixtures written before this change
+- [ ] 1.2 Change the fold in `src/events/fold.ts`: remove the `needs-task-link` branch of `moveTo` and the reason from `RejectionReason`; reject a move or hand-off into `merged` with `needs-scope-disposition` when `task` and `unplanned` are both null; apply `ticket.unplanned` (rejected `already-linked` when `task` is set, otherwise replacing `unplanned`); clear `unplanned` on a task link; leave `ticket.close` without the rule. Verify: table tests for every scenario of the modified "Fold semantics" and of "Unplanned disposition"; a fixture board written by the previous release (ad hoc tickets in `todo`, in `tests`, in `blocked` and closed from `blocked`; linked tickets in `implementing`, `review`, `merged` and closed) whose canonical fold is byte-identical before and after this change; a property test (fast-check) over random sequences of create (task or ad hoc), link, unplanned, move, hand-off, block and close events asserting, at every fold position, that no ticket in `merged` has both `task` and `unplanned` null, and that the result is independent of read order
+- [ ] 1.3 Let an operation propose an ordered list of one or two events in `src/store/transaction.ts`: each folded in memory against the state the previous leaves, each with the next hybrid timestamp, any rejection refusing all with that reason and writing nothing, files written in order, one commit; `--json` of a writing command gains `events` (all hashes) while `hash` stays the last. Verify: the board-cache scenarios "Second event refused" and "Crash between the disposition and the move" (the crash test kills a child after the first file is renamed, using the existing pause hooks, and checks the next command's catch-up); two concurrent `move merged --unplanned` processes on one ticket leaving exactly one applied move and `rebuild --check` clean, repeated 20 times without a flake; single-event commands writing byte-identical events to before
+- [ ] 1.4 Add the `unplanned` JSON column to the cache `tickets` table, bump `CACHE_SCHEMA_VERSION`, and include it in `rebuild` and `rebuild --check`. Verify: the scenarios "Unplanned disposition survives a rebuild" and "Cache from an earlier schema is rebuilt"; `rebuild` twice byte-identical; `rebuild --check` detecting a hand-edited `unplanned`
+
+## 2. Disposition on the command line and over MCP (`board/scope-disposition`)
+
+- [ ] 2.1 Extend `moveTicket` and `closeTicket` in `src/board/actions.ts` and their registry entries with `--task`, `--change`/`--group`, `--unplanned` and `--allow-secret-like` (exclusive group, `taskRefFromArgs`, the usage checks before the board is opened, a flag only with the target `merged`, `already-linked`, the close check order of design.md section 5), writing the disposition event and then the move or close; remove `EXIT_TASK_LINK` and add the exit codes `needs-scope-disposition` and `already-linked` to `move`, `close` and `handoff`; make `close-merged` skip and list a merged ticket with no disposition. Verify: tests for every scenario of "Scope disposition on the command line", "Scope disposition at merge and close", "Tickets reference tasks or are ad hoc", the modified "Close merged", "Exit codes" and "No secrets on the board"; the help drift guard and the "Move and close have help for the disposition" scenario; validation failures creating no event or temporary file
+- [ ] 2.2 Add the hints `needs-scope-disposition` (both forms of the refused command, for `move` and for `close` keeping the decision flag given, and "do not create an issue or task only to satisfy this") and `already-linked`, and remove `needs-task-link` from `HINT_REASONS` and the hint table. Verify: the "Missing disposition hint" and "No reason without a hint" scenarios; every `agentboard ` command in the new hints parses against the registry; the hint completeness test
+- [ ] 2.3 Render the disposition: `[unplanned]` in place of `[adhoc]` in the `list` line, the `unplanned: <reason> (by <actor>)` line in `show`, and the `unplanned` object in `--json`. Verify: the "List markers" scenario; golden human and `--json` outputs for `list --closed` and `show` on a fixture board with an undisposed ad hoc ticket, an unplanned merged ticket, an unplanned ticket closed from `blocked`, a ticket linked at merge and a planned ticket
+- [ ] 2.4 MCP: `board_move` and `board_close` gain `task`, `change`, `group`, `unplanned` and `allow-secret-like` from the registry. Verify: the "Disposition over MCP" scenario, with golden tool errors (`exitCode`, `reason`, `message`, `hint`) for `needs-scope-disposition` and `already-linked`, and the events written through MCP byte-identical in body to the CLI's for the same arguments and actor on a copy of the board
+
+## 3. Unplanned scope in health (`insights/unplanned-scope`)
+
+- [ ] 3.1 Add `unplannedWithin` (default 7 days) and the `unplannedScope` section (`total`, `tickets` with card, `adhoc`, `reason`, `outcome`, `since`, `ageMs`, most recent first then id) to `healthReport` in `src/view/health.ts`. Verify: tests for every scenario of "Unplanned scope in the health report" and the modified "Health report", including a window boundary exactly at `unplannedWithin`, a future wall clamped to age 0, a ticket closed before this change with `reason` null, and a ticket later linked leaving the section; one expected report recomputed by a throwaway script that does not use `healthReport`
+- [ ] 3.2 Add `--unplanned-within` to `health` (CLI and the `board_health` property), the text section and the JSON keys. Verify: the scenarios "Unplanned merges in text output", "Unplanned scope over MCP and JSON", the modified "Health has help" and "Health is a tool"; a malformed `--unplanned-within` exiting 1 `usage`; golden text and `--json` output on the fixture board of 2.3
+- [ ] 3.3 Add the unplanned scope section and the third threshold input to the web Health view, styled as information. Verify: the "Unplanned scope in the Health view" and "Information, not a failure" scenarios in the web client tests; an invalid window input shown as invalid with the report unchanged
+
+## 4. Cards, feed and ticket views (`view/scope-disposition`)
+
+- [ ] 4.1 Add `unplanned` to the view-model card and `recorded as unplanned: <reason>` to `describeEvent`. Verify: the "Unplanned card" and "Unplanned summary" scenarios; a rejected `ticket.unplanned` producing no feed entry
+- [ ] 4.2 Show the disposition in the web card ("unplanned" in place of "ad hoc"), the web ticket detail and the TUI ticket detail, and add the scope disposition to the web move control (target `merged`) and close form for an undisposed ticket. Verify: the scenarios "Merge an ad hoc ticket from the browser", "Missing disposition from the browser" and "Secret-like unplanned reason from the browser"; a TUI frame golden for a ticket with an unplanned disposition; web text rendered as text, never markup
+
+## 5. Guidance (`guidance/adhoc-lifecycle`)
+
+- [ ] 5.1 Replace the ad hoc text in the guide (`src/guidance/guide.ts`) with the wording of design.md section 9, update the exit 4 line, add the orchestrator checklist line, raise the line limit to 180, and update the `new`, `move` and `close` help descriptions and examples and the MCP instructions summary. Verify: the guide tests (every `agentboard ` line parses, at most 180 lines with each role checklist, ASCII), the "Guide explains ad hoc tickets" scenario, the instructions at most 2000 characters and free of `needs-task-link`, and `agentboard://guide` still equal to `help agents`
+- [ ] 5.2 Add the ad hoc rule to the installed `claude` and `agents-md` text, raise `GUIDANCE_VERSION` by one, and extend the tick reminder for an ad hoc ticket in `src/board/reminder.ts`. Verify: the modified "Install the Claude skill" (six rules) and "Installed guidance covers ad hoc tickets" scenarios; `agents check` reporting the previous version `stale`; the reminder test for an ad hoc ticket; a search of `src/` (tests excepted) finding no `needs-task-link`
+
+## 6. Documentation and status (`docs/adhoc-lifecycle`)
+
+- [ ] 6.1 Update README.md: the ad hoc paragraph of "Tickets and task references" (work normally; the scope disposition at merge and close with both flags; never create artifacts only to move a ticket), the `move` and `close` command reference, `needs-scope-disposition` and `already-linked` in the exit codes and hints, the unplanned scope row, text and JSON keys in "Board health" and `board_health`, the `[unplanned]` marker, and the upgrade note for boards shared between machines; check the landing site (`docs/`) and update it only if it mentions ad hoc tickets or `needs-task-link`. Verify: `make ascii`, `make validate-specs`, and running the README example on a temporary board (an ad hoc ticket from `todo` to `review`, `move merged` refused with the hint, `move merged --unplanned`, `health` showing it)
+- [ ] 6.2 Run `agentboard agents install` in this repository to move its own guidance to the new version, and update STATUS.md ("What exists" gains the lifecycle; the "What is next" entry is removed). Verify: `agentboard agents check` reporting every target current, and `make check`
+
+## Workflow follow-up
+
+- When every group is merged, archive the change in its own pull request,
+  re-syncing first any requirement another archived change has modified
+  since (see the overlap note above).
