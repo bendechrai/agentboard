@@ -43,6 +43,8 @@ const PINNED: Readonly<Record<string, number>> = {
   // A host-model board whose link to the host is broken (add-board-sharing).
   'board-link-broken': 2,
   'board-not-a-repository': 2,
+  // A host-model board whose worktree has a branch checked out (add-board-sharing group 3).
+  'board-on-branch': 3,
   'board-not-found': 2,
   // The refusals of the write actions.
   'body-too-large': 1,
@@ -55,6 +57,8 @@ const PINNED: Readonly<Record<string, number>> = {
   'forbidden-host': 1,
   'gh-missing': 1,
   'git-missing': 1,
+  // A host-model board on a git older than 2.32 (add-board-sharing group 3).
+  'git-too-old': 1,
   // The fold rejections of leases, the queue and grants (add-claim-leases).
   'holder-changed': 4,
   'id-too-short': 1,
@@ -448,6 +452,8 @@ describe('hint contracts (CLI)', () => {
     ['board-not-a-repository', 'sync', ["'agentboard help sync'"]],
     ['sync-in-progress', 'sync', ["'agentboard sync'"]],
     ['detached-head', 'sync', ["'agentboard sync'"]],
+    ['board-on-branch', 'sync', ['switch --detach refs/agentboard/board', "'agentboard sync'"]],
+    ['git-too-old', 'sync', ['2.32', "'agentboard sync'"]],
     ['sync-conflict', 'sync', ['git rebase --continue', "'agentboard sync'"]],
     ['sync-failed', 'sync', ["'agentboard sync'"]],
     ['integrity', 'show', ["'agentboard rebuild --check'"]],
@@ -722,6 +728,28 @@ describe('the hints of the board sharing reasons (add-board-sharing group 1)', (
         const hint = renderHint('board-link-broken', context) ?? '';
         expect(hint, surface).not.toBe('');
         expect(cliSteps(hint).map((step) => parseStep(step).command)).toContain('init');
+        expect(toolSteps(hint)).toEqual([]);
+      }
+    }
+  });
+
+  it('board-on-branch names git -C .board switch --detach refs/agentboard/board, then sync (group 3)', () => {
+    for (const surface of SURFACES) {
+      for (const context of [ctx(surface, 'sync'), ctx(surface, null)]) {
+        const hint = renderHint('board-on-branch', context) ?? '';
+        expect(hint, surface).toContain('git -C .board switch --detach refs/agentboard/board');
+        expect(cliSteps(hint).map((step) => parseStep(step).command)).toContain('sync');
+        expect(toolSteps(hint)).toEqual([]);
+      }
+    }
+  });
+
+  it('git-too-old says the host model needs git 2.32 or later and to upgrade git (group 3)', () => {
+    for (const surface of SURFACES) {
+      for (const context of [ctx(surface, 'sync'), ctx(surface, 'init'), ctx(surface, null)]) {
+        const hint = renderHint('git-too-old', context) ?? '';
+        expect(hint, surface).toContain('2.32');
+        expect(hint).toMatch(/upgrade/i);
         expect(toolSteps(hint)).toEqual([]);
       }
     }

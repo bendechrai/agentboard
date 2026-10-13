@@ -4,14 +4,17 @@
  * forgets `.board/` in its gitignore").
  *
  * A standalone board directory is its own git repository (`initBoard`
- * makes it one). `sync` commits new event files, pulls with rebase from the
- * board's remote, pushes, and then folds whatever arrived into the cache.
- * Event files are add-only and named by the hash of their content, so two
- * clones never produce a conflicting change to the same event path; any
- * conflict git does report is handed to a human with exit 3. The board's
- * model is decided by `detectBoardModel` (board-events "Board model
- * detection"): a host-model board whose link to the host is broken is
- * refused with exit 2 before anything is staged.
+ * makes it one outside a git host). `sync` commits new event files, pulls
+ * with rebase from the board's remote, pushes, and then folds whatever
+ * arrived into the cache. Event files are add-only and named by the hash
+ * of their content, so two clones never produce a conflicting change to
+ * the same event path; any conflict git does report is handed to a human
+ * with exit 3. The board's model is decided by `detectBoardModel`
+ * (board-events "Board model detection"): a host-model board (a worktree
+ * of the host repository at `refs/agentboard/board`) is synced by
+ * `syncHostBoard` (`src/board/host-sync.ts`) through that ref, and one
+ * whose link to the host is broken is refused with exit 2 before anything
+ * is staged. The standalone path below is unchanged by the host model.
  */
 
 import { existsSync, readdirSync, realpathSync } from 'node:fs';
@@ -28,7 +31,8 @@ import {
   type GitFailure,
   type GitRunner,
 } from './git.js';
-import { detectBoardModel } from './model.js';
+import { syncHostBoard } from './host-sync.js';
+import { detectBoardModel, type BoardModelInfo } from './model.js';
 import { ambiguousRemoteError, chooseRemote } from './remote.js';
 import { asciiText, type Env } from './text.js';
 
@@ -69,10 +73,34 @@ export interface SyncOptions {
   env?: Env | undefined;
 }
 
+/** The sharing model a `sync` ran under (`detectBoardModel`: `host` or `standalone`; the other two models are refused). */
+export type SyncModel = 'host' | 'standalone';
+
 /** Result of `syncBoard`; also the `sync --json` document. */
 export interface SyncResult {
   /** Absolute path of the board directory (`board.dir`). */
   dir: string;
+  /**
+   * The model the board was synced as: `standalone` (a repository of its
+   * own, pulled and pushed on its branch) or `host` (a worktree of the host
+   * repository, synced through `refs/agentboard/board`; see
+   * `syncHostBoard`).
+   */
+  model: SyncModel;
+  /**
+   * The ref that holds the board's history in the host repository,
+   * `refs/agentboard/board`, for a host-model board; null for a standalone
+   * board (its history is `branch`).
+   */
+  ref: string | null;
+  /**
+   * Host model: the full hex id `refs/agentboard/board` holds when sync
+   * returns, which equals the worktree's HEAD (board-events "Board ref in
+   * the host repository"), on every path that returns, including the
+   * no-remote path and a sync that committed nothing. Null for a
+   * standalone board.
+   */
+  refCommit: string | null;
   /**
    * Full hex id of the commit on the branch that contains the events sync
    * committed, as it is when sync returns: after any `pull --rebase` has
@@ -89,15 +117,25 @@ export interface SyncResult {
    * no remote (the no-remote path).
    */
   remote: string | null;
-  /** Current branch name (`main`, for example). */
-  branch: string;
-  /** True when a pull ran and completed (false on the no-remote path). */
+  /**
+   * Standalone: the current branch name (`main`, for example). Host model:
+   * null (the worktree is on a detached HEAD by design; a branch checked
+   * out there is refused with `board-on-branch`).
+   */
+  branch: string | null;
+  /**
+   * Standalone: true when a pull ran and completed. Host model: true when
+   * the fetch found `refs/agentboard/board` on the remote and its history
+   * was integrated (whether or not anything new arrived). False on the
+   * no-remote path, and when the remote has no board ref yet.
+   */
   pulled: boolean;
   /** True when a push ran and completed (false on the no-remote path). */
   pushed: boolean;
   /**
    * True when this sync set the branch's upstream (`push -u`) because none
-   * was configured.
+   * was configured. Always false for a host-model board, which never
+   * creates or moves a branch and sets no upstream.
    */
   upstreamSet: boolean;
   /**
@@ -158,14 +196,17 @@ export interface SyncResult {
  *    subdirectory of the host repository, is refused rather than synced
  *    through the host): else `BoardError(2, 'board-not-a-repository')`
  *    naming the directory and saying `agentboard init` or `git init` there
- *    makes it one. Nothing is created.
+ *    makes it one. Nothing is created. A host-model board stops here and
+ *    continues in `syncHostBoard`, whose preconditions and steps replace
+ *    the rest of this list (its result has `model` `host`).
  * 3. No rebase, merge or cherry-pick is in progress in the board
  *    repository (for example one left by an earlier conflicted sync), else
  *    `BoardError(3, 'sync-in-progress')` naming the directory and telling
  *    the human to finish it (`git rebase --continue`) or abort it
  *    (`git rebase --abort`) first. Nothing is staged or committed.
  * 4. HEAD is on a branch (possibly unborn), else
- *    `BoardError(3, 'detached-head')`.
+ *    `BoardError(3, 'detached-head')` (standalone boards only, ADR 0012: a
+ *    host-model board is detached by design).
  * 5. Every event file recorded in HEAD's tree (`events/<hash>.json`) is
  *    present in `events/` (board-concurrency scenario "Deleted event file
  *    is not synced"). Otherwise nothing is staged, committed, pulled or
@@ -260,7 +301,10 @@ export function syncBoard(board: Board, options?: SyncOptions): SyncResult {
       'agentboard sync needs git (the board is a git repository of its own), but git could not be run',
     );
   }
-  checkRepository(dir, env);
+  const info = checkRepository(dir, env);
+  if (info.model === 'host') {
+    return syncHostBoard(board, info, options);
+  }
   checkNothingInProgress(git, dir);
   const branch = currentBranch(git);
   checkCommittedEventsPresent(git, board);
@@ -275,7 +319,17 @@ export function syncBoard(board: Board, options?: SyncOptions): SyncResult {
       ? 'nothing new to commit'
       : `committed ${plural(committedEvents, 'event file')} (${id.slice(0, 12)})`;
   const lines = [committedLine(commit)];
-  const base = { dir, commit, committedEvents, branch, hostTracked, warnings };
+  const base = {
+    dir,
+    model: 'standalone' as const,
+    ref: null,
+    refCommit: null,
+    commit,
+    committedEvents,
+    branch,
+    hostTracked,
+    warnings,
+  };
 
   // 3. Remote.
   const choice = chooseRemote(dir, branch, { env });
@@ -360,9 +414,10 @@ function realpathOrSelf(path: string): string {
 
 /**
  * Precondition 2: the board's link to the host is not broken, and the
- * board directory is the top level of a repository or worktree.
+ * board directory is the top level of a repository or worktree. Returns
+ * what `detectBoardModel` found (`host` or `standalone`).
  */
-function checkRepository(dir: string, env: Env): void {
+function checkRepository(dir: string, env: Env): BoardModelInfo {
   const info = detectBoardModel(dir, { env });
   if (info.model === 'broken-host-link') {
     throw new BoardError(
@@ -380,6 +435,7 @@ function checkRepository(dir: string, env: Env): void {
         `(or git init in ${dir}) to make it one`,
     );
   }
+  return info;
 }
 
 /** Precondition 3: no rebase, merge, cherry-pick or revert is stopped in the board repository. */

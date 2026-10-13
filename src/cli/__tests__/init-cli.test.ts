@@ -168,7 +168,12 @@ describe('agentboard init (built CLI)', () => {
     const out = init(b, env);
 
     expect(out.code, out.stderr).toBe(0);
-    expect(oneJson(out)).toMatchObject({ joined: true, remote: 'origin', events: 1, model: 'host' });
+    expect(oneJson(out)).toMatchObject({
+      joined: true,
+      remote: 'origin',
+      events: 1,
+      model: 'host',
+    });
     expectComplete(b);
     expect(refCommit(b)).toBe(refCommit(a.root));
     const list = spawnCli(['list', '--json'], b, env);
@@ -229,9 +234,18 @@ describe('two init processes racing on one host', () => {
       expectComplete(root);
       expect(git(root, 'status', '--porcelain'), label).toBe('');
       expect(readdirSync(join(root, '.board', 'events')), label).toEqual(['.gitkeep']);
-      // Both inits see the same ref; one of them created it.
-      const docs = [oneJson(first), oneJson(second)] as { created: boolean }[];
-      expect(docs.some((doc) => doc.created), label).toBe(true);
+      // Both inits see the same ref; one of them created it. Neither says
+      // it restored a board from an older ref: the board is new (the
+      // group 2 review nit on the race loser's wording).
+      const docs = [oneJson(first), oneJson(second)] as { created: boolean; message: string }[];
+      expect(
+        docs.some((doc) => doc.created),
+        label,
+      ).toBe(true);
+      for (const doc of docs) {
+        expect(doc.message, label).not.toMatch(/restored it from the local/);
+        expect(doc.message, label).not.toContain('0 event files');
+      }
       expect(existsSync(join(root, '.git', 'agentboard', 'init.lock')), label).toBe(false);
     }
   });
