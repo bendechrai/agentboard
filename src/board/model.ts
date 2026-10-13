@@ -8,7 +8,11 @@
  * so a broken link never stops the board itself.
  */
 
-import type { Env } from './text.js';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { dirname, join, resolve, sep } from 'node:path';
+
+import { gitRunner, isGitFailure } from './git.js';
+import { asciiText, type Env } from './text.js';
 
 /**
  * The ref that holds a host-model board's history in the host repository.
@@ -94,7 +98,89 @@ export interface DetectOptions {
  * at all is reported as `not-a-repository`.
  */
 export function detectBoardModel(dir: string, options?: DetectOptions): BoardModelInfo {
-  void dir;
-  void options;
-  throw new Error('not implemented');
+  const absolute = resolve(dir);
+  const real = realpathOrSelf(absolute);
+  const result = (
+    model: BoardModel,
+    gitDir: string | null = null,
+    detail: string | null = null,
+  ): BoardModelInfo => ({ dir: absolute, model, gitDir, detail });
+  const dotGitIsFile = isFile(join(real, '.git'));
+
+  const git = gitRunner(real, { env: options?.env });
+  const first = git.attempt('rev-parse', '--show-toplevel', '--git-common-dir', '--absolute-git-dir');
+  if (isGitFailure(first)) {
+    if (first.status !== null && dotGitIsFile) {
+      return result('broken-host-link', null, missingTargetDetail(real));
+    }
+    return result('not-a-repository');
+  }
+  const [top = '', common = '', gitDir = ''] = first.split('\n').map((line) => line.trim());
+  if (realpathOrSelf(resolve(real, top)) !== real) {
+    return result('not-a-repository');
+  }
+  const realCommon = realpathOrSelf(resolve(real, common));
+  const realGitDir = realpathOrSelf(resolve(real, gitDir));
+
+  if (realGitDir !== realCommon) {
+    // A linked worktree: of the parent's repository, or of another one.
+    const parentCommon = git.attemptIn(dirname(real), 'rev-parse', '--git-common-dir');
+    if (!isGitFailure(parentCommon)) {
+      const realParentCommon = realpathOrSelf(resolve(dirname(real), parentCommon.trim()));
+      if (realParentCommon === realCommon) {
+        return result('host', realCommon);
+      }
+    }
+    return result(
+      'broken-host-link',
+      null,
+      `the board at ${asciiText(absolute)} is a worktree of another repository ` +
+        `(its git directory is ${asciiText(realCommon)}, not the one of ${asciiText(dirname(absolute))})`,
+    );
+  }
+  if (realGitDir.startsWith(real + sep)) {
+    return result('standalone', realGitDir);
+  }
+  if (dotGitIsFile) {
+    return result(
+      'broken-host-link',
+      null,
+      `the .git file at ${asciiText(join(absolute, '.git'))} does not name a worktree of ${asciiText(dirname(absolute))}`,
+    );
+  }
+  return result('not-a-repository');
+}
+
+/** The detail of a `.git` file whose `gitdir:` target git could not open. */
+function missingTargetDetail(real: string): string {
+  const file = join(real, '.git');
+  const target = gitdirTarget(file);
+  return target === ''
+    ? `the .git file at ${asciiText(file)} names a git directory that is missing`
+    : `the .git file at ${asciiText(file)} names the missing git directory ${asciiText(target)}`;
+}
+
+/** The `gitdir:` target written in the `.git` file at `file`, or an empty string when it cannot be read. */
+function gitdirTarget(file: string): string {
+  try {
+    return /^gitdir:\s*(.*)$/m.exec(readFileSync(file, 'utf8'))?.[1]?.trim() ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function realpathOrSelf(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
 }

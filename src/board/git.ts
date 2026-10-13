@@ -10,7 +10,12 @@
  * Nothing here reads or writes event files or the cache.
  */
 
-import type { Env } from './text.js';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+
+import { asciiText, type Env } from './text.js';
 
 /**
  * The fixed identity every git command run by agentboard is given (as
@@ -58,6 +63,12 @@ export const HOST_MODEL_GIT_FLOOR: Readonly<Pick<GitVersion, 'major' | 'minor'>>
 };
 
 /**
+ * `git version <major>.<minor>[.<patch>]`, then either the end of the text
+ * or something that is not a digit (a fourth component, a suffix).
+ */
+const VERSION_LINE = /^git version (\d+)\.(\d+)(?:\.(\d+))?(?:\D[\s\S]*)?$/;
+
+/**
  * Parses the output of `git --version`: `git version <major>.<minor>.<patch>`
  * followed by anything (a trailing newline, a fourth component such as
  * `.windows.1`, a suffix such as ` (Apple Git-154)`), for example:
@@ -71,8 +82,15 @@ export const HOST_MODEL_GIT_FLOOR: Readonly<Pick<GitVersion, 'major' | 'minor'>>
  * in front of it) is null. Pure.
  */
 export function parseGitVersion(text: string): GitVersion | null {
-  void text;
-  throw new Error('not implemented');
+  const match = VERSION_LINE.exec(text.trim());
+  if (match === null) {
+    return null;
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: match[3] === undefined ? 0 : Number(match[3]),
+  };
 }
 
 /**
@@ -81,8 +99,10 @@ export function parseGitVersion(text: string): GitVersion | null {
  * (2.32.0 and 2.32.7 meet it, 2.31.8 and 1.9.5 do not, 3.0.0 does). Pure.
  */
 export function meetsGitFloor(version: GitVersion): boolean {
-  void version;
-  throw new Error('not implemented');
+  if (version.major !== HOST_MODEL_GIT_FLOOR.major) {
+    return version.major > HOST_MODEL_GIT_FLOOR.major;
+  }
+  return version.minor >= HOST_MODEL_GIT_FLOOR.minor;
 }
 
 /**
@@ -94,9 +114,20 @@ export function meetsGitFloor(version: GitVersion): boolean {
  * believed (the tests simulate an older git that way). Never throws.
  */
 export function gitVersion(env?: Env, cwd?: string): GitVersion | null {
-  void env;
-  void cwd;
-  throw new Error('not implemented');
+  // `--version` reads no configuration, so no `-c` prefix: the first
+  // argument git sees is `--version`, as a shim on the PATH expects.
+  try {
+    return parseGitVersion(
+      execFileSync('git', ['--version'], {
+        cwd: cwd ?? process.cwd(),
+        env: sanitisedEnv(env ?? process.env),
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }),
+    );
+  } catch {
+    return null;
+  }
 }
 
 /** A git command that failed: its exit status and its captured output. */
@@ -109,8 +140,7 @@ export interface GitFailure {
 
 /** True when `result` (of `attempt` or `attemptIn`) is a failure. Pure. */
 export function isGitFailure(result: string | GitFailure): result is GitFailure {
-  void result;
-  throw new Error('not implemented');
+  return typeof result !== 'string';
 }
 
 /**
@@ -119,8 +149,12 @@ export function isGitFailure(result: string | GitFailure): result is GitFailure 
  * trimmed, one line. Pure.
  */
 export function firstErrorLine(failure: GitFailure): string {
-  void failure;
-  throw new Error('not implemented');
+  const all = `${failure.stderr}\n${failure.stdout}`
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
+  const line = all.find((l) => /^(fatal|error):/.test(l)) ?? all[0] ?? 'git failed';
+  return asciiText(line);
 }
 
 /** Options of `gitRunner`. */
@@ -171,12 +205,94 @@ export interface GitRunner {
   attemptIn(cwd: string, ...args: string[]): string | GitFailure;
 }
 
+/** The name of the empty hooks directory the runner creates under a git directory. */
+const NO_HOOKS_DIR = 'agentboard-no-hooks';
+
 /**
  * A `GitRunner` for the repository (or worktree) at `dir`. Pure apart from
  * creating the empty hooks directory when `options.disableHooks` is true.
  */
 export function gitRunner(dir: string, options?: GitRunnerOptions): GitRunner {
-  void dir;
-  void options;
-  throw new Error('not implemented');
+  const env = sanitisedEnv(options?.env ?? process.env);
+  const prefix = [
+    '-c',
+    `user.name=${GIT_IDENTITY.name}`,
+    '-c',
+    `user.email=${GIT_IDENTITY.email}`,
+    '-c',
+    'commit.gpgsign=false',
+  ];
+  const runWith = (config: readonly string[], cwd: string, args: readonly string[]): string =>
+    execFileSync('git', [...config, ...args], {
+      cwd,
+      env,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 256 * 1024 * 1024,
+    });
+  if (options?.disableHooks === true) {
+    const hooks = emptyHooksDir(dir, (args) => runWith(prefix, dir, args));
+    prefix.push('-c', `core.hooksPath=${hooks}`);
+  }
+  const runIn = (cwd: string, ...args: string[]): string => runWith(prefix, cwd, args);
+  const attemptIn = (cwd: string, ...args: string[]): string | GitFailure => {
+    try {
+      return runIn(cwd, ...args);
+    } catch (error) {
+      return asFailure(error);
+    }
+  };
+  return {
+    dir,
+    run: (...args) => runIn(dir, ...args),
+    runIn,
+    attempt: (...args) => attemptIn(dir, ...args),
+    attemptIn,
+  };
+}
+
+/**
+ * `given` without `GIT_REPOSITORY_VARIABLES` and undefined values, with the
+ * terminal prompt off and the fixed identity in the `GIT_AUTHOR_*` and
+ * `GIT_COMMITTER_*` variables.
+ */
+function sanitisedEnv(given: Env): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(given)) {
+    if (value !== undefined && !GIT_REPOSITORY_VARIABLES.includes(key)) {
+      env[key] = value;
+    }
+  }
+  env.GIT_TERMINAL_PROMPT = '0';
+  env.GIT_AUTHOR_NAME = GIT_IDENTITY.name;
+  env.GIT_AUTHOR_EMAIL = GIT_IDENTITY.email;
+  env.GIT_COMMITTER_NAME = GIT_IDENTITY.name;
+  env.GIT_COMMITTER_EMAIL = GIT_IDENTITY.email;
+  return env;
+}
+
+/**
+ * An existing empty directory for `core.hooksPath`: `agentboard-no-hooks`
+ * under the git directory of the repository at `dir` (asked of git with
+ * `run`), or a fresh temporary directory when git cannot say.
+ */
+function emptyHooksDir(dir: string, run: (args: readonly string[]) => string): string {
+  try {
+    const gitDir = resolve(dir, run(['rev-parse', '--absolute-git-dir']).trim());
+    const hooks = join(gitDir, NO_HOOKS_DIR);
+    mkdirSync(hooks, { recursive: true });
+    return hooks;
+  } catch {
+    return mkdtempSync(join(tmpdir(), `${NO_HOOKS_DIR}-`));
+  }
+}
+
+/** The failure a thrown child process error describes. */
+function asFailure(error: unknown): GitFailure {
+  const e = error as { status?: unknown; stdout?: unknown; stderr?: unknown };
+  return {
+    status: typeof e.status === 'number' ? e.status : null,
+    stdout: typeof e.stdout === 'string' ? e.stdout : '',
+    stderr: typeof e.stderr === 'string' ? e.stderr : error instanceof Error ? error.message : '',
+  };
 }

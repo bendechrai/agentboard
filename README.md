@@ -636,8 +636,36 @@ failing) when the host repository tracks anything under `.board`.
 
 It exits 5 without staging anything when event files recorded in the
 board's git history are missing from `events/` (restore them from git), 2
-when `.board` is not itself the top level of a git repository, and 1 when
-there are several remotes and none is the upstream or `origin`.
+when `.board` is not itself the top level of a git repository or when it is
+a worktree whose link to the host repository is broken
+(`board-link-broken`; `agentboard init` repairs it), and 1 when there are
+several remotes and none is chosen.
+
+`sync` chooses the remote in this order: the one named by
+`git config agentboard.remote <name>` in the repository that holds the
+board's history, the upstream of the current branch (an upstream remote of
+`.` is ignored), `origin`, then the only remote. With several remotes and
+none chosen it exits 1 (`ambiguous-remote`) after committing; set
+`agentboard.remote` to pick one.
+
+To see how a board is shared without changing anything:
+
+```
+agentboard remote
+```
+
+It prints the board directory, its model (`host` when the board is a
+worktree of the host repository with its history under
+`refs/agentboard/board`, `standalone` when `.board` is a repository of its
+own, `broken host link`, or `not a repository`), where the history lives,
+the remote `sync` would use with its URL and the rule that chose it, and
+every remote of that repository. A broken link or an ambiguous choice comes
+with how to fix it. `remote` is read-only, never contacts the network and
+exits 0 whenever a board exists (problems are in its output), so it is safe
+to run when something is wrong. `--json` prints one object with `dir`,
+`model`, `gitDir`, `ref`, `refCommit`, `branch`, `head`, `remote`,
+`remotes` and `problems`. It needs no actor and is not exposed as an MCP
+tool.
 
 Sync is for machines that take turns, not for several people editing at
 once.
@@ -1542,10 +1570,11 @@ underscores: `board_new`, `board_show`, `board_list`, `board_claim`,
 `board_link`, `board_checklist_tick`, `board_checklist_untick`,
 `board_close`, `board_inbox`, `board_import_change`,
 `board_close_merged` and `board_health`. `init`, `watch`, `serve`, `top`, `rebuild`, `sync`,
-`mcp`, `version`, `help`, `agents install` and `agents check` are not exposed:
-they are run by a human or an orchestrator in a shell (`agents install`
-and `agents check` write and read files in the caller's working tree,
-which a tool call must not do, and the guide reaches MCP clients as
+`remote`, `mcp`, `version`, `help`, `agents install` and `agents check` are
+not exposed: they are run by a human or an orchestrator in a shell (`init`,
+`sync` and `remote` run git against the host's configuration, `agents
+install` and `agents check` write and read files in the caller's working
+tree, which a tool call must not do, and the guide reaches MCP clients as
 described below instead of through `help`). Calling an unknown or excluded
 tool name returns a tool error with `exitCode` 1, `reason` `usage` and a
 hint to call `tools/list`.

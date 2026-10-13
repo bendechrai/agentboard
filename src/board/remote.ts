@@ -20,9 +20,24 @@
  * `push`.
  */
 
-import type { GitRunnerOptions } from './git.js';
-import type { BoardModel, BoardModelInfo } from './model.js';
-import type { Env } from './text.js';
+import { BoardError } from '../store/errors.js';
+import {
+  firstErrorLine,
+  gitRunner,
+  gitVersion,
+  isGitFailure,
+  meetsGitFloor,
+  type GitRunner,
+  type GitRunnerOptions,
+} from './git.js';
+import {
+  BOARD_REF,
+  MODEL_TEXT,
+  detectBoardModel,
+  type BoardModel,
+  type BoardModelInfo,
+} from './model.js';
+import { asciiText, type Env } from './text.js';
 
 /** The configuration key that names the remote `sync` uses, overriding every other rule. */
 export const REMOTE_CONFIG_KEY = 'agentboard.remote';
@@ -90,6 +105,9 @@ export interface RemoteChoice {
   readonly configured: string | null;
 }
 
+/** The text that tells a human how to choose a remote by hand. */
+const SET_REMOTE = `git config ${REMOTE_CONFIG_KEY} <name>`;
+
 /**
  * Chooses the remote of the repository at `repoDir` (a board repository or
  * a worktree of the host) for the branch `branch` (null for a detached
@@ -116,10 +134,35 @@ export function chooseRemote(
   branch: string | null,
   options?: GitRunnerOptions,
 ): RemoteChoice {
-  void repoDir;
-  void branch;
-  void options;
-  throw new Error('not implemented');
+  const git = gitRunner(repoDir, options);
+  const remotes = listRemotes(git);
+  const configured = configValue(git, REMOTE_CONFIG_KEY);
+  const choice = (chosen: ChosenRemote | null, ambiguous = false): RemoteChoice => ({
+    chosen,
+    remotes,
+    ambiguous,
+    branch,
+    configured,
+  });
+  const urlOf = (name: string): string | null =>
+    remotes.find((remote) => remote.name === name)?.url ?? null;
+
+  if (configured !== null) {
+    return choice({ name: configured, url: urlOf(configured), rule: 'agentboard.remote' });
+  }
+  const upstream = branch === null ? null : upstreamRemote(git, branch);
+  if (upstream !== null) {
+    return choice({ name: upstream, url: urlOf(upstream), rule: 'upstream' });
+  }
+  const origin = urlOf('origin');
+  if (origin !== null) {
+    return choice({ name: 'origin', url: origin, rule: 'origin' });
+  }
+  const only = remotes.length === 1 ? remotes[0] : undefined;
+  if (only !== undefined) {
+    return choice({ name: only.name, url: only.url, rule: 'only' });
+  }
+  return choice(null, remotes.length > 1);
 }
 
 /**
@@ -135,9 +178,13 @@ export function chooseRemote(
  * false, `branch` null, `configured` null. Never contacts the network.
  */
 export function boardRemote(info: BoardModelInfo, options?: GitRunnerOptions): RemoteChoice {
-  void info;
-  void options;
-  throw new Error('not implemented');
+  if (info.model === 'standalone') {
+    return chooseRemote(info.dir, currentBranch(gitRunner(info.dir, options)), options);
+  }
+  if (info.model === 'host') {
+    return chooseRemote(info.dir, mainWorktreeBranch(gitRunner(info.dir, options)), options);
+  }
+  return { chosen: null, remotes: [], ambiguous: false, branch: null, configured: null };
 }
 
 /**
@@ -148,8 +195,13 @@ export function boardRemote(info: BoardModelInfo, options?: GitRunnerOptions): R
  * `git config agentboard.remote <name>` (that text appears literally). Pure.
  */
 export function ambiguousRemoteError(choice: RemoteChoice): Error {
-  void choice;
-  throw new Error('not implemented');
+  return new BoardError(
+    1,
+    'ambiguous-remote',
+    `the repository that holds the board's history has several remotes (${remoteNames(choice.remotes)}), ` +
+      `none of them origin and none the upstream of the branch; choose one with ${SET_REMOTE} ` +
+      'in that repository and run agentboard sync again',
+  );
 }
 
 /** The `agentboard remote --json` document (board-cli: "Showing how a board is shared"). */
@@ -217,9 +269,83 @@ export interface RemoteReportOptions {
  * field is null or empty, and `problems` names git.
  */
 export function remoteReport(dir: string, options?: RemoteReportOptions): RemoteReport {
-  void dir;
-  void options;
-  throw new Error('not implemented');
+  const env = options?.env;
+  const info = detectBoardModel(dir, { env });
+  const empty: RemoteReport = {
+    dir: info.dir,
+    model: info.model,
+    gitDir: info.gitDir,
+    ref: null,
+    refCommit: null,
+    branch: null,
+    head: null,
+    remote: null,
+    remotes: [],
+    problems: [],
+  };
+
+  const git = gitRunner(info.dir, { env });
+  const versionOut = git.attempt('--version');
+  if (isGitFailure(versionOut)) {
+    return {
+      ...empty,
+      problems: [
+        `git could not be run (${firstErrorLine(versionOut)}); install git and put it on the PATH`,
+      ],
+    };
+  }
+  if (info.model === 'broken-host-link') {
+    return { ...empty, problems: [`${info.detail ?? ''}; run agentboard init to repair it`] };
+  }
+  if (info.model === 'not-a-repository') {
+    return {
+      ...empty,
+      problems: [
+        `the board directory ${asciiText(info.dir)} is not a git repository or worktree; run agentboard init to make it one`,
+      ],
+    };
+  }
+
+  const choice = boardRemote(info, { env });
+  const problems: string[] = [];
+  if (choice.ambiguous) {
+    problems.push(
+      `the remote is ambiguous: the repository has the remotes ${remoteNames(choice.remotes)} ` +
+        `and none is origin or the upstream of the branch; choose one with ${SET_REMOTE}`,
+    );
+  }
+  if (choice.chosen !== null && choice.chosen.url === null) {
+    const existing =
+      choice.remotes.length === 0
+        ? 'the repository has no remote'
+        : `the remotes are ${remoteNames(choice.remotes)}`;
+    problems.push(
+      `${REMOTE_CONFIG_KEY} names ${asciiText(choice.chosen.name)}, which is not a remote of the repository ` +
+        `(${existing}); set it to one of them with ${SET_REMOTE}`,
+    );
+  }
+  if (info.model === 'host') {
+    const version = gitVersion(env, info.dir);
+    if (version !== null && !meetsGitFloor(version)) {
+      const found = `${String(version.major)}.${String(version.minor)}.${String(version.patch)}`;
+      problems.push(
+        `git ${found} was found, but a board in the host repository needs git 2.32 or later; ` +
+          'upgrade git before running agentboard sync',
+      );
+    }
+  }
+
+  const head = commitOf(git, 'HEAD');
+  return {
+    ...empty,
+    ref: info.model === 'host' ? BOARD_REF : null,
+    refCommit: info.model === 'host' ? commitOf(git, BOARD_REF) : null,
+    branch: info.model === 'standalone' ? choice.branch : null,
+    head,
+    remote: choice.chosen,
+    remotes: choice.remotes,
+    problems,
+  };
 }
 
 /**
@@ -248,6 +374,117 @@ export function remoteReport(dir: string, options?: RemoteReportOptions): Remote
  * problems only. Every line goes through `asciiText`. Pure.
  */
 export function renderRemote(report: RemoteReport): string {
-  void report;
-  throw new Error('not implemented');
+  const lines = [`board: ${report.dir}`, `model: ${MODEL_TEXT[report.model]}`];
+  if (report.model === 'host' || report.model === 'standalone') {
+    const where = `in ${report.gitDir ?? ''}`;
+    if (report.model === 'host') {
+      lines.push(
+        report.refCommit === null
+          ? `history: ${BOARD_REF} missing ${where}`
+          : `history: ${BOARD_REF} at ${report.refCommit} ${where}`,
+      );
+    } else if (report.branch === null) {
+      lines.push(`history: detached HEAD at ${report.head ?? ''} ${where}`);
+    } else if (report.head === null) {
+      lines.push(`history: branch ${report.branch} (no commits yet) ${where}`);
+    } else {
+      lines.push(`history: branch ${report.branch} at ${report.head} ${where}`);
+    }
+    lines.push(remoteLine(report));
+    if (report.remotes.length === 0) {
+      lines.push('remotes: none');
+    } else {
+      lines.push('remotes:', ...report.remotes.map((r) => `  ${r.name}  ${r.url}`));
+    }
+  }
+  lines.push(...report.problems.map((problem) => `problem: ${problem}`));
+  return lines.map((line) => `${asciiText(line)}\n`).join('');
+}
+
+/** Line 4 of `renderRemote`. */
+function remoteLine(report: RemoteReport): string {
+  const remote = report.remote;
+  if (remote === null) {
+    return report.remotes.length === 0
+      ? 'remote: none configured'
+      : `remote: ambiguous (${remoteNames(report.remotes)}); set one with ${SET_REMOTE}`;
+  }
+  if (remote.url === null) {
+    return `remote: ${remote.name} (chosen by ${RULE_TEXT[remote.rule]}; no such remote)`;
+  }
+  return `remote: ${remote.name} ${remote.url} (chosen by ${RULE_TEXT[remote.rule]})`;
+}
+
+/** The names of `remotes`, comma-separated, through `asciiText`. */
+function remoteNames(remotes: readonly NamedRemote[]): string {
+  return remotes.map((remote) => asciiText(remote.name)).join(', ');
+}
+
+/** Every remote of the repository, by name, with its fetch URL. */
+function listRemotes(git: GitRunner): NamedRemote[] {
+  const names = git.attempt('remote');
+  if (isGitFailure(names)) {
+    return [];
+  }
+  return names
+    .split('\n')
+    .map((name) => name.trim())
+    .filter((name) => name !== '')
+    .sort()
+    .map((name) => {
+      const url = git.attempt('remote', 'get-url', name);
+      return { name, url: isGitFailure(url) ? '' : url.trim() };
+    });
+}
+
+/** `git config --get <key>`, trimmed, or null when unset or empty. */
+function configValue(git: GitRunner, key: string): string | null {
+  const out = git.attempt('config', '--get', key);
+  if (isGitFailure(out) || out.trim() === '') {
+    return null;
+  }
+  return out.trim();
+}
+
+/**
+ * The remote of the upstream of `branch`: `branch.<branch>.remote` when it
+ * and `branch.<branch>.merge` are both set and the remote is not `.`.
+ */
+function upstreamRemote(git: GitRunner, branch: string): string | null {
+  const remote = configValue(git, `branch.${branch}.remote`);
+  const merge = configValue(git, `branch.${branch}.merge`);
+  if (remote === null || merge === null || remote === '.') {
+    return null;
+  }
+  return remote;
+}
+
+/** The current branch of the repository `git` runs in, or null when HEAD is detached. */
+function currentBranch(git: GitRunner): string | null {
+  const ref = git.attempt('symbolic-ref', '--quiet', '--short', 'HEAD');
+  return isGitFailure(ref) ? null : ref.trim();
+}
+
+/**
+ * The branch checked out in the main worktree of the repository `git` runs
+ * in: the first entry of `git worktree list --porcelain`, null when it is
+ * detached or git cannot say.
+ */
+function mainWorktreeBranch(git: GitRunner): string | null {
+  const out = git.attempt('worktree', 'list', '--porcelain');
+  if (isGitFailure(out)) {
+    return null;
+  }
+  const first = out.split('\n\n')[0] ?? '';
+  const branch = /^branch (.+)$/m.exec(first)?.[1]?.trim() ?? null;
+  if (branch === null) {
+    return null;
+  }
+  return branch.startsWith('refs/heads/') ? branch.slice('refs/heads/'.length) : branch;
+}
+
+/** The full id of the commit `rev` names, or null when it does not resolve to one. */
+function commitOf(git: GitRunner, rev: string): string | null {
+  const out = git.attempt('rev-parse', '--quiet', '--verify', `${rev}^{commit}`);
+  return isGitFailure(out) ? null : out.trim();
 }
