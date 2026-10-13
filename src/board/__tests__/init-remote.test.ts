@@ -951,7 +951,9 @@ describe('scenario: Existing directory that is not a board (review R2)', () => {
     expect(readFileSync(join(dir, 'notes.txt')).equals(notes)).toBe(true);
     expect(readdirSync(root).sort()).toEqual(entries);
     expect(existsSync(join(root, '.gitignore'))).toBe(false);
-    expect(git(root, 'status', '--porcelain')).toBe('');
+    // The fixture's own notes.txt is untracked; nothing else, so no
+    // .gitignore entry was written (it would show as ?? .gitignore).
+    expect(git(root, 'status', '--porcelain')).toBe('?? .board/\n');
   });
 
   it('a directory with a user file and a missing local path: exit 2, the bare repository is not created', () => {
