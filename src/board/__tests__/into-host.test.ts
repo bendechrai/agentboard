@@ -273,7 +273,7 @@ describe('step 1 refusals change nothing', () => {
 
   it('no board: exit 2 board-not-found naming the directory, nothing written', () => {
     const env = syncEnv();
-    const root = bareHost();
+    const root = gitRepo(join(tempDir(), 'proj'));
     const before = untouched(root, join(root, '.board'));
 
     const err = expectBoardError(() => move(root, env), 2, 'board-not-found');
@@ -738,12 +738,18 @@ describe('integrating board refs that already exist', () => {
     expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
     const [temporary] = registeredMigrating(bRoot);
     const resolved = [...BOARD_GITIGNORE_LINES, 'foo', 'bar'].map((line) => `${line}\n`).join('');
-    // The human keeps both lines and continues until the rebase is finished.
+    // The human keeps both lines and continues until the rebase is finished;
+    // both of B's commits stop on .gitignore, so the continue that applies
+    // the first exits non-zero on the second, and the loop resolves again.
     for (let step = 0; rebaseInProgress(String(temporary)); step += 1) {
       expect(step).toBeLessThan(5);
       writeFileSync(join(String(temporary), '.gitignore'), resolved);
       git(String(temporary), 'add', '--', '.gitignore');
-      git(String(temporary), '-c', 'core.editor=true', 'rebase', '--continue');
+      try {
+        git(String(temporary), '-c', 'core.editor=true', 'rebase', '--continue');
+      } catch {
+        // The next commit conflicts too; the loop resolves it.
+      }
     }
     expect(revParse(String(temporary))).not.toBe(refCommit(bRoot, MIGRATING_REF));
 

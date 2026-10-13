@@ -22,7 +22,7 @@ import { AGENTBOARD_GIT_SUBDIR } from '../host-init.js';
 import { MIGRATING_DIR, MIGRATING_REF, STANDALONE_KEPT_PREFIX } from '../into-host.js';
 import { detectBoardModel } from '../model.js';
 import { syncBoard } from '../sync.js';
-import { git, gitRepo, tempDir } from './helpers.js';
+import { git, tempDir } from './helpers.js';
 import {
   BOARD_REF,
   cloneHost,
@@ -248,9 +248,14 @@ export function expectKept(kept: string, tip: string, files: readonly string[], 
   expect(eventFiles(kept), label).toEqual([...files].sort());
 }
 
-/** A fresh host that is a git repository without any `.gitignore`, at `<temp>/<name>`. */
+/**
+ * A fresh host at `<temp>/<name>` with no remote: a git repository whose
+ * committed `.gitignore` lists `.board/`, so a board built in it with
+ * `standaloneBoard` adds nothing to the host's working tree and a move,
+ * which writes nothing there, leaves `git status` clean.
+ */
 export function bareHost(name = 'proj'): string {
-  return gitRepo(join(tempDir(), name));
+  return hostRepo(join(tempDir(), name));
 }
 
 /** Appends `line` to `<dir>/.gitignore` and commits it in the repository at `dir` (a standalone board or a host worktree). */
