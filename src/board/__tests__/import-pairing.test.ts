@@ -701,3 +701,66 @@ describe('reconcileSource', () => {
     );
   });
 });
+
+describe('pairing and diff boundaries (review follow-up)', () => {
+  /** `n` distinct words with a prefix. */
+  const words = (prefix: string, n: number): string[] =>
+    Array.from({ length: n }, (_, i) => `${prefix}${String(i)}`);
+
+  it('does not pair by content at 4/9 (below the threshold) when the number pass cannot', () => {
+    const shared = words('s', 4);
+    const t = ticket('1', 'Old', [...shared, ...words('t', 2)]);
+    // {4 shared + 2} against {4 shared + 3}: 4 of 9.
+    const report = pairTickets([t], [unit('2', 'New', [...shared, ...words('u', 3)])]);
+    expect(report).toEqual({ pairs: [], newGroups: ['2'], unpaired: [t.id], ambiguous: [] });
+  });
+
+  it('does not pair by content at 24/49 (just below 0.5)', () => {
+    const shared = words('s', 24);
+    const t = ticket('1', 'Old', [...shared, ...words('t', 12)]);
+    // 36 lines against 37: 24 shared of 49.
+    const report = pairTickets([t], [unit('2', 'New', [...shared, ...words('u', 13)])]);
+    expect(report.pairs).toEqual([]);
+    expect(report.ambiguous).toEqual([]);
+  });
+
+  it('is ambiguous at a margin of 9/13 against 6/12 (0.19 apart)', () => {
+    const tw = words('w', 10);
+    const t = ticket('5', 'Old', tw);
+    const report = pairTickets(
+      [t],
+      [
+        unit('5', 'One', [...tw.slice(0, 9), ...words('x', 3)]),
+        unit('6', 'Two', [...tw.slice(0, 6), ...words('y', 2)]),
+      ],
+    );
+    expect(report.pairs).toEqual([]);
+    expect(report.ambiguous).toEqual([
+      { ticket: t.id, item: '5', score: 9 / 13, sameTitle: false },
+      { ticket: t.id, item: '6', score: 0.5, sameTitle: false },
+    ]);
+  });
+
+  it('pairs a case-only title change by normalised title, and the diff renames it', () => {
+    const t = ticket('1', 'Docs', ['1.1 a']);
+    expect(pairTickets([t], [unit('1', 'docs', ['1.1 a'])]).pairs).toEqual([
+      { ticket: t.id, item: '1', pass: 'title', score: 1 },
+    ]);
+    expect(
+      reconcileDiff(full([L('1.1 a')], { title: 'Docs' }), unit('1', 'docs', ['1.1 a'])),
+    ).toEqual({ title: 'docs', updated: [], removed: [], added: [] });
+  });
+
+  it('matches by number before text: swapped texts are two rewordings, not a reorder', () => {
+    const t = full([L('1.1 A', true), L('1.2 B')]);
+    expect(reconcileDiff(t, unit('1', 'Group title', ['1.1 B', '1.2 A']))).toEqual({
+      title: null,
+      updated: [
+        { index: 0, text: '1.1 B', done: false },
+        { index: 1, text: '1.2 A', done: false },
+      ],
+      removed: [],
+      added: [],
+    });
+  });
+});

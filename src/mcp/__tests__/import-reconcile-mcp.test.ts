@@ -92,3 +92,56 @@ describe('board_import_change', () => {
     expect(files(boardDir)).toHaveLength(before + 1);
   });
 });
+
+describe('board_import_change refusals', () => {
+  it('scenario: the tool error of reconcile-blocked carries the result', () => {
+    const { root, server } = serve();
+    writeTasks(root, V1);
+    const first = ok(server.callTool('board_import_change', { name: CHANGE }));
+    const id = (first.tickets as { id: string }[])[0]?.id ?? '';
+    ok(server.callTool('board_checklist_tick', { id, index: 1 }));
+    writeTasks(root, '## 1. One\n\n- [ ] 1.1 a\n');
+    const refused = server.callTool('board_import_change', { name: CHANGE });
+    expect(refused.isError).toBe(true);
+    expect(refused.structuredContent).toMatchObject({
+      exitCode: 4,
+      reason: 'reconcile-blocked',
+      result: {
+        dryRun: false,
+        events: 0,
+        tickets: [
+          { id, action: 'blocked', blocked: [{ index: 1, change: 'removed', reason: 'done' }] },
+        ],
+      },
+    });
+  });
+
+  it('the tool error of reconcile-ambiguous carries the dry-run result', () => {
+    const { root, server } = serve();
+    writeTasks(root, '## 2. Store\n\n- [ ] 2.1 r\n- [ ] 2.2 w\n- [ ] 2.3 l\n- [ ] 2.4 f\n');
+    ok(server.callTool('board_import_change', { name: CHANGE }));
+    writeTasks(
+      root,
+      '## 2. Reads\n\n- [ ] 2.1 r\n- [ ] 2.2 w\n\n## 3. Writes\n\n- [ ] 3.1 l\n- [ ] 3.2 f\n',
+    );
+    const refused = server.callTool('board_import_change', { name: CHANGE });
+    expect(refused.structuredContent).toMatchObject({
+      reason: 'reconcile-ambiguous',
+      result: { dryRun: true, events: 0 },
+    });
+    expect((refused.structuredContent.result as { ambiguous: unknown[] }).ambiguous).toHaveLength(
+      2,
+    );
+  });
+
+  it('other tool errors carry no result', () => {
+    const { server } = serve();
+    const refused = server.callTool('board_import_change', { name: 'no-such-change' });
+    expect(Object.keys(refused.structuredContent).sort()).toEqual([
+      'exitCode',
+      'hint',
+      'message',
+      'reason',
+    ]);
+  });
+});

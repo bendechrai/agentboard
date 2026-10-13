@@ -286,3 +286,88 @@ describe('agentboard import-change refusals and --force', SLOW, () => {
     expect(eventFiles(boardDir)).toEqual(before);
   });
 });
+
+describe(
+  'a refusal carries the import result (scenario "Refusal carries the result")',
+  SLOW,
+  () => {
+    it('reconcile-blocked: the --json error document has result with what was written', () => {
+      const { root, one, two } = importedV1();
+      expect(run(['checklist', 'tick', one, '2', '--as', 'impl'], root).code).toBe(0);
+      writeTasks(
+        root,
+        V1.replace('- [ ] 1.3 Add C\n', '').replace(
+          '2.1 Write the README',
+          '2.1 Write the README\n- [ ] 2.2 Add an ADR',
+        ),
+      );
+      const out = run(['import-change', CHANGE, ...AS, '--json'], root);
+      expect(out.code).toBe(4);
+      const doc = oneJson(out) as {
+        error: {
+          reason: string;
+          result: {
+            dryRun: boolean;
+            events: number;
+            ambiguous: unknown[];
+            tickets: {
+              id: string;
+              action: string;
+              events: string[];
+              blocked: { index: number; text: string; reason: string }[];
+            }[];
+          };
+        };
+      };
+      expect(doc.error.reason).toBe('reconcile-blocked');
+      const { result } = doc.error;
+      expect(result).toMatchObject({ dryRun: false, events: 1, ambiguous: [] });
+      expect(result.tickets.map((t) => [t.id, t.action, t.events.length])).toEqual([
+        [one, 'blocked', 0],
+        [two, 'updated', 1],
+      ]);
+      expect(result.tickets[0]?.blocked).toEqual([
+        { index: 2, text: '1.3 Add C', change: 'removed', reason: 'done' },
+      ]);
+    });
+
+    it('reconcile-ambiguous: the result is the dry run with the candidates', () => {
+      const { root } = project();
+      writeTasks(
+        root,
+        '## 2. Store\n\n- [ ] 2.1 reads\n- [ ] 2.2 writes\n- [ ] 2.3 locks\n- [ ] 2.4 files\n',
+      );
+      const first = oneJson(run(['import-change', CHANGE, ...AS, '--json'], root)) as Doc;
+      const id = first.tickets[0]?.id ?? '';
+      writeTasks(
+        root,
+        '## 2. Store reads\n\n- [ ] 2.1 reads\n- [ ] 2.2 writes\n\n## 3. Store writes\n\n- [ ] 3.1 locks\n- [ ] 3.2 files\n',
+      );
+      const out = run(['import-change', CHANGE, ...AS, '--json'], root);
+      expect(out.code).toBe(4);
+      const error = (oneJson(out) as { error: { reason: string; result: Record<string, unknown> } })
+        .error;
+      expect(error.reason).toBe('reconcile-ambiguous');
+      expect(error.result).toMatchObject({
+        dryRun: true,
+        events: 0,
+        ambiguous: [
+          { ticket: id, item: '2', score: 0.5, sameTitle: false },
+          { ticket: id, item: '3', score: 0.5, sameTitle: false },
+        ],
+      });
+    });
+
+    it('other refusals carry no result', () => {
+      const { root } = project();
+      const out = run(['import-change', 'no-such-change', ...AS, '--json'], root);
+      expect(out.code).toBe(1);
+      expect(Object.keys((oneJson(out) as { error: object }).error).sort()).toEqual([
+        'exitCode',
+        'hint',
+        'message',
+        'reason',
+      ]);
+    });
+  },
+);
