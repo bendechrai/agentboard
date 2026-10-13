@@ -126,11 +126,10 @@ import { asciiText, type Env } from './text.js';
  *    `reset --hard` of an older commit. A conflict is
  *    `BoardError(3, 'sync-conflict')` as in step 5, and the ref keeps the
  *    value it had (the hand-fetched history stays reachable through it).
- *    (The round 2 ruling asked for the ancestor test alone; plain git
- *    shows the rebased HEAD does not descend from the pre-rebase commit,
- *    so that alone re-conflicts after a human's `rebase --continue` and
- *    rebases again after a kill, which the tests forbid; conditions (a)
- *    to (c) are the exact form of the same intent.) Then, when the ref
+ *    An ancestor test alone would not do: the rebased HEAD does not
+ *    descend from the pre-rebase commit, so it would re-conflict after a
+ *    human's `rebase --continue` and rebase again after a kill. Then,
+ *    when the ref
  *    differs from HEAD, `update-ref refs/agentboard/board <HEAD> <old>`
  *    with `<old>` the value read before the rebase (the empty string when
  *    the ref was missing, which is create-only). When that compare-and-swap
