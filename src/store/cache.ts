@@ -33,6 +33,8 @@
  *   task_ref     TEXT,            --   (no task) or all non-null
  *   task_item    TEXT,
  *   adhoc        TEXT,
+ *   unplanned    TEXT,            -- Ticket.unplanned as canonical JSON
+ *                                 --   {"actor","reason","ts"}; null without one
  *   labels       TEXT NOT NULL,   -- JSON array of strings
  *   closed       INTEGER NOT NULL,
  *   decision     TEXT,            -- decision path when closed with one;
@@ -142,12 +144,13 @@ import type { CorruptFile, MalformedFile, WriteHooks } from './eventfile.js';
 export const CACHE_FILE = 'cache.sqlite';
 
 /**
- * Version of the cache schema above, stored in `meta.schema_version`: 3,
- * the version with the lease and queue columns, the `waiters` table and the
- * `grant_watermark` row (board-cache: "Cache schema"), so an older cache,
- * including one without the watermark, is rebuilt on first open.
+ * Version of the cache schema above, stored in `meta.schema_version`: 4,
+ * the version with the `tickets.unplanned` column (board-cache: "Cache
+ * schema", scenario "Cache from an earlier schema is rebuilt"), so a cache
+ * of version 3 (lease and queue columns, `waiters`, `grant_watermark`) or
+ * older is dropped and rebuilt from the event files on first open.
  */
-export const CACHE_SCHEMA_VERSION = 3;
+export const CACHE_SCHEMA_VERSION = 4;
 
 /** Minimum busy timeout on every connection, in milliseconds. */
 export const BUSY_TIMEOUT_MS = 5000;

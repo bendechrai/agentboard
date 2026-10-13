@@ -1,0 +1,1 @@
+{"actor":"orch","body":{"checklist":["2.1 Form","2.2 Tests"],"description":"The form and its tests.","labels":["change:add-login","group:2"],"task":{"item":"2","ref":"add-login","source":"openspec"},"title":"Login form"},"kind":"ticket.create","ticket":"01J0P1AN0000000000000000B2","ts":{"actor":"orch","counter":0,"wall":1700000005000},"v":1}

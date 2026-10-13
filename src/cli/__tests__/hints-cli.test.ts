@@ -2,7 +2,7 @@
  * Error hints at the CLI (board-agent-guidance: "Error hints"): every
  * refusal prints `agentboard: <message>` then `hint: <hint>` on stderr, the `--json` error document
  * carries the same hint, and the spec scenarios (claim race loser, missing
- * actor, needs-task-link, the decision rule on close) name the command
+ * actor, the decision rule on close) name the command
  * that moves the caller forward. The hint texts themselves are pinned in
  * src/guidance/__tests__/hints.test.ts; here they must match what the CLI
  * prints, with the id and actor of the invocation filled in.
@@ -127,20 +127,27 @@ describe('scenario: missing actor', () => {
   });
 });
 
-describe('scenario: needs-task-link', () => {
-  it('an ad hoc ticket entering implementing hints link --task', () => {
+describe('scenario: an ad hoc ticket enters implementing without a hint', () => {
+  // The `needs-task-link` refusal and its hint are removed
+  // (add-adhoc-ticket-lifecycle; board-openspec-integration: "Tickets
+  // reference tasks or are ad hoc"). The hints of the scope disposition at
+  // merge and close (`needs-scope-disposition`, `already-linked`) are
+  // pinned by group 2 of that change.
+  it('move and handoff into implementing exit 0 with nothing on stderr', () => {
     const { root, id } = withTicket(['--adhoc', 'found in CI']);
     ok(run(['claim', id, '--as', 'impl'], root));
     ok(run(['move', id, 'tests', '--as', 'impl'], root));
     const out = run(['move', id, 'implementing', '--as', 'impl'], root);
-    expect(out.code).toBe(4);
-    expect(hintOf(out)).toContain(`'agentboard link ${id} --task <source>:<ref>#<item> --as impl'`);
+    ok(out);
+    expect(out.stderr).toBe('');
+    ok(run(['move', id, 'review', '--as', 'impl'], root));
+    ok(run(['move', id, 'implementing', '--as', 'impl'], root));
     const viaHandoff = run(
-      ['handoff', id, '--to', 'impl2', '--status', 'implementing', '--note', 'go', '--as', 'impl'],
+      ['handoff', id, '--to', 'impl2', '--status', 'review', '--note', 'go', '--as', 'impl'],
       root,
     );
-    expect(viaHandoff.code).toBe(4);
-    expect(hintOf(viaHandoff)).toContain(`'agentboard link ${id} --task <source>:<ref>#<item>`);
+    ok(viaHandoff);
+    expect(viaHandoff.stderr).toBe('');
   });
 });
 

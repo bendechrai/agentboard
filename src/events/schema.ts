@@ -259,6 +259,20 @@ export type TicketLinkBody = { task: TaskRef } | { pr: string | number } | { dec
  */
 export type TicketCloseBody = { decision: string } | { noDecision: true };
 
+/**
+ * `ticket.unplanned` (board-events: "Unplanned disposition"): records that
+ * the ticket's scope was never planned. `reason` is a non-empty string and
+ * the only field; a missing or empty `reason` is malformed naming
+ * `body.reason`, and any other key is malformed naming `body.<key>`. A
+ * command writes it in the same transaction as, and before, the
+ * `ticket.move` to `merged` or the `ticket.close` it disposes of
+ * (board-cache: "One command, one transaction").
+ */
+export interface TicketUnplannedBody {
+  /** Non-empty: why the work was never planned. */
+  reason: string;
+}
+
 /** `ticket.checklist`: `index` any safe integer, range-checked by the fold. */
 export interface TicketChecklistBody {
   index: number;
@@ -316,6 +330,7 @@ export type TicketGrantEvent = TicketEnvelope<'ticket.grant', TicketGrantBody>;
 export type TicketHandoffEvent = TicketEnvelope<'ticket.handoff', TicketHandoffBody>;
 export type TicketLinkEvent = TicketEnvelope<'ticket.link', TicketLinkBody>;
 export type TicketCloseEvent = TicketEnvelope<'ticket.close', TicketCloseBody>;
+export type TicketUnplannedEvent = TicketEnvelope<'ticket.unplanned', TicketUnplannedBody>;
 export type TicketChecklistEvent = TicketEnvelope<'ticket.checklist', TicketChecklistBody>;
 export type TicketChecklistAddEvent = TicketEnvelope<
   'ticket.checklist.add',
@@ -347,6 +362,7 @@ export type TicketEvent =
   | TicketHandoffEvent
   | TicketLinkEvent
   | TicketCloseEvent
+  | TicketUnplannedEvent
   | TicketChecklistEvent
   | TicketChecklistAddEvent;
 
@@ -369,6 +385,7 @@ export const KNOWN_KINDS = [
   'ticket.handoff',
   'ticket.link',
   'ticket.close',
+  'ticket.unplanned',
   'ticket.checklist',
   'ticket.checklist.add',
   'board.meta',
@@ -503,6 +520,9 @@ export type ValidationResult =
  * - `ticket.close`: exactly one of `decision` (non-empty string) or
  *   `noDecision` (must be `true`, else `body.noDecision`); zero or both is
  *   one reason `body`.
+ * - `ticket.unplanned`: `reason` required non-empty string (missing, empty
+ *   or not a string: `body.reason`); any other key is `body.<key>`
+ *   (board-events: "Unplanned body is checked").
  * - `ticket.checklist`: `index` a safe integer (negative is well-formed
  *   here and rejected by the fold), `done` a boolean; both required.
  * - `ticket.checklist.add`: `items` required, an array (else `body.items`)
@@ -958,6 +978,11 @@ const BODY_CHECKS: Record<KnownKind, BodyCheck> = {
       },
       report,
     );
+  },
+  'ticket.unplanned': () => {
+    // Stub (add-adhoc-ticket-lifecycle 1.1): accepts any object body; the
+    // `reason` and extra-field checks documented on `validateEvent` are not
+    // implemented yet.
   },
   'ticket.checklist': (body, report) => {
     checkFields(

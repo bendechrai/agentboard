@@ -1,0 +1,1 @@
+{"actor":"orch","body":{"adhoc":"bug seen in production","title":"Login redirect loops"},"kind":"ticket.create","ticket":"01J0ADH0C000000000000000A2","ts":{"actor":"orch","counter":0,"wall":1700000001000},"v":1}

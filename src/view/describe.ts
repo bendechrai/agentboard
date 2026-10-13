@@ -93,9 +93,11 @@ export function describeEvent(event: BoardEvent | UnknownKindEvent): string {
     case 'ticket.queue.join':
     case 'ticket.queue.leave':
     case 'ticket.grant':
+    case 'ticket.unplanned':
       // Provisional: the kind itself, until the lease, queue and grant
-      // summaries of board-view-model are written (add-claim-leases 6.2).
-      // It must not throw: this module is bundled into the web client.
+      // summaries of board-view-model are written (add-claim-leases 6.2)
+      // and `recorded as unplanned: <reason>` (add-adhoc-ticket-lifecycle
+      // 4.1). It must not throw: this module is bundled into the web client.
       return event.kind;
   }
 }

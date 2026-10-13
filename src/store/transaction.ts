@@ -34,7 +34,19 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
 export type ProposedEvent = DistributiveOmit<BoardEvent, 'v' | 'actor' | 'ts'>;
 
 /**
- * An operation's answer: the event to write, or a refusal.
+ * An ordered list of one or two events an operation asks to write in one
+ * transaction (board-cache: "One command, one transaction"): for a `move
+ * merged` or `close` given a scope disposition, the `ticket.unplanned` or
+ * `ticket.link` first and then the `ticket.move` or `ticket.close`. The
+ * tuple type is the whole contract on length: there is no runtime check
+ * for a longer list.
+ */
+export type ProposedEvents = readonly [ProposedEvent] | readonly [ProposedEvent, ProposedEvent];
+
+/**
+ * An operation's answer: the event to write, an ordered list of one or two
+ * events to write together (`events`; a one-element list behaves exactly
+ * as `event`), or a refusal.
  *
  * A refusal carries the exit code class (1 usage, 4 rejected by board
  * state, 5 integrity), a reason token (for exit 4, a fold rejection reason
@@ -43,6 +55,7 @@ export type ProposedEvent = DistributiveOmit<BoardEvent, 'v' | 'actor' | 'ts'>;
  */
 export type Decision =
   | { ok: true; event: ProposedEvent }
+  | { ok: true; events: ProposedEvents }
   | { ok: false; exitCode: 1 | 4 | 5; reason: string; message: string };
 
 /**
@@ -77,17 +90,35 @@ export interface CommandOptions {
   env?: Readonly<Record<string, string | undefined>>;
 }
 
-/** Result of a successful `runCommand`. */
-export interface CommandResult {
+/** One event file a command wrote. */
+export interface WrittenEvent {
   /** Hash (file name without `.json`) of the written event. */
   hash: string;
   /** Absolute path of the written event file. */
   path: string;
   /** The event as written: `canonicalEncode(event)` is the file's bytes. */
   event: BoardEvent;
+}
+
+/**
+ * Result of a successful `runCommand`. `hash`, `path` and `event` describe
+ * the last event written (the only one for a single-event command), so a
+ * caller that knows nothing of two-event commands keeps working; `events`
+ * lists every event written, in write order (one or two entries, the last
+ * equal to `hash`, `path` and `event`).
+ */
+export interface CommandResult {
+  /** Hash (file name without `.json`) of the last written event. */
+  hash: string;
+  /** Absolute path of the last written event file. */
+  path: string;
+  /** The last event as written: `canonicalEncode(event)` is the file's bytes. */
+  event: BoardEvent;
+  /** Every event written by this command, in write order. */
+  events: WrittenEvent[];
   /**
-   * The event's ticket after the event was applied (`readTicket`), or null
-   * for `board.meta`.
+   * The last event's ticket after every event was applied (`readTicket`),
+   * or null for `board.meta`.
    */
   ticket: Ticket | null;
   /** Report of the catch-up run at the start of the transaction. */
@@ -132,6 +163,30 @@ export interface CommandResult {
  * 6. Applies the event to the cache rows, records it in `folded` as
  *    applied, and updates `last_position`.
  * 7. Commits.
+ *
+ * Two events (board-cache: "One command, one transaction"; design.md
+ * section 4). When the operation answers with `events` of length two, steps
+ * 3 to 6 run for each in order against one fold session: the first event
+ * gets `nextHlc(latest, t, actor)` and the second `nextHlc(<first ts>, t,
+ * actor)` (the same `t`: `now` is still called exactly once), so the
+ * second always sorts after the first; each is validated by `validateEvent`
+ * and then folded in memory against the state the earlier one leaves. A
+ * malformed event (either one) is `BoardError(1, 'malformed-event')`; a
+ * fold rejection of either is `BoardError(4, <that event's reason>)`, for
+ * example `already-linked` from a `ticket.unplanned` on a linked ticket
+ * before the move is even looked at, or `invalid-transition` from the
+ * close of a ticket in `implementing` after its `ticket.link` was accepted
+ * in memory. Any refusal refuses the whole command: no file of either event
+ * is written, not even a temporary one, and no row changes (board-cache:
+ * "Second event refused"). Only once both are accepted are the files
+ * written, first then second, each with `writeEventFile` and the `existed`
+ * check of step 5; then the rows of both are applied, both are recorded in
+ * `folded`, `last_position` is the second, and one commit follows. A crash
+ * after the first rename and before the second leaves the disposition
+ * without its move or close, which the next catch-up folds as a valid
+ * state (board-cache: "Crash between the disposition and the move"); the
+ * reverse cannot happen. `CommandResult.events` lists both, and `hash`,
+ * `path` and `event` are the second's.
  *
  * If steps 2 to 4 refuse, the command's own event is never written (no file,
  * not even a temporary one, and no row of its own), and the transaction is
@@ -193,7 +248,8 @@ export function runCommand(
     commitOwnEvent(db, session, input, outcome);
     const ticket = event.kind === 'board.meta' ? null : readTicket(db, event.ticket);
     db.exec('COMMIT');
-    return { hash: written.hash, path: written.path, event, ticket, catchUp };
+    const own: WrittenEvent = { hash: written.hash, path: written.path, event };
+    return { hash: own.hash, path: own.path, event, events: [own], ticket, catchUp };
   } catch (error) {
     rollback(db);
     throw error;
@@ -224,10 +280,17 @@ function decide(board: Board, actor: string, operation: Operation, t: number): D
   if (!decision.ok) {
     throw new BoardError(decision.exitCode, decision.reason, decision.message);
   }
+  const proposed: ProposedEvents = 'events' in decision ? decision.events : [decision.event];
+  const [first, second] = proposed;
+  if (second !== undefined) {
+    // Stub (add-adhoc-ticket-lifecycle 1.3): the two-event path documented
+    // on `runCommand` is not implemented yet.
+    throw new Error('not implemented: a two-event command');
+  }
 
   // 3. Build the event, later than every folded event.
   const ts = nextHlc(readLastPosition(db)?.ts ?? null, t, actor);
-  const built = { v: 1, ...decision.event, actor, ts };
+  const built = { v: 1, ...first, actor, ts };
   const validated = validateEvent(built);
   if (!validated.ok) {
     const fields = validated.reasons.map((r) => `${r.field}: ${r.message}`).join('; ');

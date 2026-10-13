@@ -288,6 +288,10 @@ function toTicket(row: Row, comments: Row[], links: Row[], waiters: Row[]): Tick
     task:
       source === null ? null : { source, ref: text(row, 'task_ref'), item: text(row, 'task_item') },
     adhoc: nullableText(row, 'adhoc'),
+    // Stub (add-adhoc-ticket-lifecycle 1.4): read from the `unplanned` JSON
+    // column (null or canonical JSON of an `UnplannedDisposition`) once it
+    // exists; see `saveTicket`.
+    unplanned: null,
     checklist: JSON.parse(text(row, 'checklist')) as ChecklistItem[],
     comments: comments.map((c) => ({
       actor: text(c, 'actor'),

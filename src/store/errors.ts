@@ -25,7 +25,7 @@ export type ExitCode = 0 | 1 | 2 | 3 | 4 | 5;
  * - `reason`: a stable machine-readable token where one exists, otherwise
  *   null. For exit 4 it is the fold rejection reason (`invalid-transition`,
  *   `already-assigned`, `not-assignee`, `unknown-ticket`, `duplicate-create`,
- *   `checklist-index`, `needs-task-link`) or the reason chosen by the
+ *   `checklist-index`, `needs-scope-disposition`, `already-linked`) or the reason chosen by the
  *   operation that refused; for exit 2 it is `board-not-found`; for exit 1
  *   from the transaction it is `missing-actor` or `malformed-event`.
  * - `message`: human-readable, plain ASCII.
