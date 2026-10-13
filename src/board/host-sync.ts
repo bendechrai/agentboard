@@ -105,21 +105,32 @@ import { asciiText, type Env } from './text.js';
  *    missing ref, deleted by hand, reads as empty and is created again
  *    from HEAD). When the ref exists and is not an ancestor of HEAD
  *    (`merge-base --is-ancestor refs/agentboard/board HEAD` fails),
- *    `rebase --no-verify refs/agentboard/board`, unless HEAD's tree
- *    already holds every event file the ref's tree holds
- *    (`diff --name-only --diff-filter=A HEAD refs/agentboard/board --
- *    events` prints nothing): then the ref is a stale value of this
- *    worktree (left by a sync killed between a rebase and its
- *    `update-ref`, or by a human who finished a conflicted rebase with
- *    `git rebase --continue`, both of which replayed the ref's commits
- *    into HEAD) and is moved without a rebase. The criterion is the
- *    events, never the HEAD reflog: the reflog also lists values ahead of
- *    HEAD (after `git -C .board checkout <older>` or `reset --hard`) and
- *    the `onto` of an aborted rebase, and skipping the rebase for those
- *    moved the ref backwards and dropped committed events. So a hand
- *    fetch, an aborted rebase, a checkout or a reset of an older commit
- *    all rebase onto the ref again; a conflict is
- *    `BoardError(3, 'sync-conflict')` as in step 5. Then, when the ref
+ *    `rebase --no-verify refs/agentboard/board`, unless the ref is a stale
+ *    value of this worktree, which is moved to HEAD without a rebase. The
+ *    ref is stale exactly when (a) it equals `ORIG_HEAD` of the worktree
+ *    (`rev-parse --quiet --verify ORIG_HEAD`; `git rebase` sets it to the
+ *    pre-rebase HEAD), (b) that commit is not a descendant of HEAD
+ *    (`merge-base --is-ancestor HEAD ORIG_HEAD` fails: a `reset --hard
+ *    <older>` also sets `ORIG_HEAD`, to the newer commit, and must
+ *    rebase) and (c) HEAD's tree holds every event file of the ref's
+ *    tree (`diff --no-renames --name-only --diff-filter=A HEAD
+ *    refs/agentboard/board -- events` prints nothing; never without
+ *    `--no-renames`, which would pair two similar events as a rename).
+ *    That is the state a sync killed between a rebase and its
+ *    `update-ref` leaves, and the state a human leaves by finishing a
+ *    conflicted rebase with `git rebase --continue`; rebasing onto the
+ *    ref again would conflict a second time. Everything else rebases: a
+ *    hand fetch into the ref whatever it changed (an event, a similar
+ *    event, only `.gitignore`), an aborted rebase (`--abort` restores
+ *    HEAD and `ORIG_HEAD` to the pre-rebase commit), a `checkout` or
+ *    `reset --hard` of an older commit. A conflict is
+ *    `BoardError(3, 'sync-conflict')` as in step 5, and the ref keeps the
+ *    value it had (the hand-fetched history stays reachable through it).
+ *    (The round 2 ruling asked for the ancestor test alone; plain git
+ *    shows the rebased HEAD does not descend from the pre-rebase commit,
+ *    so that alone re-conflicts after a human's `rebase --continue` and
+ *    rebases again after a kill, which the tests forbid; conditions (a)
+ *    to (c) are the exact form of the same intent.) Then, when the ref
  *    differs from HEAD, `update-ref refs/agentboard/board <HEAD> <old>`
  *    with `<old>` the value read before the rebase (the empty string when
  *    the ref was missing, which is create-only). When that compare-and-swap
@@ -203,8 +214,9 @@ import { asciiText, type Env } from './text.js';
  * `commit` the commit on HEAD that holds the events of step 1 after any
  * rebase replayed it (null when nothing was committed); `arrived` the
  * event files the rebases of steps 2 and 5 added to HEAD's tree
- * (`diff --name-only --diff-filter=A <HEAD after step 1> HEAD -- events`,
- * names without `.json`, ascending), so what a rebase onto a hand-fetched
+ * (`diff --no-renames --name-only --diff-filter=A <HEAD after step 1>
+ * HEAD -- events`, names without `.json`, ascending; `--no-renames` so a
+ * local event similar to an arrived one never hides it as a rename), so what a rebase onto a hand-fetched
  * ref brings counts too, even on the no-remote path, while an event this
  * process committed, or that another writer of this clone wrote while
  * the sync ran (it stays untracked for the next sync), never does;
@@ -221,8 +233,10 @@ import { asciiText, type Env } from './text.js';
  *
  * Guarantee on the ref (board-events "Board ref in the host repository"):
  * `refs/agentboard/board` equals the worktree's HEAD when this function
- * returns, and after the refusals `sync-conflict` (the ref was moved to
- * HEAD before the rebase, and the failed rebase moved nothing),
+ * returns, and after the refusals `sync-conflict` (a step 5 conflict: the
+ * ref was moved to HEAD before the fetch, and the failed rebase moved
+ * nothing; a step 2 conflict: the ref keeps the hand-fetched value, HEAD
+ * the local commits, so nothing is lost either way),
  * `sync-in-progress` and `board-on-branch` (nothing ran). After
  * `sync-failed` the ref may lag HEAD (the staged-content refusal after
  * the commit of step 1, a compare-and-swap that failed twice, a rebase

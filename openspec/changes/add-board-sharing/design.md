@@ -188,7 +188,9 @@ standalone board). For the host model `branch` is null (the worktree is
 detached by design) and `upstreamSet` is always false (no branch, no
 upstream). `arrived` is, for the host model, the set of event files the
 fetched or hand-fetched commits added to HEAD's tree (`git diff
---name-only --diff-filter=A <HEAD before step 2> HEAD -- events`), never an
+--no-renames --name-only --diff-filter=A <HEAD before step 2> HEAD --
+events`; without `--no-renames` a local event similar to an arrived one
+would hide it as a rename), never an
 event this process committed or that another writer in the same clone
 wrote while the sync ran; an event written mid-sync stays untracked and
 is committed by the next `sync`. `pulled` is true when the fetch found
@@ -229,24 +231,38 @@ Steps:
    next `sync` moves the ref to it.
 2. Integrate the local ref: if `refs/agentboard/board` is not an ancestor
    of HEAD, `git rebase --no-verify refs/agentboard/board` (conflict: exit
-   3 `sync-conflict`), unless HEAD already holds every event file the ref
-   holds (`git diff --name-only --diff-filter=A HEAD refs/agentboard/board
-   -- events` is empty): then the ref is a stale value of this worktree,
-   left by a `sync` killed between a rebase and its `update-ref` or by a
-   human who finished a conflicted rebase with `git rebase --continue`
-   (both replay the ref's commits into HEAD), and it is moved to HEAD
-   without a rebase. The criterion is the events themselves, not the
-   worktree's HEAD reflog: every value HEAD ever had is in the reflog,
-   including values ahead of HEAD after a human checks out or resets
-   `.board` to an older commit, and a `git rebase` that was aborted still
-   logged its `onto`; a reflog rule would then move the ref backwards and
-   drop committed events (the round 1 reviews reproduced both). With the
-   events criterion a checked-out older commit, a `reset --hard` and an
-   aborted rebase all rebase onto the ref again, so the ref never loses an
-   event it held. Then `update-ref` with the old value read before the
-   rebase (the empty string when the ref was deleted by hand, which
-   creates it again from HEAD); a failed compare-and-swap repeats this
-   step once, then exits 3 `sync-failed` naming the ref.
+   3 `sync-conflict`; the ref keeps the value it had, so a hand-fetched
+   history stays reachable through it), unless the ref is a stale value
+   of this worktree, which is moved to HEAD without a rebase. The ref is
+   stale exactly when it is the commit the last rebase of this worktree
+   started from (`ORIG_HEAD` in the worktree's git directory, which `git
+   rebase` sets to the pre-rebase HEAD) and that commit is not a
+   descendant of HEAD (so a `git reset --hard <older>`, which also sets
+   `ORIG_HEAD`, does not qualify), and HEAD's tree holds every event file
+   of the ref's tree (`git diff --no-renames --name-only --diff-filter=A
+   HEAD refs/agentboard/board -- events` prints nothing; `--no-renames`,
+   because two similar event files on either side would otherwise pair as
+   one rename and hide the one HEAD lacks). That is the state a `sync`
+   killed between its rebase and its `update-ref` leaves, and the state a
+   human leaves by finishing a conflicted rebase with `git rebase
+   --continue`: the rebase replayed the ref's commits into HEAD, so
+   rebasing onto the ref again would replay the other side's commits onto
+   it and conflict a second time. Every other way the ref can hold what
+   HEAD does not rebases: a hand fetch into the ref (the ref's commit is
+   not `ORIG_HEAD`, whatever it holds, so a commit that only changes
+   `.gitignore` is integrated too), an aborted rebase (`--abort` restores
+   HEAD and `ORIG_HEAD` to the pre-rebase commit, not the fetched one), a
+   `checkout` or `reset --hard` of an older commit in `.board` (the ref is
+   a descendant of HEAD). So the ref never loses an event it held. A rule
+   that only asked whether the ref is an ancestor of HEAD would conflict
+   again after a human's `rebase --continue` and rebase again after a kill,
+   because the rebased HEAD does not descend from the pre-rebase commit
+   (verified with plain git); a rule based on the HEAD reflog was wider
+   than that and moved the ref backwards (round 1 reviews). Then
+   `update-ref` with the old value read before the rebase (the empty
+   string when the ref was deleted by hand, which creates it again from
+   HEAD); a failed compare-and-swap repeats this step once, then exits 3
+   `sync-failed` naming the ref.
 3. Remote: chosen as in board-concurrency "Sync converges". No remote ends
    here, exit 0. The main worktree's branch is used for the upstream rule
    (not the branch of the linked worktree the command happens to run in)
@@ -308,9 +324,18 @@ the next `sync` repairs with no commit lost.
 Known limit: nothing serialises two `sync` processes in one clone. Inside
 the rebase window the second one exits 3 `sync-in-progress`; outside it
 the two collide on git's `index.lock` and the loser exits 5 with git's
-"index.lock: File exists" error, exactly as two standalone syncs do today;
-the ref equals HEAD afterwards and nothing is lost. An orchestrator runs
-one `sync` per clone at a time.
+"index.lock: File exists" error, exactly as two standalone syncs do today,
+or, when both reach their rebase at once, the loser exits 3 `sync-failed`
+with git's "there is already a rebase-merge directory" error; in every
+shape the ref equals HEAD afterwards and nothing is lost (the second
+reviewer measured 9 of 10 collisions as exit 5 and 1 as exit 3). An
+orchestrator runs one `sync` per clone at a time.
+
+Known limit: for a remote whose URL is a relative path, the resolved
+absolute path is passed in place of the remote name, so
+`remote.<name>.pushurl` and `url.<base>.insteadOf` rewrites configured
+for that remote are bypassed for the board's fetch and push; a remote
+with any other URL goes through them as usual.
 
 ### 5. Choosing the remote, and `agentboard.remote`
 

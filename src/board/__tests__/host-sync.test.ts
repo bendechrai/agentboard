@@ -1175,6 +1175,73 @@ describe('step 2 keeps every event the ref holds (review round 1 ruling)', () =>
   });
 });
 
+describe('step 2 is exact: similar events and non-event commits (review round 2)', () => {
+  /** Two hosts with no remote at all, sharing one synced ticket, each board opened. */
+  function twoHostsNoRemote(env: Env): {
+    aRoot: string;
+    bRoot: string;
+    a: Board;
+    b: Board;
+  } {
+    const a = hostBoard(env);
+    const boardA = openTracked(a.dir);
+    putEvent(join(a.dir, 'events'), ev(P.create(T1, 'Shared'), 'orch', 1_000));
+    syncBoard(boardA, { env });
+    const bHost = hostRepo(join(tempDir(), 'host-b'));
+    git(bHost, 'fetch', '-q', '--no-tags', a.root, `${BOARD_REF}:${BOARD_REF}`);
+    const bDir = join(bHost, '.board');
+    git(bHost, 'worktree', 'add', '-q', '--detach', bDir, BOARD_REF);
+    git(bHost, 'worktree', 'lock', '--reason', 'agentboard board', bDir);
+    return { aRoot: a.root, bRoot: bHost, a: boardA, b: openTracked(bDir) };
+  }
+
+  it('two events at least half alike on each side: a hand fetch and a no-remote sync keep both', () => {
+    const env = syncEnv();
+    const { aRoot, bRoot, a, b } = twoHostsNoRemote(env);
+    // Two comments whose canonical bytes share most of their content, so
+    // git's rename detection pairs them as one rename when both trees are
+    // compared; the criterion must not depend on a tree comparison.
+    const shared = 'shared context '.repeat(60);
+    const fromB = putEvent(b.eventsDir, ev(P.comment(T1, `${shared}A`), 'bob', 2_000));
+    syncBoard(b, { env });
+    const fromA = putEvent(a.eventsDir, ev(P.comment(T1, `${shared}B`), 'bob', 3_000));
+    syncBoard(a, { env });
+    git(aRoot, 'fetch', '-q', '--no-tags', bRoot, `+${BOARD_REF}:${BOARD_REF}`);
+    const bTip = String(refCommit(bRoot));
+    expect(git(a.dir, 'diff', '--name-status', 'HEAD', BOARD_REF, '--', 'events')).toMatch(/^R\d+/);
+
+    const result = syncBoard(a, { env });
+
+    expect(result.arrived).toEqual([fromB]);
+    expectRefAtHead(aRoot, a.dir, result);
+    expect(git(aRoot, 'merge-base', '--is-ancestor', bTip, BOARD_REF)).toBe('');
+    expect(refEvents(aRoot)).toContain(`${fromA}.json`);
+    expect(refEvents(aRoot)).toContain(`${fromB}.json`);
+    expect(eventFiles(a.dir)).toEqual(refEvents(aRoot));
+    expect(listTickets(a)[0]?.comments).toHaveLength(2);
+    expect(checkCache(a).ok).toBe(true);
+  });
+
+  it('a hand-fetched ref whose only new commit changes .gitignore is integrated, not dropped', () => {
+    const env = syncEnv();
+    const { aRoot, bRoot, a, b } = twoHostsNoRemote(env);
+    appendFileSync(join(b.dir, '.gitignore'), 'extra-line\n');
+    syncBoard(b, { env });
+    git(aRoot, 'fetch', '-q', '--no-tags', bRoot, `+${BOARD_REF}:${BOARD_REF}`);
+    const bTip = String(refCommit(bRoot));
+    expect(git(a.dir, 'show', `${BOARD_REF}:.gitignore`)).toContain('extra-line');
+
+    const result = syncBoard(a, { env });
+
+    expect(result.commit).toBeNull();
+    expectRefAtHead(aRoot, a.dir, result);
+    expect(git(aRoot, 'merge-base', '--is-ancestor', bTip, BOARD_REF)).toBe('');
+    expect(readFileSync(join(a.dir, '.gitignore'), 'utf8')).toContain('extra-line');
+    expect(git(a.dir, 'show', 'HEAD:.gitignore')).toContain('extra-line');
+    expect(checkCache(a).ok).toBe(true);
+  });
+});
+
 describe('foreign staged content on a host-model board (ADR 0005, the standalone refusal)', () => {
   it.each([
     ['the remote ahead', true],

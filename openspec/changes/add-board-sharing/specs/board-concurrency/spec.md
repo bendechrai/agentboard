@@ -5,11 +5,15 @@
 history from its remote with a rebase, and push. For a standalone board it
 SHALL pull with rebase from the board repository's remote and push its
 branch, as before. For a host-model board it SHALL first make
-`refs/agentboard/board` equal to HEAD (rebasing HEAD onto the ref when the
-ref holds an event file HEAD's tree does not, so a ref that a human fetched
-into, an aborted rebase, or a checkout or reset of `.board` to an older
-commit never makes the ref lose an event it held; a ref whose every event
-HEAD already holds is moved to HEAD without a rebase), then fetch
+`refs/agentboard/board` equal to HEAD (rebasing HEAD onto the ref whenever
+the ref holds commits HEAD does not, whatever they change, so a ref that a
+human fetched into, an aborted rebase, or a checkout or reset of `.board`
+to an older commit never makes the ref lose a commit it held; the one
+exception is a ref left at the commit a rebase of this worktree started
+from, by a `sync` killed before its ref update or by a human finishing a
+conflicted rebase, whose commits that rebase replayed into HEAD: it is
+moved to HEAD without a rebase, so a resolved conflict never conflicts
+again), then fetch
 `refs/agentboard/board` from the remote, rebase HEAD onto it when it holds
 commits HEAD does not, update the local ref, and push
 `HEAD:refs/agentboard/board` without force; it SHALL never create or move a
@@ -123,6 +127,14 @@ override never changes what the user's own `git pull` does.
 #### Scenario: Hand-fetched ref survives an aborted rebase
 - **WHEN** another board's history was fetched by hand into `refs/agentboard/board` with a differing `.gitignore`, `sync` exited 3 `sync-conflict`, a human ran `git -C .board rebase --abort`, and `sync` runs again
 - **THEN** it exits 3 with reason `sync-conflict` again, `refs/agentboard/board` still holds the fetched commits, and nothing was pushed
+
+#### Scenario: Hand-fetched ref with similar events
+- **WHEN** this clone and another each added a comment whose content is mostly the same, the other's board was fetched by hand into `refs/agentboard/board`, and `sync` runs with no remote
+- **THEN** both comments are in `refs/agentboard/board`, in `.board/events` and in the cache, and `rebuild --check` is clean
+
+#### Scenario: Hand-fetched ref that only changes .gitignore
+- **WHEN** the board fetched by hand into `refs/agentboard/board` differs from HEAD only by a commit that changes `.board/.gitignore`, and `sync` runs
+- **THEN** that commit is integrated: it is an ancestor of the new `refs/agentboard/board` and the line is in `.board/.gitignore`
 
 #### Scenario: Older commit checked out in the board worktree
 - **WHEN** a human ran `git -C .board checkout <older commit>` on a host-model board with three synced events, one event is added, and `sync` runs with no remote
