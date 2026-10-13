@@ -86,6 +86,8 @@ describe('every command prints exactly one JSON document with --json', () => {
         git(join(root, '.board'), 'init', '-q');
         return run(['sync', '--json'], root);
       },
+      // remote reads the board repository that the sync step made; it never contacts a network.
+      remote: () => run(['remote', '--json'], root),
       'import-change': () => {
         mkdirSync(join(root, 'openspec', 'changes', 'c'), { recursive: true });
         writeFileSync(join(root, 'openspec', 'changes', 'c', 'tasks.md'), '## 1. G\n- [ ] 1.1 t\n');
@@ -146,6 +148,7 @@ describe('every command prints exactly one JSON document with --json', () => {
       check: null,
     });
     expect(docs.rebuild).toMatchObject({ folded: 11, rejected: 0 });
+    expect(docs.remote).toMatchObject({ model: 'standalone', remote: null, remotes: [] });
     expect(docs.sync).toMatchObject({ remote: null, pushed: false, warnings: [] });
     expect(docs['import-change']).toMatchObject({ source: 'openspec', ref: 'c', events: 1 });
     expect(docs['close-merged']).toEqual({ closed: [], unmerged: [], skipped: [] });

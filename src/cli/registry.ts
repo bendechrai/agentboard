@@ -23,6 +23,7 @@ import { readInbox } from '../board/inbox.js';
 import { initBoard } from '../board/init.js';
 import { boardHealth } from '../board/health.js';
 import { closeMerged } from '../board/merged.js';
+import { remoteReport, renderRemote } from '../board/remote.js';
 import { syncBoard } from '../board/sync.js';
 import { TASK_RULE } from '../board/text.js';
 import { parseTaskFilter, taskRefFromArgs, type TaskFilter } from '../board/resolve.js';
@@ -1478,6 +1479,39 @@ export const COMMANDS: readonly CommandSpec[] = [
     run: (ctx) => {
       const result = syncBoard(ctx.board(), { env: ctx.env });
       return { json: result, text: `${result.message}\n`, warnings: result.warnings };
+    },
+  },
+  {
+    name: 'remote',
+    summary:
+      'Show how the board is shared: its model, where its history lives and the remote sync uses',
+    description:
+      'Prints how the board is shared: the board directory; its model (host, when the board is a worktree of the host repository with its history under refs/agentboard/board; standalone, when .board is a repository of its own; broken host link; or not a repository); where the history lives; the remote sync would use with its URL and the rule that chose it (agentboard.remote, the upstream of the branch, origin, or the only remote), or that there is none or the choice is ambiguous; and every remote with its URL. A broken link or an ambiguous choice comes with how to fix it (agentboard init, or git config agentboard.remote <name>). It is read-only, never contacts the network and never changes anything, so it is safe to run when something is wrong: it exits 0 whenever a board exists and puts problems in its output. Needs no actor.',
+    group: 'setup',
+    examples: [
+      {
+        command: 'agentboard remote',
+        summary: 'Show the model, the history and the remote sync would use',
+      },
+      {
+        command: 'agentboard remote --json',
+        summary:
+          'The same, as one JSON document with dir, model, gitDir, ref, branch, head, remote, remotes and problems',
+      },
+    ],
+    exitCodes: [
+      { code: 0, meaning: 'The board exists; problems, if any, are in the output' },
+      EXIT_USAGE,
+      EXIT_NO_BOARD,
+    ],
+    positionals: [],
+    flags: [],
+    exclusive: [],
+    writes: false,
+    operation: 'remoteReport',
+    run: (ctx) => {
+      const report = remoteReport(ctx.boardDir(), { env: ctx.env });
+      return { json: report, text: renderRemote(report) };
     },
   },
   {

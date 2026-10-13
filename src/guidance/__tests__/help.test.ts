@@ -88,9 +88,11 @@ const BOARDLESS = new Set(['init', 'agents install', 'agents check', 'version', 
 /**
  * Commands that locate a board but cannot exit 5: `mcp` locates the board
  * once at start-up (exit 2 without one) and then reports every failure as
- * a tool error, never as its own exit code (src/mcp/server.ts, `serveMcp`).
+ * a tool error, never as its own exit code (src/mcp/server.ts, `serveMcp`);
+ * `remote` never opens the board (board-cli: it exits 0 whenever a board
+ * exists and puts problems in its output).
  */
-const NO_INTEGRITY_EXIT = new Set(['mcp']);
+const NO_INTEGRITY_EXIT = new Set(['mcp', 'remote']);
 
 /** Commands that take a ticket id. */
 const ID_COMMANDS = COMMANDS.filter((c) => c.positionals.some((p) => p.name === 'id'));
@@ -135,7 +137,7 @@ describe('the help data of record in the registry', () => {
       awareness: ['inbox', 'watch', 'serve', 'top', 'health'],
       planning: ['import-change', 'close-merged'],
       maintenance: ['rebuild', 'sync'],
-      setup: ['init', 'mcp', 'agents install', 'agents check', 'version', 'help'],
+      setup: ['init', 'remote', 'mcp', 'agents install', 'agents check', 'version', 'help'],
     });
     expect(COMMAND_GROUPS).toEqual(['lifecycle', 'awareness', 'planning', 'maintenance', 'setup']);
     expect(GROUP_TITLES).toEqual({
@@ -263,6 +265,8 @@ describe('the help data of record in the registry', () => {
     has('handoff', 1, 'secret-like');
     has('checklist tick', 4, 'checklist-index');
     has('sync', 3, 'sync-conflict');
+    has('sync', 2, 'board-link-broken');
+    has('sync', 1, 'ambiguous-remote');
     has('inbox', 1, 'unknown-cursor');
     has('close-merged', 1, 'gh-missing');
     has('import-change', 1, 'tasks-not-found');

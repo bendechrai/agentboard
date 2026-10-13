@@ -40,6 +40,8 @@ const PINNED: Readonly<Record<string, number>> = {
   'already-assigned': 4,
   'ambiguous-id': 1,
   'ambiguous-remote': 1,
+  // A host-model board whose link to the host is broken (add-board-sharing).
+  'board-link-broken': 2,
   'board-not-a-repository': 2,
   'board-not-found': 2,
   // The refusals of the write actions.
@@ -710,5 +712,28 @@ describe('hintFor', () => {
     expect(hintFor(new BoardError(5, null, 'odd'), context)).toBeNull();
     expect(hintFor(new Error('disk on fire'), context)).toBeNull();
     expect(hintFor('a string', context)).toBeNull();
+  });
+});
+
+describe('the hints of the board sharing reasons (add-board-sharing group 1)', () => {
+  it('board-link-broken names agentboard init as the repair, on both surfaces, in CLI form', () => {
+    for (const surface of SURFACES) {
+      for (const context of [ctx(surface, 'sync'), ctx(surface, null)]) {
+        const hint = renderHint('board-link-broken', context) ?? '';
+        expect(hint, surface).not.toBe('');
+        expect(cliSteps(hint).map((step) => parseStep(step).command)).toContain('init');
+        expect(toolSteps(hint)).toEqual([]);
+      }
+    }
+  });
+
+  it('ambiguous-remote says to set agentboard.remote, then sync', () => {
+    for (const surface of SURFACES) {
+      for (const context of [ctx(surface, 'sync'), ctx(surface, 'init'), ctx(surface, null)]) {
+        const hint = renderHint('ambiguous-remote', context) ?? '';
+        expect(hint, surface).toContain('git config agentboard.remote <name>');
+        expect(cliSteps(hint).map((step) => parseStep(step).command)).toContain('sync');
+      }
+    }
   });
 });
