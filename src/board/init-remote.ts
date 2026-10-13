@@ -17,9 +17,25 @@
  * the host repository's hooks never run, because no command runs in it.
  */
 
-import type { LocateOptions } from '../store/locate.js';
-import type { InitResult } from './init.js';
-import type { SyncResult } from './sync.js';
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+
+import { openBoard } from '../store/board.js';
+import { BoardError } from '../store/errors.js';
+import { boardExists, locateBoard, type LocateOptions } from '../store/locate.js';
+import { firstErrorLine, gitRunner, gitVersion, isGitFailure, type GitRunner } from './git.js';
+import {
+  countEvents,
+  hasInTreeGitDir,
+  ignoreBoardInHost,
+  writeStandaloneRepository,
+  type InitResult,
+} from './init.js';
+import { BOARD_REF, type BoardModelInfo } from './model.js';
+import { ambiguousRemoteError, boardRemote } from './remote.js';
+import { checkRepository, syncBoard, type SyncResult } from './sync.js';
+import { plural } from './sync-steps.js';
+import { asciiText, type Env } from './text.js';
 
 /**
  * What `initBoardWithRemote` did:
@@ -73,8 +89,12 @@ export interface InitRemoteResult extends InitResult {
  * trimmed. Pure.
  */
 export function isLocalUrl(url: string): boolean {
-  void url;
-  throw new Error('not implemented');
+  if (url.startsWith(FILE_SCHEME)) {
+    return true;
+  }
+  const colon = url.indexOf(':');
+  const slash = url.indexOf('/');
+  return colon === -1 || (slash !== -1 && slash < colon);
 }
 
 /**
@@ -86,9 +106,13 @@ export function isLocalUrl(url: string): boolean {
  * resolves relative paths against (see there). Pure.
  */
 export function localPath(url: string, base: string): string | null {
-  void url;
-  void base;
-  throw new Error('not implemented');
+  if (!isLocalUrl(url)) {
+    return null;
+  }
+  if (url.startsWith(FILE_SCHEME)) {
+    return url.slice(FILE_SCHEME.length);
+  }
+  return isAbsolute(url) ? url : resolve(base, url);
 }
 
 /**
@@ -100,9 +124,8 @@ export function localPath(url: string, base: string): string | null {
  * `file://` URL as given; any other URL as given. Pure.
  */
 export function originUrl(url: string, base: string): string {
-  void url;
-  void base;
-  throw new Error('not implemented');
+  const path = localPath(url, base);
+  return path === null || url.startsWith(FILE_SCHEME) ? url : path;
 }
 
 /**
@@ -217,7 +240,274 @@ export function originUrl(url: string, base: string): string {
  * `origin` at `remoteUrl`, and `agentboard sync` syncs it on its branch.
  */
 export function initBoardWithRemote(url: string, options?: LocateOptions): InitRemoteResult {
-  void url;
-  void options;
-  throw new Error('not implemented');
+  if (url.trim() === '') {
+    throw new BoardError(
+      1,
+      'usage',
+      'agentboard init --remote needs the URL or local path of the repository that holds the board (--remote <url>)',
+    );
+  }
+  const { dir, source } = locateBoard(options);
+  const env: Env = options?.env ?? process.env;
+  const cwd = options?.cwd ?? process.cwd();
+  if (gitVersion(env, cwd) === null) {
+    throw new BoardError(
+      1,
+      'git-missing',
+      'agentboard init needs git (the board is kept in a git repository), but git could not be run',
+    );
+  }
+  // A relative path is resolved against the host's top level when discovery
+  // found the board through git (the same directory from every linked
+  // worktree), else against the current directory.
+  const base = source === 'git' ? dirname(dir) : cwd;
+  const remoteUrl = originUrl(url, base);
+
+  if (boardExists(dir)) {
+    return existingBoard(dir, remoteUrl, env);
+  }
+  const writeHostGitignore = source === 'git' && hasInTreeGitDir(dirname(dir), env);
+  const path = localPath(url, base);
+  if (path !== null && !existsSync(path)) {
+    createBareRepository(path, env);
+  }
+  const git = gitRunner(base, { env });
+  const refs = git.attempt('ls-remote', remoteUrl);
+  if (isGitFailure(refs)) {
+    throw new BoardError(
+      3,
+      'remote-unreachable',
+      `the repository at ${asciiText(remoteUrl)} cannot be read (${firstErrorLine(refs)}); ` +
+        'create an empty repository there (for example on your git host) and check your ' +
+        'access to it, then run agentboard init --remote again',
+    );
+  }
+  return refs.trim() === ''
+    ? createBoard(dir, remoteUrl, writeHostGitignore, env)
+    : cloneBoard(dir, remoteUrl, writeHostGitignore, env);
+}
+
+/** The prefix of a `file://` URL. */
+const FILE_SCHEME = 'file://';
+
+/** The ten keys of `InitResult` that every `init --remote` result shares, for a standalone board. */
+function standaloneBase(dir: string, events: number): Omit<InitResult, 'created' | 'joined' | 'remote' | 'message' | 'warnings'> {
+  return { dir, model: 'standalone', events, hostGitignore: null, repair: null };
+}
+
+/**
+ * Step 2 of `initBoardWithRemote`: `dir` is an existing board. A host-model
+ * board, a broken link and a non-repository are refused; a standalone board
+ * without a remote is attached to `remoteUrl` and synced; one whose chosen
+ * remote has that URL is left as it is; any other URL is a mismatch.
+ */
+function existingBoard(dir: string, remoteUrl: string, env: Env): InitRemoteResult {
+  const info = checkRepository(dir, env);
+  if (info.model === 'host') {
+    throw new BoardError(
+      1,
+      'board-in-host',
+      `the board at ${dir} is already shared through the host repository at ${BOARD_REF}, ` +
+        'which --remote does not apply to; agentboard remote shows how it is shared, and nothing changed',
+    );
+  }
+  const choice = boardRemote(info, { env });
+  if (choice.ambiguous) {
+    throw ambiguousRemoteError(choice, 'init');
+  }
+  const chosen = choice.chosen;
+  if (chosen === null) {
+    return attachBoard(dir, info, remoteUrl, env);
+  }
+  if (chosen.url === remoteUrl) {
+    return {
+      ...standaloneBase(dir, countEvents(dir)),
+      action: 'unchanged',
+      created: false,
+      joined: false,
+      remote: chosen.name,
+      remoteUrl,
+      sync: null,
+      warnings: [],
+      message:
+        `board already exists at ${asciiText(dir)} (standalone model) with the remote ` +
+        `${asciiText(chosen.name)} at ${asciiText(remoteUrl)}; nothing changed`,
+    };
+  }
+  throw new BoardError(
+    1,
+    'remote-mismatch',
+    `the board at ${dir} already has the remote ${asciiText(chosen.name)} at ` +
+      `${chosen.url === null ? 'no URL (no such remote)' : asciiText(chosen.url)}, not ` +
+      `${asciiText(remoteUrl)}; keep it, or change it with git -C ${dir} remote set-url ` +
+      `${asciiText(chosen.name)} ${asciiText(remoteUrl)}; nothing changed`,
+  );
+}
+
+/** A standalone board with no remote: `origin` is added at `remoteUrl` and the board is synced. */
+function attachBoard(
+  dir: string,
+  info: BoardModelInfo,
+  remoteUrl: string,
+  env: Env,
+): InitRemoteResult {
+  gitRunner(info.dir, { env }).run('remote', 'add', 'origin', remoteUrl);
+  const sync = syncNow(dir, env);
+  return {
+    ...standaloneBase(dir, countEvents(dir)),
+    action: 'attached',
+    created: false,
+    joined: false,
+    remote: 'origin',
+    remoteUrl,
+    sync,
+    warnings: [...sync.warnings],
+    message:
+      `attached the board at ${asciiText(dir)} (standalone model) to the remote origin at ` +
+      `${asciiText(remoteUrl)}\n${sync.message}`,
+  };
+}
+
+/**
+ * Step 3 of `initBoardWithRemote` for an empty remote: a new standalone
+ * board as `initBoard` makes one, the host `.gitignore` entry, `origin`
+ * at `remoteUrl` and a `sync`, whose first push creates the branch there.
+ */
+function createBoard(
+  dir: string,
+  remoteUrl: string,
+  writeHostGitignore: boolean,
+  env: Env,
+): InitRemoteResult {
+  writeStandaloneRepository(dir, env);
+  const hostGitignore = writeHostGitignore ? ignoreBoardInHost(dirname(dir)) : null;
+  gitRunner(dir, { env }).run('remote', 'add', 'origin', remoteUrl);
+  const sync = syncNow(dir, env);
+  return {
+    ...standaloneBase(dir, countEvents(dir)),
+    hostGitignore,
+    action: 'created',
+    created: true,
+    joined: false,
+    remote: 'origin',
+    remoteUrl,
+    sync,
+    warnings: [...sync.warnings],
+    message:
+      `created the board at ${asciiText(dir)} (standalone model: a git repository of its own, ` +
+      `shared through the remote origin at ${asciiText(remoteUrl)})\n${sync.message}`,
+  };
+}
+
+/**
+ * Step 3 of `initBoardWithRemote` for a remote with a branch: a clone into
+ * a temporary sibling of `dir`, renamed to `dir` once its working tree
+ * holds `events/`; a clone that fails or holds no board is removed.
+ */
+function cloneBoard(
+  dir: string,
+  remoteUrl: string,
+  writeHostGitignore: boolean,
+  env: Env,
+): InitRemoteResult {
+  const parent = dirname(dir);
+  mkdirSync(parent, { recursive: true });
+  // A sibling of the board directory, so the rename below stays on one
+  // file system; a dot name keeps it out of the way while it exists.
+  const temporary = mkdtempSync(join(parent, '.board-clone-'));
+  try {
+    const git = gitRunner(temporary, { env });
+    const cloned = git.attempt('clone', '--quiet', '--', remoteUrl, temporary);
+    if (isGitFailure(cloned)) {
+      throw new BoardError(
+        3,
+        'remote-unreachable',
+        `the repository at ${asciiText(remoteUrl)} could not be cloned (${firstErrorLine(cloned)}); ` +
+          'create an empty repository there (for example on your git host) and check your ' +
+          'access to it, then run agentboard init --remote again',
+      );
+    }
+    checkoutOnlyBranch(git);
+    if (!isDirectory(join(temporary, 'events'))) {
+      const branch = currentBranch(git);
+      throw new BoardError(
+        1,
+        'not-a-board',
+        `the repository at ${asciiText(remoteUrl)} holds no board: ` +
+          `${branch === null ? 'its default branch' : `its branch ${asciiText(branch)}`} has no ` +
+          'events/ directory; --remote needs an empty repository, or one that holds a board',
+      );
+    }
+    renameSync(temporary, dir);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+  const hostGitignore = writeHostGitignore ? ignoreBoardInHost(parent) : null;
+  // Folds the events into the cache, so the next command sees them.
+  openBoard(dir).close();
+  const events = countEvents(dir);
+  return {
+    ...standaloneBase(dir, events),
+    hostGitignore,
+    action: 'cloned',
+    created: true,
+    joined: true,
+    remote: 'origin',
+    remoteUrl,
+    sync: null,
+    warnings: [],
+    message:
+      `cloned the board at ${asciiText(dir)} from ${asciiText(remoteUrl)} (standalone model: ` +
+      `a git repository of its own) with ${plural(events, 'event')}`,
+  };
+}
+
+/**
+ * When the clone checked nothing out because the remote's HEAD names a
+ * branch the remote does not have, and the remote has exactly one branch,
+ * checks that branch out, tracking `origin`.
+ */
+function checkoutOnlyBranch(git: GitRunner): void {
+  if (!isGitFailure(git.attempt('rev-parse', '--quiet', '--verify', 'HEAD^{commit}'))) {
+    return;
+  }
+  const branches = git
+    .run('for-each-ref', '--format=%(refname:strip=3)', 'refs/remotes/origin/')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((name) => name !== '' && name !== 'HEAD');
+  const only = branches.length === 1 ? branches[0] : undefined;
+  if (only !== undefined) {
+    git.run('checkout', '--quiet', '-b', only, '--track', `origin/${only}`);
+  }
+}
+
+/** The current branch of the repository `git` runs in, or null when HEAD is detached. */
+function currentBranch(git: GitRunner): string | null {
+  const ref = git.attempt('symbolic-ref', '--quiet', '--short', 'HEAD');
+  return isGitFailure(ref) ? null : ref.trim();
+}
+
+/** `git init --bare` at `path`, with every missing parent directory. */
+function createBareRepository(path: string, env: Env): void {
+  mkdirSync(dirname(path), { recursive: true });
+  gitRunner(dirname(path), { env }).run('init', '--quiet', '--bare', path);
+}
+
+/** `syncBoard` on the board at `dir`, closed afterwards whatever happens. */
+function syncNow(dir: string, env: Env): SyncResult {
+  const board = openBoard(dir);
+  try {
+    return syncBoard(board, { env });
+  } finally {
+    board.close();
+  }
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }

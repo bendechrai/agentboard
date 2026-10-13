@@ -73,6 +73,7 @@ export const HINT_REASONS: readonly string[] = [
   'already-assigned',
   'ambiguous-id',
   'ambiguous-remote',
+  'board-in-host',
   'board-link-broken',
   'board-not-a-repository',
   'board-not-found',
@@ -104,6 +105,7 @@ export const HINT_REASONS: readonly string[] = [
   'no-cache',
   'no-disposition',
   'no-targets',
+  'not-a-board',
   'not-a-tty',
   'not-assignee',
   'not-found',
@@ -111,6 +113,8 @@ export const HINT_REASONS: readonly string[] = [
   'port-in-use',
   'queued',
   'read-only',
+  'remote-mismatch',
+  'remote-unreachable',
   'schema-mismatch',
   'secret-like',
   'stale-grant',
@@ -141,6 +145,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'already-assigned': 4,
   'ambiguous-id': 1,
   'ambiguous-remote': 1,
+  'board-in-host': 1,
   'board-link-broken': 2,
   'board-not-a-repository': 2,
   'board-not-found': 2,
@@ -172,6 +177,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'no-cache': 5,
   'no-disposition': 1,
   'no-targets': 1,
+  'not-a-board': 1,
   'not-a-tty': 1,
   'not-assignee': 4,
   'not-found': 1,
@@ -179,6 +185,8 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'port-in-use': 1,
   queued: 4,
   'read-only': 1,
+  'remote-mismatch': 1,
+  'remote-unreachable': 3,
   'schema-mismatch': 5,
   'secret-like': 1,
   'stale-grant': 4,
@@ -354,6 +362,17 @@ export function hintStep(
  *   (the text `2.32` and the word `upgrade` appear); upgrade git, then
  *   step `init` with `into-host` when the command is `init`, else step
  *   `sync`.
+ * - `not-a-board`: the repository given to `init --remote` has a branch
+ *   without an `events/` directory (the word `events` appears); give
+ *   `--remote` an empty repository or one that holds a board, then step
+ *   `init` with `remote` `<url>`.
+ * - `remote-mismatch`: the standalone board already has a remote with
+ *   another URL; keep it, or change it with `git -C .board remote set-url
+ *   <name> <url>` (the text `remote set-url` appears); step `remote` shows
+ *   the remote `sync` would use.
+ * - `board-in-host`: the board is already shared through the host
+ *   repository at `refs/agentboard/board` (that text appears), which
+ *   `--remote` does not apply to; step `remote` shows how it is shared.
  * - `streaming-command`: run the command from the agentboard executable
  *   (step `<command>` when the command is known).
  * - `no-targets`: `agents install` detected nothing to install; names the
@@ -372,6 +391,11 @@ export function hintStep(
  * `git rebase --continue`; `board-on-branch` names
  * `git -C .board switch --detach refs/agentboard/board` (that text
  * appears: a host-model board is synced on a detached HEAD).
+ * `remote-unreachable`: create an empty repository at the URL given to
+ * `init --remote` (on the git host, or as a local bare repository) and
+ * check the access to it (the words `create` and `access` appear; a git
+ * host answers the same for a missing repository and one the user cannot
+ * read), then step `init` with `remote` `<url>`.
  *
  * Exit 4:
  * - `unknown-ticket`, `duplicate-create`: step `list`.
@@ -634,6 +658,12 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     `a board in the host repository needs git 2.32 or later; upgrade git, then run ${
       h.command?.name === 'init' ? h.step('init', [['into-host', true]]) : h.step('sync')
     } again`,
+  'not-a-board': (h) =>
+    `the repository has a branch without an events/ directory, so it holds no board; give --remote an empty repository or one that holds a board, then run ${h.step('init', [['remote', '<url>']])} again`,
+  'remote-mismatch': (h) =>
+    `the board already has a remote with another URL; keep it, or change it with git -C .board remote set-url <name> <url>; ${h.step('remote')} shows the remote sync would use`,
+  'board-in-host': (h) =>
+    `the board is already shared through the host repository at refs/agentboard/board, which --remote does not apply to; ${h.step('remote')} shows how it is shared`,
   'streaming-command': streamingHint,
   'port-in-use': (h) =>
     `another process listens on that port; let the system choose a free one with ${h.step('serve', [['port', '0']])}, or pass another --port`,
@@ -678,6 +708,8 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
   'sync-failed': syncHint(
     'a human fixes what the message names in the board repository (content staged by hand, the remote or the network)',
   ),
+  'remote-unreachable': (h) =>
+    `create an empty repository at that URL (on your git host, or a local bare repository) and check your access to it, then run ${h.step('init', [['remote', '<url>']])} again`,
   // Exit 4.
   'unknown-ticket': (h) => `no ticket matches that id; find it with ${h.step('list')}`,
   'duplicate-create': (h) => `that ticket already exists; find it with ${h.step('list')}`,
