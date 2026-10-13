@@ -1055,8 +1055,13 @@ describe('step 2 keeps every event the ref holds (review round 1 ruling)', () =>
       git(a.root, 'push', '-q', 'origin', 'main');
     }
     syncBoard(boardA, { env });
-    const fromB = commitHostEvent(b.dir, ev(P.create(T2, 'From B'), 'bob', 2_000), env);
-    git(b.root, 'commit', '-q', '--allow-empty', '-m', 'keep');
+    // B's `.gitignore` change is committed with its event, as B's own sync
+    // would commit it, so the fetched history really conflicts with A's.
+    const fromB = putEvent(join(b.dir, 'events'), ev(P.create(T2, 'From B'), 'bob', 2_000));
+    git(b.dir, 'add', '--', 'events', '.gitignore');
+    git(b.dir, 'commit', '-q', '--no-verify', '-m', syncCommitMessage(1));
+    git(b.root, 'update-ref', BOARD_REF, revParse(b.dir));
+    expect(git(b.dir, 'show', '--name-only', '--format=', 'HEAD')).toContain('.gitignore');
     git(a.root, 'fetch', '-q', '--no-tags', b.root, `+${BOARD_REF}:${BOARD_REF}`);
     const bTip = String(refCommit(b.root));
     expect(refCommit(a.root)).toBe(bTip);

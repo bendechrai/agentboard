@@ -126,7 +126,13 @@ both pass git's non-empty check and register two worktrees (`-board` and
 `-board1`) for `.board`. So the host-model steps of `init` (finding or
 making the ref, adding and locking the worktree, repairing a broken link)
 run under a pid lock file `<git common dir>/agentboard/init.lock`, removed
-when `init` is done. A lock whose pid is not running, or which is older
+when `init` is done. The lock is taken before `init` decides between
+reporting an existing board, creating or joining one, and repairing a
+broken link, because a `.board` that another `init` is in the middle of
+adding (the directory exists, `events/` does not) looks like a broken link
+or a stray directory; a second `init` that decided before taking the lock
+would start a repair of a board that is healthy by the time it holds the
+lock. Under the lock it sees the finished board and reports it. A lock whose pid is not running, or which is older
 than 60 seconds, is stale and is broken by the next `init`, so a killed
 `init` never blocks the one that completes the board. The lock lives
 inside the git directory, where the host's `git status` never shows it.
