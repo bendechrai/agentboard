@@ -1392,7 +1392,7 @@ describe('the temporary worktree helpers', () => {
     const { root, commit } = hostWithRefOnly(env);
     const dead = temporary(root, DEAD_PID, commit);
     const alive = temporary(root, process.pid, commit);
-    const plain = join(agentboardDir(root), MIGRATING_DIR, '123');
+    const plain = join(agentboardDir(root), MIGRATING_DIR, String(DEAD_PID + 2));
     mkdirSync(plain);
     const junk = join(agentboardDir(root), MIGRATING_DIR, 'junk');
     mkdirSync(junk);
@@ -1423,7 +1423,7 @@ describe('the temporary worktree helpers', () => {
       head: commit,
     });
     expect(found.find((w) => w.path === plain)).toMatchObject({
-      pid: 123,
+      pid: DEAD_PID + 2,
       alive: false,
       registered: false,
       head: null,
@@ -1445,7 +1445,7 @@ describe('the temporary worktree helpers', () => {
     git(root, 'update-ref', MIGRATING_REF, commit);
     const dead = temporary(root, DEAD_PID, commit);
     const alive = temporary(root, process.pid, commit);
-    const plain = join(agentboardDir(root), MIGRATING_DIR, '123');
+    const plain = join(agentboardDir(root), MIGRATING_DIR, String(DEAD_PID + 3));
     mkdirSync(plain);
     const junk = join(agentboardDir(root), MIGRATING_DIR, 'junk');
     mkdirSync(junk);
@@ -1627,7 +1627,7 @@ describe('resuming after the worktree is in place, and cleaning dead temporaries
     const stopped = join(base, String(DEAD_PID + 1));
     git(root, 'worktree', 'add', '-q', '--detach', stopped, commit);
     mkdirSync(join(git(stopped, 'rev-parse', '--absolute-git-dir').trim(), 'rebase-merge'));
-    const plain = join(base, '123');
+    const plain = join(base, String(DEAD_PID + 2));
     mkdirSync(plain);
     const before = [refCommit(root), snapshotDir(dir), worktreeEntry(root, dir)];
 
@@ -1709,7 +1709,7 @@ describe('resuming after the worktree is in place, and cleaning dead temporaries
     const stopped = join(base, String(DEAD_PID + 1));
     git(root, 'worktree', 'add', '-q', '--detach', stopped, BOARD_REF);
     mkdirSync(join(git(stopped, 'rev-parse', '--absolute-git-dir').trim(), 'rebase-merge'));
-    const plain = join(base, '123');
+    const plain = join(base, String(DEAD_PID + 2));
     mkdirSync(plain);
 
     const result = move(root, env);
