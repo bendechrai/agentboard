@@ -9,10 +9,11 @@
 
 import type { DatabaseSync, SQLOutputValue, StatementSync } from 'node:sqlite';
 
-import { canonicalEncode, type JsonValue } from '../events/canonical.js';
+import { canonicalEncode, canonicalHash, type JsonValue } from '../events/canonical.js';
 import {
   applyEvent,
   compareFoldOrder,
+  dueGrant,
   type ApplyOutcome,
   type Availability,
   type BoardState,
@@ -25,8 +26,9 @@ import {
   type UnknownReport,
   type Waiter,
 } from '../events/fold.js';
+import { dueGrants } from '../events/grants.js';
 import { compareHlc, decodeHlc, encodeHlc, type Hlc } from '../events/hlc.js';
-import { isKnownEvent, type Status } from '../events/schema.js';
+import { SYSTEM_ACTOR, isKnownEvent, type Status } from '../events/schema.js';
 import type { Board } from './board.js';
 import type { CatchUpReport, DumpTable } from './cache.js';
 import { resetLateCursors, type CursorPosition, type LateEvent } from './cursors.js';
@@ -34,10 +36,16 @@ import { BoardError } from './errors.js';
 import {
   STALE_TEMP_MS,
   TEMP_PREFIX,
+  listEventFiles,
+  readEventFile,
   readEventLog,
   reapStaleTemps,
+  type EventLog,
+  writeEventFile,
+  type ReadOutcome,
   type CorruptFile,
   type MalformedFile,
+  type WriteHooks,
 } from './eventfile.js';
 import { recordedPositions } from './folded.js';
 import { staleTemps } from './temps.js';
@@ -462,6 +470,21 @@ function saveWaiters(db: DatabaseSync, ticket: Ticket): void {
  * rejected event (which `applyEvent` never applies) changes no row. The
  * board settings are loaded from the rows when the session starts, because
  * the fold reads them (a grant's window) at the position of each event.
+ *
+ * Every event a session applies must sort after `last_position` (the
+ * incremental path, the command's own event, and a refold, which starts
+ * from empty rows). The session also keeps the `grant_watermark` meta row
+ * (see `GRANT_WATERMARK_KEY`): the slot time of the first grant that would
+ * be due and is not folded. When the stored watermark sorts strictly before
+ * the first event applied, that grant is still the first missing one and
+ * the row is left alone. Otherwise the stored value can only have come from
+ * the state at `last_position`, so the session derives it again: before
+ * each event, the grant `dueGrant` derives for each waiting ticket that
+ * sorts strictly before that event is missing, and the first one found
+ * gives the watermark; when there is none, the earliest grant due in the
+ * final state does, and when no ticket has a grant due the row is removed.
+ * This is the first grant `dueGrants` returns with no bound on the clock,
+ * so catch-up and `rebuild` write the same row.
  */
 export class FoldSession {
   private readonly db: DatabaseSync;
@@ -469,6 +492,12 @@ export class FoldSession {
   private readonly stored = new Map<string, Stored | null>();
   private readonly dirty = new Set<string>();
   private readonly metaKeys = new Set<string>();
+  /** Null until the first event is applied; then whether the watermark is kept as stored. */
+  private frozen: boolean | null = null;
+  /** Ids of the tickets with a non-empty queue, loaded on first use. */
+  private waitingIds: Set<string> | null = null;
+  /** Slot of the first missing grant found before an applied event, if any. */
+  private mark: number | null = null;
 
   constructor(db: DatabaseSync) {
     this.db = db;
@@ -493,6 +522,13 @@ export class FoldSession {
   /** Applies one event in memory; `flush` writes the effects. */
   apply(input: FoldInput): ApplyOutcome {
     const { event } = input;
+    if (this.frozen === null) {
+      const stored = readWatermark(this.db);
+      this.frozen = stored !== null && compareHlc(slotTs(stored), event.ts) < 0;
+    }
+    if (!this.frozen && this.mark === null) {
+      this.mark = this.firstSlot(input);
+    }
     if (isKnownEvent(event) && event.kind !== 'board.meta') {
       this.ticket(event.ticket);
     }
@@ -502,12 +538,20 @@ export class FoldSession {
         this.metaKeys.add(event.body.key);
       } else {
         this.dirty.add(event.ticket);
+        if (!this.frozen) {
+          const waiting = this.waiting();
+          if ((this.state.tickets[event.ticket]?.queue.length ?? 0) > 0) {
+            waiting.add(event.ticket);
+          } else {
+            waiting.delete(event.ticket);
+          }
+        }
       }
     }
     return outcome;
   }
 
-  /** Writes every changed ticket and board setting to the rows. */
+  /** Writes every changed ticket, board setting and the grant watermark to the rows. */
   flush(): void {
     for (const id of this.dirty) {
       const ticket = this.state.tickets[id] as Ticket;
@@ -519,7 +563,72 @@ export class FoldSession {
       setMeta(this.db, `${META_PREFIX}${key}`, jsonText(this.state.meta[key]));
     }
     this.metaKeys.clear();
+    if (this.frozen === false) {
+      writeWatermark(this.db, this.mark ?? this.firstSlot(null));
+    }
   }
+
+  private waiting(): Set<string> {
+    if (this.waitingIds === null) {
+      this.waitingIds = new Set(
+        stmt(this.db, 'SELECT DISTINCT ticket FROM waiters')
+          .all()
+          .map((row) => text(row, 'ticket')),
+      );
+    }
+    return this.waitingIds;
+  }
+
+  /**
+   * The earliest slot time of a grant due in the current state that sorts
+   * strictly before `next` (any, when `next` is null), or null.
+   */
+  private firstSlot(next: FoldInput | null): number | null {
+    let first: number | null = null;
+    for (const id of this.waiting()) {
+      const ticket = this.ticket(id);
+      const grant = ticket === null ? null : dueGrant(ticket, this.state.meta);
+      if (grant === null || (first !== null && grant.ts.wall >= first)) {
+        continue;
+      }
+      if (next !== null) {
+        const order = compareHlc(grant.ts, next.event.ts);
+        // Equal timestamps happen only between grants; the hash then decides.
+        if (order > 0 || (order === 0 && canonicalHash(grant) >= next.hash)) {
+          continue;
+        }
+      }
+      first = grant.ts.wall;
+    }
+    return first;
+  }
+}
+
+/**
+ * Key of the `meta` row holding the grant watermark: the slot time, as a
+ * JSON number, of the first grant that would be due and is not folded,
+ * absent when there is none (board-cache: "Cache schema"). Catch-up reads
+ * event files to derive grants only once the clock reaches it.
+ */
+export const GRANT_WATERMARK_KEY = 'grant_watermark';
+
+/** The grant watermark, or null when the row is absent. */
+export function readWatermark(db: DatabaseSync): number | null {
+  const row = stmt(db, 'SELECT value FROM meta WHERE key = ?').get(GRANT_WATERMARK_KEY);
+  return row === undefined ? null : (JSON.parse(text(row, 'value')) as number);
+}
+
+function writeWatermark(db: DatabaseSync, slot: number | null): void {
+  if (slot === null) {
+    stmt(db, 'DELETE FROM meta WHERE key = ?').run(GRANT_WATERMARK_KEY);
+  } else {
+    setMeta(db, GRANT_WATERMARK_KEY, jsonText(slot));
+  }
+}
+
+/** The timestamp of a grant with slot time `wall`. */
+function slotTs(wall: number): Hlc {
+  return { wall, counter: 0, actor: SYSTEM_ACTOR };
 }
 
 function setMeta(db: DatabaseSync, key: string, value: string): void {
@@ -619,15 +728,20 @@ export interface RefoldResult extends BatchReport {
 
 /**
  * Deletes every derived row (all but `cursors`, `cursor_seen` and
- * `meta.schema_version`), board settings included,
- * and folds every event file from scratch. Caller holds the transaction.
+ * `meta.schema_version`), board settings and the grant watermark included,
+ * and folds every event file from scratch: `log` when given (catch-up
+ * passes the log it read through the board's read outcomes), otherwise
+ * `readEventLog(eventsDir)`. Caller holds the transaction.
  */
-export function refold(db: DatabaseSync, eventsDir: string): RefoldResult {
+export function refold(db: DatabaseSync, eventsDir: string, log?: EventLog): RefoldResult {
   db.exec(`DELETE FROM comments; DELETE FROM links; DELETE FROM waiters; DELETE FROM tickets;
     DELETE FROM folded;
     DELETE FROM meta WHERE key <> 'schema_version';
     INSERT INTO meta (key, value) VALUES ('last_position', 'null');`);
-  const log = readEventLog(eventsDir);
+  return foldAll(db, log ?? readEventLog(eventsDir));
+}
+
+function foldAll(db: DatabaseSync, log: EventLog): RefoldResult {
   return {
     ...applyBatch(db, log.inputs, log.malformed),
     malformed: log.malformed,
@@ -637,18 +751,29 @@ export function refold(db: DatabaseSync, eventsDir: string): RefoldResult {
 
 /**
  * The lock-free first look of `catchUp`: when there is no stale temporary
- * file to reap and no unrecorded event or malformed file to record, returns
- * the (empty) report, with the corrupt files, without taking the write
- * lock. Returns null when there is work, which must then be redone under the
+ * file to reap, every unrecorded event file name (if any) is corrupt, and
+ * the clock is before the grant watermark (or there is none), returns the
+ * (empty) report, with those corrupt files, without taking the write lock.
+ * It lists the event file names and reads the cache; the only files it
+ * reads are unrecorded ones, so a warm look with nothing due reads none.
+ * Returns null when there is work, which must then be redone under the
  * lock by `catchUpLocked` (another process may have done it meanwhile).
  */
-export function catchUpUnlocked(board: Board, now: number): CatchUpReport | null {
+export function catchUpUnlocked(
+  board: Board,
+  now: number,
+  probe?: ReadProbe,
+): CatchUpReport | null {
   const { eventsDir } = board;
   if (staleTemps(eventsDir, TEMP_PREFIX, now - STALE_TEMP_MS).length > 0) {
     return null;
   }
-  const log = readEventLog(eventsDir, recordedHashes(board.db));
+  const log = readNewFiles(board, recordedHashes(board.db), probe);
   if (log.inputs.length > 0 || log.malformed.length > 0) {
+    return null;
+  }
+  const watermark = readWatermark(board.db);
+  if (watermark !== null && now >= watermark) {
     return null;
   }
   const report: CatchUpReport = {
@@ -661,6 +786,75 @@ export function catchUpUnlocked(board: Board, now: number): CatchUpReport | null
     refolded: false,
   };
   return report;
+}
+
+/** Called with an event file's name each time catch-up reads its bytes. */
+export type ReadProbe = (name: string) => void;
+
+/**
+ * The read outcome of the event file `name`. Event files are immutable and
+ * named by the hash of their bytes, so the outcome of a well-formed or
+ * malformed file is kept for the life of `board` (`readOutcomes`) and a
+ * process that catches up repeatedly (the web server, `watch`) reads each
+ * file once. A corrupt outcome is not kept, so such a file is read again
+ * every time. `probe` is called for every read from disk.
+ */
+function readOutcome(board: Board, name: string, probe: ReadProbe | undefined): ReadOutcome {
+  let known = readOutcomes.get(board);
+  if (known === undefined) {
+    known = new Map();
+    readOutcomes.set(board, known);
+  }
+  let outcome = known.get(name);
+  if (outcome === undefined) {
+    probe?.(name);
+    outcome = readEventFile(board.eventsDir, name);
+    if (outcome.status !== 'corrupt') {
+      known.set(name, outcome);
+    }
+  }
+  return outcome;
+}
+
+/** The read outcomes of `readOutcome`, per open board, by file name. */
+const readOutcomes = new WeakMap<Board, Map<string, ReadOutcome>>();
+
+/**
+ * Reads the event files whose name is not a recorded hash, partitioned as
+ * `readEventLog` does. A recorded file is not read, so one changed in place
+ * after it was recorded is invisible here; `rebuild` and `rebuild --check`
+ * report it.
+ */
+function readNewFiles(
+  board: Board,
+  recorded: ReadonlySet<string>,
+  probe: ReadProbe | undefined,
+): EventLog {
+  return readFiles(
+    board,
+    listEventFiles(board.eventsDir).filter((name) => !recorded.has(name.replace(/\.json$/, ''))),
+    probe,
+  );
+}
+
+/** Every event file, partitioned as `readEventLog` does, through `readOutcome`. */
+function readAllFiles(board: Board, probe: ReadProbe | undefined): EventLog {
+  return readFiles(board, listEventFiles(board.eventsDir), probe);
+}
+
+function readFiles(board: Board, names: readonly string[], probe: ReadProbe | undefined): EventLog {
+  const log: EventLog = { inputs: [], corrupt: [], malformed: [] };
+  for (const name of names) {
+    const outcome = readOutcome(board, name, probe);
+    if (outcome.status === 'ok') {
+      log.inputs.push(outcome.input);
+    } else if (outcome.status === 'malformed') {
+      log.malformed.push(outcome.file);
+    } else {
+      log.corrupt.push(outcome.file);
+    }
+  }
+  return log;
 }
 
 function recordedHashes(db: DatabaseSync): Set<string> {
@@ -707,42 +901,109 @@ export function refoldWithCursors(
   return { result, late: resetLateCursors(db, becameEffective(db, prior)) };
 }
 
-/** `catchUp` with the transaction already held by the caller. */
-export function catchUpLocked(board: Board, now: number): CatchUpReport {
-  const { db, eventsDir } = board;
-  const reaped = reapStaleTemps(eventsDir, { now });
-  const prior = recordedFlags(db);
-  const recorded = new Set(prior.keys());
-  const log = readEventLog(eventsDir, recorded);
+/** Options of `catchUpLocked`. */
+export interface LockedOptions {
+  hooks?: WriteHooks | undefined;
+  probe?: ReadProbe | undefined;
+}
+
+/**
+ * `catchUp` with the transaction already held by the caller. Reaps stale
+ * temporaries and folds the files not yet recorded (`foldNew`). Then, only
+ * when the clock has reached the grant watermark, reads every event file,
+ * writes the grants `dueGrants` returns at `now` (`writeEventFile` with
+ * `hooks`, so a file already there is left as it is) and folds them the
+ * same way. The report covers both steps, its event arrays in fold order.
+ */
+export function catchUpLocked(board: Board, now: number, options?: LockedOptions): CatchUpReport {
+  const { db } = board;
+  const probe = options?.probe;
+  const reaped = reapStaleTemps(board.eventsDir, { now });
+  const fresh = readNewFiles(board, new Set(recordedFlags(db).keys()), probe);
+  const first = foldNew(board, fresh.inputs, fresh.malformed, probe);
+  const watermark = readWatermark(db);
+  if (watermark === null || now < watermark) {
+    return { ...first, corrupt: first.corrupt ?? fresh.corrupt, reaped };
+  }
+  const walked = readAllFiles(board, probe);
+  const grants = dueGrants(walked.inputs, now);
+  for (const grant of grants) {
+    writeEventFile(board.eventsDir, grant.event, options?.hooks);
+  }
+  const second = foldNew(board, grants, [], probe);
+  const order = new Map(
+    [...fresh.inputs, ...grants].map((input): [string, FoldInput] => [input.hash, input]),
+  );
+  const byFoldOrder = (a: { hash: string }, b: { hash: string }): number =>
+    compareFoldOrder(order.get(a.hash) as FoldInput, order.get(b.hash) as FoldInput);
+  return {
+    applied: [...first.applied, ...second.applied]
+      .map((hash) => ({ hash }))
+      .sort(byFoldOrder)
+      .map(({ hash }) => hash),
+    rejected: [...first.rejected, ...second.rejected].sort(byFoldOrder),
+    unknown: [...first.unknown, ...second.unknown].sort(byFoldOrder),
+    malformed: first.malformed,
+    // The walk reads recorded files too, so it also sees one corrupted in place.
+    corrupt: byName([...(second.corrupt ?? first.corrupt ?? fresh.corrupt), ...walked.corrupt]),
+    reaped,
+    refolded: first.refolded || second.refolded,
+  };
+}
+
+/** `files` without repeated names, in name order. */
+function byName(files: readonly CorruptFile[]): CorruptFile[] {
+  const unique = new Map(files.map((file): [string, CorruptFile] => [file.name, file]));
+  return [...unique.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+/** What `foldNew` did; `corrupt` is set only by a refold, which lists every corrupt file. */
+interface FoldNewReport extends BatchReport {
+  malformed: MalformedFile[];
+  corrupt: CorruptFile[] | null;
+  refolded: boolean;
+}
+
+/**
+ * Folds `inputs` and `malformed`, none of them recorded yet: incrementally
+ * when every input sorts after `last_position`, and otherwise by a full
+ * refold (through the board's read outcomes), moving inbox cursors back for
+ * every event the refold made effective. The arrays list only the events
+ * given, in fold order.
+ */
+function foldNew(
+  board: Board,
+  inputs: readonly FoldInput[],
+  malformed: readonly MalformedFile[],
+  probe: ReadProbe | undefined,
+): FoldNewReport {
+  const { db } = board;
   const last = readLastPosition(db);
-  const late = last !== null && log.inputs.some((input) => compareToPosition(input, last) < 0);
+  const late = last !== null && inputs.some((input) => compareToPosition(input, last) < 0);
   if (!late) {
-    const batch = applyBatch(db, log.inputs, log.malformed);
+    const batch = applyBatch(db, inputs, malformed);
     const applied = new Set(batch.applied);
+    // Every event here sorts after last_position, so after every cursor (a
+    // cursor only points at a folded event): this moves no cursor, grants
+    // included, and keeps the incremental path to the same contract.
     resetLateCursors(
       db,
-      log.inputs
+      inputs
         .filter((input) => applied.has(input.hash))
         .map((input) => ({ hash: input.hash, ts: input.event.ts })),
     );
-    return {
-      ...batch,
-      malformed: log.malformed,
-      corrupt: log.corrupt,
-      reaped,
-      refolded: false,
-    };
+    return { ...batch, malformed: [...malformed], corrupt: null, refolded: false };
   }
-  const full = refold(db, eventsDir);
+  const prior = recordedFlags(db);
+  const full = refold(db, board.eventsDir, readAllFiles(board, probe));
   resetLateCursors(db, becameEffective(db, prior));
-  const isNew = (hash: string): boolean => !recorded.has(hash);
+  const isNew = (hash: string): boolean => !prior.has(hash);
   return {
     applied: full.applied.filter(isNew),
     rejected: full.rejected.filter((r) => isNew(r.hash)),
     unknown: full.unknown.filter((u) => isNew(u.hash)),
     malformed: full.malformed.filter((m) => isNew(m.hash)),
     corrupt: full.corrupt,
-    reaped,
     refolded: true,
   };
 }

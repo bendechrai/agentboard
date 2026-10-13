@@ -297,7 +297,7 @@ describe('openCache', () => {
       { key: 'last_position', value: 'null' },
       { key: 'schema_version', value: String(CACHE_SCHEMA_VERSION) },
     ]);
-    expect(CACHE_SCHEMA_VERSION).toBe(2);
+    expect(CACHE_SCHEMA_VERSION).toBe(3);
   });
 
   it('enforces the foreign key from comments to tickets', () => {

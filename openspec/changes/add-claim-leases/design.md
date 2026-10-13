@@ -172,7 +172,17 @@ So:
 - any command that catches up (every command except `rebuild` and
   `rebuild --check`, including `list`, `show`, `inbox`, `watch` and a
   waiting `claim --wait`) writes the grants that are due, in the same
-  transaction as its catch-up;
+  transaction as its catch-up; a grant so written is a derived event
+  independent of the command, never deleted, and a command refused after
+  its catch-up commits that catch-up (grant included) without writing its
+  own event;
+- deriving a grant needs the whole log (each grant at its own fold
+  position), so catch-up does not walk it on every command: the cache
+  keeps a grant watermark, the slot time of the first grant that would be
+  due and is not folded, computed by the fold like any other derived row,
+  and catch-up reads event files only for new files, stale temporaries,
+  or a clock that has reached the watermark; a warm read-only command
+  with nothing due therefore opens no event file;
 - two writers on one machine are serialised by the write lock, and the
   second finds the file already present (writing identical bytes is a
   no-op); two machines write identical files, so `sync` merges them as

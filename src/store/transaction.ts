@@ -7,7 +7,7 @@
 import { writeSync } from 'node:fs';
 
 import { canonicalHash } from '../events/canonical.js';
-import type { BoardState, Ticket } from '../events/fold.js';
+import type { ApplyOutcome, BoardState, FoldInput, Ticket } from '../events/fold.js';
 import { nextHlc } from '../events/hlc.js';
 import { validateEvent, type BoardEvent } from '../events/schema.js';
 import type { Board } from './board.js';
@@ -102,7 +102,9 @@ export interface CommandResult {
  *
  * 1. Catch-up (`catchUp` with `now: t`, so stale temp reaping uses the same
  *    clock), so files written by other processes, or left by a command
- *    that crashed after its rename, are folded before validation.
+ *    that crashed after its rename, are folded before validation, and the
+ *    grants due at `t` are written and folded (with the command's write
+ *    hooks), so the operation decides against the granted state.
  * 2. `operation(ctx)`. A refusal rolls back and throws
  *    `BoardError(decision.exitCode, decision.reason, decision.message)`.
  * 3. Builds the event: `{ v: 1, ...proposed, actor, ts }` with
@@ -131,8 +133,11 @@ export interface CommandResult {
  *    applied, and updates `last_position`.
  * 7. Commits.
  *
- * If steps 2 to 4 refuse, no file is created (not even a temporary one) and
- * no row changes. If anything throws after `BEGIN` (including a hook, which
+ * If steps 2 to 4 refuse, the command's own event is never written (no file,
+ * not even a temporary one, and no row of its own), and the transaction is
+ * committed with only what step 1 did: a grant catch-up wrote is a derived
+ * event independent of this command, so its file stays and the cache keeps
+ * it folded. If anything else throws after `BEGIN` (including a hook, which
  * is how tests simulate a crash), the transaction is rolled back and the
  * exception propagates; an event file already renamed into place stays and
  * is folded by the next catch-up. If `BEGIN IMMEDIATE` is still busy after
@@ -158,45 +163,21 @@ export function runCommand(
   beginImmediate(db);
   try {
     const t = now();
-    // 1. Catch-up, under the write lock.
-    const catchUp = catchUpLocked(board, t);
+    // 1. Catch-up, under the write lock, writing the grants due at t.
+    const catchUp = catchUpLocked(board, t, { hooks });
 
-    // 2. The operation decides against the caught-up state.
-    const decision = operation({
-      actor,
-      ticket: (id) => readTicket(db, id),
-      state: () => readState(db),
-    });
-    if (!decision.ok) {
-      throw new BoardError(decision.exitCode, decision.reason, decision.message);
+    // 2 to 4. Decide. A refusal commits what catch-up did (folded files and
+    // written grants, which do not depend on this command) and nothing else.
+    let decided: Decided;
+    try {
+      decided = decide(board, actor, operation, t);
+    } catch (error) {
+      if (error instanceof BoardError) {
+        db.exec('COMMIT');
+      }
+      throw error;
     }
-
-    // 3. Build the event, later than every folded event.
-    const ts = nextHlc(readLastPosition(db)?.ts ?? null, t, actor);
-    const built = { v: 1, ...decision.event, actor, ts };
-    const validated = validateEvent(built);
-    if (!validated.ok) {
-      const fields = validated.reasons.map((r) => `${r.field}: ${r.message}`).join('; ');
-      throw new BoardError(1, 'malformed-event', `the event is malformed (${fields})`);
-    }
-    if (!validated.known) {
-      throw new BoardError(1, 'malformed-event', `unknown event kind ${built.kind}`);
-    }
-    const event = validated.event;
-
-    // 4. Validate against the current state with the fold's own rules.
-    const input = { hash: canonicalHash(event), event };
-    const session = new FoldSession(db);
-    const holder = event.kind === 'board.meta' ? null : session.ticket(event.ticket)?.assignee;
-    const outcome = session.apply(input);
-    if (outcome.status === 'rejected') {
-      const { reason, ticket, kind } = outcome.rejected;
-      const message =
-        reason === 'already-assigned'
-          ? `ticket ${ticket} is already assigned to ${String(holder)}`
-          : `${kind} on ticket ${ticket} refused: ${reason}`;
-      throw new BoardError(4, reason, message);
-    }
+    const { event, input, session, outcome } = decided;
 
     // 5. Write the event file (atomic), then 6. apply to rows and 7. commit.
     const written = writeEventFile(board.eventsDir, event, hooks);
@@ -219,13 +200,70 @@ export function runCommand(
   }
 }
 
+/** The command's event, validated and applied in memory by steps 2 to 4. */
+interface Decided {
+  event: BoardEvent;
+  input: FoldInput;
+  session: FoldSession;
+  outcome: ApplyOutcome;
+}
+
 /**
- * Environment variable for crash injection. When set to one of
- * the `PausePoint` values, a writing command pauses at that point of the
- * event write: it prints `agentboard: paused at <point> <path>` plus a
- * newline to stderr and then blocks synchronously (never returning) until
- * the process is killed. A test kills it with SIGKILL there. Any other
- * value, and the empty string, is ignored.
+ * Steps 2 to 4 of `runCommand`: the operation decides against the
+ * caught-up state, the event is built later than every folded event and
+ * validated with the fold's own rules. Writes nothing (the fold session
+ * only applies the event in memory); a refusal is a `BoardError`.
+ */
+function decide(board: Board, actor: string, operation: Operation, t: number): Decided {
+  const { db } = board;
+  const decision = operation({
+    actor,
+    ticket: (id) => readTicket(db, id),
+    state: () => readState(db),
+  });
+  if (!decision.ok) {
+    throw new BoardError(decision.exitCode, decision.reason, decision.message);
+  }
+
+  // 3. Build the event, later than every folded event.
+  const ts = nextHlc(readLastPosition(db)?.ts ?? null, t, actor);
+  const built = { v: 1, ...decision.event, actor, ts };
+  const validated = validateEvent(built);
+  if (!validated.ok) {
+    const fields = validated.reasons.map((r) => `${r.field}: ${r.message}`).join('; ');
+    throw new BoardError(1, 'malformed-event', `the event is malformed (${fields})`);
+  }
+  if (!validated.known) {
+    throw new BoardError(1, 'malformed-event', `unknown event kind ${built.kind}`);
+  }
+  const event = validated.event;
+
+  // 4. Validate against the current state with the fold's own rules.
+  const input = { hash: canonicalHash(event), event };
+  const session = new FoldSession(db);
+  const holder = event.kind === 'board.meta' ? null : session.ticket(event.ticket)?.assignee;
+  const outcome = session.apply(input);
+  if (outcome.status === 'rejected') {
+    const { reason, ticket, kind } = outcome.rejected;
+    const message =
+      reason === 'already-assigned'
+        ? `ticket ${ticket} is already assigned to ${String(holder)}`
+        : `${kind} on ticket ${ticket} refused: ${reason}`;
+    throw new BoardError(4, reason, message);
+  }
+  return { event, input, session, outcome };
+}
+
+/**
+ * Environment variable for crash injection. When set to one of the
+ * `PausePoint` values, a command pauses at that point of the first event
+ * file it writes, whether its own event or a grant written by its catch-up
+ * (when the board is opened or inside the command transaction), so a
+ * read-only command that writes a due grant pauses too: it prints
+ * `agentboard: paused at <point> <path>` plus a newline to stderr and then
+ * blocks synchronously (never returning) until the process is killed. A
+ * test kills it with SIGKILL there. Any other value, and the empty string,
+ * is ignored.
  */
 export const TEST_PAUSE_ENV = 'AGENTBOARD_TEST_PAUSE';
 

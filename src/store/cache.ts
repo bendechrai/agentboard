@@ -92,11 +92,15 @@
  * `last_position` (JSON `{"hash":...,"ts":{...}}` of the greatest
  * well-formed event in fold order, or `null`); and one row per board meta
  * key `k` from `board.meta` events, keyed `board.<k>` with the JSON of its
- * value. Every table above has exactly these columns.
+ * value; and `grant_watermark` (a JSON number: the slot time of the first
+ * grant that would be due and is not folded; absent when there is none,
+ * see `FoldSession` in `src/store/engine.ts`). Every table above has
+ * exactly these columns.
  *
  * Every event file with a valid name is recorded in `folded` once it has
- * been read (applied, rejected, unknown kind or malformed), so catch-up only
- * reads files not yet recorded. Corrupt files (a name that is not
+ * been read (applied, rejected, unknown kind or malformed), so catch-up
+ * reads only files not yet recorded, and the whole log only once the clock
+ * reaches `grant_watermark`. Corrupt files (a name that is not
  * `<sha256>.json` of the bytes) are never recorded and are reported by every
  * catch-up and rebuild. Dot-named entries of `events/` (temporary files,
  * `.gitkeep`) are ignored entirely, as `listEventFiles` documents.
@@ -132,17 +136,18 @@ import {
   stmt,
   tableRows,
 } from './engine.js';
-import type { CorruptFile, MalformedFile } from './eventfile.js';
+import type { CorruptFile, MalformedFile, WriteHooks } from './eventfile.js';
 
 /** File name of the cache inside the board directory. */
 export const CACHE_FILE = 'cache.sqlite';
 
 /**
- * Version of the cache schema above, stored in `meta.schema_version`. It is
- * 2 from the lease and queue columns and the `waiters` table on (board-cache:
- * "Cache schema"), so a version 1 cache is rebuilt on first open.
+ * Version of the cache schema above, stored in `meta.schema_version`: 3,
+ * the version with the lease and queue columns, the `waiters` table and the
+ * `grant_watermark` row (board-cache: "Cache schema"), so an older cache,
+ * including one without the watermark, is rebuilt on first open.
  */
-export const CACHE_SCHEMA_VERSION = 2;
+export const CACHE_SCHEMA_VERSION = 3;
 
 /** Minimum busy timeout on every connection, in milliseconds. */
 export const BUSY_TIMEOUT_MS = 5000;
@@ -445,34 +450,75 @@ export interface CatchUpReport {
 
 /** Options for `catchUp`. */
 export interface CatchUpOptions {
-  /** Clock for temp reaping, in ms since the epoch. Defaults to `Date.now()`. */
+  /**
+   * The local clock reading, in ms since the epoch, used both for temp
+   * reaping and for deciding which grants are due (a grant is written when
+   * its slot time `ts.wall` is at or before it). Defaults to `Date.now()`,
+   * read once per call.
+   */
   now?: number;
+  /**
+   * Lock probe: called exactly once, with no arguments, immediately before
+   * this call itself issues `BEGIN IMMEDIATE`, that is whenever it found
+   * something to fold, reap or grant. Never called when the call returns
+   * from its lock-free first look, and never when it runs inside the
+   * caller's transaction (`board.db.isTransaction`), whose lock the caller
+   * took. An exception it throws propagates before the lock is taken.
+   */
+  onWriteLock?: () => void;
+  /**
+   * Crash-injection hooks passed to `writeEventFile` for every grant file
+   * this call writes (see `WriteHooks`). Defaults to none. The CLI passes
+   * the hooks of `pauseHooks` for its environment, so
+   * `AGENTBOARD_TEST_PAUSE` also pauses inside the grant write of a
+   * command's catch-up.
+   */
+  hooks?: WriteHooks;
+  /**
+   * Read probe: called with the file name (`<hash>.json`) each time this
+   * call reads the bytes of an event file from disk, whether for folding or
+   * for deriving grants, and never for listing the events directory or for
+   * a file whose outcome was already read earlier on the same board handle.
+   * A call that finds no unrecorded file name, no stale temporary file and
+   * a clock before the cache's `grant_watermark` (or no watermark) calls it
+   * zero times (board-cache: "Cache schema", scenario "List reads the
+   * cache").
+   */
+  onReadEventFile?: (name: string) => void;
 }
 
 /**
  * Brings the cache up to date with the events directory.
  *
- * Reaps stale temporary files (`reapStaleTemps`), then reads every event file
- * whose hash is not in `folded` and records it. When every newly read
- * well-formed event sorts after `last_position` in fold order, they are
- * applied incrementally in fold order; otherwise all derived tables
- * (everything but `cursors`) are refolded from every event file. Either way,
- * afterwards `dumpCache(board.db)` equals the dump of a fresh rebuild of the
- * same events directory (the incremental and full paths are
- * indistinguishable except for `refolded`).
+ * Reaps stale temporary files (`reapStaleTemps`), then reads every event
+ * file whose hash is not in `folded` and records it. A recorded file is
+ * not read at this step, so one changed in place after it was recorded is
+ * never folded again; it is reported when the grant walk below reads it
+ * (`corrupt` is then deduplicated and in name order), and by `rebuild` and
+ * `rebuild --check`. When every newly read well-formed event sorts after
+ * `last_position` in fold order, they are applied incrementally in fold
+ * order; otherwise all derived tables (everything but `cursors`) are
+ * refolded from every event file. Either way, afterwards
+ * `dumpCache(board.db)` equals the dump of a fresh rebuild of the same
+ * events directory (the incremental and full paths are indistinguishable
+ * except for `refolded`). Each file is read from disk at most once per
+ * open board (files are immutable and named by their hash), and
+ * `onReadEventFile` is called for every such read.
  *
  * Runs inside the caller's transaction when `board.db.isTransaction` is
- * true. Otherwise it first looks without taking the write lock (a plain read
- * of `folded`, a listing of `events/` and of stale temporaries): when there
- * is no stale temporary file to reap and no unrecorded file to record
- * (every unrecorded name, if any, is corrupt), it returns at once without
- * ever taking the write lock, with empty event arrays, `reaped` empty,
- * `refolded` false and `corrupt` listing the corrupt files; a concurrent
- * writer holding `BEGIN IMMEDIATE` therefore never blocks it. Only when
- * there is something to fold or reap does it take `BEGIN IMMEDIATE` (with
- * the busy retry, then `BoardError(5, 'busy')`), redo the work above under
- * the lock, and `COMMIT` (rolled back on error). A call that finds nothing
- * new changes no rows.
+ * true. Otherwise it first looks without taking the write lock: it reads
+ * `folded` and the `grant_watermark` row, lists `events/` and the stale
+ * temporaries, and reads only the event files not yet recorded. When there
+ * is no stale temporary file to reap, no unrecorded file to record (every
+ * unrecorded name, if any, is corrupt) and the clock is before the grant
+ * watermark (or there is none), it returns at once without ever taking the
+ * write lock, with empty event arrays, `reaped` empty, `refolded` false and
+ * `corrupt` listing the corrupt files; a concurrent writer holding `BEGIN
+ * IMMEDIATE` therefore never blocks it, and a warm cache with nothing due
+ * reads no event file. Otherwise it calls `onWriteLock`, takes `BEGIN
+ * IMMEDIATE` (with the busy retry, then `BoardError(5, 'busy')`), redoes
+ * the work under the lock, and `COMMIT`s (rolled back on error). A call
+ * that finds nothing new changes no rows.
  *
  * Late events: after the derived rows are up to date, the
  * events this call newly recorded as applied, plus (after a refold) every
@@ -482,14 +528,45 @@ export interface CatchUpOptions {
  * seen-set window (late itself, or made effective by a late event) moves
  * that cursor back and is delivered by the next `inbox`. The report does
  * not list them; `rebuild` does.
+ *
+ * Grants (board-cli: "Due grants are written during catch-up"). After the
+ * new files are folded, and in the same transaction, when the clock `now`
+ * has reached the grant watermark (the slot time of the first grant that
+ * would be due and is not folded, kept in `meta` by every fold; see
+ * `FoldSession`), every event file is read and every grant that `dueGrants`
+ * (`src/events/grants.ts`) returns for the board's well-formed events and
+ * `now` is written with `writeEventFile` (so its file holds exactly
+ * `canonicalEncode` of the derived grant, named by its hash, and a file
+ * already present with those bytes is not rewritten) and folded exactly
+ * like a late-arriving event: when it sorts before `last_position` the
+ * derived tables are refolded, and `resetLateCursors` is called for it (and
+ * for every event a refold made effective), so an actor whose cursor is
+ * past the grant and outside its seen window gets it from the next `inbox`.
+ * Afterwards `dumpCache(board.db)` equals the dump of a fresh rebuild of the
+ * events directory, grant files and watermark included, and no grant due at
+ * `now` is missing. Each grant written is recorded in `folded` by this call
+ * and so listed in `applied`, in fold order with the other new events. A
+ * grant whose slot time is after `now` is not written. Grants are derived
+ * from the state at their own fold position (see `dueGrants`), never from
+ * the latest state alone, so an event sorting after a grant's slot never
+ * changes or suppresses it. Under the lock the watermark is read again,
+ * after the new files are folded, because another process may have written
+ * the grants meanwhile and a late event may have lowered it.
+ *
+ * `rebuild` and `rebuild --check` never call this and never write grants.
  */
 export function catchUp(board: Board, options?: CatchUpOptions): CatchUpReport {
   const now = options?.now ?? Date.now();
+  const locked = { hooks: options?.hooks, probe: options?.onReadEventFile };
   if (board.db.isTransaction) {
-    return catchUpLocked(board, now);
+    return catchUpLocked(board, now, locked);
   }
-  const quiet = catchUpUnlocked(board, now);
-  return quiet ?? inImmediate(board.db, () => catchUpLocked(board, now));
+  const quiet = catchUpUnlocked(board, now, locked.probe);
+  if (quiet !== null) {
+    return quiet;
+  }
+  options?.onWriteLock?.();
+  return inImmediate(board.db, () => catchUpLocked(board, now, locked));
 }
 
 /**
