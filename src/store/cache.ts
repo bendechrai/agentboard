@@ -152,7 +152,7 @@ export const CACHE_FILE = 'cache.sqlite';
  * per-line `removed` flag of the checklist (board-cache: "Cache schema"), so
  * an older cache, including one of version 3, is rebuilt on first open.
  */
-export const CACHE_SCHEMA_VERSION = 3;
+export const CACHE_SCHEMA_VERSION = 4;
 
 /** Minimum busy timeout on every connection, in milliseconds. */
 export const BUSY_TIMEOUT_MS = 5000;
@@ -376,6 +376,7 @@ CREATE TABLE tickets (
   adhoc        TEXT,
   labels       TEXT NOT NULL,
   closed       INTEGER NOT NULL,
+  superseded   TEXT,
   decision     TEXT,
   checklist    TEXT NOT NULL
 );
