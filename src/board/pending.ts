@@ -79,6 +79,8 @@ function entryOf(hash: string, event: BoardEvent): InboxEntry {
       return { ...entry, status: event.body.to };
     case 'ticket.comment':
       return { ...entry, note: event.body.text };
+    case 'ticket.reconcile':
+      return { ...entry, affects: event.body.holder ?? null };
     default:
       return entry;
   }

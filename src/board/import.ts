@@ -8,7 +8,9 @@
  * that needs another status writes the permitted moves").
  */
 
-import { dirname } from 'node:path';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import type { Ticket } from '../events/fold.js';
 import {
@@ -17,13 +19,20 @@ import {
   type TaskRef,
   type TicketChecklistAddItem,
   type TicketCreateBody,
+  type TicketReconcileBody,
   type TicketReconcileUpdate,
 } from '../events/schema.js';
 import { newUlid } from '../events/ulid.js';
 import type { Board } from '../store/board.js';
 import { stmt } from '../store/engine.js';
 import { BoardError } from '../store/errors.js';
-import { runCommand, type CommandResult, type ProposedEvent } from '../store/transaction.js';
+import { readState, readTicket } from '../store/cache.js';
+import {
+  runCommand,
+  type CommandResult,
+  type ProposedEvent,
+  type TxContext,
+} from '../store/transaction.js';
 import { requireActor, ticketOf } from './lookup.js';
 import { OPENSPEC_SOURCE } from './openspec.js';
 import { refuseSecretLike } from './secrets.js';
@@ -114,9 +123,21 @@ export const PAIR_MARGIN = 0.2;
  * ticket title `3. CLI core` is `cli core`.
  */
 export function normaliseTitle(text: string): string {
-  void text;
-  throw new Error('not implemented');
+  return text
+    .toLowerCase()
+    .replace(LEADING_NUMBER, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
+
+/** A leading group or task number and the whitespace after it. */
+const LEADING_NUMBER = /^\s*[0-9]+(\.[0-9]+)*\.?\s+/;
+
+/** A leading markdown checkbox. */
+const CHECKBOX = /^- \[[ xX]\] /;
+
+/** A leading task number (`taskNumber`). */
+const TASK_NUMBER = /^([0-9]+(\.[0-9]+)+)\.?(?=\s|$)/;
 
 /**
  * The normalised form of a task line for pairing: the line with a leading
@@ -126,8 +147,7 @@ export function normaliseTitle(text: string): string {
  * `add b with retries`). Pure.
  */
 export function normaliseTaskLine(text: string): string {
-  void text;
-  throw new Error('not implemented');
+  return normaliseTitle(text.replace(CHECKBOX, ''));
 }
 
 /**
@@ -138,8 +158,61 @@ export function normaliseTaskLine(text: string): string {
  * Pure.
  */
 export function taskNumber(text: string): string | null {
-  void text;
-  throw new Error('not implemented');
+  return TASK_NUMBER.exec(text)?.[1] ?? null;
+}
+
+/**
+ * The text of a line without its task number: the text after the number
+ * (`TASK_NUMBER`) and the whitespace that follows it, or the whole text
+ * when it has no number.
+ */
+function withoutNumber(text: string): string {
+  const match = TASK_NUMBER.exec(text);
+  return match === null ? text : text.slice(match[0].length).trimStart();
+}
+
+/**
+ * A Jaccard score as the exact rational `shared / union` (`0 / 1` for two
+ * empty sets), so that scores compare without rounding errors.
+ */
+interface Score {
+  shared: number;
+  union: number;
+}
+
+function score(a: readonly string[], b: readonly string[]): Score {
+  const left = new Set(a);
+  const right = new Set(b);
+  let shared = 0;
+  for (const line of left) {
+    if (right.has(line)) {
+      shared += 1;
+    }
+  }
+  const union = left.size + right.size - shared;
+  return union === 0 ? { shared: 0, union: 1 } : { shared, union };
+}
+
+/**
+ * `PAIR_THRESHOLD` and `PAIR_MARGIN` as exact fractions (1/2 and 1/5),
+ * for comparing `Score`s.
+ */
+const THRESHOLD = { num: 1, den: 2 };
+const MARGIN = { num: 1, den: 5 };
+
+/** True when `s >= num / den`. */
+function atLeast(s: Score, fraction: { num: number; den: number }): boolean {
+  return s.shared * fraction.den >= fraction.num * s.union;
+}
+
+/** True when `other <= best - MARGIN`. */
+function marginMet(best: Score, other: Score): boolean {
+  // other.shared / other.union <= best.shared / best.union - num / den,
+  // multiplied out by the (positive) denominators.
+  return (
+    other.shared * best.union * MARGIN.den <=
+    (best.shared * MARGIN.den - MARGIN.num * best.union) * other.union
+  );
 }
 
 /**
@@ -148,9 +221,8 @@ export function taskNumber(text: string): string | null {
  * sets score 0 (no evidence of identity). Pure.
  */
 export function jaccard(a: readonly string[], b: readonly string[]): number {
-  void a;
-  void b;
-  throw new Error('not implemented');
+  const s = score(a, b);
+  return s.shared / s.union;
 }
 
 /** The part of a ticket that pairing reads. */
@@ -241,9 +313,137 @@ export function pairTickets(
   tickets: readonly PairingTicket[],
   units: readonly TaskUnit[],
 ): PairingReport {
-  void tickets;
-  void units;
-  throw new Error('not implemented');
+  const ticketTitles = tickets.map((t) => normaliseTitle(t.title));
+  const unitTitles = units.map((u) => normaliseTitle(u.title));
+  const ticketLines = tickets.map((t) =>
+    t.checklist.filter((line) => line.removed !== true).map((line) => normaliseTaskLine(line.text)),
+  );
+  const scores = units.map((u) => {
+    const lines = u.lines.map((line) => normaliseTaskLine(line.text));
+    return ticketLines.map((t) => score(t, lines));
+  });
+  /** `scores[unit][ticket]`; always present for in-range indices. */
+  const at = (t: number, u: number): Score => scores[u]?.[t] ?? { shared: 0, union: 1 };
+  /** The unit paired with each ticket, by index. */
+  const unitOf = new Map<number, { unit: number; pass: PairPass }>();
+  const pairedUnits = new Set<number>();
+  const openTickets = (): number[] => tickets.map((_, i) => i).filter((i) => !unitOf.has(i));
+  const openUnits = (): number[] => units.map((_, i) => i).filter((i) => !pairedUnits.has(i));
+  const decide = (pass: PairPass, found: [number, number][]): void => {
+    for (const [t, u] of found) {
+      unitOf.set(t, { unit: u, pass });
+      pairedUnits.add(u);
+    }
+  };
+
+  // Pass 1: equal normalised titles, unique on both sides.
+  {
+    const ts = openTickets();
+    const us = openUnits();
+    const found: [number, number][] = [];
+    for (const t of ts) {
+      const title = ticketTitles[t];
+      const sameTickets = ts.filter((o) => ticketTitles[o] === title);
+      const sameUnits = us.filter((u) => unitTitles[u] === title);
+      const [u] = sameUnits;
+      if (u !== undefined && sameTickets.length === 1 && sameUnits.length === 1) {
+        found.push([t, u]);
+      }
+    }
+    decide('title', found);
+  }
+
+  // Pass 2: content, at least the threshold and every rival a margin lower.
+  {
+    const ts = openTickets();
+    const us = openUnits();
+    const found: [number, number][] = [];
+    for (const t of ts) {
+      for (const u of us) {
+        const s = at(t, u);
+        if (
+          atLeast(s, THRESHOLD) &&
+          us.every((o) => o === u || marginMet(s, at(t, o))) &&
+          ts.every((o) => o === t || marginMet(s, at(o, u)))
+        ) {
+          found.push([t, u]);
+        }
+      }
+    }
+    decide('content', found);
+  }
+
+  // Pass 3: number, when no other candidate of either side scores the margin.
+  {
+    const ts = openTickets();
+    const us = openUnits();
+    const found: [number, number][] = [];
+    for (const t of ts) {
+      const item = tickets[t]?.task?.item;
+      const sameItem = us.filter((u) => units[u]?.item === item);
+      const [u] = sameItem;
+      if (
+        item === undefined ||
+        u === undefined ||
+        sameItem.length !== 1 ||
+        ts.some((o) => o !== t && tickets[o]?.task?.item === item)
+      ) {
+        continue;
+      }
+      if (
+        us.every((o) => o === u || !atLeast(at(t, o), MARGIN)) &&
+        ts.every((o) => o === t || !atLeast(at(o, u), MARGIN))
+      ) {
+        found.push([t, u]);
+      }
+    }
+    decide('number', found);
+  }
+
+  const ts = openTickets();
+  const us = openUnits();
+  const ambiguous: AmbiguousCandidate[] = [];
+  const undecided = ts.some((t) =>
+    us.some((u) => atLeast(at(t, u), THRESHOLD) || ticketTitles[t] === unitTitles[u]),
+  );
+  if (undecided) {
+    for (const t of ts) {
+      for (const u of us) {
+        const sameTitle = ticketTitles[t] === unitTitles[u];
+        if (sameTitle || atLeast(at(t, u), MARGIN)) {
+          ambiguous.push({
+            ticket: tickets[t]?.id ?? '',
+            item: units[u]?.item ?? '',
+            score: jaccardOf(at(t, u)),
+            sameTitle,
+          });
+        }
+      }
+    }
+  }
+  const pairs: Pair[] = [];
+  units.forEach((unit, u) => {
+    for (const [t, chosen] of unitOf) {
+      if (chosen.unit === u) {
+        pairs.push({
+          ticket: tickets[t]?.id ?? '',
+          item: unit.item,
+          pass: chosen.pass,
+          score: jaccardOf(at(t, u)),
+        });
+      }
+    }
+  });
+  return {
+    pairs,
+    newGroups: us.map((u) => units[u]?.item ?? ''),
+    unpaired: ts.map((t) => tickets[t]?.id ?? ''),
+    ambiguous,
+  };
+}
+
+function jaccardOf(s: Score): number {
+  return s.shared / s.union;
 }
 
 /** One `ticket.renumber` the import writes. */
@@ -259,9 +459,16 @@ export interface RenumberStep {
  * order; -1, 0 or 1. Pure.
  */
 export function compareItems(a: string, b: string): -1 | 0 | 1 {
-  void a;
-  void b;
-  throw new Error('not implemented');
+  const decimal = /^[0-9]+$/;
+  const aNumber = decimal.test(a);
+  const bNumber = decimal.test(b);
+  if (aNumber && bNumber) {
+    return Math.sign(Number(a) - Number(b)) as -1 | 0 | 1;
+  }
+  if (aNumber !== bNumber) {
+    return aNumber ? -1 : 1;
+  }
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /**
@@ -276,9 +483,17 @@ export function renumberPlan(
   tickets: readonly PairingTicket[],
   pairs: readonly Pair[],
 ): RenumberStep[] {
-  void tickets;
-  void pairs;
-  throw new Error('not implemented');
+  const steps: RenumberStep[] = [];
+  for (const pair of pairs) {
+    const from = tickets.find((t) => t.id === pair.ticket)?.task?.item;
+    if (from !== undefined && from !== pair.item) {
+      steps.push({ ticket: pair.ticket, from, to: pair.item });
+    }
+  }
+  return steps.sort(
+    (a, b) =>
+      compareItems(a.from, b.from) || (a.ticket < b.ticket ? -1 : a.ticket > b.ticket ? 1 : 0),
+  );
 }
 
 /**
@@ -330,9 +545,57 @@ export function reconcileDiff(
   ticket: Pick<Ticket, 'title' | 'checklist'>,
   unit: TaskUnit,
 ): ReconcileDiff | null {
-  void ticket;
-  void unit;
-  throw new Error('not implemented');
+  const active: number[] = [];
+  ticket.checklist.forEach((line, index) => {
+    if (line.removed !== true) {
+      active.push(index);
+    }
+  });
+  const textOf = (index: number): string => ticket.checklist[index]?.text ?? '';
+  /** Task line index (in `unit.lines`) matched with each ticket line index. */
+  const matched = new Map<number, number>();
+  const taken = new Set<number>();
+  const matchBy = (key: (text: string) => string | null): void => {
+    const open = new Map<string, number[]>();
+    unit.lines.forEach((line, j) => {
+      const k = taken.has(j) ? null : key(line.text);
+      if (k !== null) {
+        open.set(k, [...(open.get(k) ?? []), j]);
+      }
+    });
+    for (const index of active) {
+      const k = matched.has(index) ? null : key(textOf(index));
+      const j = k === null ? undefined : open.get(k)?.shift();
+      if (j !== undefined) {
+        matched.set(index, j);
+        taken.add(j);
+      }
+    }
+  };
+  matchBy(taskNumber);
+  matchBy(withoutNumber);
+
+  const updated: TicketReconcileUpdate[] = [];
+  const removed: number[] = [];
+  for (const index of active) {
+    const j = matched.get(index);
+    const line = unit.lines[j ?? -1];
+    const current = ticket.checklist[index];
+    if (line === undefined || current === undefined) {
+      removed.push(index);
+    } else if (line.text !== current.text) {
+      const renumbered = withoutNumber(line.text) === withoutNumber(current.text);
+      updated.push({ index, text: line.text, done: renumbered ? current.done : line.done });
+    }
+  }
+  const added = unit.lines
+    .filter((_, j) => !taken.has(j))
+    .map((line) => ({ text: line.text, done: line.done }));
+  const title = unit.title === ticket.title ? null : unit.title;
+  if (title === null && updated.length === 0 && removed.length === 0 && added.length === 0) {
+    return null;
+  }
+  return { title, updated, removed, added };
 }
 
 /**
@@ -370,10 +633,33 @@ export function reconcileGuard(
   ticket: Pick<Ticket, 'status' | 'assignee' | 'checklist'>,
   diff: ReconcileDiff,
 ): BlockedLine[] {
-  void ticket;
-  void diff;
-  throw new Error('not implemented');
+  const held = ticket.assignee !== null && HELD_STATUSES.includes(ticket.status);
+  const changes: { index: number; change: 'updated' | 'removed' }[] = [
+    ...diff.updated
+      .filter(
+        (line) =>
+          withoutNumber(line.text) !== withoutNumber(ticket.checklist[line.index]?.text ?? ''),
+      )
+      .map((line) => ({ index: line.index, change: 'updated' as const })),
+    ...diff.removed.map((index) => ({ index, change: 'removed' as const })),
+  ];
+  const blocked: BlockedLine[] = [];
+  for (const { index, change } of changes) {
+    const line = ticket.checklist[index];
+    if (line === undefined) {
+      continue;
+    }
+    if (line.done) {
+      blocked.push({ index, text: line.text, change, reason: 'done' });
+    } else if (held) {
+      blocked.push({ index, text: line.text, change, reason: 'held' });
+    }
+  }
+  return blocked.sort((a, b) => a.index - b.index);
 }
+
+/** The statuses in which an assigned ticket's lines are not rewritten without `--force`. */
+const HELD_STATUSES: readonly Status[] = ['tests', 'implementing', 'review'];
 
 /**
  * The `source` of a `ticket.reconcile`: `<tasksFile>@sha256:<hex>`, where
@@ -381,9 +667,7 @@ export function reconcileGuard(
  * as this import read it. Pure.
  */
 export function reconcileSource(tasksFile: string, bytes: Uint8Array): string {
-  void tasksFile;
-  void bytes;
-  throw new Error('not implemented');
+  return `${tasksFile}@sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
 
 /** Options of `importChange`. */
@@ -590,45 +874,168 @@ export function importChange(
         `${SOURCE_ADAPTERS.map((a) => a.source).join(', ')} can be imported`,
     );
   }
-  const units = adapter.listUnits(dirname(board.dir), target.ref);
+  const hostRoot = dirname(board.dir);
+  const units = adapter.listUnits(hostRoot, target.ref);
   refuseSecretLike(
     units.flatMap((unit) => [unit.title, ...unit.lines.map((line) => line.text)]),
     false,
     false,
   );
-  if (options?.dryRun === true || options?.force === true) {
-    throw new Error('not implemented');
-  }
-  const tickets = units.map((unit) =>
-    importUnit(board, actor, target, adapter.labels(target.ref, unit), unit, options),
-  );
-  return {
+  const tasksFile = adapter.tasksPath(target.ref);
+  const plan = planImport(board, target, units, tasksFile, options?.force === true);
+  const base = {
     source: target.source,
     ref: target.ref,
-    tasksFile: adapter.tasksPath(target.ref),
+    tasksFile,
+    ambiguous: plan.ambiguous,
+  };
+  if (options?.dryRun === true || plan.ambiguous.length > 0) {
+    const result: ImportResult = {
+      ...base,
+      dryRun: true,
+      tickets: plan.entries.map((p) => p.entry),
+      events: 0,
+    };
+    if (options?.dryRun === true) {
+      return result;
+    }
+    throw new ImportRefusedError('reconcile-ambiguous', ambiguousMessage(result), result);
+  }
+  const bytes = readFileSync(join(hostRoot, ...tasksFile.split('/')));
+  const writer: Writer = {
+    board,
+    actor,
+    target,
+    labels: (unit) => adapter.labels(target.ref, unit),
+    source: reconcileSource(tasksFile, bytes),
+    force: options?.force === true,
+    options,
+  };
+  writeImport(writer, plan);
+  const tickets = plan.entries.map((p) => p.entry);
+  const result: ImportResult = {
+    ...base,
     dryRun: false,
     tickets,
-    ambiguous: [],
     events: tickets.reduce((sum, t) => sum + t.events.length, 0),
   };
+  const blocked = tickets.filter((t) => t.action === 'blocked');
+  if (blocked.length > 0) {
+    throw new ImportRefusedError('reconcile-blocked', blockedMessage(blocked), result);
+  }
+  return result;
 }
 
-/** An entry with no pairing, renumber, diff, block or supersede. */
-function plainEntry(
+/** One entry of the plan: the reported entry plus what the writer needs. */
+interface Planned {
+  entry: ImportedTicket;
+  /** The group of a `created` or paired entry; null for a `superseded` one. */
+  unit: TaskUnit | null;
+}
+
+/** What `planImport` computes, before anything is written. */
+interface Plan {
+  /** In result order: one per unit in file order, then the superseded tickets. */
+  entries: Planned[];
+  /** `renumberPlan` of the pairing. */
+  renumbers: RenumberStep[];
+  ambiguous: AmbiguousCandidate[];
+}
+
+/**
+ * Pairs the change's tickets with `units` on the board's current state and
+ * computes every entry as a dry run reports it.
+ */
+function planImport(
+  board: Board,
+  target: ImportTarget,
+  units: readonly TaskUnit[],
+  tasksFile: string,
+  force: boolean,
+): Plan {
+  const tickets = Object.values(readState(board.db).tickets)
+    .filter(
+      (t) => t.superseded === null && t.task?.source === target.source && t.task.ref === target.ref,
+    )
+    .sort((a, b) => (a.id < b.id ? -1 : 1));
+  const byId = new Map(tickets.map((t) => [t.id, t]));
+  const report = pairTickets(tickets, units);
+  const renumbers = renumberPlan(tickets, report.pairs);
+  const entries: Planned[] = units.map((unit) => {
+    const pair = report.pairs.find((p) => p.item === unit.item);
+    const ticket = pair === undefined ? undefined : byId.get(pair.ticket);
+    if (pair === undefined || ticket === undefined) {
+      return { entry: createdEntry(unit, null, [], null), unit };
+    }
+    const step = renumbers.find((r) => r.ticket === ticket.id);
+    const renumber = step === undefined ? null : { from: step.from, to: step.to };
+    const diff = reconcileDiff(ticket, unit);
+    const blocked = ticket.closed || diff === null ? [] : reconcileGuard(ticket, diff);
+    const writesReconcile = !ticket.closed && diff !== null && (blocked.length === 0 || force);
+    let action: ImportAction = 'unchanged';
+    if (!ticket.closed && blocked.length > 0 && !force) {
+      action = 'blocked';
+    } else if (renumber !== null || writesReconcile) {
+      action = 'updated';
+    }
+    const entry: ImportedTicket = {
+      item: unit.item,
+      title: unit.title,
+      id: ticket.id,
+      action,
+      pairing: { pass: pair.pass, score: pair.score },
+      renumber,
+      diff,
+      blocked,
+      forced: writesReconcile && blocked.length > 0,
+      supersede: null,
+      events: [],
+      ticket,
+    };
+    return { entry, unit };
+  });
+  const reason = `group removed from ${tasksFile}`;
+  const unpaired = report.unpaired
+    .map((id) => byId.get(id))
+    .filter((t): t is Ticket => t !== undefined)
+    .sort((a, b) => compareItems(a.task?.item ?? '', b.task?.item ?? '') || (a.id < b.id ? -1 : 1));
+  for (const ticket of unpaired) {
+    entries.push({
+      entry: {
+        item: null,
+        title: ticket.title,
+        id: ticket.id,
+        action: 'superseded',
+        pairing: null,
+        renumber: null,
+        diff: null,
+        blocked: [],
+        forced: false,
+        supersede: reason,
+        events: [],
+        ticket,
+      },
+      unit: null,
+    });
+  }
+  return { entries, renumbers, ambiguous: report.ambiguous };
+}
+
+/** A `created` entry; `id` and `ticket` are null in a dry run. */
+function createdEntry(
   unit: TaskUnit,
-  action: ImportAction,
-  ticket: Ticket,
+  id: string | null,
   events: string[],
-  diff: ReconcileDiff | null,
+  ticket: Ticket | null,
 ): ImportedTicket {
   return {
     item: unit.item,
     title: unit.title,
-    id: ticket.id,
-    action,
+    id,
+    action: 'created',
     pairing: null,
     renumber: null,
-    diff,
+    diff: null,
     blocked: [],
     forced: false,
     supersede: null,
@@ -637,105 +1044,172 @@ function plainEntry(
   };
 }
 
+/** What the writer of an import needs besides the plan. */
+interface Writer {
+  board: Board;
+  actor: string;
+  target: ImportTarget;
+  labels: (unit: TaskUnit) => string[];
+  /** The `source` of every reconcile this import writes. */
+  source: string;
+  force: boolean;
+  options: ImportOptions | undefined;
+}
+
 /**
- * Thrown inside a unit's transaction when its ticket exists and has
- * nothing to append, so the transaction is rolled back without writing.
+ * Thrown inside a transaction whose event a concurrent import has made
+ * stale or redundant, so the transaction is rolled back without writing.
  * Never escapes this module.
  */
-class Unchanged extends Error {
-  readonly ticket: Ticket;
-
-  constructor(ticket: Ticket) {
-    super(`ticket ${ticket.id} is unchanged`);
-    this.ticket = ticket;
+class Skip extends Error {
+  constructor() {
+    super('nothing left to write');
   }
 }
 
-/** The id of the unit's ticket (smallest id with this task reference), or null. */
-function ticketIdFor(board: Board, task: TaskRef): string | null {
-  const row = stmt(
-    board.db,
-    'SELECT id FROM tickets WHERE task_source = ? AND task_ref = ? AND task_item = ? ' +
-      'ORDER BY id LIMIT 1',
-  ).get(task.source, task.ref, task.item);
-  return row === undefined ? null : String(row.id);
-}
-
-/** Imports one unit: creates its ticket, or appends to the existing one, or does nothing. */
-function importUnit(
-  board: Board,
-  actor: string,
-  target: ImportTarget,
-  labels: string[],
-  unit: TaskUnit,
-  options: ImportOptions | undefined,
-): ImportedTicket {
-  const task: TaskRef = { source: target.source, ref: target.ref, item: unit.item };
-  let first: CommandResult;
+/**
+ * Writes one event in its own command transaction; `propose` re-checks it
+ * against the caught-up state and returns it, or throws `Skip`. Returns the
+ * hash, or null when skipped.
+ */
+function writeOne(w: Writer, propose: (ctx: TxContext) => ProposedEvent): CommandResult | null {
   try {
-    // One transaction decides between create, append and nothing, so two
-    // concurrent imports cannot both create a ticket for the unit.
-    first = runCommand(
-      board,
-      actor,
-      (ctx) => {
-        const id = ticketIdFor(board, task);
-        const existing = id === null ? null : ctx.ticket(id);
-        return { ok: true, event: firstEvent(existing, task, labels, unit) };
-      },
-      options,
-    );
+    return runCommand(w.board, w.actor, (ctx) => ({ ok: true, event: propose(ctx) }), w.options);
   } catch (error) {
-    if (error instanceof Unchanged) {
-      return plainEntry(unit, 'unchanged', error.ticket, [], null);
+    if (error instanceof Skip) {
+      return null;
     }
     throw error;
   }
-  const events = [first.hash];
-  let ticket = ticketOf(first.ticket);
-  if (first.event.kind === 'ticket.checklist.add') {
-    const added = first.event.body.items.map((item) => ({ text: item.text, done: item.done }));
-    return plainEntry(unit, 'updated', ticket, events, {
-      title: null,
-      updated: [],
-      removed: [],
-      added,
-    });
-  }
-  const follow: ProposedEvent[] = [];
-  unit.lines.forEach((line, index) => {
-    if (line.done) {
-      follow.push({ kind: 'ticket.checklist', ticket: ticket.id, body: { index, done: true } });
-    }
-  });
-  if (unit.lines.length > 0 && unit.lines.every((line) => line.done)) {
-    for (const to of MERGED_PATH) {
-      follow.push({ kind: 'ticket.move', ticket: ticket.id, body: { to } });
-    }
-  }
-  for (const event of follow) {
-    const result = runCommand(board, actor, () => ({ ok: true, event }), options);
-    events.push(result.hash);
-    ticket = ticketOf(result.ticket);
-  }
-  return plainEntry(unit, 'created', ticket, events, null);
 }
 
-/** The permitted moves from `todo` to `merged`, in order. */
-const MERGED_PATH: readonly Status[] = ['tests', 'implementing', 'review', 'merged'];
+/**
+ * Writes the plan, in order: the renumbers, then each group in file order
+ * (a create or a reconcile), then the supersedes. Updates each entry with
+ * the events written and the ticket after the import.
+ */
+function writeImport(w: Writer, plan: Plan): void {
+  const byId = new Map(
+    plan.entries
+      .filter((p) => p.entry.id !== null)
+      .map((p) => [p.entry.id ?? '', p.entry] as const),
+  );
+  for (const step of plan.renumbers) {
+    const result = writeOne(w, (ctx) => {
+      const ticket = ctx.ticket(step.ticket);
+      if (ticket?.superseded !== null || ticket.task?.item !== step.from) {
+        throw new Skip();
+      }
+      return {
+        kind: 'ticket.renumber',
+        ticket: step.ticket,
+        body: { from: step.from, to: step.to },
+      };
+    });
+    if (result !== null) {
+      byId.get(step.ticket)?.events.push(result.hash);
+    }
+  }
+  for (const planned of plan.entries) {
+    const { entry, unit } = planned;
+    if (unit === null) {
+      continue;
+    }
+    if (entry.action === 'created') {
+      planned.entry = createTicket(w, unit);
+    } else if (entry.id !== null && entry.ticket?.closed === false) {
+      reconcileTicket(w, entry, unit);
+    }
+  }
+  for (const { entry } of plan.entries) {
+    if (entry.action !== 'superseded' || entry.id === null || entry.supersede === null) {
+      continue;
+    }
+    const id = entry.id;
+    const reason = entry.supersede;
+    const result = writeOne(w, (ctx) => {
+      if (ctx.ticket(id)?.superseded !== null) {
+        throw new Skip();
+      }
+      return { kind: 'ticket.supersede', ticket: id, body: { reason } };
+    });
+    if (result !== null) {
+      entry.events.push(result.hash);
+    }
+  }
+  for (const { entry } of plan.entries) {
+    if (entry.id !== null) {
+      entry.ticket = readTicket(w.board.db, entry.id);
+    }
+    if (entry.action === 'updated' && entry.events.length === 0) {
+      entry.action = 'unchanged';
+    }
+  }
+}
 
 /**
- * The first event of a unit: the create when it has no ticket, the append
- * of its new task lines when it has one, or `Unchanged` thrown.
+ * Writes the reconcile of a paired open ticket, recomputing its diff and
+ * guard on the caught-up ticket, and updates `entry` with what was written
+ * (or with the block that stopped it).
  */
-function firstEvent(
-  existing: Ticket | null,
-  task: TaskRef,
-  labels: string[],
-  unit: TaskUnit,
-): ProposedEvent {
-  if (existing === null) {
+function reconcileTicket(w: Writer, entry: ImportedTicket, unit: TaskUnit): void {
+  const id = entry.id ?? '';
+  let diff = entry.diff;
+  let blocked = entry.blocked;
+  const result = writeOne(w, (ctx) => {
+    const ticket = ctx.ticket(id);
+    if (ticket === null || ticket.closed || ticket.superseded !== null) {
+      throw new Skip();
+    }
+    diff = reconcileDiff(ticket, unit);
+    blocked = diff === null ? [] : reconcileGuard(ticket, diff);
+    if (diff === null || (blocked.length > 0 && !w.force)) {
+      throw new Skip();
+    }
+    const forced = blocked.length > 0;
+    const body: TicketReconcileBody = {
+      updated: diff.updated,
+      removed: diff.removed,
+      added: diff.added,
+      forced,
+      source: w.source,
+    };
+    if (diff.title !== null) {
+      body.title = diff.title;
+    }
+    if (forced && ticket.assignee !== null) {
+      body.holder = ticket.assignee;
+    }
+    return { kind: 'ticket.reconcile', ticket: id, body };
+  });
+  entry.diff = diff;
+  entry.blocked = blocked;
+  if (result !== null) {
+    entry.events.push(result.hash);
+    entry.forced = blocked.length > 0;
+    entry.action = 'updated';
+  } else {
+    entry.forced = false;
+    entry.action = blocked.length > 0 && !w.force ? 'blocked' : entry.action;
+  }
+}
+
+/**
+ * Creates the ticket of an unpaired unit, exactly as a first import does,
+ * unless a concurrent import has meanwhile created one (a ticket of the
+ * change, not superseded, with the unit's item and normalised title): then
+ * nothing is written and that ticket is reported `unchanged`.
+ */
+function createTicket(w: Writer, unit: TaskUnit): ImportedTicket {
+  const task: TaskRef = { source: w.target.source, ref: w.target.ref, item: unit.item };
+  const found: { id: string | null } = { id: null };
+  const first = writeOne(w, () => {
+    found.id = concurrentTicket(w.board, task, unit.title);
+    if (found.id !== null) {
+      throw new Skip();
+    }
     const body: TicketCreateBody = { title: unit.title, task };
+    const labels = w.labels(unit);
     if (labels.length > 0) {
       body.labels = [...labels];
     }
@@ -743,14 +1217,87 @@ function firstEvent(
       body.checklist = unit.lines.map((line) => line.text);
     }
     return { kind: 'ticket.create', ticket: newUlid(), body };
+  });
+  if (first === null) {
+    const id = found.id ?? '';
+    const entry = createdEntry(unit, id, [], readTicket(w.board.db, id));
+    entry.action = 'unchanged';
+    return entry;
   }
-  const added = unit.lines.slice(existing.checklist.length);
-  if (added.length === 0) {
-    throw new Unchanged(existing);
+  const id = ticketOf(first.ticket).id;
+  const events = [first.hash];
+  const follow: ProposedEvent[] = [];
+  unit.lines.forEach((line, index) => {
+    if (line.done) {
+      follow.push({ kind: 'ticket.checklist', ticket: id, body: { index, done: true } });
+    }
+  });
+  if (unit.lines.length > 0 && unit.lines.every((line) => line.done)) {
+    for (const to of MERGED_PATH) {
+      follow.push({ kind: 'ticket.move', ticket: id, body: { to } });
+    }
   }
-  return {
-    kind: 'ticket.checklist.add',
-    ticket: existing.id,
-    body: { items: added.map((line) => ({ text: line.text, done: line.done })) },
-  };
+  for (const event of follow) {
+    events.push(runCommand(w.board, w.actor, () => ({ ok: true, event }), w.options).hash);
+  }
+  return createdEntry(unit, id, events, null);
+}
+
+/** The id of a ticket of the change, not superseded, with `task.item` and the normalised `title`, or null. */
+function concurrentTicket(board: Board, task: TaskRef, title: string): string | null {
+  const rows = stmt(
+    board.db,
+    'SELECT id, title FROM tickets WHERE task_source = ? AND task_ref = ? AND task_item = ? ' +
+      'AND superseded IS NULL ORDER BY id',
+  ).all(task.source, task.ref, task.item);
+  const wanted = normaliseTitle(title);
+  const found = rows.find((row) => normaliseTitle(String(row.title)) === wanted);
+  return found === undefined ? null : String(found.id);
+}
+
+/** The permitted moves from `todo` to `merged`, in order. */
+const MERGED_PATH: readonly Status[] = ['tests', 'implementing', 'review', 'merged'];
+
+/** A score with two decimals, as the reports print it. */
+function twoDecimals(score: number): string {
+  return score.toFixed(2);
+}
+
+/** The message of `reconcile-ambiguous`. */
+function ambiguousMessage(result: ImportResult): string {
+  const lines = [
+    `pairing tickets with the groups of ${asciiText(result.tasksFile)} is ambiguous; nothing was written`,
+  ];
+  for (const c of result.ambiguous) {
+    lines.push(
+      `  ${c.ticket} group ${asciiText(c.item)} score ${twoDecimals(c.score)}` +
+        (c.sameTitle ? ' (same title)' : ''),
+    );
+  }
+  return lines.join('\n');
+}
+
+/** The text of a blocked line, as the refusal and `renderImport` print it. */
+function blockedLineText(line: BlockedLine, ticket: Ticket | null): string {
+  const why =
+    line.reason === 'done'
+      ? 'done'
+      : `held by ${asciiText(ticket?.assignee ?? '-')} in ${ticket?.status ?? 'todo'}`;
+  return `blocked ${String(line.index)} ${asciiText(line.text)} (${why})`;
+}
+
+/** The message of `reconcile-blocked`. */
+function blockedMessage(blocked: readonly ImportedTicket[]): string {
+  const lines = [
+    `reconcile blocked for ${String(blocked.length)} ticket(s); every other group was imported`,
+  ];
+  for (const entry of blocked) {
+    lines.push(
+      `  ${entry.id ?? '-'} group ${asciiText(entry.item ?? '-')} ${asciiText(entry.title)}`,
+    );
+    for (const line of entry.blocked) {
+      lines.push(`    ${blockedLineText(line, entry.ticket)}`);
+    }
+  }
+  return lines.join('\n');
 }
