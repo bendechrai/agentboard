@@ -307,10 +307,7 @@ export function syncHostBoard(
   }
   // What the rebases of steps 2 and 5 added to HEAD's tree: never an
   // event this process committed or a writer added meanwhile.
-  const arrived = zList(
-    git.run('diff', '--name-only', '-z', '--diff-filter=A', committedHead, 'HEAD', '--', 'events'),
-  )
-    .filter((path) => EVENT_PATH.test(path))
+  const arrived = eventsAdded(git, committedHead, 'HEAD')
     .map((path) => path.slice('events/'.length, -'.json'.length))
     .sort();
 
@@ -397,26 +394,45 @@ function isAncestor(git: GitRunner, ancestor: string, descendant: string): boole
 }
 
 /**
- * Whether HEAD's tree already holds every event file the ref's tree holds
- * (`diff --name-only --diff-filter=A HEAD refs/agentboard/board -- events`
- * prints nothing): the ref is then a stale value of this worktree whose
- * commits were replayed into HEAD, and moving it loses no event. The
- * criterion is the events, never the HEAD reflog, which also lists values
- * ahead of HEAD (after a checkout or reset of an older commit) and the
- * onto of an aborted rebase.
+ * Whether the ref at `value` is a stale value of this worktree, which is
+ * moved to HEAD without a rebase (the contract on `syncHostBoard`): it
+ * equals the worktree's `ORIG_HEAD` (the commit the last rebase started
+ * from), that commit is not a descendant of HEAD (a `reset --hard` to an
+ * older commit sets `ORIG_HEAD` to the newer one, which must rebase), and
+ * HEAD's tree holds every event file of the ref's tree, compared without
+ * rename detection (two similar events would otherwise pair as a rename
+ * and hide the one HEAD lacks). That is what a sync killed between its
+ * rebase and its `update-ref`, or a human's `git rebase --continue`,
+ * leaves; rebasing onto the ref again would conflict a second time.
  */
-function headHoldsEventsOf(git: GitRunner, ref: string): boolean {
+function staleRefOfThisWorktree(git: GitRunner, value: string): boolean {
+  const origHead = git.attempt('rev-parse', '--quiet', '--verify', 'ORIG_HEAD^{commit}');
+  if (isGitFailure(origHead) || origHead.trim() !== value) {
+    return false;
+  }
+  if (isAncestor(git, 'HEAD', value)) {
+    return false;
+  }
+  return eventsAdded(git, 'HEAD', BOARD_REF).length === 0;
+}
+
+/**
+ * The event files (`events/<hash>.json`) that `to`'s tree holds and
+ * `from`'s does not, without rename detection.
+ */
+function eventsAdded(git: GitRunner, from: string, to: string): string[] {
   const added = git.run(
     'diff',
+    '--no-renames',
     '--name-only',
     '-z',
     '--diff-filter=A',
-    'HEAD',
-    ref,
+    from,
+    to,
     '--',
     'events',
   );
-  return zList(added).filter((path) => EVENT_PATH.test(path)).length === 0;
+  return zList(added).filter((path) => EVENT_PATH.test(path));
 }
 
 /**
@@ -432,7 +448,7 @@ function integrateLocalRef(git: GitRunner, dir: string): string {
     if (old === head) {
       return head;
     }
-    if (old !== '' && !isAncestor(git, BOARD_REF, 'HEAD') && !headHoldsEventsOf(git, BOARD_REF)) {
+    if (old !== '' && !isAncestor(git, BOARD_REF, 'HEAD') && !staleRefOfThisWorktree(git, old)) {
       rebaseOnto(git, dir, BOARD_REF, `the local ${BOARD_REF}`);
       head = git.run('rev-parse', 'HEAD').trim();
       if (old === head) {
