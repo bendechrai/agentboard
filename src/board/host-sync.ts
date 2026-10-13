@@ -13,11 +13,35 @@
  *
  * `syncBoard` (`src/board/sync.ts`) is the one entry point for both models:
  * it detects the model and calls `syncHostBoard` for a host-model board.
+ * The steps both models share are in `src/board/sync-steps.ts`.
  */
 
 import type { Board } from '../store/board.js';
-import type { BoardModelInfo } from './model.js';
+import { catchUp } from '../store/cache.js';
+import { BoardError } from '../store/errors.js';
+import {
+  HOST_MODEL_GIT_FLOOR,
+  gitRunner,
+  gitVersion,
+  isGitFailure,
+  meetsGitFloor,
+  type GitRunner,
+} from './git.js';
+import { BOARD_REF, type BoardModelInfo } from './model.js';
+import { ambiguousRemoteError, boardRemote } from './remote.js';
 import type { SyncOptions, SyncResult } from './sync.js';
+import {
+  checkCommittedEventsPresent,
+  checkNothingInProgress,
+  eventFileNames,
+  hostTrackedPaths,
+  hostWarning,
+  plural,
+  stageAndCommit,
+  syncFailed,
+  unmergedPaths,
+} from './sync-steps.js';
+import { asciiText, type Env } from './text.js';
 
 /**
  * The host-model path of `agentboard sync`, for a board whose model
@@ -167,8 +191,229 @@ export function syncHostBoard(
   info: BoardModelInfo,
   options?: SyncOptions,
 ): SyncResult {
-  void board;
-  void info;
-  void options;
-  throw new Error('not implemented');
+  const env = options?.env ?? process.env;
+  const dir = board.dir;
+  const git = gitRunner(dir, { env, disableHooks: true });
+
+  // Preconditions.
+  checkGitFloor(env, dir);
+  checkNothingInProgress(git, dir);
+  checkDetached(git, dir);
+  checkCommittedEventsPresent(git, board);
+
+  const hostTracked = hostTrackedPaths(git, dir);
+  const warnings = hostTracked.length > 0 ? [hostWarning(dir, hostTracked)] : [];
+
+  // 1. Stage and commit.
+  const { commit, committedEvents } = stageAndCommit(git, board);
+  const before = new Set(eventFileNames(board));
+
+  // 2. Make the local ref equal to HEAD.
+  let refCommit = integrateLocalRef(git, dir);
+
+  // 3. Remote.
+  const choice = boardRemote(info, { env, disableHooks: true });
+  if (choice.ambiguous) {
+    throw ambiguousRemoteError(choice);
+  }
+  const remote = choice.chosen?.name ?? null;
+
+  // 4. Fetch, 5. integrate and 6. push, retried once when the push is rejected.
+  let pulled = false;
+  if (remote !== null) {
+    for (let attempt = 1; ; attempt += 1) {
+      if (remoteHasRef(git, remote)) {
+        fetchRef(git, remote);
+        if (!isAncestor(git, 'FETCH_HEAD', 'HEAD')) {
+          rebaseOnto(git, dir, 'FETCH_HEAD', `what ${asciiText(remote)} holds`);
+        }
+        refCommit = integrateLocalRef(git, dir);
+        pulled = true;
+      }
+      if (push(git, remote, attempt === 2)) {
+        break;
+      }
+    }
+  }
+  const arrived = eventFileNames(board)
+    .filter((name) => !before.has(name))
+    .map((name) => name.slice(0, -'.json'.length))
+    .sort();
+
+  // 7. Catch-up.
+  const report = catchUp(board);
+  // A rebase replays the local commit: report the commit on HEAD now.
+  const onHead = commit === null ? null : git.run('rev-parse', 'HEAD').trim();
+
+  const lines = [
+    onHead === null
+      ? 'nothing new to commit'
+      : `committed ${plural(committedEvents, 'event file')} (${onHead.slice(0, 12)})`,
+  ];
+  if (remote === null) {
+    lines.push(`no remote configured; the board at ${dir} was not fetched or pushed`);
+  } else {
+    lines.push(
+      pulled
+        ? `fetched ${BOARD_REF} from ${remote}: ${plural(arrived.length, 'event')} arrived`
+        : `${remote} has no ${BOARD_REF} yet; nothing to fetch`,
+      `pushed ${BOARD_REF} to ${remote}`,
+    );
+  }
+  return {
+    dir,
+    model: 'host',
+    ref: BOARD_REF,
+    refCommit,
+    commit: onHead,
+    committedEvents,
+    remote,
+    branch: null,
+    pulled,
+    pushed: remote !== null,
+    upstreamSet: false,
+    arrived,
+    refolded: report.refolded,
+    hostTracked,
+    warnings,
+    message: lines.join('\n'),
+  };
+}
+
+/** Precondition 1: the git found meets the host model's floor. */
+function checkGitFloor(env: Env, dir: string): void {
+  const version = gitVersion(env, dir);
+  if (version === null || meetsGitFloor(version)) {
+    return;
+  }
+  const found = `${String(version.major)}.${String(version.minor)}.${String(version.patch)}`;
+  const floor = `${String(HOST_MODEL_GIT_FLOOR.major)}.${String(HOST_MODEL_GIT_FLOOR.minor)}`;
+  throw new BoardError(
+    1,
+    'git-too-old',
+    `git ${found} was found, but the board at ${dir} is in the host repository, which needs ` +
+      `git ${floor} or later; upgrade git and run agentboard sync again`,
+  );
+}
+
+/** Precondition 3: the worktree is on a detached HEAD, not a branch. */
+function checkDetached(git: GitRunner, dir: string): void {
+  const branch = git.attempt('symbolic-ref', '--quiet', '--short', 'HEAD');
+  if (isGitFailure(branch)) {
+    return;
+  }
+  throw new BoardError(
+    3,
+    'board-on-branch',
+    `the board worktree at ${dir} has the branch ${asciiText(branch.trim())} checked out, but a ` +
+      `board in the host repository is synced through ${BOARD_REF} on a detached HEAD; ` +
+      `run git -C ${dir} switch --detach ${BOARD_REF} and then agentboard sync again`,
+  );
+}
+
+/** The full id `BOARD_REF` holds, or the empty string when it does not exist. */
+function refValue(git: GitRunner): string {
+  const out = git.attempt('rev-parse', '--quiet', '--verify', `${BOARD_REF}^{commit}`);
+  return isGitFailure(out) ? '' : out.trim();
+}
+
+/** Whether `ancestor` is an ancestor of (or equal to) `descendant`. */
+function isAncestor(git: GitRunner, ancestor: string, descendant: string): boolean {
+  return !isGitFailure(git.attempt('merge-base', '--is-ancestor', ancestor, descendant));
+}
+
+/**
+ * Whether the worktree's HEAD ever pointed at `commit` (its reflog lists
+ * it). A worktree without a HEAD reflog never did.
+ */
+function headEverWas(git: GitRunner, commit: string): boolean {
+  const log = git.attempt('rev-list', '-g', 'HEAD');
+  return !isGitFailure(log) && log.split('\n').some((line) => line.trim() === commit);
+}
+
+/**
+ * Steps 2 and 5's ref update: makes `BOARD_REF` equal to HEAD with a
+ * compare-and-swap, rebasing HEAD onto the ref first when the ref holds
+ * commits HEAD never had (the contract on `syncHostBoard`). Returns the
+ * value the ref holds afterwards, which is HEAD.
+ */
+function integrateLocalRef(git: GitRunner, dir: string): string {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const old = refValue(git);
+    let head = git.run('rev-parse', 'HEAD').trim();
+    if (old === head) {
+      return head;
+    }
+    if (old !== '' && !isAncestor(git, BOARD_REF, 'HEAD') && !headEverWas(git, old)) {
+      rebaseOnto(git, dir, BOARD_REF, `the local ${BOARD_REF}`);
+      head = git.run('rev-parse', 'HEAD').trim();
+      if (old === head) {
+        return head;
+      }
+    }
+    if (!isGitFailure(git.attempt('update-ref', BOARD_REF, head, old))) {
+      return head;
+    }
+  }
+  throw new BoardError(
+    3,
+    'sync-failed',
+    `updating ${BOARD_REF} in the host repository failed twice because something else kept ` +
+      `moving it; run agentboard sync again`,
+  );
+}
+
+/**
+ * Rebases HEAD onto `onto` (`rebase --no-verify <onto>`), leaving a
+ * conflicted rebase in place for a human.
+ */
+function rebaseOnto(git: GitRunner, dir: string, onto: string, what: string): void {
+  const out = git.attempt('rebase', '--no-verify', onto);
+  if (!isGitFailure(out)) {
+    return;
+  }
+  const conflicted = unmergedPaths(git);
+  if (conflicted.length > 0) {
+    throw new BoardError(
+      3,
+      'sync-conflict',
+      `rebasing onto ${what} stopped on a conflict in the board worktree at ${dir}: ` +
+        `${conflicted.map((p) => asciiText(p)).join(', ')}; resolve them, git add them and ` +
+        `git rebase --continue (or git rebase --abort) in ${dir}, then run agentboard sync again`,
+    );
+  }
+  throw syncFailed(`rebasing onto ${what}`, out);
+}
+
+/** Step 4, first half: whether `remote` has `BOARD_REF` (contacts the remote). */
+function remoteHasRef(git: GitRunner, remote: string): boolean {
+  const out = git.attempt('ls-remote', remote, BOARD_REF);
+  if (isGitFailure(out)) {
+    throw syncFailed(`reaching ${asciiText(remote)}`, out);
+  }
+  return out.trim() !== '';
+}
+
+/** Step 4, second half: `fetch --no-tags <remote> refs/agentboard/board` into the worktree's `FETCH_HEAD`. */
+function fetchRef(git: GitRunner, remote: string): void {
+  const out = git.attempt('fetch', '--no-tags', remote, BOARD_REF);
+  if (isGitFailure(out)) {
+    throw syncFailed(`fetching ${BOARD_REF} from ${asciiText(remote)}`, out);
+  }
+}
+
+/**
+ * Step 6: push. Returns false when the push was rejected and may be
+ * retried (`last` false); throws on any other failure or a last rejection.
+ */
+function push(git: GitRunner, remote: string, last: boolean): boolean {
+  const out = git.attempt('push', '--porcelain', '--no-verify', remote, `HEAD:${BOARD_REF}`);
+  if (!isGitFailure(out)) {
+    return true;
+  }
+  const rejected = out.stdout.split('\n').some((line) => line.startsWith('!'));
+  if (rejected && !last) {
+    return false;
+  }
+  throw syncFailed(`pushing ${BOARD_REF} to ${asciiText(remote)}`, out);
 }

@@ -1448,15 +1448,22 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'sync',
-    summary: "Commit new events, pull with rebase from the board's remote and push",
+    summary: "Commit new events, integrate the board's history from its remote and push",
     description:
-      'Shares the board with other clones: commits new event files in the board repository, pulls with rebase from its remote and pushes. The remote is the one named by git config agentboard.remote, else the upstream of the branch, else origin, else the only remote. Event files never conflict with each other; a problem that needs a human (a conflict, a rebase in progress, a detached HEAD, an unreachable remote) exits 3. Needs no actor.',
+      "Shares the board with other clones: commits new event files (only its own paths, as the fixed identity agentboard <agentboard@localhost>), integrates the board's history from its remote with a rebase and pushes, retrying once when the remote moved in between, then folds the events that arrived. For a board in the host repository (host model) the history is the ref refs/agentboard/board: sync makes it equal to the worktree's HEAD, fetches it from the host's remote into the worktree's own FETCH_HEAD, rebases onto it, pushes HEAD:refs/agentboard/board without force and never creates or moves a branch; the host's git hooks do not run. For a standalone board (.board as a repository of its own) it pulls with rebase and pushes its branch. The remote is chosen in the repository that holds the history: the one named by git config agentboard.remote, else the upstream of the branch (the host's main checkout's branch for the host model), else origin, else the only remote. Event files never conflict with each other; a problem that needs a human (a conflict, a rebase in progress, a standalone board on a detached HEAD, a host-model board worktree on a branch, an unreachable remote) exits 3; a host-model board on a git older than 2.32 exits 1. Needs no actor.",
     group: 'maintenance',
-    examples: [{ command: 'agentboard sync', summary: "Commit, pull and push the board's events" }],
+    examples: [
+      { command: 'agentboard sync', summary: "Commit, integrate and push the board's events" },
+    ],
     exitCodes: [
       EXIT_OK,
       EXIT_USAGE,
       { code: 1, reason: 'git-missing', meaning: 'git could not be run' },
+      {
+        code: 1,
+        reason: 'git-too-old',
+        meaning: 'The board is in the host repository, which needs git 2.32 or later',
+      },
       {
         code: 1,
         reason: 'ambiguous-remote',
@@ -1467,7 +1474,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       {
         code: 2,
         reason: 'board-not-a-repository',
-        meaning: 'The board directory is not the top of its own git repository',
+        meaning: 'The board directory is not the top of its own git repository or worktree',
       },
       {
         code: 2,
@@ -1477,10 +1484,20 @@ export const COMMANDS: readonly CommandSpec[] = [
       {
         code: 3,
         reason: 'sync-in-progress',
-        meaning: 'A rebase is in progress in the board repository',
+        meaning: 'A rebase is in progress in the board repository or worktree',
       },
-      { code: 3, reason: 'detached-head', meaning: 'The board repository has a detached HEAD' },
-      { code: 3, reason: 'sync-conflict', meaning: 'The pull stopped on a conflict' },
+      {
+        code: 3,
+        reason: 'detached-head',
+        meaning: 'The standalone board repository has a detached HEAD',
+      },
+      {
+        code: 3,
+        reason: 'board-on-branch',
+        meaning:
+          'The host-model board worktree has a branch checked out instead of a detached HEAD',
+      },
+      { code: 3, reason: 'sync-conflict', meaning: 'The rebase stopped on a conflict' },
       {
         code: 3,
         reason: 'sync-failed',

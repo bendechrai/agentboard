@@ -31,6 +31,7 @@ import {
   newestStaleBoard,
   repairBoardLink,
   withInitLock,
+  writeEmptyBoardCommit,
   type BoardRefSource,
   type RepairOutcome,
 } from './host-init.js';
@@ -204,10 +205,13 @@ export interface InitResult {
  * (`joined <n> events from <remote>` style wording, the count and the
  * remote appear); `local`, that the board was restored from the local
  * `refs/agentboard/board` with the number of event files (the words
- * `restored` and `local` and the count appear, never `new empty board`);
- * `created`, that the board is new and that `agentboard sync` publishes
- * it (to `<remote>`, or once the repository has a remote: the words `sync`
- * and `remote` appear).
+ * `restored` and `local` and the count appear, never `new empty board`),
+ * unless the ref holds nothing but the deterministic empty-board commit
+ * (a racing `init` wrote it, or an empty board's directory was deleted),
+ * which is reported as `created` is: a board with no history of its own
+ * was never restored from anything; `created`, that the board is new and
+ * that `agentboard sync` publishes it (to `<remote>`, or once the
+ * repository has a remote: the words `sync` and `remote` appear).
  *
  * New standalone board, creating only what is missing and never
  * overwriting an existing file:
@@ -423,10 +427,14 @@ function createHostBoard(dir: string, env: Env): InitResult {
     };
   }
   const where = `created the board at ${asciiText(dir)} (host model: a worktree of the host repository at ${BOARD_REF})`;
+  // A local ref at the empty-board commit is a new board, not a restored
+  // one: a racing init wrote it, or an empty board's directory was deleted.
+  const restored =
+    ref.source === 'local' && ref.commit !== writeEmptyBoardCommit(hostRoot, { env });
   const how =
     ref.source === 'remote'
       ? `joined ${plural(events, 'event')} from ${asciiText(remote ?? '')}`
-      : ref.source === 'local'
+      : restored
         ? `restored it from the local ${BOARD_REF} with ${plural(events, 'event file')}`
         : remote === null
           ? 'a new empty board; agentboard sync publishes it once the repository has a remote'
