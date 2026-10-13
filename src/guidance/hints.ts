@@ -108,9 +108,12 @@ export const HINT_REASONS: readonly string[] = [
   'port-in-use',
   'queued',
   'read-only',
+  'reconcile-ambiguous',
+  'reconcile-blocked',
   'schema-mismatch',
   'secret-like',
   'stale-grant',
+  'stale-import',
   'streaming-command',
   'sync-conflict',
   'sync-failed',
@@ -175,7 +178,10 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'read-only': 1,
   'schema-mismatch': 5,
   'secret-like': 1,
+  'reconcile-ambiguous': 4,
+  'reconcile-blocked': 4,
   'stale-grant': 4,
+  'stale-import': 4,
   'streaming-command': 1,
   'sync-conflict': 3,
   'sync-failed': 3,
@@ -474,6 +480,15 @@ function tasksHint(what: string): HintTemplate {
     ])} again`;
 }
 
+/** Step `import-change` with `name` `<change>`, `dry-run` and A. */
+function importDryRun(h: HintParts): string {
+  return h.step('import-change', [
+    ['name', '<change>'],
+    ['dry-run', true],
+    ['as', h.actor],
+  ]);
+}
+
 /** Rebuilding the cache from the event log. */
 const rebuildHint: HintTemplate = (h) =>
   `rebuild the cache from the events with ${h.step('rebuild')}`;
@@ -680,6 +695,19 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     `that queue change does not apply to the ticket as it stands; see its holder and queue with ${h.step('show', [['id', h.id]])}`,
   'stale-grant': (h) =>
     `that grant is no longer the one due; see the ticket's holder, lease and queue with ${h.step('show', [['id', h.id]])}`,
+  'reconcile-blocked': (h) =>
+    `see the blocked lines with ${importDryRun(h)}, then revise the tasks file or reconcile anyway, telling the holder, with ${h.step(
+      'import-change',
+      [
+        ['name', '<change>'],
+        ['force', true],
+        ['as', h.actor],
+      ],
+    )}`,
+  'reconcile-ambiguous': (h) =>
+    `see the candidates and their scores with ${importDryRun(h)}, then edit a group title in the tasks file so each ticket's group is clear, and import again`,
+  'stale-import': (h) =>
+    `another import changed the ticket first; see what is left to change with ${importDryRun(h)}`,
   queued: (h) =>
     `other actors are waiting for this ticket and have priority; see the queue with ${h.step('show', [['id', h.id]])}`,
   'needs-task-link': (h) =>

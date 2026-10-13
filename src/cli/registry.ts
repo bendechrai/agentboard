@@ -46,6 +46,7 @@ import {
   asciiText,
   renderCheck,
   renderHealth,
+  renderImport,
   renderInboxLine,
   renderListLine,
   renderRebuild,
@@ -1544,17 +1545,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         dryRun: values['dry-run'] === true,
         force: values.force === true,
       });
-      const count = (action: string): number =>
-        result.tickets.filter((t) => t.action === action).length;
-      const lines = result.tickets.map(
-        (t) => `${t.action} ${t.ticket === null ? asciiText(t.title) : renderListLine(t.ticket)}`,
-      );
-      lines.push(
-        `imported ${asciiText(result.source)}:${asciiText(result.ref)}: ` +
-          `${String(count('created'))} created, ${String(count('updated'))} updated, ` +
-          `${String(count('unchanged'))} unchanged, ${String(result.events)} events`,
-      );
-      return { json: result, text: `${lines.join('\n')}\n` };
+      return { json: result, text: renderImport(result) };
     },
   },
   {

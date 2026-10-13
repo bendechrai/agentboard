@@ -6,7 +6,7 @@
 import type { Ticket } from '../events/fold.js';
 import { formatTaskRef } from '../events/schema.js';
 import { asciiText } from '../board/text.js';
-import type { ImportResult } from '../board/import.js';
+import type { ImportAction, ImportResult, ImportedTicket } from '../board/import.js';
 import type { InboxEntry } from '../board/inbox.js';
 import type { ShowResult } from '../board/tickets.js';
 import { CACHE_SCHEMA_VERSION } from '../store/cache.js';
@@ -31,15 +31,27 @@ export { asciiText };
  * command. Pure.
  */
 export function renderListLine(ticket: Ticket): string {
-  return listLine({ ...ticket, adhoc: ticket.adhoc !== null });
+  return listLine({
+    ...ticket,
+    adhoc: ticket.adhoc !== null,
+    superseded: typeof ticket.superseded === 'string',
+  });
 }
 
-/** The fields of a `list` line. */
-type ListFields = Pick<Card, 'id' | 'status' | 'assignee' | 'adhoc' | 'closed' | 'title'>;
+/**
+ * The fields of a `list` line; `superseded` is absent where the source (a
+ * health card) does not carry it, and then no marker is printed.
+ */
+type ListFields = Pick<Card, 'id' | 'status' | 'assignee' | 'adhoc' | 'closed' | 'title'> & {
+  superseded?: boolean;
+};
 
 /** The `list` line of `fields` (see `renderListLine`). */
 function listLine(fields: ListFields): string {
-  const markers = (fields.adhoc ? '[adhoc] ' : '') + (fields.closed ? '[closed] ' : '');
+  const markers =
+    (fields.adhoc ? '[adhoc] ' : '') +
+    (fields.closed ? '[closed] ' : '') +
+    (fields.superseded === true ? '[superseded] ' : '');
   return [
     fields.id,
     fields.status,
@@ -93,7 +105,9 @@ export function renderShow(show: ShowResult): string {
     `description: ${orDash(t.description)}`,
     'checklist:',
     ...t.checklist.map(
-      (item, i) => `  [${item.done ? 'x' : ' '}] ${String(i)} ${asciiText(item.text)}`,
+      (item, i) =>
+        `  [${item.done ? 'x' : ' '}] ${String(i)} ${asciiText(item.text)}` +
+        (item.removed === true ? ' (removed)' : ''),
     ),
     'links:',
     ...t.links.map((l) =>
@@ -102,6 +116,7 @@ export function renderShow(show: ShowResult): string {
     'comments:',
     ...t.comments.map((c) => `  ${asciiText(c.actor)}: ${asciiText(c.text)}`),
     `closed: ${closedText(t)}`,
+    ...(t.superseded === null ? [] : [`superseded: ${asciiText(t.superseded)}`]),
     `events: ${String(show.events)}`,
     ...show.unknown.map((u) => `unknown: ${asciiText(u.kind)} ${u.hash}`),
   );
@@ -152,8 +167,85 @@ export function renderShow(show: ShowResult): string {
  * ```
  */
 export function renderImport(result: ImportResult): string {
-  void result;
-  throw new Error('not implemented');
+  const lines: string[] = [];
+  for (const entry of result.tickets) {
+    lines.push(...importEntryLines(entry, result.dryRun));
+  }
+  if (result.dryRun) {
+    for (const c of result.ambiguous) {
+      lines.push(
+        `ambiguous ${c.ticket} group ${asciiText(c.item)} ` +
+          `(score ${c.score.toFixed(2)}${c.sameTitle ? ' same title' : ''})`,
+      );
+    }
+  }
+  const count = (action: ImportAction): number =>
+    result.tickets.filter((t) => t.action === action).length;
+  const optional = (action: ImportAction): string =>
+    count(action) === 0 ? '' : `, ${String(count(action))} ${action}`;
+  const counts =
+    `${String(count('created'))} created, ${String(count('updated'))} updated, ` +
+    `${String(count('unchanged'))} unchanged${optional('blocked')}${optional('superseded')}`;
+  const target = `${asciiText(result.source)}:${asciiText(result.ref)}`;
+  lines.push(
+    result.dryRun
+      ? `dry run ${target}: ${counts}${result.ambiguous.length > 0 ? ', ambiguous' : ''}, nothing written`
+      : `imported ${target}: ${counts}, ${String(result.events)} events`,
+  );
+  return `${lines.join('\n')}\n`;
+}
+
+/** The lines of one `import-change` entry (see `renderImport`). */
+function importEntryLines(entry: ImportedTicket, dryRun: boolean): string[] {
+  const { ticket, diff } = entry;
+  const box = (done: boolean): string => (done ? '[x]' : '[ ]');
+  const lines = [
+    ticket === null
+      ? `${entry.action} group ${asciiText(entry.item ?? '-')}: ${asciiText(entry.title)}`
+      : `${entry.action} ${renderListLine(ticket)}`,
+  ];
+  if (dryRun && entry.pairing !== null) {
+    lines.push(`  paired by ${entry.pairing.pass} (score ${entry.pairing.score.toFixed(2)})`);
+  }
+  if (entry.renumber !== null) {
+    lines.push(
+      `  renumbered from group ${asciiText(entry.renumber.from)} to ${asciiText(entry.renumber.to)}`,
+    );
+  }
+  if (entry.supersede !== null) {
+    lines.push(`  superseded: ${asciiText(entry.supersede)}`);
+  }
+  if (diff !== null) {
+    if (diff.title !== null) {
+      lines.push(`  title: ${asciiText(diff.title)}`);
+    }
+    for (const line of diff.updated) {
+      lines.push(`  updated ${box(line.done)} ${String(line.index)} ${asciiText(line.text)}`);
+    }
+    for (const index of diff.removed) {
+      const line = ticket?.checklist[index];
+      lines.push(
+        `  removed ${box(line?.done ?? false)} ${String(index)} ${asciiText(line?.text ?? '')}`,
+      );
+    }
+    for (const line of diff.added) {
+      lines.push(`  added ${box(line.done)} ${asciiText(line.text)}`);
+    }
+    if (ticket?.closed === true) {
+      lines.push('  not reconciled: closed');
+    }
+  }
+  for (const line of entry.blocked) {
+    const why =
+      line.reason === 'done'
+        ? 'done'
+        : `held by ${ticket?.assignee === null || ticket === null ? '-' : asciiText(ticket.assignee)} in ${ticket?.status ?? '-'}`;
+    lines.push(`  blocked ${String(line.index)} ${asciiText(line.text)} (${why})`);
+  }
+  if (entry.forced) {
+    lines.push('  forced');
+  }
+  return lines;
 }
 
 function closedText(t: Ticket): string {
