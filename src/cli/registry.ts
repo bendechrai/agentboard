@@ -790,13 +790,13 @@ export const COMMANDS: readonly CommandSpec[] = [
         code: 3,
         reason: 'sync-conflict',
         meaning:
-          'The sync that --remote or --into-host runs stopped on a conflict, left in the board repository for a human; with --into-host also a conflict while integrating the host board ref, left in the temporary worktree, the old board untouched',
+          'The sync that --remote or --into-host runs stopped on a conflict, left in the board repository for a human; with --into-host also a conflict while integrating the host board ref, left in the temporary worktree the message names (resolve, git add, git rebase --continue there, then init --into-host again), the old board untouched',
       },
       {
         code: 3,
         reason: 'sync-in-progress',
         meaning:
-          'With --into-host: a rebase or merge is in progress in the standalone board repository; nothing changed',
+          'With --into-host: a rebase or merge is in progress in the standalone board repository, or the rebase of an earlier move is still stopped in its temporary worktree (finish it there, then run init --into-host again); nothing changed',
       },
       {
         code: 3,

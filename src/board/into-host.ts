@@ -26,7 +26,7 @@
  * a concurrent run fail), as `init.lock` treats its holder.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 
 import { openBoard } from '../store/board.js';
@@ -244,7 +244,21 @@ export function adoptMigratingWorktree(
   const git = hostGit(hostDir, options);
   git.run('worktree', 'move', candidate, dir);
   addBoardWorktree(hostDir, dir, options);
+  removeEmptyMigratingDir(hostDir, options);
   return true;
+}
+
+/**
+ * Removes `<git common dir>/agentboard/migrating` once the last temporary
+ * worktree has been moved into place, so a completed move leaves no
+ * directory behind; a directory that still holds an entry (another move's
+ * temporary) or that is already gone is left alone.
+ */
+function removeEmptyMigratingDir(hostDir: string, options?: HostInitOptions): void {
+  const base = migratingDir(hostDir, options);
+  if (existsSync(base) && readdirSync(base).length === 0) {
+    rmdirSync(base);
+  }
 }
 
 /**
@@ -880,6 +894,7 @@ function lockedMove(
   renameSync(dir, keptAt);
   host.run('worktree', 'move', temp, dir);
   addBoardWorktree(hostRoot, dir, { env });
+  removeEmptyMigratingDir(hostRoot, { env });
 
   // 7. Publish and catch up.
   const sync = syncNow(dir, env);
