@@ -4,7 +4,8 @@ Date: 2026-09-24
 
 ## Status
 
-Accepted
+Accepted. Amended by ADR 0012: the detached HEAD refusal applies to
+standalone boards only.
 
 ## Context
 
