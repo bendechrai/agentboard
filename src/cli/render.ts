@@ -6,6 +6,7 @@
 import type { Ticket } from '../events/fold.js';
 import { formatTaskRef } from '../events/schema.js';
 import { asciiText } from '../board/text.js';
+import type { ImportResult } from '../board/import.js';
 import type { InboxEntry } from '../board/inbox.js';
 import type { ShowResult } from '../board/tickets.js';
 import { CACHE_SCHEMA_VERSION } from '../store/cache.js';
@@ -21,8 +22,9 @@ export { asciiText };
  * The `list` line of a ticket, without a newline:
  * `<full 26-character id>  <status>  <assignee or ->  <markers><title>`,
  * fields separated by two spaces, where `<markers>` is `[adhoc] ` for a
- * ticket with an ad hoc reason and `[closed] ` for a closed ticket (in
- * that order when both apply), and assignee and title pass through
+ * ticket with an ad hoc reason, `[closed] ` for a closed ticket and
+ * `[superseded] ` for a superseded one (in that order when several
+ * apply), and assignee and title pass through
  * `asciiText`. Example:
  * `01ARYZ6S41TSV4RRFFQ69G5FAV  todo  -  [adhoc] Fix thing`. The id is never
  * shortened, so every id printed by `list` can be pasted back into any
@@ -58,10 +60,12 @@ function listLine(fields: ListFields): string {
  * task: <source>:<ref>#<item>       (or `adhoc: <reason>`, or `task: -`)
  * labels: <comma+space separated, or ->
  * description: <text or ->
- * checklist:                        (then per line `  [x] <index> <text>` or `  [ ] ...`)
+ * checklist:                        (then per line `  [x] <index> <text>` or `  [ ] ...`;
+ *                                    a removed line ends with ` (removed)`)
  * links:                            (then per link `  pr <n or url>` or `  decision <path>`)
  * comments:                         (then per comment, in order, `  <actor>: <text>`)
  * closed: no                        (or `yes (decision: <path>)` or `yes (no decision)`)
+ * superseded: <reason>              (only when the ticket is superseded)
  * events: <n>
  * unknown: <kind> <hash>            (one line per unknown-kind event, when any)
  * ```
@@ -102,6 +106,54 @@ export function renderShow(show: ShowResult): string {
     ...show.unknown.map((u) => `unknown: ${asciiText(u.kind)} ${u.hash}`),
   );
   return `${lines.join('\n')}\n`;
+}
+
+/**
+ * Human output of `import-change` (with or without `--dry-run`), ending
+ * with a newline. User text (titles, line texts, actors, reasons) passes
+ * through `asciiText`. Pure.
+ *
+ * For each entry of `result.tickets`, in order, a head line:
+ * - `<action> <renderListLine(ticket)>` when the entry has a ticket;
+ * - `created group <item>: <title>` for a `created` entry of a dry run.
+ * Then, each starting with two spaces and only when it applies, in this
+ * order:
+ * - dry run only, when `pairing` is not null:
+ *   `  paired by <pass> (score <score with two decimals>)`;
+ * - `renumber`: `  renumbered from group <from> to <to>`;
+ * - `supersede`: `  superseded: <reason>`;
+ * - when `diff` is not null: `  title: <new title>` (when its `title` is
+ *   not null); per `updated` line `  updated [x] <index> <text>` (or
+ *   `[ ]`, the line's new done flag, and its new text); per removed index
+ *   `  removed [x] <index> <text>` (or `[ ]`, the line's current done flag
+ *   and text on the ticket); per added line `  added [x] <text>` (or
+ *   `[ ]`); then, when the entry's ticket is closed,
+ *   `  not reconciled: closed`;
+ * - per `blocked` line `  blocked <index> <text> (done)` or
+ *   `  blocked <index> <text> (held by <assignee> in <status>)`;
+ * - when `forced`: `  forced`.
+ * Then, in a dry run with candidates, one line per `ambiguous` candidate:
+ * `ambiguous <ticket id> group <item> (score <two decimals>)`, with
+ * ` same title` before the closing parenthesis when `sameTitle`
+ * (`... (score 0.00 same title)`).
+ * Then the summary line, where the blocked and superseded counts appear
+ * only when not zero:
+ * - `imported <source>:<ref>: <c> created, <u> updated, <n> unchanged[, <b> blocked][, <s> superseded], <e> events`;
+ * - dry run: `dry run <source>:<ref>: <c> created, <u> updated, <n> unchanged[, <b> blocked][, <s> superseded][, ambiguous], nothing written`,
+ *   with `, ambiguous` when `ambiguous` is not empty.
+ * Example (a dry run renumbering one ticket and creating one):
+ *
+ * ```
+ * created group 5: Leases
+ * updated 01ARYZ6S41TSV4RRFFQ69G5FAV  todo  -  Docs
+ *   paired by title (score 1.00)
+ *   renumbered from group 5 to 6
+ * dry run openspec:add-x: 1 created, 1 updated, 0 unchanged, nothing written
+ * ```
+ */
+export function renderImport(result: ImportResult): string {
+  void result;
+  throw new Error('not implemented');
 }
 
 function closedText(t: Ticket): string {

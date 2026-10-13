@@ -244,6 +244,7 @@ describe('fold: basics', () => {
         comments: [],
         links: [],
         closed: false,
+        superseded: null,
         disposition: null,
         createdBy: 'orch',
         createdAt: tsOf(c),

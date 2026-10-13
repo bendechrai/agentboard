@@ -335,8 +335,10 @@ grant watermark (see board-cache "Cache schema").
 Inbox entries (and `watch --json` lines) SHALL carry `affects`: the
 previous holder for an applied `ticket.release.force` (its `holder`), for
 an applied claim that took over a lease (its `supersedes.holder`) and for
-an applied grant after a lapse (its `after.lease.holder`), and null for
-every other event. For `ticket.grant` the entry's `to` SHALL be the
+an applied grant after a lapse (its `after.lease.holder`), the assignee
+for a forced `ticket.reconcile` (its `holder`, see
+board-openspec-integration "Reconcile on re-import"), and null for every
+other event. For `ticket.grant` the entry's `to` SHALL be the
 grantee, and for `ticket.release.force` its `note` SHALL be the reason.
 Human inbox output SHALL begin an entry's line with `GRANTED: ` when it is
 a grant to the reading actor, and with `LOST: ` when its `affects` equals

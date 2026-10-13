@@ -67,6 +67,7 @@ function entryOf(hash: string, event: BoardEvent): InboxEntry {
     to: null,
     status: null,
     note: null,
+    affects: null,
     event,
   };
   switch (event.kind) {

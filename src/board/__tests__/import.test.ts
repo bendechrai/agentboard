@@ -158,12 +158,20 @@ function imported(): { board: Board; root: string; first: ImportResult } {
   return { board, root, first: structuredClone(template.first) };
 }
 
+/** `value`, which a test knows is not null. */
+function must<T>(value: T | null | undefined): T {
+  if (value === null || value === undefined) {
+    throw new Error('unexpected null');
+  }
+  return value;
+}
+
 function byItem(result: ImportResult, item: string): Ticket {
   const found = result.tickets.find((t) => t.item === item);
   if (found === undefined) {
     throw new Error(`no ticket for item ${item}`);
   }
-  return found.ticket;
+  return must(found.ticket);
 }
 
 describe('parseImportTarget', () => {
@@ -214,9 +222,9 @@ describe('import-change: first import (scenario: one ticket per group)', () => {
       expect(listTickets(board)).toHaveLength(9);
       first.tickets.forEach((entry, i) => {
         const n = String(i + 1);
-        const t = entry.ticket;
+        const t = must(entry.ticket);
         expect(entry.action).toBe('created');
-        expect(entry.appended).toBe(0);
+        expect(entry.diff).toBeNull();
         expect(entry.id).toBe(t.id);
         expect(t.title).toBe(TITLES[i]);
         expect(t.task).toEqual({ source: 'openspec', ref: CHANGE, item: n });
@@ -245,7 +253,7 @@ describe('import-change: first import (scenario: one ticket per group)', () => {
 
   it('imports fully ticked groups as merged and the rest as todo (scenario: fully ticked)', () => {
     const { first } = imported();
-    expect(first.tickets.map((t) => t.ticket.status)).toEqual([
+    expect(first.tickets.map((t) => must(t.ticket).status)).toEqual([
       'merged',
       'merged',
       'merged',
@@ -291,7 +299,7 @@ describe('import-change: first import (scenario: one ticket per group)', () => {
     expect(eventCount(board)).toBe(TOTAL_EVENTS);
     for (const entry of first.tickets) {
       expect(new Set(entry.events).size).toBe(entry.events.length);
-      expect(entry.ticket.version).toBe(entry.events.length);
+      expect(must(entry.ticket).version).toBe(entry.events.length);
     }
   });
 
@@ -299,7 +307,9 @@ describe('import-change: first import (scenario: one ticket per group)', () => {
     const { board, root } = setup();
     writeTasks(root, '# Tasks\n\n## 1. Nothing yet\n\nprose\n\n## 2. One\n\n- [x] 2.1 done\n');
     const out = importChange(board, 'orch', TARGET);
-    expect(out.tickets.map((t) => [t.item, t.ticket.status, t.ticket.checklist.length])).toEqual([
+    expect(
+      out.tickets.map((t) => [t.item, must(t.ticket).status, must(t.ticket).checklist.length]),
+    ).toEqual([
       ['1', 'todo', 0],
       ['2', 'merged', 1],
     ]);
@@ -378,19 +388,21 @@ describe('import-change: re-import (scenario: second import adds nothing)', () =
     const again = importChange(board, 'orch', TARGET);
     const seven = again.tickets.find((t) => t.item === '7');
     const eight = again.tickets.find((t) => t.item === '8');
-    expect(seven).toMatchObject({ action: 'updated', appended: 2 });
-    expect(eight).toMatchObject({ action: 'updated', appended: 1 });
+    expect(seven?.action).toBe('updated');
+    expect(seven?.diff?.added).toHaveLength(2);
+    expect(eight?.action).toBe('updated');
+    expect(eight?.diff?.added).toHaveLength(1);
     expect(seven?.events).toHaveLength(1);
     expect(eight?.events).toHaveLength(1);
     expect(again.events).toBe(2);
     expect(eventCount(board)).toBe(TOTAL_EVENTS + 2);
-    expect(seven?.ticket.checklist).toEqual([
+    expect(must(seven?.ticket).checklist).toEqual([
       ...byItem(first, '7').checklist,
       { text: '7.4 A new task', done: false },
       { text: '7.5 A task done already', done: true },
     ]);
-    expect(seven?.ticket.status).toBe('todo');
-    expect(seven?.ticket.version).toBe(byItem(first, '7').version + 1);
+    expect(must(seven?.ticket).status).toBe('todo');
+    expect(must(seven?.ticket).version).toBe(byItem(first, '7').version + 1);
     // The one event of each ticket is a ticket.checklist.add carrying the new lines.
     const lastEvent = (id: string): unknown => showRaw(board, id).at(-1)?.event;
     expect(lastEvent(seven?.id ?? '')).toMatchObject({
@@ -436,7 +448,7 @@ describe('import-change: tickets are keyed by task reference', () => {
       expect(listTickets(board)).toHaveLength(9);
       const seven = out.tickets.find((t) => t.item === '7');
       expect(seven).toMatchObject({ action: 'unchanged', id: manual.id, events: [] });
-      expect(seven?.ticket.title).toBe('My own title');
+      expect(must(seven?.ticket).title).toBe('My own title');
       expect(out.events).toBe(TOTAL_EVENTS - 1);
     },
   );
@@ -458,7 +470,7 @@ describe('import-change: tickets are keyed by task reference', () => {
     const again = importChange(board, 'orch', TARGET);
     expect(again.events).toBe(0);
     expect(again.tickets[0]).toMatchObject({ id: one.id, action: 'unchanged' });
-    expect(again.tickets[0]?.ticket.closed).toBe(true);
+    expect(must(again.tickets[0]?.ticket).closed).toBe(true);
     expect(listTickets(board, { closed: true })).toHaveLength(9);
   });
 

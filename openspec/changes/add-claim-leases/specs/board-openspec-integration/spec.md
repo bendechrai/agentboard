@@ -63,7 +63,7 @@ text or, with `--json`, as one document, and SHALL write nothing and exit 0.
 The `reconcile-blocked` and `reconcile-ambiguous` hints SHALL name
 `import-change <name> --dry-run`, the first also `--force`, and the
 `stale-import` reason SHALL hint `import-change <name> --dry-run`. The MCP tool `board_import_change` SHALL gain optional
-`dry_run` and `force` arguments from the registry.
+`dry-run` and `force` arguments from the registry.
 
 #### Scenario: Revised tasks file reconciles
 - **WHEN** a ticket was imported with lines `1.1 Add A`, `1.2 Add B` and `1.3 Add C` (`1.1` done), and tasks.md now titles the group differently and has `1.1 Add A`, `1.2 Add B with retries` and `1.4 Add D`

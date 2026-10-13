@@ -371,6 +371,16 @@ export function hintStep(
  * - `queued`: step `show` with I (for the queue).
  * - `needs-task-link`: step `link` with I, `task`
  *   `<source>:<ref>#<item>`, A.
+ * - `reconcile-blocked`: step `import-change` with `name` `<change>`,
+ *   `dry-run`, `as` A (to see the blocked lines), and step `import-change`
+ *   with `name` `<change>`, `force`, `as` A (to reconcile anyway, telling
+ *   the holder).
+ * - `reconcile-ambiguous`: edit a group title in the tasks file so each
+ *   ticket's group is clear (the words `tasks` and `title` appear), after
+ *   step `import-change` with `name` `<change>`, `dry-run`, `as` A shows
+ *   the candidates.
+ * - `stale-import`: step `import-change` with `name` `<change>`,
+ *   `dry-run`, `as` A.
  *
  * Exit 5: `integrity`: a human must inspect the file named in the
  * message; step `rebuild --check`. `busy`: retry the command. `no-cache`,

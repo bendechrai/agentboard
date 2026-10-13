@@ -28,7 +28,9 @@ function describeLink(body: TicketLinkBody): string {
 }
 
 function describeClose(body: TicketCloseBody): string {
-  return 'decision' in body ? `closed (decision ${oneLine(body.decision)})` : 'closed (no decision)';
+  return 'decision' in body
+    ? `closed (decision ${oneLine(body.decision)})`
+    : 'closed (no decision)';
 }
 
 /**
@@ -50,6 +52,13 @@ function describeClose(body: TicketCloseBody): string {
  *   otherwise, where `<n>` is the 1-based line number (`index + 1`)
  * - `ticket.checklist.add`: `added <k> checklist line(s)`, with `<k>` the
  *   number of items, the words `checklist line(s)` literal whatever `<k>`
+ * - `ticket.reconcile`: `reconciled with tasks (<u> updated, <r> removed,
+ *   <a> added[, renamed][, forced])`, where `<u>`, `<r>` and `<a>` are the
+ *   lengths of `updated`, `removed` and `added` (each written, 0 included),
+ *   `, renamed` appears when the body has a `title`, and `, forced` when
+ *   `forced` is true, in that order
+ * - `ticket.renumber`: `renumbered from group <from> to <to>`
+ * - `ticket.supersede`: `superseded: <reason>`
  * - `board.meta`: `set <key>`
  * - a kind this version does not define: `unknown kind <kind>`
  *
@@ -88,6 +97,12 @@ export function describeEvent(event: BoardEvent | UnknownKindEvent): string {
       return `added ${String(event.body.items.length)} checklist line(s)`;
     case 'board.meta':
       return `set ${oneLine(event.body.key)}`;
+    case 'ticket.reconcile':
+    case 'ticket.renumber':
+    case 'ticket.supersede':
+      // Not implemented yet. It must not throw: this module is bundled into
+      // the web client.
+      return event.kind;
     case 'ticket.renew':
     case 'ticket.release.force':
     case 'ticket.queue.join':

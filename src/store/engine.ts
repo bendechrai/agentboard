@@ -297,6 +297,7 @@ function toTicket(row: Row, comments: Row[], links: Row[], waiters: Row[]): Tick
     })),
     links: links.map(toLink),
     closed,
+    superseded: null,
     disposition: closed ? (decision === null ? { noDecision: true } : { decision }) : null,
     createdBy: text(row, 'created_by'),
     createdAt: decodeHlc(text(row, 'created_at')),

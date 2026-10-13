@@ -35,9 +35,13 @@
  *   adhoc        TEXT,
  *   labels       TEXT NOT NULL,   -- JSON array of strings
  *   closed       INTEGER NOT NULL,
+ *   superseded   TEXT,            -- Ticket.superseded: the supersede reason,
+ *                                 --   null when not superseded
  *   decision     TEXT,            -- decision path when closed with one;
  *                                 --   null when open or closed with noDecision
- *   checklist    TEXT NOT NULL    -- JSON array of {"done":bool,"text":string}
+ *   checklist    TEXT NOT NULL    -- JSON array of {"done":bool,"text":string},
+ *                                 --   plus "removed":true on a removed line
+ *                                 --   (Ticket.checklist, canonical JSON)
  * );
  * CREATE TABLE waiters (
  *   ticket   TEXT NOT NULL REFERENCES tickets(id),
@@ -142,10 +146,11 @@ import type { CorruptFile, MalformedFile, WriteHooks } from './eventfile.js';
 export const CACHE_FILE = 'cache.sqlite';
 
 /**
- * Version of the cache schema above, stored in `meta.schema_version`: 3,
- * the version with the lease and queue columns, the `waiters` table and the
- * `grant_watermark` row (board-cache: "Cache schema"), so an older cache,
- * including one without the watermark, is rebuilt on first open.
+ * Version of the cache schema above, stored in `meta.schema_version`: 4,
+ * the version with the lease and queue columns, the `waiters` table, the
+ * `grant_watermark` row (version 3), and the `superseded` column and the
+ * per-line `removed` flag of the checklist (board-cache: "Cache schema"), so
+ * an older cache, including one of version 3, is rebuilt on first open.
  */
 export const CACHE_SCHEMA_VERSION = 3;
 
