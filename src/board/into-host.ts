@@ -26,10 +26,46 @@
  * a concurrent run fail), as `init.lock` treats its holder.
  */
 
-import type { LocateOptions } from '../store/locate.js';
-import type { HostInitOptions } from './host-init.js';
-import type { InitResult } from './init.js';
-import type { SyncResult } from './sync.js';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
+
+import { openBoard } from '../store/board.js';
+import { BoardError } from '../store/errors.js';
+import { boardExists, locateBoard, type LocateOptions } from '../store/locate.js';
+import {
+  HOST_MODEL_GIT_FLOOR,
+  firstErrorLine,
+  gitRunner,
+  gitVersion,
+  isGitFailure,
+  meetsGitFloor,
+  type GitRunner,
+} from './git.js';
+import {
+  AGENTBOARD_GIT_SUBDIR,
+  addBoardWorktree,
+  boardWorktreeLocked,
+  registeredAt,
+  removeLeftoverWorktree,
+  withInitLock,
+  type HostInitOptions,
+} from './host-init.js';
+import { resolveRemoteTarget } from './host-sync.js';
+import { countEvents, hasInTreeGitDir, ignoreBoardInHost, initBoard, type InitResult } from './init.js';
+import { BOARD_REF, detectBoardModel, type BoardModelInfo } from './model.js';
+import { ambiguousRemoteError, boardRemote, chooseRemote, type ChosenRemote } from './remote.js';
+import { syncBoard, type SyncResult } from './sync.js';
+import {
+  EVENT_PATH,
+  checkCommittedEventsPresent,
+  checkNothingInProgress,
+  headExists,
+  plural,
+  syncFailed,
+  unmergedPaths,
+  zList,
+} from './sync-steps.js';
+import { asciiText, type Env } from './text.js';
 
 /**
  * The reserved, temporary ref the source tip is fetched into
@@ -48,6 +84,12 @@ export const MIGRATING_DIR = 'migrating';
 /** The prefix of a kept old repository: `standalone-<UTC timestamp>`. */
 export const STANDALONE_KEPT_PREFIX = 'standalone-';
 
+/** The name of an event file. */
+const EVENT_FILE = /^[0-9a-f]{64}\.json$/;
+
+/** The command a human runs again after fixing what a refusal names. */
+const AGAIN = 'agentboard init --into-host';
+
 /**
  * The name of the kept old repository for the moment `now`:
  * `standalone-` followed by the UTC time as `YYYYMMDDTHHMMSSZ` (so
@@ -56,8 +98,12 @@ export const STANDALONE_KEPT_PREFIX = 'standalone-';
  * as `staleBoardName` in `host-init.ts`. Pure.
  */
 export function standaloneKeptName(now: Date): string {
-  void now;
-  throw new Error('not implemented');
+  const pad = (n: number, width = 2): string => String(n).padStart(width, '0');
+  return (
+    `${STANDALONE_KEPT_PREFIX}${pad(now.getUTCFullYear(), 4)}${pad(now.getUTCMonth() + 1)}` +
+    `${pad(now.getUTCDate())}T${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}` +
+    `${pad(now.getUTCSeconds())}Z`
+  );
 }
 
 /**
@@ -71,10 +117,7 @@ export function migratingWorktreePath(
   pid?: number,
   options?: HostInitOptions,
 ): string {
-  void hostDir;
-  void pid;
-  void options;
-  throw new Error('not implemented');
+  return join(migratingDir(hostDir, options), String(pid ?? process.pid));
 }
 
 /** One temporary worktree directory found under `<git common dir>/agentboard/migrating/`. */
@@ -109,9 +152,27 @@ export function findMigratingWorktrees(
   hostDir: string,
   options?: HostInitOptions,
 ): MigratingWorktree[] {
-  void hostDir;
-  void options;
-  throw new Error('not implemented');
+  const base = migratingDir(hostDir, options);
+  if (!existsSync(base)) {
+    return [];
+  }
+  const git = gitRunner(hostDir, { env: options?.env });
+  return readdirSync(base)
+    .sort()
+    .map((name) => {
+      const path = join(base, name);
+      const pid = /^[1-9][0-9]*$/.test(name) ? Number(name) : null;
+      const registered = registeredAt(git, path) !== null;
+      const head = registered && existsSync(path) ? commitOf(git, path, 'HEAD') : null;
+      return {
+        path,
+        pid,
+        alive: pid !== null && processAlive(pid),
+        registered,
+        head,
+        rebasing: registered && existsSync(path) && rebaseStopped(git, path),
+      };
+    });
 }
 
 /**
@@ -133,9 +194,28 @@ export function findMigratingWorktrees(
  * repository changes.
  */
 export function removeDeadMigratingWorktrees(hostDir: string, options?: HostInitOptions): string[] {
-  void hostDir;
-  void options;
-  throw new Error('not implemented');
+  const git = hostGit(hostDir, options);
+  const migratingRef = refValue(git, MIGRATING_REF);
+  const removed: string[] = [];
+  for (const worktree of findMigratingWorktrees(hostDir, options)) {
+    if (worktree.alive || worktree.rebasing) {
+      continue;
+    }
+    // A registered worktree whose HEAD left the temporary ref (or whose
+    // ref is gone) holds a finished rebase: the re-run adopts it.
+    if (worktree.registered && worktree.head !== null && worktree.head !== migratingRef) {
+      continue;
+    }
+    removeLeftoverWorktree(git, worktree.path);
+    removed.push(worktree.path);
+  }
+  // The ref is deleted only when it exists: a move runs this pass before
+  // its step 2, and an `update-ref -d` of a missing ref would be a no-op
+  // that a shim or a trace could mistake for the end of step 4.
+  if (migratingRef !== '' && findMigratingWorktrees(hostDir, options).length === 0) {
+    git.attempt('update-ref', '-d', MIGRATING_REF);
+  }
+  return removed.sort();
 }
 
 /**
@@ -157,10 +237,34 @@ export function adoptMigratingWorktree(
   dir: string,
   options?: HostInitOptions,
 ): boolean {
-  void hostDir;
-  void dir;
-  void options;
-  throw new Error('not implemented');
+  const candidate = resumable(hostDir, dir, options);
+  if (candidate === null) {
+    return false;
+  }
+  const git = hostGit(hostDir, options);
+  git.run('worktree', 'move', candidate, dir);
+  addBoardWorktree(hostDir, dir, options);
+  return true;
+}
+
+/**
+ * The one temporary worktree `adoptMigratingWorktree` would move into
+ * place (registered, present, dead pid, no rebase state, HEAD at
+ * `BOARD_REF`), or null when `dir` exists or there is not exactly one.
+ * Read-only, so the decision to resume is taken before the init lock.
+ */
+function resumable(hostDir: string, dir: string, options?: HostInitOptions): string | null {
+  if (existsSync(dir)) {
+    return null;
+  }
+  const ref = refValue(gitRunner(hostDir, { env: options?.env }), BOARD_REF);
+  if (ref === '') {
+    return null;
+  }
+  const candidates = findMigratingWorktrees(hostDir, options).filter(
+    (w) => w.registered && existsSync(w.path) && !w.alive && !w.rebasing && w.head === ref,
+  );
+  return candidates.length === 1 ? (candidates[0]?.path ?? null) : null;
 }
 
 /** The outcome of `verifyEventFiles`. */
@@ -182,9 +286,23 @@ export interface EventVerification {
  * files.
  */
 export function verifyEventFiles(from: string, to: string): EventVerification {
-  void from;
-  void to;
-  throw new Error('not implemented');
+  const missing: string[] = [];
+  const different: string[] = [];
+  if (!existsSync(from)) {
+    return { missing, different };
+  }
+  for (const entry of readdirSync(from, { withFileTypes: true })) {
+    if (!entry.isFile() || !EVENT_FILE.test(entry.name)) {
+      continue;
+    }
+    const copy = join(to, entry.name);
+    if (!existsSync(copy)) {
+      missing.push(entry.name);
+    } else if (!readFileSync(join(from, entry.name)).equals(readFileSync(copy))) {
+      different.push(entry.name);
+    }
+  }
+  return { missing: missing.sort(), different: different.sort() };
 }
 
 /**
@@ -308,13 +426,15 @@ export interface IntoHostResult extends InitResult {
  *      first (the text `agentboard sync` appears).
  * 5. The standalone remote: `boardRemote(info)`. Ambiguous:
  *    `ambiguousRemoteError(choice, 'init')`, exit 1 `ambiguous-remote`.
- *    When a remote is chosen: `fetch --no-tags <remote>
- *    +refs/heads/<branch>:refs/remotes/<remote>/<branch>` in `dir` (so the
- *    remote-tracking ref holds the remote's tip whatever the remote's fetch
- *    refspec is); a failure (unreachable, no such branch on the remote
- *    when the local branch has commits) is `BoardError(3, 'sync-failed')`
- *    naming the remote and git's first error line. Then HEAD must be an
- *    ancestor of (or equal to) that tip (`merge-base --is-ancestor HEAD
+ *    When a remote is chosen: `fetch --no-tags --no-write-fetch-head
+ *    <remote> +refs/heads/<branch>:refs/remotes/<remote>/<branch>` in
+ *    `dir` (so the remote-tracking ref holds the remote's tip whatever the
+ *    remote's fetch refspec is; without `FETCH_HEAD`, so a refusal leaves
+ *    the board repository byte for byte as it was); a failure
+ *    (unreachable, no such branch on the remote when the local branch has
+ *    commits) is `BoardError(3, 'sync-failed')` naming the remote and
+ *    git's first error line. Then HEAD must be an ancestor of (or equal
+ *    to) that tip (`merge-base --is-ancestor HEAD
  *    refs/remotes/<remote>/<branch>`), else `BoardError(4, 'unsynced')`
  *    saying the branch has commits the remote does not and to run
  *    `agentboard sync` first. The source tip is
@@ -351,11 +471,13 @@ export interface IntoHostResult extends InitResult {
  * as the move runs it, after the runner's `-c` prefix, so a shim on the
  * PATH can match it:
  *
- * 2. `fetch --no-tags <dir> +<source tip>:refs/agentboard/migrating` run
- *    in `hostRoot` (`<dir>` the standalone repository as a local path,
- *    `<source tip>` the ref of step 5), so `MIGRATING_REF` holds the source
- *    tip in the host's object store. No other command of the move has the
- *    text `:refs/agentboard/migrating` in its arguments.
+ * 2. `fetch --no-tags --no-write-fetch-head <dir>
+ *    +<source tip>:refs/agentboard/migrating` run in `hostRoot` (`<dir>`
+ *    the standalone repository as a local path, `<source tip>` the ref of
+ *    step 5; without `FETCH_HEAD`, so the host's own is left alone), so
+ *    `MIGRATING_REF` holds the source tip in the host's object store. No
+ *    other command of the move has the text `:refs/agentboard/migrating`
+ *    in its arguments.
  * 3. `worktree add --detach <migratingWorktreePath(hostRoot)>
  *    refs/agentboard/migrating` in `hostRoot` (the parent directories
  *    created first). Then, in that worktree, with `<old>` the value of
@@ -444,6 +566,575 @@ export interface IntoHostResult extends InitResult {
  * @throws BoardError as listed above.
  */
 export function moveBoardIntoHost(options?: LocateOptions): IntoHostResult {
-  void options;
-  throw new Error('not implemented');
+  const { dir, source } = locateBoard(options);
+  const env: Env = options?.env ?? process.env;
+  const cwd = options?.cwd ?? process.cwd();
+  checkGit(env, cwd);
+  const hostRoot = dirname(dir);
+  if (source !== 'git' || !hasInTreeGitDir(hostRoot, env)) {
+    throw new BoardError(
+      1,
+      'no-host-repository',
+      `${source === 'env' ? `the board named by AGENTBOARD_DIR, ${asciiText(dir)},` : `the board at ${asciiText(dir)}`} ` +
+        'was not found through a git repository with its .git directory inside its working ' +
+        `tree, so there is no host repository to move it into; unset AGENTBOARD_DIR and run ${AGAIN} ` +
+        'at the root of the main checkout of the project',
+    );
+  }
+  if (!boardExists(dir)) {
+    // Only a move interrupted between keeping the old board aside and
+    // moving its worktree into place leaves no board here; everything
+    // else is a missing board, refused before any lock is taken.
+    if (resumable(hostRoot, dir, { env }) !== null) {
+      const remote = hostRemote(hostRoot, env);
+      const resumed = withInitLock(
+        hostRoot,
+        () =>
+          adoptMigratingWorktree(hostRoot, dir, { env })
+            ? resumedMove(dir, hostRoot, remote, env)
+            : null,
+        { env },
+      );
+      if (resumed !== null) {
+        return resumed;
+      }
+    }
+    throw notFound(dir);
+  }
+  const info = detectBoardModel(dir, { env });
+  if (info.model === 'host') {
+    return unchangedBoard(dir, info, env);
+  }
+  if (info.model !== 'standalone') {
+    return repairedBoard(initBoard(options));
+  }
+  const plan = checkStandalone(dir, info, env);
+  const remote = hostRemote(hostRoot, env);
+  const outcome = withInitLock(hostRoot, () => lockedMove(dir, hostRoot, plan, remote, env), { env });
+  return outcome === 'repair' ? repairedBoard(initBoard(options)) : outcome;
+}
+
+/** Step 1, check 3: the refusal of a missing board, as `findBoard` words it for a board found through git. */
+function notFound(dir: string): BoardError {
+  return new BoardError(
+    2,
+    'board-not-found',
+    `no board found at ${dir} (<git common dir>/../.board); run agentboard init to create one`,
+  );
+}
+
+/** Step 1, check 1: git runs and meets the host model's floor. */
+function checkGit(env: Env, cwd: string): void {
+  const version = gitVersion(env, cwd);
+  if (version === null) {
+    throw new BoardError(
+      1,
+      'git-missing',
+      'agentboard init needs git (the board is kept in a git repository), but git could not be run',
+    );
+  }
+  if (!meetsGitFloor(version)) {
+    const found = `${String(version.major)}.${String(version.minor)}.${String(version.patch)}`;
+    const floor = `${String(HOST_MODEL_GIT_FLOOR.major)}.${String(HOST_MODEL_GIT_FLOOR.minor)}`;
+    throw new BoardError(
+      1,
+      'git-too-old',
+      `git ${found} was found, but a board in the host repository needs git ${floor} or later; ` +
+        `upgrade git and run ${AGAIN} again`,
+    );
+  }
+}
+
+/** What step 1 learned about the standalone board, for steps 2 to 7. */
+interface MovePlan {
+  /** The ref step 2 fetches from the standalone repository: the remote-tracking ref of its branch, else the branch. */
+  readonly sourceTip: string;
+  /** The raw `remote.<name>.url` of the chosen remote, or null without one. */
+  readonly oldRemoteUrl: string | null;
+}
+
+/** Step 1, check 4 (standalone) and 5: the standalone board can be moved without losing an event. */
+function checkStandalone(dir: string, info: BoardModelInfo, env: Env): MovePlan {
+  const git = gitRunner(dir, { env });
+  checkNothingInProgress(git, dir);
+  const branch = git.attempt('symbolic-ref', '--quiet', '--short', 'HEAD');
+  if (isGitFailure(branch)) {
+    throw new BoardError(
+      3,
+      'detached-head',
+      `the board repository at ${asciiText(dir)} has a detached HEAD; check out its branch ` +
+        `(git -C ${asciiText(dir)} switch main) and run ${AGAIN} again`,
+    );
+  }
+  if (!headExists(git)) {
+    throw new BoardError(
+      4,
+      'unsynced',
+      `the board repository at ${asciiText(dir)} has no commit yet, so its events are not ` +
+        `committed; run agentboard sync first, then ${AGAIN} again`,
+    );
+  }
+  checkCommittedEventsPresent(git, { dir });
+  const modified = zList(
+    git.run('diff', '--name-only', '-z', '--diff-filter=M', 'HEAD', '--', 'events'),
+  )
+    .filter((path) => EVENT_PATH.test(path))
+    .sort();
+  if (modified.length > 0) {
+    throw new BoardError(
+      5,
+      'integrity',
+      `${plural(modified.length, 'committed event file')} in ${asciiText(dir)} differ from their ` +
+        `committed content: ${modified.map((p) => asciiText(p)).join(', ')}; event files are ` +
+        'named by their content and never change, so nothing was moved; restore them with ' +
+        modified.map((p) => `git -C ${asciiText(dir)} checkout -- ${asciiText(p)}`).join(' and '),
+    );
+  }
+  const pending = git
+    .run('status', '--porcelain', '--untracked-files=all', '--', 'events')
+    .split('\n')
+    .map((line) => line.slice(3).trim())
+    .filter((path) => path !== '' && !basename(path).startsWith('.tmp-'));
+  if (pending.length > 0) {
+    throw new BoardError(
+      4,
+      'unsynced',
+      `${plural(pending.length, 'event file')} in ${asciiText(join(dir, 'events'))} ` +
+        `${pending.length === 1 ? 'is' : 'are'} not committed; run agentboard sync first, ` +
+        `then ${AGAIN} again`,
+    );
+  }
+
+  const choice = boardRemote(info, { env });
+  if (choice.ambiguous) {
+    throw ambiguousRemoteError(choice, 'init');
+  }
+  const remote = choice.chosen;
+  if (remote === null) {
+    return { sourceTip: `refs/heads/${branch.trim()}`, oldRemoteUrl: null };
+  }
+  const name = remote.name;
+  const tracking = `refs/remotes/${name}/${branch.trim()}`;
+  const fetched = git.attempt(
+    'fetch',
+    '--no-tags',
+    '--no-write-fetch-head',
+    name,
+    `+refs/heads/${branch.trim()}:${tracking}`,
+  );
+  if (isGitFailure(fetched)) {
+    throw syncFailed(`fetching ${asciiText(branch.trim())} from ${asciiText(name)}`, fetched);
+  }
+  if (!isAncestor(git, 'HEAD', tracking)) {
+    throw new BoardError(
+      4,
+      'unsynced',
+      `the branch ${asciiText(branch.trim())} of the board repository at ${asciiText(dir)} has ` +
+        `commits that ${asciiText(name)} does not; run agentboard sync first, then ${AGAIN} again`,
+    );
+  }
+  const url = git.attempt('config', '--get', `remote.${name}.url`);
+  return { sourceTip: tracking, oldRemoteUrl: isGitFailure(url) ? null : url.trim() };
+}
+
+/** Step 1, check 6: the host repository's remote, refused when ambiguous. */
+function hostRemote(hostRoot: string, env: Env): ChosenRemote | null {
+  const branch = gitRunner(hostRoot, { env }).attempt('symbolic-ref', '--quiet', '--short', 'HEAD');
+  const choice = chooseRemote(hostRoot, isGitFailure(branch) ? null : branch.trim(), { env });
+  if (choice.ambiguous) {
+    throw ambiguousRemoteError(choice, 'init');
+  }
+  return choice.chosen;
+}
+
+/**
+ * Steps 2 to 7, under the init lock. Returns `repair` when the board is
+ * no longer standalone nor healthy, so the caller repairs it as `initBoard`
+ * does once the lock is released (`initBoard` takes the lock itself).
+ */
+function lockedMove(
+  dir: string,
+  hostRoot: string,
+  plan: MovePlan,
+  remote: ChosenRemote | null,
+  env: Env,
+): IntoHostResult | 'repair' {
+  if (!boardExists(dir)) {
+    if (adoptMigratingWorktree(hostRoot, dir, { env })) {
+      return resumedMove(dir, hostRoot, remote, env);
+    }
+    throw notFound(dir);
+  }
+  const info = detectBoardModel(dir, { env });
+  if (info.model === 'host') {
+    return unchangedBoard(dir, info, env);
+  }
+  if (info.model !== 'standalone') {
+    return 'repair';
+  }
+  const host = hostGit(hostRoot, { env });
+  const scratch = join(commonDir(host, hostRoot), AGENTBOARD_GIT_SUBDIR);
+
+  // Leftovers of earlier moves: a stopped rebase waits for a human, what
+  // holds nothing is removed, and a finished rebase is adopted. A
+  // temporary named by this process's own pid is one an earlier call in
+  // this process left (it holds the lock alone and runs one move at a
+  // time), so it is treated as a dead one here, although the helpers
+  // report it alive.
+  const done = (w: MigratingWorktree): boolean => !w.alive || w.pid === process.pid;
+  const leftovers = findMigratingWorktrees(hostRoot, { env });
+  const stopped = leftovers.find((w) => done(w) && w.rebasing);
+  if (stopped !== undefined) {
+    throw new BoardError(
+      3,
+      'sync-in-progress',
+      `an earlier ${AGAIN} stopped on a conflict, and its rebase is still in progress in the ` +
+        `temporary worktree at ${asciiText(stopped.path)}; resolve the conflict, git add the paths ` +
+        `and git rebase --continue (or git rebase --abort) in ${asciiText(stopped.path)}, then ` +
+        `run ${AGAIN} again; the board at ${asciiText(dir)} is untouched`,
+    );
+  }
+  const removed = removeDeadMigratingWorktrees(hostRoot, { env });
+  const migratingRef = refValue(host, MIGRATING_REF);
+  for (const own of leftovers.filter(
+    (w) => w.pid === process.pid && !w.rebasing && (w.head === null || w.head === migratingRef),
+  )) {
+    removeLeftoverWorktree(host, own.path);
+    removed.push(own.path);
+  }
+  const adoptable = findMigratingWorktrees(hostRoot, { env }).find(
+    (w) => done(w) && !w.rebasing && w.registered && w.head !== null && w.head !== migratingRef,
+  );
+  const hostGitignore = ignoreBoardInHost(hostRoot);
+
+  // 2. The source tip into the temporary ref; 3. the temporary worktree.
+  let temp: string;
+  if (adoptable === undefined) {
+    host.run('fetch', '--no-tags', '--no-write-fetch-head', dir, `+${plan.sourceTip}:${MIGRATING_REF}`);
+    temp = migratingWorktreePath(hostRoot, process.pid, { env });
+    mkdirSync(dirname(temp), { recursive: true });
+    host.run('worktree', 'add', '--detach', temp, MIGRATING_REF);
+  } else {
+    temp = adoptable.path;
+  }
+  const worktree = gitRunner(temp, { env, disableHooks: true });
+  const old = refValue(host, BOARD_REF);
+  if (old !== '' && !isAncestor(worktree, BOARD_REF, 'HEAD')) {
+    rebaseOnto(host, worktree, dir, temp, BOARD_REF, `the local ${BOARD_REF}`);
+  }
+  const warnings: string[] = [];
+  let joined = false;
+  if (remote !== null) {
+    const target = resolveRemoteTarget(remote.name, remote.url, hostRoot);
+    const listed = worktree.attempt('ls-remote', target, BOARD_REF);
+    if (isGitFailure(listed)) {
+      warnings.push(
+        `the host remote ${asciiText(remote.name)} could not be reached (${firstErrorLine(listed)}); ` +
+          `the board is moved anyway, and agentboard sync publishes it once ${asciiText(remote.name)} ` +
+          'can be reached',
+      );
+    } else if (listed.trim() !== '') {
+      const fetched = worktree.attempt('fetch', '--no-tags', target, BOARD_REF);
+      if (isGitFailure(fetched)) {
+        discardTemporary(host, temp);
+        throw syncFailed(`fetching ${BOARD_REF} from ${asciiText(remote.name)}`, fetched);
+      }
+      if (!isAncestor(worktree, 'FETCH_HEAD', 'HEAD')) {
+        rebaseOnto(host, worktree, dir, temp, 'FETCH_HEAD', `what ${asciiText(remote.name)} holds`);
+      }
+      joined = true;
+    }
+  }
+
+  // 4. The compare-and-swap, then the temporary ref goes.
+  const head = worktree.run('rev-parse', 'HEAD').trim();
+  if (isGitFailure(host.attempt('update-ref', BOARD_REF, head, old))) {
+    discardTemporary(host, temp);
+    throw new BoardError(
+      3,
+      'sync-failed',
+      `updating ${BOARD_REF} in the host repository failed because something else moved it ` +
+        `meanwhile; nothing was moved; run ${AGAIN} again`,
+    );
+  }
+  host.run('update-ref', '-d', MIGRATING_REF);
+
+  // 5. Every old event file, byte for byte.
+  const check = verifyEventFiles(join(dir, 'events'), join(temp, 'events'));
+  if (check.missing.length > 0 || check.different.length > 0) {
+    discardTemporary(host, temp);
+    const names = (list: readonly string[]): string => list.map((n) => asciiText(n)).join(', ');
+    throw new BoardError(
+      5,
+      'integrity',
+      `the new worktree at ${asciiText(temp)} did not hold every event file of ${asciiText(dir)} ` +
+        `byte for byte (${check.missing.length > 0 ? `missing: ${names(check.missing)}` : ''}` +
+        `${check.missing.length > 0 && check.different.length > 0 ? '; ' : ''}` +
+        `${check.different.length > 0 ? `different: ${names(check.different)}` : ''}); nothing was ` +
+        `moved and the board at ${asciiText(dir)} is untouched; run ${AGAIN} again`,
+    );
+  }
+
+  // 6. Keep the old repository, move the worktree into place, lock it.
+  const keptAt = freshKeptName(scratch, new Date());
+  renameSync(dir, keptAt);
+  host.run('worktree', 'move', temp, dir);
+  addBoardWorktree(hostRoot, dir, { env });
+
+  // 7. Publish and catch up.
+  const sync = syncNow(dir, env);
+  const lines = [
+    `moved the board at ${asciiText(dir)} into the host repository (host model: a worktree of ` +
+      `the host repository at ${BOARD_REF})`,
+    ...keptLines(keptAt, plan.oldRemoteUrl),
+  ];
+  if (removed.length > 0) {
+    lines.push(`removed ${removed.map((p) => asciiText(p)).join(', ')}, left by an interrupted move`);
+  }
+  lines.push(...sync.message.split('\n'));
+  return {
+    dir,
+    created: false,
+    model: 'host',
+    joined,
+    remote: remote?.name ?? null,
+    events: countEvents(dir),
+    hostGitignore,
+    warnings: [...warnings, ...sync.warnings],
+    repair: null,
+    message: lines.join('\n'),
+    action: 'moved',
+    keptAt,
+    oldRemoteUrl: plan.oldRemoteUrl,
+    sync,
+  };
+}
+
+/** The move finished by `adoptMigratingWorktree` (action `resumed`): step 7 and the report. */
+function resumedMove(
+  dir: string,
+  hostRoot: string,
+  remote: ChosenRemote | null,
+  env: Env,
+): IntoHostResult {
+  const scratch = join(commonDir(gitRunner(hostRoot, { env }), hostRoot), AGENTBOARD_GIT_SUBDIR);
+  const keptAt = newestKept(scratch);
+  const oldRemoteUrl = keptAt === null ? null : keptRemoteUrl(keptAt, env);
+  const sync = syncNow(dir, env);
+  const lines = [
+    `finished moving the board at ${asciiText(dir)} into the host repository (host model: a ` +
+      `worktree of the host repository at ${BOARD_REF}): moved the worktree of an interrupted ` +
+      'move into place',
+    ...(keptAt === null
+      ? ['no kept copy of the old board repository was found']
+      : keptLines(keptAt, oldRemoteUrl)),
+    ...sync.message.split('\n'),
+  ];
+  return {
+    dir,
+    created: false,
+    model: 'host',
+    joined: false,
+    remote: remote?.name ?? null,
+    events: countEvents(dir),
+    hostGitignore: null,
+    warnings: [...sync.warnings],
+    repair: null,
+    message: lines.join('\n'),
+    action: 'resumed',
+    keptAt,
+    oldRemoteUrl,
+    sync,
+  };
+}
+
+/** A board already in the host repository (action `unchanged`), the lock restored as `initBoard` does. */
+function unchangedBoard(dir: string, info: BoardModelInfo, env: Env): IntoHostResult {
+  const hostRoot = dirname(dir);
+  const choice = boardRemote(info, { env });
+  const remote = choice.chosen?.name ?? null;
+  let changed = 'nothing changed';
+  if (!boardWorktreeLocked(hostRoot, dir, { env })) {
+    // Finishes a move or an init interrupted after the worktree was moved
+    // or added and before its lock: locks it.
+    addBoardWorktree(hostRoot, dir, { env });
+    changed = 'restored the worktree lock that an interrupted init had not set';
+  }
+  return {
+    dir,
+    created: false,
+    model: 'host',
+    joined: false,
+    remote,
+    events: countEvents(dir),
+    hostGitignore: null,
+    warnings: [],
+    repair: null,
+    message:
+      `the board at ${asciiText(dir)} is already in the host repository (host model: its ` +
+      `history is ${BOARD_REF}; ${remote === null ? 'no remote configured' : `remote: ${asciiText(remote)}`}); ` +
+      changed,
+    action: 'unchanged',
+    keptAt: null,
+    oldRemoteUrl: null,
+    sync: null,
+  };
+}
+
+/** The result of `initBoard` on a broken link or a non-repository `.board` (action `repaired`). */
+function repairedBoard(base: InitResult): IntoHostResult {
+  return {
+    ...base,
+    action: base.repair === null ? 'unchanged' : 'repaired',
+    keptAt: null,
+    oldRemoteUrl: null,
+    sync: null,
+  };
+}
+
+/** The message lines naming the kept repository, the old remote and what the other clones do. */
+function keptLines(keptAt: string, oldRemoteUrl: string | null): string[] {
+  return [
+    `the old board repository is kept at ${asciiText(keptAt)}`,
+    oldRemoteUrl === null
+      ? 'the old board had no remote'
+      : `its remote was ${asciiText(oldRemoteUrl)} (as written in its configuration)`,
+    `every other clone of the project runs ${AGAIN} too; retire the old remote once they all have`,
+  ];
+}
+
+/** `syncBoard` on the board at `dir`, closed afterwards whatever happens. */
+function syncNow(dir: string, env: Env): SyncResult {
+  const board = openBoard(dir);
+  try {
+    return syncBoard(board, { env });
+  } finally {
+    board.close();
+  }
+}
+
+/**
+ * Rebases the temporary worktree's HEAD onto `onto`. A conflict is left in
+ * place for a human (the worktree and `MIGRATING_REF` stay); any other
+ * failure removes the worktree.
+ */
+function rebaseOnto(
+  host: GitRunner,
+  worktree: GitRunner,
+  dir: string,
+  temp: string,
+  onto: string,
+  what: string,
+): void {
+  const out = worktree.attempt('rebase', '--no-verify', onto);
+  if (!isGitFailure(out)) {
+    return;
+  }
+  const conflicted = unmergedPaths(worktree);
+  if (conflicted.length > 0) {
+    throw new BoardError(
+      3,
+      'sync-conflict',
+      `integrating ${what} stopped on a conflict in the temporary worktree at ${asciiText(temp)}: ` +
+        `${conflicted.map((p) => asciiText(p)).join(', ')}; resolve them, git add them and ` +
+        `git rebase --continue (or git rebase --abort) in ${asciiText(temp)}, then run ${AGAIN} ` +
+        `again; the board at ${asciiText(dir)} is untouched`,
+    );
+  }
+  discardTemporary(host, temp);
+  throw syncFailed(`integrating ${what}`, out);
+}
+
+/** Removes the temporary worktree at `temp` and the temporary ref after a refusal in steps 3 to 5. */
+function discardTemporary(host: GitRunner, temp: string): void {
+  removeLeftoverWorktree(host, temp);
+  host.attempt('update-ref', '-d', MIGRATING_REF);
+}
+
+/** A runner for the host repository at `hostDir` with its hooks disabled. */
+function hostGit(hostDir: string, options?: HostInitOptions): GitRunner {
+  return gitRunner(hostDir, { env: options?.env, disableHooks: true });
+}
+
+/** The git common directory of the repository at `hostDir`, absolute. Creates nothing. */
+function commonDir(git: GitRunner, hostDir: string): string {
+  return resolve(hostDir, git.run('rev-parse', '--git-common-dir').trim());
+}
+
+/** `<git common dir>/agentboard/migrating` of the repository at `hostDir`. Creates nothing. */
+function migratingDir(hostDir: string, options?: HostInitOptions): string {
+  const git = gitRunner(hostDir, { env: options?.env });
+  return join(commonDir(git, hostDir), AGENTBOARD_GIT_SUBDIR, MIGRATING_DIR);
+}
+
+/** The full id `ref` holds in the repository `git` runs in, or the empty string when it does not exist. */
+function refValue(git: GitRunner, ref: string): string {
+  const out = git.attempt('rev-parse', '--quiet', '--verify', `${ref}^{commit}`);
+  return isGitFailure(out) ? '' : out.trim();
+}
+
+/** The full id of the commit `rev` names in the worktree at `cwd`, or null. */
+function commitOf(git: GitRunner, cwd: string, rev: string): string | null {
+  const out = git.attemptIn(cwd, 'rev-parse', '--quiet', '--verify', `${rev}^{commit}`);
+  return isGitFailure(out) ? null : out.trim();
+}
+
+/** Whether `ancestor` is an ancestor of (or equal to) `descendant` in the repository `git` runs in. */
+function isAncestor(git: GitRunner, ancestor: string, descendant: string): boolean {
+  return !isGitFailure(git.attempt('merge-base', '--is-ancestor', ancestor, descendant));
+}
+
+/** Whether a rebase is stopped in the worktree at `cwd` (`rebase-merge` or `rebase-apply` in its git directory). */
+function rebaseStopped(git: GitRunner, cwd: string): boolean {
+  const gitDir = git.attemptIn(cwd, 'rev-parse', '--absolute-git-dir');
+  if (isGitFailure(gitDir)) {
+    return false;
+  }
+  return ['rebase-merge', 'rebase-apply'].some((name) => existsSync(join(gitDir.trim(), name)));
+}
+
+/** Whether a process with `pid` is running: `kill(pid, 0)` succeeds, or fails for a reason other than ESRCH. */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as { code?: unknown }).code !== 'ESRCH';
+  }
+}
+
+/** `<scratch>/<standaloneKeptName(now)>`, with `-2`, `-3`, ... appended while the name is taken. */
+function freshKeptName(scratch: string, now: Date): string {
+  const base = join(scratch, standaloneKeptName(now));
+  let candidate = base;
+  for (let n = 2; existsSync(candidate); n += 1) {
+    candidate = `${base}-${String(n)}`;
+  }
+  return candidate;
+}
+
+/** The newest kept repository (`standalone-*`, the greatest name) under `scratch`, or null. */
+function newestKept(scratch: string): string | null {
+  if (!existsSync(scratch)) {
+    return null;
+  }
+  const names = readdirSync(scratch)
+    .filter((name) => name.startsWith(STANDALONE_KEPT_PREFIX))
+    .sort();
+  const newest = names[names.length - 1];
+  return newest === undefined ? null : join(scratch, newest);
+}
+
+/** The raw URL of the remote the kept standalone repository at `kept` would sync with, or null. */
+function keptRemoteUrl(kept: string, env: Env): string | null {
+  const info = detectBoardModel(kept, { env });
+  if (info.model !== 'standalone') {
+    return null;
+  }
+  const name = boardRemote(info, { env }).chosen?.name;
+  if (name === undefined) {
+    return null;
+  }
+  const url = gitRunner(kept, { env }).attempt('config', '--get', `remote.${name}.url`);
+  return isGitFailure(url) ? null : url.trim();
 }

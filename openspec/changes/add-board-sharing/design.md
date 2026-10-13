@@ -298,8 +298,11 @@ Steps:
    `[remote rejected]` whose reason is a lost ref update, which is how
    receive-pack reports a push received at the same time as another one
    to the same ref: `failed to update ref`, `failed to lock`, `incorrect
-   old value provided`, `cannot lock ref`; ten writers and two syncs per
-   clone hit it in the first round of the concurrency test) retries once
+   old value provided`, `cannot lock ref`, and `reference already exists`
+   when the other push created the ref between this push's advertisement
+   and its ref update; ten writers and two syncs per clone hit it in the
+   first round of the concurrency test, and two clones moving their boards
+   into one host at the same time hit the last wording) retries once
    from step 4; a second such rejection is exit 3 `sync-failed`. A remote
    that refuses the ref (any other `[remote rejected]`: a `pre-receive`
    hook, a host that does not accept custom refs) is not a race and is

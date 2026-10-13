@@ -68,8 +68,8 @@ export function headExists(git: GitRunner): boolean {
   return !isGitFailure(git.attempt('rev-parse', '--quiet', '--verify', 'HEAD^{commit}'));
 }
 
-/** Precondition: every event file recorded in HEAD is present in `events/`. */
-export function checkCommittedEventsPresent(git: GitRunner, board: Board): void {
+/** Precondition: every event file recorded in HEAD is present in `events/`. Needs only the board's directory, so `init --into-host` runs it without opening the board. */
+export function checkCommittedEventsPresent(git: GitRunner, board: Pick<Board, 'dir'>): void {
   if (!headExists(git)) {
     return;
   }
