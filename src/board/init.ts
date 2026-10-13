@@ -22,8 +22,9 @@ import { openBoard } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
 import { boardExists, locateBoard, type LocateOptions } from '../store/locate.js';
 import { gitRunner, gitVersion, isGitFailure, meetsGitFloor, type GitVersion } from './git.js';
-import { cleanDeadMigratingWorktrees } from './into-host.js';
+import { MIGRATING_DIR, cleanDeadMigratingWorktrees } from './into-host.js';
 import {
+  AGENTBOARD_GIT_SUBDIR,
   BOARD_GITIGNORE_LINES,
   addBoardWorktree,
   adoptRepairingWorktree,
@@ -304,7 +305,13 @@ export function initBoard(options?: LocateOptions): InitResult {
   // the init lock: no init changes a healthy board.
   const healthy = healthyBoard(dir, env);
   if (healthy !== null) {
-    return existingBoard(dir, healthy, hostModel, env);
+    // A host-model board with temporary worktrees of a move under
+    // `<git common dir>/agentboard/migrating` is cleaned under the lock.
+    return healthy.model === 'host' && hostModel && existsSync(migratingDirOf(dirname(dir), env))
+      ? withInitLock(dirname(dir), () => existingBoard(dir, healthy, hostModel, env, true), {
+          env,
+        })
+      : existingBoard(dir, healthy, hostModel, env, false);
   }
   if (!hostModel) {
     return createStandaloneBoard(dir, inTree, warnings, why, env);
@@ -316,6 +323,12 @@ export function initBoard(options?: LocateOptions): InitResult {
   const hostRoot = dirname(dir);
   const remote = hostRemote(hostRoot, env);
   return withInitLock(hostRoot, () => hostModelBoard(dir, remote, env), { env });
+}
+
+/** `<git common dir>/agentboard/migrating` of the host at `hostRoot`, the directory of a move's temporary worktrees. */
+function migratingDirOf(hostRoot: string, env: Env): string {
+  const common = gitRunner(hostRoot, { env }).run('rev-parse', '--git-common-dir').trim();
+  return join(resolve(hostRoot, common), AGENTBOARD_GIT_SUBDIR, MIGRATING_DIR);
 }
 
 /** The model of the board at `dir` when it exists and is healthy (`host` or `standalone`), else null. */
@@ -337,7 +350,7 @@ function healthyBoard(dir: string, env: Env): BoardModelInfo | null {
 function hostModelBoard(dir: string, remote: string | null, env: Env): InitResult {
   const healthy = healthyBoard(dir, env);
   if (healthy !== null) {
-    return existingBoard(dir, healthy, true, env);
+    return existingBoard(dir, healthy, true, env, true);
   }
   return existsSync(dir) ? repairBoard(dir, remote, env) : createHostBoard(dir, remote, env);
 }
@@ -380,6 +393,7 @@ function existingBoard(
   info: BoardModelInfo,
   hostModel: boolean,
   env: Env,
+  locked: boolean,
 ): InitResult {
   const choice = boardRemote(info, { env });
   const remote = choice.chosen?.name ?? null;
@@ -396,14 +410,11 @@ function existingBoard(
       `board already exists at ${asciiText(dir)} (host model: its history is ${BOARD_REF} ` +
         `in the host repository; ${remoteText}); ${changed}`,
     );
-    if (hostModel) {
+    if (hostModel && locked) {
       // Temporary worktrees of a move that died: removed under the init
-      // lock, as `init --into-host` removes them on a board already moved.
-      const removed = withInitLock(
-        dirname(dir),
-        () => cleanDeadMigratingWorktrees(dirname(dir), { env }),
-        { env },
-      );
+      // lock (held by the caller), as `init --into-host` removes them on a
+      // board already moved.
+      const removed = cleanDeadMigratingWorktrees(dirname(dir), { env });
       if (removed.length > 0) {
         lines.push(
           `removed ${removed.map((p) => asciiText(p)).join(', ')}, left by an interrupted ` +
