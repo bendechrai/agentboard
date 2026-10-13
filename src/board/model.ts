@@ -28,11 +28,14 @@ export const BOARD_REF_NAMESPACE = 'refs/agentboard/';
  * that contains it:
  * - `host`: the board directory is the top level of a linked worktree whose
  *   git common directory is the git common directory of `<parent>`;
- * - `standalone`: the board directory is the top level of a git repository
- *   whose git directory is inside the board directory;
+ * - `standalone`: the board directory is the top level of a repository that
+ *   is not a linked worktree (its git common directory is its git
+ *   directory, after resolving), whether `.git` is a directory or a file
+ *   naming a git directory elsewhere (`git init --separate-git-dir`, a
+ *   submodule of the host);
  * - `broken-host-link`: the board directory contains a `.git` file whose
- *   target is missing, or is a linked worktree of a different repository
- *   than `<parent>`'s (the host was moved, or a `.board` was copied from
+ *   target is missing, or is a linked worktree whose git common directory
+ *   is not `<parent>`'s (the host was moved, or a `.board` was copied from
  *   another clone);
  * - `not-a-repository`: none of the above (no `.git` at all, or a plain
  *   subdirectory of the host repository).
@@ -55,7 +58,8 @@ export interface BoardModelInfo {
   /**
    * Where the board's history lives: for `host`, the realpath of the host
    * repository's git common directory; for `standalone`, the realpath of
-   * the board's own git directory (`<dir>/.git`); null for the other two.
+   * the board's own git directory (`<dir>/.git`, or the directory a `.git`
+   * file names); null for the other two.
    */
   readonly gitDir: string | null;
   /**
@@ -85,13 +89,21 @@ export interface DetectOptions {
  *   directory is not its common directory (a linked worktree), and its
  *   common directory is the parent's;
  * - `standalone` when the first call succeeds, its top level is `dir`, and
- *   its git directory lies inside `dir`;
- * - `broken-host-link` when `dir/.git` is a file and either the first call
- *   fails (its target is missing) or the common directory is not the
- *   parent's (the parent not being a repository counts);
+ *   its git directory is its common directory (not a linked worktree),
+ *   wherever that directory lies: `dir/.git`, or the directory a `.git`
+ *   file names (`git init --separate-git-dir`, a submodule of the host,
+ *   whose git directory is `<host>/.git/modules/<name>`);
+ * - `broken-host-link` when `dir/.git` is a file and the first call fails
+ *   (its target is missing), or when `dir` is a linked worktree whose
+ *   common directory is not the parent's (the parent not being a
+ *   repository counts);
  * - `not-a-repository` otherwise: no `dir/.git`, or `dir` is only a
  *   subdirectory of some repository (the first call's top level is not
  *   `dir`).
+ *
+ * A standalone board is never told apart by where its git directory is, so
+ * every board that synced before the host model existed keeps syncing
+ * unchanged.
  *
  * Reads nothing but git's answers and whether `dir/.git` is a file; writes
  * nothing. Never throws for a missing or odd directory; git failing to run

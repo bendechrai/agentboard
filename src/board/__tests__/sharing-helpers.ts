@@ -1,7 +1,9 @@
 /**
  * Fixtures for the board sharing tests (add-board-sharing): a host-model
  * board built with git plumbing only (`init` of group 2 is not used, so
- * these tests do not depend on it), events committed into it, a `git` shim
+ * these tests do not depend on it), events committed into it, standalone
+ * boards whose `.git` is a file (a separate git directory; a submodule of
+ * the host), a `git` shim
  * on the PATH that reports another version and delegates to the real git,
  * a `GIT_SSH_COMMAND` shim that records every call git makes to it, and
  * read-only snapshots of refs, worktrees and directories to prove that a
@@ -24,8 +26,8 @@ import { join, relative } from 'node:path';
 
 import { sha256Hex } from '../../events/canonical.js';
 import { putEvent } from '../../store/__tests__/helpers.js';
-import { BOARD_GITIGNORE_LINES } from '../init.js';
-import { git, gitRepo, tempDir } from './helpers.js';
+import { BOARD_GITIGNORE_LINES, initBoard } from '../init.js';
+import { git, gitRepo, makeBoardDir, tempDir } from './helpers.js';
 import { gitWith, syncEnv, type Env } from './sync-helpers.js';
 
 /** The ref that holds a host-model board's history. */
@@ -110,6 +112,54 @@ export function hostBoard(
   git(root, 'worktree', 'add', '-q', '--detach', dir, BOARD_REF);
   git(root, 'worktree', 'lock', '--reason', 'agentboard board', dir);
   return { root, dir, commit };
+}
+
+/**
+ * A standalone board whose `.git` is a file (board-events "Board model
+ * detection": standalone whether `.git` is a directory or a file): the
+ * working tree at `<root>/.board`, made with
+ * `git init --separate-git-dir <temp>/board-git`, holding `.gitignore` and
+ * `events/.gitkeep` as `init` writes them, nothing committed, on the unborn
+ * branch `main`. `root` may be a git repository. Returns the board
+ * directory and the separate git directory the `.git` file names.
+ */
+export function separateGitDirBoard(root = tempDir()): { dir: string; gitDir: string } {
+  const dir = makeBoardDir(root);
+  const gitDir = join(tempDir(), 'board-git');
+  git(root, 'init', '-q', '--separate-git-dir', gitDir, dir);
+  writeFileSync(join(dir, '.gitignore'), BOARD_GITIGNORE_LINES.map((line) => `${line}\n`).join(''));
+  writeFileSync(join(dir, 'events', '.gitkeep'), '');
+  return { dir, gitDir };
+}
+
+/**
+ * A submodule-style board: a standalone board repository (one commit with
+ * `.gitignore` and `events/.gitkeep`) added to a fresh `hostRepo()` as the
+ * submodule `.board` with `git submodule add --force`, so `.board/.git` is
+ * a file naming `<host>/.git/modules/.board`, the host's index holds
+ * `.board` as a gitlink and `.gitmodules`, and the board's `origin` is the
+ * source repository with `main` tracking it. Returns the host root, the
+ * board directory, the git directory the `.git` file names and the source
+ * repository.
+ */
+export function submoduleBoard(env: Env = syncEnv()): {
+  host: string;
+  dir: string;
+  gitDir: string;
+  source: string;
+} {
+  const source = initBoard({ cwd: tempDir(), env }).dir;
+  git(source, 'symbolic-ref', 'HEAD', 'refs/heads/main');
+  git(source, 'add', '-A');
+  git(source, 'commit', '-q', '-m', 'board');
+  const host = hostRepo();
+  git(host, '-c', 'protocol.file.allow=always', 'submodule', 'add', '--force', '-q', source, '.board');
+  return {
+    host,
+    dir: join(host, '.board'),
+    gitDir: join(host, '.git', 'modules', '.board'),
+    source,
+  };
 }
 
 /**

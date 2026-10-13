@@ -39,7 +39,14 @@ import {
   openTracked,
   tempDir,
 } from './helpers.js';
-import { commitHostEvent, hostBoard, hostRepo, real, withGitShim } from './sharing-helpers.js';
+import {
+  commitHostEvent,
+  hostBoard,
+  hostRepo,
+  real,
+  separateGitDirBoard,
+  withGitShim,
+} from './sharing-helpers.js';
 import { bareRemote, commitCount, initMachine, revParse, syncEnv } from './sync-helpers.js';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -494,6 +501,12 @@ describe('sync on a standalone board obeys the remote rules', () => {
     expect(result.pushed).toBe(true);
     expect(revParse(fork, 'main')).toBe(revParse(dir));
     expect(git(upstream, 'for-each-ref')).toBe('');
+    // The override never rewrites the user's upstream: no push -u, and the
+    // branch still tracks upstream/main (design.md decision 5).
+    expect(result.upstreamSet).toBe(false);
+    expect(result.message).not.toContain('set it as the upstream');
+    expect(git(dir, 'config', '--get', 'branch.main.remote').trim()).toBe('upstream');
+    expect(git(dir, 'config', '--get', 'branch.main.merge').trim()).toBe('refs/heads/main');
   });
 
   it('an upstream remote of . is ignored and origin is used', () => {
@@ -628,6 +641,30 @@ describe('remoteReport', () => {
     expect(report.branch).toBe('main');
     expect(report.remote).toEqual({ name: 'origin', url: remote, rule: 'upstream' });
     expect(report.problems).toEqual([]);
+  });
+
+  it('standalone with a separate git directory: model standalone, the git directory the .git file names', () => {
+    const env = syncEnv();
+    const remote = bareRemote();
+    const { dir, gitDir } = separateGitDirBoard();
+    git(dir, 'remote', 'add', 'origin', remote);
+
+    const report = remoteReport(dir, { env });
+
+    expect(Object.keys(report).sort()).toEqual(KEYS);
+    expect(report).toEqual({
+      dir,
+      model: 'standalone',
+      gitDir: real(gitDir),
+      ref: null,
+      refCommit: null,
+      branch: 'main',
+      head: null,
+      remote: { name: 'origin', url: remote, rule: 'origin' },
+      remotes: [{ name: 'origin', url: remote }],
+      problems: [],
+    });
+    expect(renderRemote(report)).toContain('model: standalone\n');
   });
 
   it('broken host link: a problem naming agentboard init, nothing else known', () => {

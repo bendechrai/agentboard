@@ -142,11 +142,17 @@ such as `(Apple Git-154)`.
 Same entry point and result shape as today, with `model: "host"` and
 `ref` added to the JSON. Every git command runs in `.board` with the
 existing sanitised environment and fixed identity, plus
-`-c core.hooksPath=<an empty directory agentboard creates under the
-worktree's git directory>`, so the host's hooks (pre-commit, pre-rebase,
-post-checkout, pre-push) never run for the board: they are written for the
-host's branches, and a slow or failing `pre-push` (this repository's runs
-`make`) would otherwise block every board sync.
+`-c core.hooksPath=<empty directory>`, so the host's hooks (pre-commit,
+pre-rebase, post-checkout, pre-push) never run for the board: they are
+written for the host's branches, and a slow or failing `pre-push` (this
+repository's runs `make`) would otherwise block every board sync. The
+empty directory is `agentboard-no-hooks` under the worktree's git
+directory (`git rev-parse --absolute-git-dir` in `.board`, so
+`<host git common dir>/worktrees/<name>/agentboard-no-hooks`), created by
+the git runner when it is missing, or a fresh temporary directory when git
+cannot name the git directory. It is the one file the host's git directory
+gains for the board besides the worktree entry itself; `core.hooksPath` is
+passed on each command and never written to any configuration file.
 
 Preconditions: git present and at least 2.32; model `host` (a broken link
 is exit 2 `board-link-broken`); no rebase, merge or cherry-pick in progress
@@ -195,16 +201,32 @@ it changes nothing unless set. An upstream remote of `.` (a branch tracking
 a local branch) is skipped, because pushing the board to the repository
 itself means nothing.
 
+The override never rewrites the user's upstream either: the standalone
+`sync` pushes with `-u` only when the branch has no upstream at all
+(neither `branch.<name>.remote` nor `branch.<name>.merge` set). When
+`agentboard.remote` or the `origin` rule picks a remote other than the
+branch's upstream (including an upstream of `.`), the branch keeps its
+upstream, so `git pull` in the board repository behaves as it did before.
+Where a standalone board's git directory lies makes no difference (decision
+6).
+
 ### 6. Model detection
 
 One function, used by `init`, `sync` and `remote`, implements
 board-events "Board model detection" with `git rev-parse
 --show-toplevel --git-common-dir --absolute-git-dir` run in the board
 directory and `git rev-parse --git-common-dir` run in its parent, both
-resolved with `realpath` before comparing. A `.git` file whose target is
-missing makes the first call fail; that, or a common directory other than
-the parent's, is a broken host link. Commands that only read or write
-events never call it, so a broken link never stops the board itself.
+resolved with `realpath` before comparing. The git directory and the common
+directory being equal means the board is not a linked worktree, and that is
+what makes it standalone: wherever that directory lies, `.board/.git` or
+the directory a `.git` file names (`git init --separate-git-dir`, a
+submodule of the host under `<host>/.git/modules/`). Whether `.git` is a
+file or a directory is never the deciding fact, since boards of both kinds
+synced before this change and must keep doing so. A `.git` file whose
+target is missing makes the first call fail; that, or a linked worktree
+whose common directory is not the parent's, is a broken host link; nothing
+else is. Commands that only read or write events never call it, so a
+broken link never stops the board itself.
 
 ### 7. `init` without flags
 

@@ -1,14 +1,18 @@
 /**
  * Board model detection (add-board-sharing task 1.2; board-events "Board
  * model detection"): one test per model, including a temporary directory
- * behind a symlink and the two broken-link cases (the `.git` file's target
- * is missing; a worktree of another repository), and `sync` on a broken
- * link: exit 2 `board-link-broken`, changing nothing (scenario "Stale board
- * copied into a fresh clone"), while `list` still works (scenario "Board
- * commands work on a broken link").
+ * behind a symlink, standalone boards whose `.git` is a file (a separate
+ * git directory; a submodule of the host: scenarios "Separate git directory
+ * is standalone" and "Submodule board is standalone") and the two
+ * broken-link cases (the `.git` file's target is missing; a worktree of
+ * another repository), `sync` on a standalone board with a separate git
+ * directory behaving exactly as on one whose git directory is `.board/.git`,
+ * and `sync` on a broken link: exit 2 `board-link-broken`, changing nothing
+ * (scenario "Stale board copied into a fresh clone"), while `list` still
+ * works (scenario "Board commands work on a broken link").
  */
 
-import { cpSync, existsSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -17,7 +21,7 @@ import { run } from '../../cli/__tests__/cli-helpers.js';
 import { P, T1, T3, ev, putEvent } from '../../store/__tests__/helpers.js';
 import { initBoard } from '../init.js';
 import { BOARD_REF, BOARD_REF_NAMESPACE, MODEL_TEXT, detectBoardModel } from '../model.js';
-import { syncBoard } from '../sync.js';
+import { syncBoard, type SyncResult } from '../sync.js';
 import {
   cleanEnv,
   expectBoardError,
@@ -33,10 +37,12 @@ import {
   hostRepo,
   real,
   refs,
+  separateGitDirBoard,
   snapshotDir,
+  submoduleBoard,
   worktrees,
 } from './sharing-helpers.js';
-import { bareRemote, syncEnv } from './sync-helpers.js';
+import { bareRemote, initMachine, revParse, syncEnv } from './sync-helpers.js';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
@@ -119,6 +125,47 @@ describe('detectBoardModel', () => {
     const info = detectBoardModel(link, { env });
     expect(info.model).toBe('standalone');
     expect(info.gitDir).toBe(real(join(dir, '.git')));
+  });
+
+  it('standalone: a .git file naming a separate git directory (git init --separate-git-dir), outside and inside a git host', () => {
+    const env = syncEnv();
+    const plain = separateGitDirBoard();
+    expect(detectBoardModel(plain.dir, { env })).toEqual({
+      dir: plain.dir,
+      model: 'standalone',
+      gitDir: real(plain.gitDir),
+      detail: null,
+    });
+    const inHost = separateGitDirBoard(gitRepo(join(tempDir(), 'host')));
+    expect(detectBoardModel(inHost.dir, { env })).toEqual({
+      dir: inHost.dir,
+      model: 'standalone',
+      gitDir: real(inHost.gitDir),
+      detail: null,
+    });
+  });
+
+  it('standalone: a submodule of the host repository (.git names <host>/.git/modules/.board)', () => {
+    const env = syncEnv();
+    const { host, dir, gitDir } = submoduleBoard(env);
+    expect(git(host, 'ls-files', '--stage', '--', '.board')).toMatch(/^160000 /);
+    expect(detectBoardModel(dir, { env })).toEqual({
+      dir,
+      model: 'standalone',
+      gitDir: real(gitDir),
+      detail: null,
+    });
+  });
+
+  it('broken host link: a .git file whose separate git directory has gone', () => {
+    const env = syncEnv();
+    const { dir, gitDir } = separateGitDirBoard();
+    rmSync(gitDir, { recursive: true });
+    const info = detectBoardModel(dir, { env });
+    expect(info.model).toBe('broken-host-link');
+    expect(info.gitDir).toBeNull();
+    expect(info.detail).toMatch(/^[\x20-\x7e]+$/);
+    expect(info.detail).toMatch(/missing|not found|does not exist/i);
   });
 
   it('broken host link: the .git file names a missing directory (the host was moved)', () => {
@@ -210,6 +257,107 @@ describe('detectBoardModel', () => {
     expect([refs(a.root), worktrees(a.root), snapshotDir(a.dir), refs(c), snapshotDir(c)]).toEqual(
       before,
     );
+  });
+});
+
+describe('sync on a standalone board whose .git is a file', () => {
+  /** `result` with everything that differs between two equivalent boards replaced by placeholders. */
+  function normalised(result: SyncResult): SyncResult {
+    return {
+      ...result,
+      dir: '<dir>',
+      commit: result.commit === null ? null : '<commit>',
+      message: result.message
+        .replaceAll(result.dir, '<dir>')
+        .replace(/\([0-9a-f]{12}\)/g, '(<commit>)'),
+    };
+  }
+
+  it('scenario: separate git directory is standalone (sync commits, pushes and exits 0 as on any standalone board)', () => {
+    const env = syncEnv();
+    const event = ev(P.create(T1, 'Separate'), 'orch', 1000);
+    // The same board twice: once with .board/.git a directory, once a file.
+    const plain = initMachine(env, bareRemote());
+    putEvent(join(plain.dir, 'events'), event);
+    const plainResult = syncBoard(openTracked(plain.dir), { env });
+
+    const remote = bareRemote();
+    const { dir, gitDir } = separateGitDirBoard();
+    git(dir, 'remote', 'add', 'origin', remote);
+    putEvent(join(dir, 'events'), event);
+    const board = openTracked(dir);
+
+    const first = syncBoard(board, { env });
+
+    expect(first).toMatchObject({
+      dir,
+      remote: 'origin',
+      branch: 'main',
+      committedEvents: 1,
+      pulled: false,
+      pushed: true,
+      upstreamSet: true,
+      arrived: [],
+      hostTracked: [],
+      warnings: [],
+    });
+    expect(first.commit).toBe(revParse(dir));
+    expect(revParse(remote, 'main')).toBe(revParse(dir));
+    expect(revParse(gitDir, 'main')).toBe(revParse(dir));
+    expect(git(dir, 'rev-parse', '--abbrev-ref', '@{u}').trim()).toBe('origin/main');
+    expect(normalised(first)).toEqual(normalised(plainResult));
+
+    const second = syncBoard(board, { env });
+    expect(second).toMatchObject({
+      remote: 'origin',
+      pulled: true,
+      pushed: true,
+      upstreamSet: false,
+      commit: null,
+      arrived: [],
+    });
+    expect(normalised(second)).toEqual(normalised(syncBoard(openTracked(plain.dir), { env })));
+  });
+
+  it('a separate git directory with no remote commits locally and exits 0', () => {
+    const env = syncEnv();
+    const { dir, gitDir } = separateGitDirBoard();
+    putEvent(join(dir, 'events'), ev(P.create(T1, 'Local'), 'orch', 1000));
+
+    const result = syncBoard(openTracked(dir), { env });
+
+    expect(result).toMatchObject({
+      remote: null,
+      branch: 'main',
+      committedEvents: 1,
+      pulled: false,
+      pushed: false,
+      upstreamSet: false,
+    });
+    expect(result.message).toContain('no remote configured');
+    expect(revParse(gitDir, 'main')).toBe(result.commit);
+  });
+
+  it('scenario: submodule board is standalone (sync pushes to its remote; the host tracks the gitlink)', () => {
+    const env = syncEnv();
+    const remote = bareRemote();
+    const { dir, gitDir } = submoduleBoard(env);
+    git(dir, 'remote', 'set-url', 'origin', remote);
+    putEvent(join(dir, 'events'), ev(P.create(T1, 'Sub'), 'orch', 1000));
+
+    const result = syncBoard(openTracked(dir), { env });
+
+    expect(result).toMatchObject({
+      remote: 'origin',
+      branch: 'main',
+      committedEvents: 1,
+      pushed: true,
+      upstreamSet: false,
+      hostTracked: ['.board'],
+    });
+    expect(result.warnings).toHaveLength(1);
+    expect(revParse(remote, 'main')).toBe(revParse(dir));
+    expect(revParse(gitDir, 'main')).toBe(revParse(dir));
   });
 });
 
