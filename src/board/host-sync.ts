@@ -177,10 +177,13 @@ import { asciiText, type Env } from './text.js';
  * 6. Push: `push --porcelain --no-verify <remote> HEAD:refs/agentboard/board`,
  *    never `--force`, `-f`, `--mirror` or `--all`. A rejection because the
  *    remote moved (a porcelain line starting with `!` whose reason is
- *    `[rejected]`: non-fast-forward, fetch first) is retried once from
+ *    `[rejected]`: non-fast-forward, fetch first; or `[remote rejected]`
+ *    with a ref update that lost to a concurrent push received at the
+ *    same time: `failed to update ref`, `failed to lock`, `incorrect old
+ *    value provided`, `cannot lock ref`) is retried once from
  *    step 4, so what arrived in between is integrated and reported in
  *    `arrived`; a second such rejection is `BoardError(3, 'sync-failed')`.
- *    A refusal by the remote (`[remote rejected]`: a `pre-receive` hook, a
+ *    Any other refusal by the remote (`[remote rejected]`: a `pre-receive` hook, a
  *    host that does not accept custom refs) is not retried: exactly one
  *    push, then `BoardError(3, 'sync-failed')` whose message names the
  *    remote and carries the remote's reason as git printed it (the text
@@ -510,12 +513,23 @@ function fetchRef(git: GitRunner, remote: string, target: string): void {
 const PUSH_REFUSAL = /^!\t[^\t]*\t(.*)$/;
 
 /**
+ * The reason of a `[remote rejected]` line that means the remote's ref
+ * moved while the push was being received (receive-pack lost the ref
+ * update to a concurrent push: the files backend's `failed to update ref`
+ * or `failed to lock`, the transaction's `incorrect old value provided`,
+ * `cannot lock ref ... is at <new> but expected <old>`): a race, retried
+ * like a `[rejected]` non-fast-forward, not a refusal.
+ */
+const LOST_RACE = /failed to (update|lock)|cannot lock|incorrect old value|but expected/i;
+
+/**
  * Step 6: push. Returns false when the remote moved (a `[rejected]`
- * porcelain line) and the push may be retried (`last` false); throws on a
- * last such rejection, on a refusal by the remote (`[remote rejected]`:
- * a hook, a host that refuses the ref), which is never retried and whose
- * message carries the remote's reason and `remote:` lines, and on any
- * other failure.
+ * porcelain line, or a `[remote rejected]` one whose reason is
+ * `LOST_RACE`) and the push may be retried (`last` false); throws on a
+ * last such rejection, on a refusal by the remote (any other
+ * `[remote rejected]`: a hook, a host that refuses the ref), which is
+ * never retried and whose message carries the remote's reason and
+ * `remote:` lines, and on any other failure.
  */
 function push(git: GitRunner, remote: string, target: string, last: boolean): boolean {
   const out = git.attempt('push', '--porcelain', '--no-verify', target, `HEAD:${BOARD_REF}`);
@@ -527,7 +541,10 @@ function push(git: GitRunner, remote: string, target: string, last: boolean): bo
     .map((line) => PUSH_REFUSAL.exec(line)?.[1]?.trim() ?? null)
     .filter((reason): reason is string => reason !== null);
   const what = `pushing ${BOARD_REF} to ${asciiText(remote)}`;
-  if (reasons.some((reason) => reason.startsWith('[rejected]'))) {
+  const moved = (reason: string): boolean =>
+    reason.startsWith('[rejected]') ||
+    (reason.startsWith('[remote rejected]') && LOST_RACE.test(reason));
+  if (reasons.some(moved)) {
     if (!last) {
       return false;
     }

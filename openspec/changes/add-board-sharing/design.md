@@ -268,10 +268,16 @@ Steps:
    ordinary conflict.
 6. Push: `git push --porcelain --no-verify <remote> HEAD:refs/agentboard/board`
    (never `--force`). A rejection because the remote moved (a porcelain
-   `!` line whose reason is `[rejected]`, non-fast-forward) retries once
+   `!` line whose reason is `[rejected]`, non-fast-forward; or a
+   `[remote rejected]` whose reason is a lost ref update, which is how
+   receive-pack reports a push received at the same time as another one
+   to the same ref: `failed to update ref`, `failed to lock`, `incorrect
+   old value provided`, `cannot lock ref`; ten writers and two syncs per
+   clone hit it in the first round of the concurrency test) retries once
    from step 4; a second such rejection is exit 3 `sync-failed`. A remote
-   that refuses the ref (`[remote rejected]`: a `pre-receive` hook, a host
-   that does not accept custom refs) is not a race and is not retried:
+   that refuses the ref (any other `[remote rejected]`: a `pre-receive`
+   hook, a host that does not accept custom refs) is not a race and is
+   not retried:
    one push, then exit 3 `sync-failed` whose message carries the remote's
    reason as git printed it (the hook's text), so the user can read why.
    Any other push failure is exit 3 `sync-failed` with git's first error
