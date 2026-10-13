@@ -138,7 +138,11 @@ creates):
   suggest `agentboard init --into-host`.
 - When a host-model board's link is broken (board-events "Board model
   detection"), it SHALL repair it: first by asking git to repair the
-  worktree link (which fixes a moved host); when that is not enough, by
+  worktree link, only when the board's `.git` file names a git directory
+  that is missing (which fixes a moved host; a copied board whose named
+  directory still exists in another clone is never repaired that way,
+  because git would relink that clone's worktree to the copy); when that
+  is not enough, by
   creating a fresh worktree from the best history available (the local
   `refs/agentboard/board`, else the remote's, else a new empty board),
   copying into its `events/` every event file of the old directory that it

@@ -106,6 +106,17 @@ Git names the worktree's administrative directory itself (`-board` on
 2.52 for the path `.board`); agentboard never assumes the name and always
 asks git (`git rev-parse --absolute-git-dir` in `.board`).
 
+The create-only `update-ref` makes two racing `init`s agree on the ref,
+but not on the worktree: two concurrent `git worktree add` of one path can
+both pass git's non-empty check and register two worktrees (`-board` and
+`-board1`) for `.board`. So the host-model steps of `init` (finding or
+making the ref, adding and locking the worktree, repairing a broken link)
+run under a pid lock file `<git common dir>/agentboard/init.lock`, removed
+when `init` is done. A lock whose pid is not running, or which is older
+than 60 seconds, is stale and is broken by the next `init`, so a killed
+`init` never blocks the one that completes the board. The lock lives
+inside the git directory, where the host's `git status` never shows it.
+
 `git worktree add --orphan` would create the first commit without
 plumbing, but it needs git 2.42 and makes a non-deterministic commit.
 Plumbing works on the floor and gives every independent empty board the
@@ -238,8 +249,14 @@ else create); add and lock the worktree; disable sparse checkout; catch up
 the cache. `.board/events` only appears with the worktree checkout, so a
 half-made board is never mistaken for a board.
 
-Repair of a broken link: `git worktree repair .board` first (fixes a moved
-host in place). If the link is still broken, the old directory is kept and
+Repair of a broken link: `git worktree repair .board` first, and only when
+`.board/.git` names a git directory that is missing (the host was moved
+together with its `.board`; the repair fixes it in place). When the named
+directory exists in another repository (a `.board` copied from clone A,
+whose `A/.git/worktrees/-board` is still there), `git worktree repair`
+would rewrite A's `worktrees/-board/gitdir` to point at the copy, changing
+clone A, so that case skips the repair step. If the link is still broken
+(or the repair step was skipped), the old directory is kept and
 a fresh worktree is built at `<git common dir>/agentboard/repairing` from
 the best history available, every event file of the old `events/` it lacks
 is copied in (names are content hashes, so a copy can never change an

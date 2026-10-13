@@ -12,7 +12,16 @@
  * shim proves when no network operation was attempted.
  */
 
-import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -259,6 +268,9 @@ describe('addBoardWorktree', () => {
       const hash = commitHostEvent(dir, ev(P.create(T1, 'Kept'), 'orch', 1000), env);
       rmSync(dir, { recursive: true });
       if (prune) {
+        // A locked worktree is never pruned (scenario "Worktree cleanup
+        // leaves the board alone"), so unlock it first to reach the pruned state.
+        git(root, 'worktree', 'unlock', dir);
         git(root, 'worktree', 'prune');
         expect(worktreeEntry(root, dir)).toBeNull();
       } else {
@@ -410,7 +422,9 @@ describe('scenario: init joins the board from the remote', () => {
     const { root, dir } = hostBoard(env);
     const hash = commitHostEvent(dir, ev(P.create(T1, 'One'), 'orch', 1000), env);
     rmSync(dir, { recursive: true });
+    git(root, 'worktree', 'unlock', dir);
     git(root, 'worktree', 'prune');
+    expect(worktreeEntry(root, dir)).toBeNull();
 
     const result = initBoard({ cwd: root, env });
 
@@ -430,7 +444,11 @@ describe('scenario: init repairs a moved host', () => {
     renameSync(root, moved);
     const movedDir = join(moved, '.board');
     expect(detectBoardModel(movedDir, { env }).model).toBe('broken-host-link');
-    const filesBefore = snapshotDir(movedDir);
+    // Everything but .board/.git, which git worktree repair must rewrite to
+    // name the moved host's administrative directory.
+    const files = (): string[] => snapshotDir(movedDir).filter((line) => !line.startsWith('.git '));
+    const filesBefore = files();
+    expect(filesBefore.some((line) => line.startsWith('events/'))).toBe(true);
 
     const result = initBoard({ cwd: moved, env });
 
@@ -456,7 +474,8 @@ describe('scenario: init repairs a moved host', () => {
     expect(result.message).toMatch(/repair/);
     expect(refCommit(moved)).toBe(commit);
     expect(eventFiles(movedDir)).toEqual([`${hash}.json`]);
-    expect(snapshotDir(movedDir)).toEqual(filesBefore);
+    expect(files()).toEqual(filesBefore);
+    expect(readFileSync(join(movedDir, '.git'), 'utf8')).toContain(join(moved, '.git'));
     expect(keptEntries(moved)).toEqual([]);
     expectHealthy(moved, env);
     // The board works from the moved host.

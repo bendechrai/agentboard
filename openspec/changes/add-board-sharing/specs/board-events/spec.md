@@ -57,7 +57,12 @@ the message is `agentboard: empty board`, so empty boards created
 independently in clones of one project share their root commit. The
 worktree SHALL be registered in the host repository and locked with the
 reason `agentboard board` so `git worktree prune` and `git worktree remove`
-leave it alone. Every git command agentboard runs against the host
+leave it alone. `init` SHALL hold a pid lock file
+`<git common dir>/agentboard/init.lock` while it finds or makes the ref,
+adds and locks the worktree or repairs a broken link, removing it when
+done, so two `init` processes racing on one host leave one ref and one
+worktree; a lock whose pid is not running or that is older than 60
+seconds SHALL be treated as stale and broken by the next `init`. Every git command agentboard runs against the host
 repository for the board SHALL run with the host's git hooks disabled,
 without writing the host's configuration: each command is given
 `core.hooksPath` pointing at an empty directory `agentboard-no-hooks` that
