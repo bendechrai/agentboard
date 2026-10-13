@@ -12,15 +12,19 @@
  * `host-sync-crash.test.ts` and `host-sync-clones.test.ts`.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
-import { git } from '../board/__tests__/helpers.js';
+import { git, tempDir } from '../board/__tests__/helpers.js';
 import {
   BOARD_REF,
   commitHostEvent,
   pushBoardRef,
   refCommit,
   withGitShimBefore,
+  withRecordingGitShim,
 } from '../board/__tests__/sharing-helpers.js';
 import { revParse, syncEnv } from '../board/__tests__/sync-helpers.js';
 import { P, T1, ev } from '../store/__tests__/helpers.js';
@@ -47,6 +51,10 @@ describe('two clones, ten writers each, syncing concurrently', () => {
     async () => {
       const env = syncEnv();
       const { remote, aRoot, bRoot, aDir, bDir } = twoClones(env);
+      // The two racing syncs run through a recording shim, so the rounds
+      // can be shown to have raced: a rejected push is retried, so more
+      // pushes than syncs means at least one retry happened.
+      const { env: racingEnv, calls } = withRecordingGitShim(env);
       for (let run = 1; run <= RUNS; run += 1) {
         const label = `run ${String(run)}`;
         const writers = (side: string) =>
@@ -62,11 +70,11 @@ describe('two clones, ten writers each, syncing concurrently', () => {
             env,
           }));
         const gatedA = await startGated(
-          [...writers('a'), { argv: ['sync', '--json'], env }],
+          [...writers('a'), { argv: ['sync', '--json'], env: racingEnv }],
           aRoot,
         );
         const gatedB = await startGated(
-          [...writers('b'), { argv: ['sync', '--json'], env }],
+          [...writers('b'), { argv: ['sync', '--json'], env: racingEnv }],
           bRoot,
         );
         gatedA.open();
@@ -102,6 +110,12 @@ describe('two clones, ten writers each, syncing concurrently', () => {
       const listed = await runCliAsync(['list', '--json'], bRoot, env);
       expect(listed.code, listed.stderr).toBe(0);
       expect(oneDocument(listed)).toHaveLength(1 + 20 * RUNS);
+      // The racing syncs pushed more often than they ran: at least one
+      // round had its push rejected and retried (the reviewers measured
+      // 15 to 19 of 20 rounds), and no push was ever forced.
+      const pushes = calls().filter((line) => / push --porcelain /.test(line));
+      expect(pushes.length).toBeGreaterThan(2 * RUNS);
+      expect(pushes.every((line) => !/--force|--mirror| -f /.test(line))).toBe(true);
     },
   );
 });
@@ -121,16 +135,31 @@ describe('a sync racing a hand-run fetch into the ref (the compare-and-swap path
           env,
         );
         pushBoardRef(bRoot);
+        const bTip = String(refCommit(bRoot));
+        const beforeSync = String(refCommit(aRoot));
         const fromA = addComment(aDir, 'alice', run);
-        // Just before A's first compare-and-swap, a human fetches origin's ref over A's.
+        // Just before A's first compare-and-swap, a human fetches origin's
+        // ref over A's; every update-ref command line is logged, so the
+        // three-argument form and the repeated step are both pinned.
+        const log = join(tempDir(), `cas-${String(run)}.log`);
         const racing = withGitShimBefore(
           env,
           COMMANDS.updateRef,
-          `"$GIT" -C '${aRoot}' fetch -q --no-tags origin +${BOARD_REF}:${BOARD_REF}`,
+          `echo "$*" >> '${log}'; if [ ! -e '${log}.fired' ]; then : > '${log}.fired'; ` +
+            `"$GIT" -C '${aRoot}' fetch -q --no-tags origin +${BOARD_REF}:${BOARD_REF}; fi`,
+          3,
         );
 
         const doc = syncOk(aRoot, racing);
 
+        const swaps = readFileSync(log, 'utf8').split('\n').filter(Boolean);
+        expect(swaps, label).toHaveLength(2);
+        expect(swaps[0], label).toMatch(
+          new RegExp(` update-ref ${BOARD_REF} [0-9a-f]{40} ${beforeSync}$`),
+        );
+        expect(swaps[1], label).toMatch(
+          new RegExp(` update-ref ${BOARD_REF} [0-9a-f]{40} ${bTip}$`),
+        );
         expect(doc, label).toMatchObject({ committedEvents: 1, pushed: true, model: 'host' });
         expect(doc.arrived, label).toEqual([fromB]);
         expect(refCommit(aRoot), label).toBe(revParse(aDir));

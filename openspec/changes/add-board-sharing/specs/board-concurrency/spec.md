@@ -6,12 +6,27 @@ history from its remote with a rebase, and push. For a standalone board it
 SHALL pull with rebase from the board repository's remote and push its
 branch, as before. For a host-model board it SHALL first make
 `refs/agentboard/board` equal to HEAD (rebasing HEAD onto the ref when the
-ref holds commits HEAD does not), then fetch `refs/agentboard/board` from
-the remote, rebase HEAD onto it when it holds commits HEAD does not, update
-the local ref, and push `HEAD:refs/agentboard/board` without force; it
-SHALL never create or move a branch. In both models a push rejected
-because the remote moved SHALL be retried once from the fetch or pull, and
-a second rejection SHALL exit 3. Because event files are add-only and
+ref holds an event file HEAD's tree does not, so a ref that a human fetched
+into, an aborted rebase, or a checkout or reset of `.board` to an older
+commit never makes the ref lose an event it held; a ref whose every event
+HEAD already holds is moved to HEAD without a rebase), then fetch
+`refs/agentboard/board` from the remote, rebase HEAD onto it when it holds
+commits HEAD does not, update the local ref, and push
+`HEAD:refs/agentboard/board` without force; it SHALL never create or move a
+branch. In both models a push rejected because the remote moved SHALL be
+retried once from the fetch or pull, and a second rejection SHALL exit 3.
+A push that the remote refuses (a hook or a host that does not accept the
+ref) is not a race: `sync` SHALL NOT retry it and SHALL exit 3 with reason
+`sync-failed` carrying the remote's reason as git printed it. For a
+host-model board, `arrived` (in the output and the JSON) SHALL name only
+the event files the fetched commits added, never one this clone wrote
+while the sync ran. A host-model board whose worktree has content staged
+outside `events/` and `.gitignore` SHALL make `sync` exit 3 with reason
+`sync-failed` naming the paths, as the standalone `sync` does before its
+pull, after committing its own paths and before any rebase. A remote
+whose URL is a relative path SHALL work for a host-model board exactly as
+it does for `init`: the path is resolved against the host repository's
+top level, and the configuration is not rewritten. Because event files are add-only and
 named by content, two clones that each added events SHALL merge without
 conflict, and after both have synced, `rebuild` on each SHALL produce
 byte-identical canonical dumps. If git reports a conflict on any path,
@@ -104,6 +119,30 @@ override never changes what the user's own `git pull` does.
 #### Scenario: Conflict on a host-model board
 - **WHEN** clones A and B change `.board/.gitignore` differently, A syncs, and B runs `sync`
 - **THEN** B exits 3 with reason `sync-conflict` naming `.gitignore`, the rebase is left in progress in B's board worktree, B's `refs/agentboard/board` and every branch, index and working tree of B's host repository are unchanged, and the next `sync` in B exits 3 with reason `sync-in-progress` until a human finishes or aborts the rebase
+
+#### Scenario: Hand-fetched ref survives an aborted rebase
+- **WHEN** another board's history was fetched by hand into `refs/agentboard/board` with a differing `.gitignore`, `sync` exited 3 `sync-conflict`, a human ran `git -C .board rebase --abort`, and `sync` runs again
+- **THEN** it exits 3 with reason `sync-conflict` again, `refs/agentboard/board` still holds the fetched commits, and nothing was pushed
+
+#### Scenario: Older commit checked out in the board worktree
+- **WHEN** a human ran `git -C .board checkout <older commit>` on a host-model board with three synced events, one event is added, and `sync` runs with no remote
+- **THEN** `refs/agentboard/board` holds all four events, equals the worktree's HEAD, and `rebuild --check` is clean
+
+#### Scenario: Remote refuses the board ref
+- **WHEN** the remote's `pre-receive` hook refuses `refs/agentboard/*` and `sync` pushes a host-model board
+- **THEN** `sync` pushes exactly once, exits 3 with reason `sync-failed` whose message carries the hook's text, keeps the commit, and `refs/agentboard/board` equals HEAD
+
+#### Scenario: Relative remote URL on a host
+- **WHEN** the host's `origin` was added as `../project.git` and `sync` runs on its host-model board
+- **THEN** it fetches from and pushes to that repository, and `git remote get-url origin` still prints `../project.git`
+
+#### Scenario: Event written during the sync is not reported as arrived
+- **WHEN** another writer in the same clone adds an event while `sync` is rebasing onto what it fetched
+- **THEN** `arrived` names only the fetched events, the new event stays uncommitted, and the next `sync` commits it
+
+#### Scenario: Content staged by hand in the board worktree
+- **WHEN** a human staged `NOTES.md` in `.board` of a host-model board and `sync` runs
+- **THEN** it commits its own paths, exits 3 with reason `sync-failed` naming `NOTES.md` and `git restore --staged`, leaves the file staged, and the next `sync` after unstaging completes with every event
 
 #### Scenario: Board worktree on a branch
 - **WHEN** a human runs `git -C .board switch -c scratch` on a host-model board and then `sync`

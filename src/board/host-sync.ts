@@ -88,25 +88,38 @@ import { asciiText, type Env } from './text.js';
  *    then, only when something of those paths is staged,
  *    `commit --quiet --no-verify -m <syncCommitMessage(n)> -- <same pathspec>`;
  *    anything else staged stays staged and uncommitted. `commit` and
- *    `committedEvents` report it as in `SyncResult`.
+ *    `committedEvents` report it as in `SyncResult`. Then, as the
+ *    standalone path does before its pull (`checkNothingForeignStaged`),
+ *    anything still staged (`diff --cached --name-only -z` not empty) is
+ *    `BoardError(3, 'sync-failed')` with the standalone message (the
+ *    board directory, the paths, `restore --staged`), on every path
+ *    including the no-remote one: the rebases of steps 2 and 5 cannot run
+ *    over it, and sync never commits it. The commit of step 1 is kept and
+ *    the next sync moves the ref to it.
  * 2. Integrate the local ref. Read the ref
  *    (`rev-parse --quiet --verify refs/agentboard/board^{commit}`; a
  *    missing ref, deleted by hand, reads as empty and is created again
- *    from HEAD). When the ref exists, is not an ancestor of HEAD
- *    (`merge-base --is-ancestor refs/agentboard/board HEAD` fails) and
- *    holds a commit this worktree's HEAD never pointed at (the worktree
- *    HEAD's reflog, `rev-list -g HEAD`, does not list it: someone fetched
- *    into the ref by hand), `rebase --no-verify refs/agentboard/board`; a
- *    conflict is `BoardError(3, 'sync-conflict')` as in step 5. A ref
- *    value that the reflog does list is a stale value of this worktree
- *    (left by a sync killed between a rebase and its `update-ref`, or by
- *    a human who finished a conflicted rebase with `git rebase
- *    --continue`): its commits were replayed into HEAD, so no rebase runs
- *    and the ref is simply moved. Then, when the ref differs from HEAD,
- *    `update-ref refs/agentboard/board <HEAD> <old>` with `<old>` the
- *    value read before the rebase (the empty string when the ref was
- *    missing, which is create-only). When that compare-and-swap fails
- *    (something moved the ref in between: a hand-run
+ *    from HEAD). When the ref exists and is not an ancestor of HEAD
+ *    (`merge-base --is-ancestor refs/agentboard/board HEAD` fails),
+ *    `rebase --no-verify refs/agentboard/board`, unless HEAD's tree
+ *    already holds every event file the ref's tree holds
+ *    (`diff --name-only --diff-filter=A HEAD refs/agentboard/board --
+ *    events` prints nothing): then the ref is a stale value of this
+ *    worktree (left by a sync killed between a rebase and its
+ *    `update-ref`, or by a human who finished a conflicted rebase with
+ *    `git rebase --continue`, both of which replayed the ref's commits
+ *    into HEAD) and is moved without a rebase. The criterion is the
+ *    events, never the HEAD reflog: the reflog also lists values ahead of
+ *    HEAD (after `git -C .board checkout <older>` or `reset --hard`) and
+ *    the `onto` of an aborted rebase, and skipping the rebase for those
+ *    moved the ref backwards and dropped committed events. So a hand
+ *    fetch, an aborted rebase, a checkout or a reset of an older commit
+ *    all rebase onto the ref again; a conflict is
+ *    `BoardError(3, 'sync-conflict')` as in step 5. Then, when the ref
+ *    differs from HEAD, `update-ref refs/agentboard/board <HEAD> <old>`
+ *    with `<old>` the value read before the rebase (the empty string when
+ *    the ref was missing, which is create-only). When that compare-and-swap
+ *    fails (something moved the ref in between: a hand-run
  *    `git fetch origin +refs/agentboard/board:refs/agentboard/board`),
  *    this step is repeated once from reading the ref; a second failure is
  *    `BoardError(3, 'sync-failed')` naming the ref. After this step the ref
@@ -117,19 +130,27 @@ import { asciiText, type Env } from './text.js';
  *    remote). Ambiguous: `ambiguousRemoteError(choice)`, exit 1
  *    `ambiguous-remote`, after the commit and the local ref update. No
  *    remote: stop here, exit 0, `remote` null, `pulled` and `pushed` false,
- *    `arrived` empty, the message's second line
+ *    the message's second line
  *    `no remote configured; the board at <dir> was not fetched or pushed`.
- *    The catch-up of step 7 still runs.
+ *    The catch-up of step 7 still runs. A remote whose URL is a relative
+ *    path (`git remote add origin ../project.git`, which git would
+ *    resolve from `.board`, one directory too deep) is resolved against
+ *    the host's top level for the commands of steps 4 to 6 (for example
+ *    `-c remote.<name>.url=<absolute path>` on each of them, or the
+ *    absolute path as the remote argument); `git remote get-url` still
+ *    prints the relative URL afterwards.
  * 4. Fetch: `fetch --no-tags <remote> refs/agentboard/board`. No
  *    destination in the refspec, so the result is the worktree's own
  *    `FETCH_HEAD` (`<worktree git dir>/FETCH_HEAD`, never the main
  *    checkout's) and no remote-tracking ref is written (nothing appears
  *    under `refs/remotes/`). A failure because the remote has no such ref
  *    (`ls-remote <remote> refs/agentboard/board` lists nothing, checked
- *    first) skips to step 6 with `pulled` false; any other failure
- *    (unreachable remote, a configured remote that does not exist) is
- *    `BoardError(3, 'sync-failed')` with git's first error line, the
- *    commit of step 1 kept.
+ *    first) skips to step 6 with `pulled` false; any other failure of the
+ *    `ls-remote` or of the fetch (unreachable remote, a configured remote
+ *    that does not exist, a fetch that fails after the ref was listed) is
+ *    `BoardError(3, 'sync-failed')` whose message names what failed
+ *    (`fetching refs/agentboard/board from <remote>`) and git's first
+ *    error line, the commit of step 1 kept.
  * 5. Integrate what was fetched: when `FETCH_HEAD` is not an ancestor of
  *    HEAD, `rebase --no-verify FETCH_HEAD`. A rebase that stops on a
  *    conflict (any unmerged path) is left exactly as git left it for a
@@ -137,20 +158,30 @@ import { asciiText, type Env } from './text.js';
  *    every unmerged path, the board directory, `git add`,
  *    `git rebase --continue` and `git rebase --abort`; the local ref, every
  *    branch, the index and the working tree of every other worktree of the
- *    host are unchanged (the next `sync` exits 3 `sync-in-progress`).
- *    Histories with different roots (an offline-created empty board
- *    meeting a board that began as a standalone board) rebase the same
- *    way: the empty-board root adds the same `.gitignore` and
- *    `events/.gitkeep`, which git applies and drops. Then
- *    `update-ref refs/agentboard/board <HEAD> <old>` as in step 2 (one
- *    repeat, then `sync-failed`; the repeat reads the ref again and
- *    treats it as step 2 does). `pulled` is true when this step ran (the
- *    remote had the ref), whether or not anything new arrived.
+ *    host are unchanged (the next `sync` exits 3 `sync-in-progress`). A
+ *    rebase that fails for another reason (an untracked file in `.board`
+ *    that the fetched commits would overwrite) leaves HEAD where it was
+ *    and is `BoardError(3, 'sync-failed')` with git's first error line
+ *    (which names the file). Histories with different roots (an
+ *    offline-created empty board meeting a board that began as a
+ *    standalone board) rebase the same way: the empty-board root adds the
+ *    same `.gitignore` and `events/.gitkeep`, which git applies and
+ *    drops. Then `update-ref refs/agentboard/board <HEAD> <old>` as in
+ *    step 2 (one repeat, then `sync-failed`; the repeat reads the ref
+ *    again and treats it as step 2 does). `pulled` is true when this step
+ *    ran (the remote had the ref), whether or not anything new arrived.
  * 6. Push: `push --porcelain --no-verify <remote> HEAD:refs/agentboard/board`,
- *    never `--force`, `-f`, `--mirror` or `--all`. A rejection (a porcelain
- *    line starting with `!`: the remote moved) is retried once from step 4,
- *    so what arrived in between is integrated and reported in `arrived`; a
- *    second rejection, or any other push failure, is
+ *    never `--force`, `-f`, `--mirror` or `--all`. A rejection because the
+ *    remote moved (a porcelain line starting with `!` whose reason is
+ *    `[rejected]`: non-fast-forward, fetch first) is retried once from
+ *    step 4, so what arrived in between is integrated and reported in
+ *    `arrived`; a second such rejection is `BoardError(3, 'sync-failed')`.
+ *    A refusal by the remote (`[remote rejected]`: a `pre-receive` hook, a
+ *    host that does not accept custom refs) is not retried: exactly one
+ *    push, then `BoardError(3, 'sync-failed')` whose message names the
+ *    remote and carries the remote's reason as git printed it (the text
+ *    of the porcelain line's reason and of the `remote:` lines, so a
+ *    hook's own message appears). Any other push failure is
  *    `BoardError(3, 'sync-failed')` with git's first error line. `pushed`
  *    is true when a push completed (also when it was already up to date).
  * 7. Catch-up: `catchUp(board)`, so every arrived event is in the cache
@@ -164,9 +195,13 @@ import { asciiText, type Env } from './text.js';
  * also on the no-remote path); `branch` null; `upstreamSet` false;
  * `commit` the commit on HEAD that holds the events of step 1 after any
  * rebase replayed it (null when nothing was committed); `arrived` the
- * event files present when the steps are done and absent before step 2
- * (so what a rebase onto a hand-fetched ref brings counts too, even on
- * the no-remote path), ascending; `message` lines,
+ * event files the rebases of steps 2 and 5 added to HEAD's tree
+ * (`diff --name-only --diff-filter=A <HEAD after step 1> HEAD -- events`,
+ * names without `.json`, ascending), so what a rebase onto a hand-fetched
+ * ref brings counts too, even on the no-remote path, while an event this
+ * process committed, or that another writer of this clone wrote while
+ * the sync ran (it stays untracked for the next sync), never does;
+ * `message` lines,
  * in order: `committed <n> event file(s) (<12 hex of commit>)` or
  * `nothing new to commit`; then on the no-remote path the line of step 3,
  * else `fetched refs/agentboard/board from <remote>: <n> event(s) arrived`
@@ -177,14 +212,23 @@ import { asciiText, type Env } from './text.js';
  * No line mentions a retry, so the text is the same whether or not a push
  * was retried.
  *
- * Invariant (board-events "Board ref in the host repository"): when this
- * function returns, and after every `BoardError` it throws except
- * `sync-conflict`, `refs/agentboard/board` equals the worktree's HEAD; a
- * process killed between any step and the next `update-ref` leaves HEAD
- * ahead of the ref, and the next `sync` repairs that in step 2 with no
- * commit lost. Never modifies a branch, a tag, the index or the working
- * tree of any other worktree of the host; never writes the host's
- * configuration.
+ * Guarantee on the ref (board-events "Board ref in the host repository"):
+ * `refs/agentboard/board` equals the worktree's HEAD when this function
+ * returns, and after the refusals `sync-conflict` (the ref was moved to
+ * HEAD before the rebase, and the failed rebase moved nothing),
+ * `sync-in-progress` and `board-on-branch` (nothing ran). After
+ * `sync-failed` the ref may lag HEAD (the staged-content refusal after
+ * the commit of step 1, a compare-and-swap that failed twice, a rebase
+ * that failed without a conflict); no commit is lost, and the next sync
+ * repairs it in step 2. A process killed between any step and its
+ * `update-ref` likewise leaves HEAD ahead of the ref, repaired by the
+ * next sync with no commit lost. Nothing serialises two syncs of one
+ * clone: inside the rebase window the second exits 3 `sync-in-progress`;
+ * outside it they collide on git's `index.lock` and the loser exits 5
+ * with git's error, as two standalone syncs do, with the ref at HEAD and
+ * nothing lost (design.md decision 4, known limit). Never modifies a
+ * branch, a tag, the index or the working tree of any other worktree of
+ * the host; never writes the host's configuration.
  */
 export function syncHostBoard(
   board: Board,

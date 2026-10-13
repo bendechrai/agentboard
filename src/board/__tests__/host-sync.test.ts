@@ -15,7 +15,9 @@
 
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -39,6 +41,7 @@ import {
   EMPTY_BOARD_COMMIT_ID,
   commitHostEvent,
   hostBoard,
+  hostRepo,
   installHook,
   joinHostBoard,
   pushBoardRef,
@@ -1025,6 +1028,362 @@ describe('a second sync during the rebase of a first', () => {
     expect(git(a.dir, 'status', '--porcelain')).toBe('');
     syncBoard(b, { env: base });
     expect(refCommit(bRoot)).toBe(refCommit(aRoot));
+  });
+});
+
+describe('step 2 keeps every event the ref holds (review round 1 ruling)', () => {
+  /**
+   * Two hosts, A and B, each with its own board and a different
+   * `.gitignore` line, B's board fetched by hand into A's
+   * `refs/agentboard/board`. `aRemote` gives A a bare `origin` that holds
+   * A's board as it was before the hand fetch.
+   */
+  function handFetched(
+    env: Env,
+    aRemote: boolean,
+  ): { aRoot: string; a: Board; bTip: string; fromB: string; remote: string | null } {
+    const a = hostBoard(env);
+    const b = hostBoard(env, hostRepo(join(tempDir(), 'host-b')));
+    appendFileSync(join(a.dir, '.gitignore'), 'a-only\n');
+    appendFileSync(join(b.dir, '.gitignore'), 'b-only\n');
+    const boardA = openTracked(a.dir);
+    addTickets(boardA, 1, 'alice');
+    let remote: string | null = null;
+    if (aRemote) {
+      remote = bareRemote();
+      git(a.root, 'remote', 'add', 'origin', remote);
+      git(a.root, 'push', '-q', 'origin', 'main');
+    }
+    syncBoard(boardA, { env });
+    const fromB = commitHostEvent(b.dir, ev(P.create(T2, 'From B'), 'bob', 2_000), env);
+    git(b.root, 'commit', '-q', '--allow-empty', '-m', 'keep');
+    git(a.root, 'fetch', '-q', '--no-tags', b.root, `+${BOARD_REF}:${BOARD_REF}`);
+    const bTip = String(refCommit(b.root));
+    expect(refCommit(a.root)).toBe(bTip);
+    return { aRoot: a.root, a: boardA, bTip, fromB, remote };
+  }
+
+  it.each([
+    ['no remote', false],
+    ['a remote holding the old board', true],
+  ])(
+    'hand fetch, conflict, git rebase --abort, next sync conflicts again and keeps the fetched commits (%s)',
+    (_label, aRemote) => {
+      const env = syncEnv();
+      const { aRoot, a, bTip, fromB, remote } = handFetched(env, aRemote);
+      const head = revParse(a.dir);
+      const onOrigin = remote === null ? null : git(remote, 'rev-parse', BOARD_REF).trim();
+
+      expectBoardError(() => syncBoard(a, { env }), 3, 'sync-conflict');
+      expect(rebaseInProgress(a.dir)).toBe(true);
+      git(a.dir, 'rebase', '--abort');
+      expect(revParse(a.dir)).toBe(head);
+      expect(refCommit(aRoot)).toBe(bTip);
+
+      // The ref still holds B's commits, which HEAD does not: the rebase runs again.
+      const again = expectBoardError(() => syncBoard(a, { env }), 3, 'sync-conflict');
+      expect(again.message).toContain('.gitignore');
+      expect(refCommit(aRoot)).toBe(bTip);
+      expect(refEvents(aRoot)).toContain(`${fromB}.json`);
+      expect(git(aRoot, 'merge-base', '--is-ancestor', bTip, BOARD_REF)).toBe('');
+      if (remote !== null) {
+        expect(git(remote, 'rev-parse', BOARD_REF).trim()).toBe(onOrigin);
+      }
+      git(a.dir, 'rebase', '--abort');
+      expect(refCommit(aRoot)).toBe(bTip);
+    },
+  );
+
+  it('a human checks out an older commit in .board, adds an event and syncs with no remote: nothing is lost', () => {
+    const env = syncEnv();
+    const { root, dir } = hostBoard(env);
+    const board = openTracked(dir);
+    const hashes: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      hashes.push(...addTickets(board, 1, 'orch'));
+      syncBoard(board, { env });
+    }
+    const tip = String(refCommit(root));
+    git(dir, 'checkout', '-q', 'HEAD~2');
+    expect(eventFiles(dir)).toHaveLength(1);
+    hashes.push(...addTickets(board, 1, 'orch'));
+
+    const result = syncBoard(board, { env });
+
+    expect(result).toMatchObject({ committedEvents: 1, remote: null });
+    expectRefAtHead(root, dir, result);
+    expect(git(root, 'merge-base', '--is-ancestor', tip, BOARD_REF)).toBe('');
+    const all = hashes.map((h) => `${h}.json`).sort();
+    expect(refEvents(root)).toEqual(all);
+    expect(eventFiles(dir)).toEqual(all);
+    expect(result.arrived).toEqual([String(hashes[1]), String(hashes[2])].sort());
+    expect(listTickets(board)).toHaveLength(4);
+    expect(checkCache(board).ok).toBe(true);
+  });
+
+  it('a human reset --hard to an older commit is undone the same way: the ref never moves backwards', () => {
+    const env = syncEnv();
+    const { root, dir, remote } = hostWithOrigin(env);
+    const board = openTracked(dir);
+    const hashes = addTickets(board, 2, 'orch');
+    syncBoard(board, { env });
+    const tip = String(refCommit(root));
+    git(dir, 'reset', '-q', '--hard', 'HEAD~1');
+
+    const result = syncBoard(board, { env });
+
+    expect(result.commit).toBeNull();
+    expectRefAtHead(root, dir, result);
+    expect(refCommit(root)).toBe(tip);
+    expect(refEvents(root)).toEqual(hashes.map((h) => `${h}.json`));
+    expect(git(remote, 'rev-parse', BOARD_REF).trim()).toBe(tip);
+    expect(checkCache(board).ok).toBe(true);
+  });
+
+  it('after a sync killed between its rebase and update-ref, the next sync moves the ref without rebasing again', () => {
+    const base = syncEnv();
+    const { remote, aRoot, bRoot, a, b } = twoClones(base);
+    const fromB = addTickets(b, 1, 'bob');
+    syncBoard(b, { env: base });
+    const fromA = addTickets(a, 1, 'alice');
+    // The state a sync killed after `rebase --no-verify FETCH_HEAD` leaves:
+    // A's own commit on the ref, HEAD rebased onto what origin holds.
+    git(a.dir, 'add', '--', 'events');
+    git(a.dir, 'commit', '-q', '--no-verify', '-m', syncCommitMessage(1));
+    git(aRoot, 'update-ref', BOARD_REF, revParse(a.dir));
+    const stale = String(refCommit(aRoot));
+    git(a.dir, 'fetch', '-q', '--no-tags', 'origin', BOARD_REF);
+    git(a.dir, 'rebase', '--no-verify', 'FETCH_HEAD');
+    expect(revParse(a.dir)).not.toBe(stale);
+    expect(git(a.dir, 'rev-list', '-g', 'HEAD')).toContain(stale);
+    const { env, calls } = withRecordingGitShim(base);
+
+    const result = syncBoard(a, { env });
+
+    expect(result).toMatchObject({ commit: null, pushed: true });
+    expectRefAtHead(aRoot, a.dir, result);
+    expect(calls().filter((line) => / rebase /.test(line))).toEqual([]);
+    expect(git(remote, 'rev-parse', BOARD_REF).trim()).toBe(refCommit(aRoot));
+    expect(refEvents(remote)).toEqual([...fromA, ...fromB].map((h) => `${h}.json`).sort());
+    syncBoard(b, { env: base });
+    expect(refCommit(bRoot)).toBe(refCommit(aRoot));
+  });
+});
+
+describe('foreign staged content on a host-model board (ADR 0005, the standalone refusal)', () => {
+  it.each([
+    ['the remote ahead', true],
+    ['no remote', false],
+  ])(
+    'exits 3 sync-failed naming the staged path, keeps it staged and loses nothing (%s)',
+    (_label, withRemote) => {
+      const env = syncEnv();
+      const made = withRemote ? twoClones(env) : null;
+      const { root, dir } = made === null ? hostBoard(env) : { root: made.aRoot, dir: made.a.dir };
+      const board = made === null ? openTracked(dir) : made.a;
+      let fromB: string[] = [];
+      if (made !== null) {
+        fromB = addTickets(made.b, 1, 'bob');
+        syncBoard(made.b, { env });
+      }
+      writeFileSync(join(dir, 'NOTES.md'), 'by hand\n');
+      git(dir, 'add', 'NOTES.md');
+      const fromA = addTickets(board, 1, 'alice');
+
+      const err = expectBoardError(() => syncBoard(board, { env }), 3, 'sync-failed');
+
+      expect(err.message).toContain('staged changes that agentboard sync does not commit');
+      expect(err.message).toContain('NOTES.md');
+      expect(err.message).toContain(`restore --staged`);
+      expect(git(dir, 'diff', '--cached', '--name-only')).toBe('NOTES.md\n');
+      expect(rebaseInProgress(dir)).toBe(false);
+      expect(git(dir, 'ls-tree', '-r', '--name-only', 'HEAD')).not.toContain('NOTES.md');
+      // The commit of step 1 was made; the next sync repairs the ref.
+      expect(git(dir, 'show', '--name-only', '--format=', 'HEAD').trim()).toBe(
+        `events/${String(fromA[0])}.json`,
+      );
+      git(dir, 'restore', '--staged', 'NOTES.md');
+      const result = syncBoard(board, { env });
+      expectRefAtHead(root, dir, result);
+      expect(refEvents(root)).toEqual([...fromA, ...fromB].map((h) => `${h}.json`).sort());
+      expect(checkCache(board).ok).toBe(true);
+    },
+  );
+});
+
+describe('failures of the host-model sync that are not conflicts', () => {
+  it('a rebase that fails without a conflict (an untracked file in the way) is sync-failed with git error, HEAD and ref unchanged', () => {
+    const env = syncEnv();
+    const { remote, aRoot, bRoot, a, b } = twoClones(env);
+    writeFileSync(join(b.dir, 'NOTES.md'), 'from B\n');
+    git(b.dir, 'add', 'NOTES.md');
+    git(b.dir, 'commit', '-q', '--no-verify', '-m', 'notes');
+    git(bRoot, 'update-ref', BOARD_REF, revParse(b.dir));
+    pushBoardRef(bRoot);
+    writeFileSync(join(a.dir, 'NOTES.md'), 'untracked on A\n');
+    addTickets(a, 1, 'alice');
+
+    const err = expectBoardError(() => syncBoard(a, { env }), 3, 'sync-failed');
+
+    expect(err.message).toMatch(/untracked/i);
+    expect(rebaseInProgress(a.dir)).toBe(false);
+    expectRefAtHead(aRoot, a.dir);
+    expect(git(remote, 'rev-parse', BOARD_REF).trim()).toBe(refCommit(bRoot));
+    rmSync(join(a.dir, 'NOTES.md'));
+    const result = syncBoard(a, { env });
+    expectRefAtHead(aRoot, a.dir, result);
+    expect(readFileSync(join(a.dir, 'NOTES.md'), 'utf8')).toBe('from B\n');
+  });
+
+  it('a fetch that fails after ls-remote listed the ref is sync-failed with git error, the commit kept', () => {
+    const base = syncEnv();
+    const { aRoot, a, b } = twoClones(base);
+    addTickets(b, 1, 'bob');
+    syncBoard(b, { env: base });
+    const [fromA] = addTickets(a, 1, 'alice');
+    const env = withGitShimBefore(
+      base,
+      ['fetch', '--no-tags', 'origin', BOARD_REF],
+      'echo "fatal: simulated fetch failure" >&2; exit 128',
+    );
+
+    const err = expectBoardError(() => syncBoard(a, { env }), 3, 'sync-failed');
+
+    expect(err.message).toContain(`fetching ${BOARD_REF} from origin`);
+    expect(err.message).toContain('simulated fetch failure');
+    expect(refEvents(aRoot)).toEqual([`${String(fromA)}.json`]);
+    expectRefAtHead(aRoot, a.dir);
+    expect(rebaseInProgress(a.dir)).toBe(false);
+  });
+
+  it('the compare-and-swap failing twice in one sync is sync-failed naming the ref; the next sync converges', () => {
+    const base = syncEnv();
+    const { remote, aRoot, bRoot, a, b } = twoClones(base);
+    const c1Events = addTickets(b, 1, 'bob');
+    syncBoard(b, { env: base });
+    const c1 = String(refCommit(bRoot));
+    const c2Events = addTickets(b, 1, 'bob');
+    syncBoard(b, { env: base });
+    const c2 = String(refCommit(bRoot));
+    const fromA = addTickets(a, 1, 'alice');
+    // The hand fetches of the shim need B's objects in A: fetch them into
+    // the main checkout's FETCH_HEAD, which moves no ref.
+    git(aRoot, 'fetch', '-q', '--no-tags', 'origin', BOARD_REF);
+    const counter = join(tempDir(), 'moves');
+    // Before each of the two compare-and-swaps the ref moves by hand: to
+    // B's first commit, then to B's second.
+    const env = withGitShimBefore(
+      base,
+      ['update-ref', BOARD_REF],
+      `n=$(cat '${counter}' 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > '${counter}'; ` +
+        `if [ "$n" -eq 1 ]; then "$GIT" -C '${aRoot}' update-ref ${BOARD_REF} ${c1}; ` +
+        `else "$GIT" -C '${aRoot}' update-ref ${BOARD_REF} ${c2}; fi`,
+      2,
+    );
+
+    const err = expectBoardError(() => syncBoard(a, { env }), 3, 'sync-failed');
+
+    expect(err.message).toContain(BOARD_REF);
+    expect(readFileSync(counter, 'utf8').trim()).toBe('2');
+    expect(refCommit(aRoot)).toBe(c2);
+    expect(rebaseInProgress(a.dir)).toBe(false);
+
+    // The failed sync's second attempt had already rebased onto B's first
+    // commit, so only B's second one arrives now.
+    expect(eventFiles(a.dir)).toContain(`${String(c1Events[0])}.json`);
+    const result = syncBoard(a, { env: base });
+    expect(result.arrived).toEqual(c2Events);
+    expectRefAtHead(aRoot, a.dir, result);
+    expect(git(remote, 'rev-parse', BOARD_REF).trim()).toBe(refCommit(aRoot));
+    expect(refEvents(remote)).toEqual(
+      [...fromA, ...c1Events, ...c2Events].map((h) => `${h}.json`).sort(),
+    );
+    expect(checkCache(a).ok).toBe(true);
+  });
+
+  it('a remote that refuses refs/agentboard/* is sync-failed carrying the hook text, after exactly one push', () => {
+    const base = syncEnv();
+    const { root, dir, remote } = hostWithOrigin(base);
+    writeFileSync(
+      join(remote, 'hooks', 'pre-receive'),
+      [
+        '#!/bin/sh',
+        'while read old new ref; do',
+        '  case "$ref" in refs/agentboard/*) echo "refs/agentboard/* is prohibited here" >&2; exit 1;; esac',
+        'done',
+        'exit 0',
+        '',
+      ].join('\n'),
+    );
+    chmodSync(join(remote, 'hooks', 'pre-receive'), 0o755);
+    const board = openTracked(dir);
+    const [hash] = addTickets(board, 1, 'orch');
+    const { env, calls } = withRecordingGitShim(base);
+
+    const err = expectBoardError(() => syncBoard(board, { env }), 3, 'sync-failed');
+
+    expect(err.message).toContain('refs/agentboard/* is prohibited here');
+    expect(err.message).toContain('origin');
+    expect(calls().filter((line) => / push /.test(line))).toHaveLength(1);
+    expect(git(remote, 'for-each-ref', 'refs/agentboard/')).toBe('');
+    expect(refEvents(root)).toEqual([`${String(hash)}.json`]);
+    expectRefAtHead(root, dir);
+  });
+
+  it('a relative remote URL (git remote add origin ../remote.git) works for sync as it does for init', () => {
+    const env = syncEnv();
+    const parent = tempDir();
+    const remote = join(parent, 'remote.git');
+    git(parent, 'init', '-q', '--bare', '-b', 'main', remote);
+    const root = hostRepo(join(parent, 'host'));
+    git(root, 'remote', 'add', 'origin', '../remote.git');
+    git(root, 'push', '-q', 'origin', 'main');
+    const { dir } = hostBoard(env, root);
+    const board = openTracked(dir);
+    const [hash] = addTickets(board, 1, 'orch');
+
+    const result = syncBoard(board, { env });
+
+    expect(result).toMatchObject({ remote: 'origin', pushed: true, pulled: false });
+    expectRefAtHead(root, dir, result);
+    expect(git(remote, 'rev-parse', BOARD_REF).trim()).toBe(refCommit(root));
+    expect(refEvents(remote)).toEqual([`${String(hash)}.json`]);
+    expect(git(root, 'remote', 'get-url', 'origin').trim()).toBe('../remote.git');
+    // And the way back: a second sync fetches through the same relative URL.
+    const again = syncBoard(board, { env });
+    expect(again).toMatchObject({ pulled: true, pushed: true, commit: null });
+  });
+});
+
+describe('arrived counts only what the fetched commits added', () => {
+  it('an event another writer adds during the rebase is not reported as arrived, and the next sync commits it', () => {
+    const base = syncEnv();
+    const { aRoot, a, b } = twoClones(base);
+    const fromB = addTickets(b, 1, 'bob');
+    syncBoard(b, { env: base });
+    const fromA = addTickets(a, 1, 'alice');
+    const prepared = join(tempDir(), 'prepared');
+    mkdirSync(prepared);
+    const mid = putEvent(prepared, ev(P.comment(T1, 'written mid-rebase'), 'other', 9_000));
+    const env = withGitShimBefore(
+      base,
+      ['rebase', '--no-verify', 'FETCH_HEAD'],
+      `cp '${join(prepared, `${mid}.json`)}' '${join(a.dir, 'events')}/'`,
+    );
+
+    const result = syncBoard(a, { env });
+
+    expect(result.arrived).toEqual(fromB);
+    expect(result.committedEvents).toBe(1);
+    expect(result.message).toContain('1 event arrived');
+    expect(git(a.dir, 'status', '--porcelain')).toBe(`?? events/${mid}.json\n`);
+    expect(eventFiles(a.dir)).toEqual([...fromA, ...fromB, mid].map((h) => `${h}.json`).sort());
+    expectRefAtHead(aRoot, a.dir, result);
+
+    const next = syncBoard(a, { env: base });
+    expect(next).toMatchObject({ committedEvents: 1, arrived: [] });
+    expect(refEvents(aRoot)).toEqual(eventFiles(a.dir));
+    expect(checkCache(a).ok).toBe(true);
   });
 });
 
