@@ -272,6 +272,7 @@ describe('the help data of record in the registry', () => {
     has('init', 1, 'not-a-board');
     has('init', 1, 'remote-mismatch');
     has('init', 1, 'board-in-host');
+    has('init', 2, 'board-not-a-repository');
     has('inbox', 1, 'unknown-cursor');
     has('close-merged', 1, 'gh-missing');
     has('import-change', 1, 'tasks-not-found');

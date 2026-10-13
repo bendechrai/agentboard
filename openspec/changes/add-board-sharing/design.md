@@ -441,6 +441,38 @@ found" both for a missing repository and for one the user cannot read, so
 the `remote-unreachable` message says to create the repository and to
 check access.
 
+The value of `--remote` is validated before any git command runs: an
+empty value, one that starts with `-` (which `ls-remote` would read as an
+option, `--upload-pack=<command>` among them, against the host's own
+`origin`), and a `file://` URL whose host is neither empty nor `localhost`
+are usage errors, and every git command that takes the URL passes it after
+`--`. A relative path is resolved against the host's top level (the parent
+of `.board` when discovery went through git, the same from every linked
+worktree, as the host-model `sync` resolves one) or the current directory,
+and `origin` stores the absolute path, so a later `sync` reaches it from any
+directory and no `pushurl` or `insteadOf` rewrite is bypassed at sync time;
+`file://localhost/x` and `file:///x` are the path `/x`, and a `file://` or
+non-local URL is stored as given. A matching URL is compared against the
+raw `remote.<name>.url` as well as the rewritten URL, so `insteadOf` does
+not turn a re-run into `remote-mismatch`; a re-run with a matching URL runs
+no `sync`, so `init` stays idempotent. An existing `.board` that is not a
+board (a non-empty directory without `events/`, a file, a dangling symbolic
+link) is refused with exit 2 `board-not-a-repository` before any write,
+rather than repaired or adopted as plain `init` would: `--remote` names a
+repository to clone or create, and the user's directory must not be
+renamed over or turned into a repository; an empty directory is treated as
+absent. A standalone board with several remotes and none chosen is
+`ambiguous-remote`, as `init`, `sync` and `remote` all decide through the
+same choice. The temporary clone is `.board-clone-<random>` beside `.board`
+(same file system, so the rename is atomic); a clone that fails after a
+successful `ls-remote` is `remote-unreachable`; a remote whose HEAD names a
+branch it does not have (a bare repository whose HEAD is `main` that only
+received `master`) checks nothing out, so when it has exactly one branch
+that branch is checked out before the `events/` check, and a failed
+checkout is `not-a-board`; in every refusal the temporary directory is
+removed, and a `.board-clone-*` left by an interrupted run is removed by
+the next `init --remote`, which names it.
+
 ### 9. Migration: `agentboard init --into-host`
 
 Name: a flag on `init` rather than a new command (`agentboard migrate`,

@@ -400,3 +400,27 @@ describe('the README documents the board in a separate repository (task 4.2)', (
     expect([...readme].every((ch) => ch.charCodeAt(0) < 128)).toBe(true);
   });
 });
+
+describe('scenario: Remote URL that is an option, through the built CLI (review R1)', () => {
+  it('exits 1 usage, runs nothing and creates nothing', () => {
+    const shim = sshShim();
+    const env = syncEnv({ GIT_SSH_COMMAND: shim.command });
+    const root = project();
+    git(root, 'remote', 'add', 'origin', SSH_URL);
+    const url = '--upload-pack=touch PWNED;:x';
+
+    const out = spawnCli(['init', '--remote', url], root, env);
+
+    expect(out.code).toBe(1);
+    expect(out.stdout).toBe('');
+    expect(out.stderr).toContain('--remote');
+    expect(errorOf(spawnCli(['init', '--remote', url, '--json'], root, env))).toMatchObject({
+      exitCode: 1,
+      reason: 'usage',
+    });
+    expect(shim.calls()).toEqual([]);
+    expect(existsSync(join(root, 'PWNED'))).toBe(false);
+    expect(existsSync(join(root, '.board'))).toBe(false);
+    expect(git(root, 'status', '--porcelain')).toBe('');
+  });
+});

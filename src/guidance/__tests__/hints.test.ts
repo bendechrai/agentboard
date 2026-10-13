@@ -456,6 +456,7 @@ describe('hint contracts (CLI)', () => {
     ['git-missing', 'sync', ['PATH']],
     ['gh-missing', 'close-merged', ['PATH', 'gh auth login']],
     ['ambiguous-remote', 'sync', ['origin', "'agentboard sync'"]],
+    ['ambiguous-remote', 'init', ['origin', "'agentboard init'"]],
     ['board-not-found', 'list', ["'agentboard init'", 'AGENTBOARD_DIR']],
     ['board-not-a-repository', 'sync', ["'agentboard help sync'"]],
     ['sync-in-progress', 'sync', ["'agentboard sync'"]],

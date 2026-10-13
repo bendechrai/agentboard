@@ -14,7 +14,16 @@
  * shim that connects nowhere; nothing touches the network.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -43,6 +52,7 @@ import {
   sshShim,
   standaloneBoard,
   withGitShim,
+  withRecordingGitShim,
   worktreeEntries,
   worktrees,
 } from './sharing-helpers.js';
@@ -142,6 +152,8 @@ describe('isLocalUrl: git treats a URL as a path when it starts with file:// or 
     ['dir/host:x.git', true],
     ['file:///x.git', true],
     ['file:///abs/path/x.git', true],
+    ['file://localhost/abs/x.git', true],
+    ['file://host/abs/x.git', true],
     ['host:x.git', false],
     ['git@host:x.git', false],
     ['git@github.com:me/board.git', false],
@@ -162,11 +174,20 @@ describe('localPath and originUrl', () => {
     ['x.git', '/a/b', '/a/b/x.git'],
     ['../../boards/x.git', '/a/b/c', '/a/boards/x.git'],
     ['file:///abs/x.git', '/a/b', '/abs/x.git'],
+    ['file://localhost/abs/x.git', '/a/b', '/abs/x.git'],
   ])('localPath(%s, %s) is %s', (url, base, path) => {
     expect(localPath(url, base)).toBe(path);
   });
 
-  it.each(['host:x.git', 'git@host:x.git', 'ssh://host/x.git', 'https://host/x.git'])(
+  it.each([
+    'host:x.git',
+    'git@host:x.git',
+    'ssh://host/x.git',
+    'https://host/x.git',
+    // A file:// URL with a host other than localhost names no path on this machine.
+    'file://host/abs/x.git',
+    'file://example.invalid/x.git',
+  ])(
     'localPath(%s) is null',
     (url) => {
       expect(localPath(url, '/a/b')).toBeNull();
@@ -178,6 +199,7 @@ describe('localPath and originUrl', () => {
     expect(originUrl('./x.git', '/a/b')).toBe('/a/b/x.git');
     expect(originUrl('/abs/x.git', '/a/b')).toBe('/abs/x.git');
     expect(originUrl('file:///abs/x.git', '/a/b')).toBe('file:///abs/x.git');
+    expect(originUrl('file://localhost/abs/x.git', '/a/b')).toBe('file://localhost/abs/x.git');
     expect(originUrl('git@host:x.git', '/a/b')).toBe('git@host:x.git');
     expect(originUrl('https://host/x.git', '/a/b')).toBe('https://host/x.git');
   });
@@ -823,5 +845,432 @@ describe('refusals before anything is read', () => {
     );
 
     expect(readdirSync(root)).toEqual([]);
+  });
+});
+
+// The group 4 review round 1 (ticket 01M4SN8WNB94RP984DERZBRSBG, orchestrator
+// ruling): the URL is validated before any git command runs, an existing
+// non-board `.board` is refused before any write, the decisions are in the
+// delta, and the clone failure paths are typed refusals.
+
+/** The git command lines a recording shim saw that carry `word` as an argument. */
+function callsWith(calls: readonly string[], word: string): string[] {
+  return calls.filter((line) => line.split(' ').includes(word));
+}
+
+describe('scenario: Remote URL that is an option (review R1)', () => {
+  it.each(['--upload-pack=touch PWNED;:x', '-x', '--', '-'])(
+    'refuses %j as usage before any git command sees it, contacting nothing and creating nothing',
+    (url) => {
+      const shim = sshShim();
+      const recording = withRecordingGitShim(syncEnv({ GIT_SSH_COMMAND: shim.command }));
+      const env = recording.env;
+      const root = hostRepo();
+      git(root, 'remote', 'add', 'origin', SSH_URL);
+      const before = { entries: readdirSync(root).sort(), refs: refs(root) };
+
+      const err = expectBoardError(() => initBoardWithRemote(url, { cwd: root, env }), 1, 'usage');
+
+      expect(err.message).toContain('--remote');
+      expect(err.message).toContain(url);
+      // No git command received the value, so no command could run it or
+      // reach the host's origin; the shims prove both. (A one or two
+      // character value is matched as a whole word: `-` is in every `-c`.)
+      const carries = (line: string): boolean =>
+        url.length > 2 ? line.includes(url) : line.split(' ').includes(url);
+      for (const line of recording.calls()) {
+        expect(carries(line), line).toBe(false);
+      }
+      expect(callsWith(recording.calls(), 'ls-remote')).toEqual([]);
+      expect(callsWith(recording.calls(), 'clone')).toEqual([]);
+      expect(shim.calls()).toEqual([]);
+      expect(existsSync(join(root, 'PWNED'))).toBe(false);
+      expect(existsSync(join(root, '.board'))).toBe(false);
+      expect({ entries: readdirSync(root).sort(), refs: refs(root) }).toEqual(before);
+      expect(git(root, 'status', '--porcelain')).toBe('');
+    },
+  );
+
+  it('passes the URL after -- to ls-remote and to clone', () => {
+    const base = syncEnv();
+    const { remote } = publishedBoard(base, ['one']);
+    const recording = withRecordingGitShim(base);
+    const root = plainProject();
+
+    const result = initBoardWithRemote(remote, { cwd: root, env: recording.env });
+
+    expect(result.action).toBe('cloned');
+    const lsRemote = callsWith(recording.calls(), 'ls-remote');
+    expect(lsRemote).toHaveLength(1);
+    expect(lsRemote[0]).toMatch(new RegExp(`ls-remote( \\S+)* -- ${remote}`));
+    const clone = callsWith(recording.calls(), 'clone');
+    expect(clone).toHaveLength(1);
+    expect(clone[0]).toMatch(new RegExp(`clone( \\S+)* -- ${remote} `));
+  });
+
+  it('passes the URL after -- to ls-remote on the empty-remote path too', () => {
+    const recording = withRecordingGitShim(syncEnv());
+    const root = plainProject();
+    const remote = bareRemote();
+
+    const result = initBoardWithRemote(remote, { cwd: root, env: recording.env });
+
+    expect(result.action).toBe('created');
+    const lsRemote = callsWith(recording.calls(), 'ls-remote');
+    expect(lsRemote.length).toBeGreaterThan(0);
+    expect(lsRemote[0]).toMatch(new RegExp(`ls-remote( \\S+)* -- ${remote}`));
+  });
+});
+
+describe('scenario: Existing directory that is not a board (review R2)', () => {
+  /** `<root>/.board` as a directory holding only `notes.txt`; returns the file's bytes. */
+  function userDirectory(root: string): Buffer {
+    const dir = join(root, '.board');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'notes.txt'), 'my notes, not a board\n');
+    return readFileSync(join(dir, 'notes.txt'));
+  }
+
+  it('a directory with a user file and a remote that holds a board: exit 2 before any write, the file survives', () => {
+    const env = syncEnv();
+    const { remote } = publishedBoard(env, ['one']);
+    const root = gitRepo(join(tempDir(), 'proj'));
+    const notes = userDirectory(root);
+    const dir = join(root, '.board');
+    const entries = readdirSync(root).sort();
+
+    const err = expectBoardError(
+      () => initBoardWithRemote(remote, { cwd: root, env }),
+      2,
+      'board-not-a-repository',
+    );
+
+    expect(err.message).toContain(dir);
+    expect(err.message).toMatch(/move/);
+    expect(readdirSync(dir)).toEqual(['notes.txt']);
+    expect(readFileSync(join(dir, 'notes.txt')).equals(notes)).toBe(true);
+    expect(readdirSync(root).sort()).toEqual(entries);
+    expect(existsSync(join(root, '.gitignore'))).toBe(false);
+    expect(git(root, 'status', '--porcelain')).toBe('');
+  });
+
+  it('a directory with a user file and a missing local path: exit 2, the bare repository is not created', () => {
+    const env = syncEnv();
+    const root = gitRepo(join(tempDir(), 'proj'));
+    const notes = userDirectory(root);
+    const dir = join(root, '.board');
+    const bare = resolve(root, '../boards/project.git');
+
+    expectBoardError(
+      () => initBoardWithRemote('../boards/project.git', { cwd: root, env }),
+      2,
+      'board-not-a-repository',
+    );
+
+    expect(existsSync(bare)).toBe(false);
+    expect(existsSync(resolve(root, '../boards'))).toBe(false);
+    expect(readdirSync(dir)).toEqual(['notes.txt']);
+    expect(readFileSync(join(dir, 'notes.txt')).equals(notes)).toBe(true);
+    expect(existsSync(join(dir, '.git'))).toBe(false);
+    expect(existsSync(join(root, '.gitignore'))).toBe(false);
+  });
+
+  it('a directory with a user file and an empty remote: exit 2, the directory is not turned into a repository', () => {
+    const env = syncEnv();
+    const root = plainProject();
+    const notes = userDirectory(root);
+    const dir = join(root, '.board');
+    const remote = bareRemote();
+
+    expectBoardError(
+      () => initBoardWithRemote(remote, { cwd: root, env }),
+      2,
+      'board-not-a-repository',
+    );
+
+    expect(readdirSync(dir)).toEqual(['notes.txt']);
+    expect(readFileSync(join(dir, 'notes.txt')).equals(notes)).toBe(true);
+    expect(branchesOf(remote)).toEqual([]);
+  });
+
+  it('a regular file named .board: exit 2, the file survives byte for byte', () => {
+    const env = syncEnv();
+    const { remote } = publishedBoard(env, ['one']);
+    const root = plainProject();
+    writeFileSync(join(root, '.board'), 'a file, not a directory\n');
+    const bytes = readFileSync(join(root, '.board'));
+
+    const err = expectBoardError(
+      () => initBoardWithRemote(remote, { cwd: root, env }),
+      2,
+      'board-not-a-repository',
+    );
+
+    expect(err.message).toContain(join(root, '.board'));
+    expect(lstatSync(join(root, '.board')).isFile()).toBe(true);
+    expect(readFileSync(join(root, '.board')).equals(bytes)).toBe(true);
+    expect(readdirSync(root)).toEqual(['.board']);
+  });
+
+  it('a dangling symbolic link named .board: exit 2, the link survives and its target stays absent', () => {
+    const env = syncEnv();
+    const root = plainProject();
+    const remote = bareRemote();
+    const target = join(tempDir(), 'gone');
+    symlinkSync(target, join(root, '.board'));
+
+    expectBoardError(
+      () => initBoardWithRemote(remote, { cwd: root, env }),
+      2,
+      'board-not-a-repository',
+    );
+
+    expect(lstatSync(join(root, '.board')).isSymbolicLink()).toBe(true);
+    expect(existsSync(target)).toBe(false);
+    expect(readdirSync(root)).toEqual(['.board']);
+    expect(branchesOf(remote)).toEqual([]);
+  });
+
+  it('an empty directory counts as absent: a board is cloned into it', () => {
+    const env = syncEnv();
+    const { remote } = publishedBoard(env, ['one']);
+    const root = plainProject();
+    mkdirSync(join(root, '.board'));
+
+    const result = initBoardWithRemote(remote, { cwd: root, env });
+
+    expect(result).toMatchObject({ action: 'cloned', events: 1 });
+    expectStandaloneBoard(join(root, '.board'), remote, env);
+    expect(readdirSync(root)).toEqual(['.board']);
+  });
+
+  it('an empty directory counts as absent: a new board is created in it for an empty remote', () => {
+    const env = syncEnv();
+    const root = plainProject();
+    const remote = bareRemote();
+    mkdirSync(join(root, '.board'));
+
+    const result = initBoardWithRemote(remote, { cwd: root, env });
+
+    expect(result).toMatchObject({ action: 'created' });
+    expectStandaloneBoard(join(root, '.board'), remote, env);
+    expect(branchesOf(remote)).toEqual(['main']);
+  });
+});
+
+describe('scenario: Init with a remote on a board with several remotes (review R3)', () => {
+  it('exits 1 ambiguous-remote naming fork, upstream and agentboard init, and changes nothing', () => {
+    const env = syncEnv();
+    const root = plainProject();
+    const dir = standaloneBoard(root);
+    const fork = bareRemote();
+    const upstream = bareRemote();
+    git(dir, 'remote', 'add', 'fork', fork);
+    git(dir, 'remote', 'add', 'upstream', upstream);
+    putEvent(join(dir, 'events'), createEvent(T1, 'not yet synced'));
+    const other = bareRemote();
+    const before = snapshotDir(dir);
+
+    const err = expectBoardError(
+      () => initBoardWithRemote(other, { cwd: root, env }),
+      1,
+      'ambiguous-remote',
+    );
+
+    expect(err.message).toContain('fork');
+    expect(err.message).toContain('upstream');
+    expect(err.message).toContain('agentboard init');
+    expect(err.message).toContain('git config agentboard.remote <name>');
+    expect(snapshotDir(dir)).toEqual(before);
+    expect(git(dir, 'remote').trim().split('\n').sort()).toEqual(['fork', 'upstream']);
+    expect(git(dir, 'status', '--porcelain')).toMatch(/^\?\? events\//m);
+    for (const remote of [fork, upstream, other]) {
+      expect(branchesOf(remote)).toEqual([]);
+    }
+  });
+});
+
+describe('file:// URLs with a host part (review S1)', () => {
+  it('file://localhost/<path> names that path: a missing one is created as a bare repository, stored as given', () => {
+    const env = syncEnv();
+    const root = plainProject();
+    const path = join(tempDir(), 'boards', 'x.git');
+    const url = `file://localhost${path}`;
+
+    const result = initBoardWithRemote(url, { cwd: root, env });
+
+    expect(result).toMatchObject({ action: 'created', remoteUrl: url });
+    expect(git(path, 'rev-parse', '--is-bare-repository').trim()).toBe('true');
+    expect(originOf(join(root, '.board'))).toBe(url);
+    expect(existsSync(join(root, 'localhost'))).toBe(false);
+  });
+
+  it.each(['file://host/x.git', 'file://example.invalid/boards/x.git'])(
+    '%s is refused as usage and nothing is created',
+    (url) => {
+      const env = syncEnv();
+      const root = plainProject();
+
+      const err = expectBoardError(() => initBoardWithRemote(url, { cwd: root, env }), 1, 'usage');
+
+      expect(err.message).toContain(url);
+      expect(readdirSync(root)).toEqual([]);
+    },
+  );
+});
+
+describe('a matching URL rewritten by insteadOf (review S2)', () => {
+  it('is unchanged, not remote-mismatch, and runs no sync', () => {
+    const env = syncEnv();
+    const root = plainProject();
+    const dir = standaloneBoard(root);
+    const bare = bareRemote();
+    git(dir, 'remote', 'add', 'origin', 'https://host/d.git');
+    git(dir, 'config', `url.${bare}/.insteadOf`, 'https://host/');
+    expect(git(dir, 'remote', 'get-url', 'origin').trim()).toBe(`${bare}/d.git`);
+    putEvent(join(dir, 'events'), createEvent(T1, 'not yet synced'));
+    const before = snapshotDir(dir);
+
+    const result = initBoardWithRemote('https://host/d.git', { cwd: root, env });
+
+    expect(result).toMatchObject({
+      action: 'unchanged',
+      remote: 'origin',
+      remoteUrl: 'https://host/d.git',
+      sync: null,
+    });
+    expect(snapshotDir(dir)).toEqual(before);
+    expect(git(dir, 'status', '--porcelain')).toMatch(/^\?\? events\//m);
+    expect(git(dir, 'config', '--get', 'remote.origin.url').trim()).toBe('https://host/d.git');
+  });
+});
+
+describe('clone failures after ls-remote succeeded (review S3)', () => {
+  /**
+   * A bare copy of the board at `source` (loose objects, so one can be
+   * deleted) at `<temp>/corrupt.git`, with HEAD at `head`; returns its path.
+   */
+  function bareCopy(source: string, head: string): string {
+    const bare = join(tempDir(), 'corrupt.git');
+    git(tempDir(), 'clone', '-q', '--bare', '--no-hardlinks', source, bare);
+    git(bare, 'symbolic-ref', 'HEAD', head);
+    return bare;
+  }
+
+  /** Deletes the loose object `id` from the bare repository at `bare`. */
+  function deleteObject(bare: string, id: string): void {
+    const path = join(bare, 'objects', id.slice(0, 2), id.slice(2));
+    expect(existsSync(path), path).toBe(true);
+    rmSync(path);
+  }
+
+  /** A standalone board with one committed event on `main`. */
+  function committedBoard(): string {
+    const dir = standaloneBoard(join(tempDir(), 'source'));
+    putEvent(join(dir, 'events'), createEvent(T1, 'one'));
+    git(dir, 'add', '-A');
+    git(dir, 'commit', '-q', '-m', 'agentboard sync: 1 event file');
+    return dir;
+  }
+
+  it('a file:// remote whose tip commit object is missing: ls-remote succeeds, the clone fails, exit 3 remote-unreachable, nothing left', () => {
+    const env = syncEnv();
+    const source = committedBoard();
+    const bare = bareCopy(source, 'refs/heads/main');
+    deleteObject(bare, revParse(bare, 'main'));
+    const url = `file://${bare}`;
+    expect(git(tempDir(), 'ls-remote', '--', url)).toContain('refs/heads/main');
+    const root = gitRepo(join(tempDir(), 'proj'));
+
+    const err = expectBoardError(
+      () => initBoardWithRemote(url, { cwd: root, env }),
+      3,
+      'remote-unreachable',
+    );
+
+    expect(err.message).toContain(url);
+    expect(err.message).toMatch(/fatal: |error: /);
+    expect(existsSync(join(root, '.board'))).toBe(false);
+    expect(readdirSync(root).sort()).toEqual(['.git']);
+    expect(existsSync(join(root, '.gitignore'))).toBe(false);
+  });
+
+  it('a remote whose HEAD names a missing branch and whose only branch cannot be checked out: exit 1 not-a-board, nothing left', () => {
+    const env = syncEnv();
+    const source = committedBoard();
+    const bare = bareCopy(source, 'refs/heads/main');
+    git(bare, 'branch', '-m', 'main', 'master');
+    git(bare, 'symbolic-ref', 'HEAD', 'refs/heads/main');
+    deleteObject(bare, git(bare, 'rev-parse', 'master^{tree}').trim());
+    const root = gitRepo(join(tempDir(), 'proj'));
+
+    const err = expectBoardError(
+      () => initBoardWithRemote(bare, { cwd: root, env }),
+      1,
+      'not-a-board',
+    );
+
+    expect(err.message).toContain(bare);
+    expect(err.message).toMatch(/master/);
+    expect(existsSync(join(root, '.board'))).toBe(false);
+    expect(readdirSync(root).sort()).toEqual(['.git']);
+    expect(existsSync(join(root, '.gitignore'))).toBe(false);
+  });
+});
+
+describe('review nits', () => {
+  it('N1: agentboard.remote naming a remote the board does not have is a mismatch that names agentboard.remote, not remote set-url', () => {
+    const env = syncEnv();
+    const root = plainProject();
+    const dir = standaloneBoard(root);
+    git(dir, 'config', 'agentboard.remote', 'nosuch');
+    const remote = bareRemote();
+    const before = snapshotDir(dir);
+
+    const err = expectBoardError(
+      () => initBoardWithRemote(remote, { cwd: root, env }),
+      1,
+      'remote-mismatch',
+    );
+
+    expect(err.message).toContain('nosuch');
+    expect(err.message).toContain('agentboard.remote');
+    expect(err.message).not.toContain('remote set-url');
+    expect(snapshotDir(dir)).toEqual(before);
+    expect(git(dir, 'remote')).toBe('');
+    expect(branchesOf(remote)).toEqual([]);
+  });
+
+  it('N3: a leftover .board-clone-* from an interrupted run is removed by the next init --remote, which names it (clone path)', () => {
+    const env = syncEnv();
+    const { remote } = publishedBoard(env, ['one']);
+    const root = plainProject();
+    const leftover = join(root, '.board-clone-abc123');
+    mkdirSync(leftover);
+    writeFileSync(join(leftover, 'half.txt'), 'half a clone\n');
+
+    const result = initBoardWithRemote(remote, { cwd: root, env });
+
+    expect(result.action).toBe('cloned');
+    expect(result.message).toContain('.board-clone-abc123');
+    expect(existsSync(leftover)).toBe(false);
+    expect(readdirSync(root)).toEqual(['.board']);
+    expectStandaloneBoard(join(root, '.board'), remote, env);
+  });
+
+  it('N3: the same on the empty-remote path', () => {
+    const env = syncEnv();
+    const root = plainProject();
+    const remote = bareRemote();
+    const leftover = join(root, '.board-clone-xyz789');
+    mkdirSync(leftover);
+    writeFileSync(join(leftover, 'half.txt'), 'half a clone\n');
+
+    const result = initBoardWithRemote(remote, { cwd: root, env });
+
+    expect(result.action).toBe('created');
+    expect(result.message).toContain('.board-clone-xyz789');
+    expect(existsSync(leftover)).toBe(false);
+    expect(readdirSync(root)).toEqual(['.board']);
   });
 });

@@ -99,11 +99,14 @@ export function isLocalUrl(url: string): boolean {
 
 /**
  * The absolute file system path of a local `url` (`isLocalUrl`), or null
- * for any other URL: a `file://` URL without its `file://` prefix
- * (`file:///abs/x.git` is `/abs/x.git`), an absolute path as it is, and
- * a relative path resolved against `base` with `path.resolve` (`../x.git`
- * from `/a/b` is `/a/x.git`). `base` is the directory `initBoardWithRemote`
- * resolves relative paths against (see there). Pure.
+ * for any other URL: a `file://` URL without its scheme and host part,
+ * where the host part is empty or `localhost` (`file:///abs/x.git` and
+ * `file://localhost/abs/x.git` are both `/abs/x.git`; a `file://` URL
+ * with any other host names no path on this machine and is null, and
+ * `initBoardWithRemote` refuses it as usage), an absolute path as it is,
+ * and a relative path resolved against `base` with `path.resolve`
+ * (`../x.git` from `/a/b` is `/a/x.git`). `base` is the directory
+ * `initBoardWithRemote` resolves relative paths against (see there). Pure.
  */
 export function localPath(url: string, base: string): string | null {
   if (!isLocalUrl(url)) {
@@ -146,8 +149,14 @@ export function originUrl(url: string, base: string): string {
  *
  * In this order, writing nothing until a step says so:
  *
- * 1. `url` empty or whitespace only: `BoardError(1, 'usage')` naming
- *    `--remote`. `git` cannot be run: `BoardError(1, 'git-missing')` as
+ * 1. `url` empty or whitespace only, `url` starting with `-` (git would
+ *    read it as an option: `--upload-pack=<command>` run against the
+ *    host's own `origin`), or a `file://` URL whose host part is neither
+ *    empty nor `localhost`: `BoardError(1, 'usage')` naming `--remote`
+ *    and the value, before any git command runs with the value (the host
+ *    repository's remote is never contacted; nothing is created). Every
+ *    git command that is given the URL (`ls-remote`, `clone`) passes it
+ *    after `--`. `git` cannot be run: `BoardError(1, 'git-missing')` as
  *    `initBoard`.
  * 2. `dir` exists and is a board (`boardExists`):
  *    - `detectBoardModel(dir)` is `host`: `BoardError(1, 'board-in-host')`
@@ -166,8 +175,16 @@ export function originUrl(url: string, base: string): string {
  *      `BoardError` it throws: `sync-failed`, `sync-conflict`, ...)
  *      propagates unchanged, with the remote kept and the sync's local
  *      commit kept.
+ *    - `standalone` with several remotes and none chosen
+ *      (`boardRemote(info).ambiguous`): `ambiguousRemoteError(choice,
+ *      'init')`, exit 1 `ambiguous-remote` naming the remotes and
+ *      `agentboard init`; nothing changes (no sync, no push, the remotes
+ *      as they were).
  *    - `standalone` whose chosen remote (`boardRemote(info).chosen`) has
- *      exactly the URL `originUrl(url, base)`: `action` `unchanged`, exit
+ *      exactly the URL `originUrl(url, base)`, compared against the URL
+ *      `git remote get-url` prints and against the raw configuration
+ *      value `remote.<name>.url` (a `url.<base>.insteadOf` rewrite
+ *      changes the former, not the latter): `action` `unchanged`, exit
  *      0, nothing done (no `sync`: an uncommitted event file stays
  *      uncommitted, the remote receives nothing), `created` false,
  *      `remote` the chosen remote's name, `sync` null, `hostGitignore`
@@ -177,16 +194,29 @@ export function originUrl(url: string, base: string): string {
  *      `BoardError(1, 'remote-mismatch')` naming the remote, both URLs
  *      (the one it has and `originUrl(url, base)`) and
  *      `git -C <dir> remote set-url <name> <url>` (the text
- *      `remote set-url` appears); nothing changes.
+ *      `remote set-url` appears); nothing changes. When the chosen remote
+ *      is one `agentboard.remote` names and the repository does not have
+ *      (`chosen.url` null), the message names `agentboard.remote` and the
+ *      missing name instead and does not suggest `remote set-url`, which
+ *      would fail.
  *    - `broken-host-link` or `not-a-repository`: not this command's job;
  *      `BoardError(2, 'board-link-broken')` for a broken link (it is a
  *      host worktree; `agentboard init` repairs it) and
  *      `BoardError(2, 'board-not-a-repository')` for a non-repository,
  *      each with the message `sync` gives; nothing changes.
- * 3. `dir` does not exist. When `isLocalUrl(url)` and
- *    `localPath(url, base)` does not exist, `git init --bare` creates it
- *    (with every missing parent directory), before anything else is
- *    written. Then `git ls-remote <originUrl>`:
+ * 3. `dir` does not exist, or is an empty directory (which counts as
+ *    absent). When `dir` exists and is not a board and not an empty
+ *    directory (a directory holding any entry but no `events/`, a regular
+ *    file, a symbolic link that does not resolve to a board directory):
+ *    `BoardError(2, 'board-not-a-repository')` naming `dir` and telling
+ *    the user to move it aside (the word `move` appears), before any
+ *    write: no bare repository, no temporary directory, no host
+ *    `.gitignore` entry, and whatever `dir` holds is left byte for byte.
+ *    A `.board-clone-*` sibling left by an interrupted earlier run is
+ *    removed now, and the result's message names it. When `isLocalUrl(url)`
+ *    and `localPath(url, base)` does not exist, `git init --bare` creates
+ *    it (with every missing parent directory), before anything else is
+ *    written. Then `git ls-remote -- <originUrl>`:
  *    - it fails (a non-local URL that does not exist or cannot be read, a
  *      local path that is not a repository): `BoardError(3,
  *      'remote-unreachable')` naming the URL, quoting git's first error
@@ -211,16 +241,20 @@ export function originUrl(url: string, base: string): string {
  *      message naming `dir`, the standalone model, `origin` and the URL,
  *      ending with the sync's message lines. A `sync` failure propagates
  *      unchanged, the board, its `origin` and the sync's commit kept.
- *    - it lists at least one branch: `git clone <originUrl> <temporary>`
+ *    - it lists at least one branch: `git clone -- <originUrl> <temporary>`
  *      into a fresh temporary directory beside `dir` (a sibling in the
- *      parent of `dir`, so the rename below is on one file system), then
- *      the clone's working tree is checked for an `events/` directory.
+ *      parent of `dir` named `.board-clone-<random>`, so the rename below
+ *      is on one file system), then the clone's working tree is checked
+ *      for an `events/` directory.
  *      When the remote's HEAD names no branch of the clone (git warns
  *      "remote HEAD refers to nonexistent ref" and checks nothing out:
  *      a bare repository whose HEAD is `main` that received only
  *      `master`) and the remote has exactly one branch, that branch is
  *      checked out as the clone's branch (tracking `origin`) before the
- *      check. With `events/` present, the temporary directory is renamed
+ *      check; when that checkout fails (the branch's tree cannot be
+ *      read), the temporary directory is removed and the refusal is
+ *      `BoardError(1, 'not-a-board')` quoting git, never a raw error.
+ *      With `events/` present, the temporary directory is renamed
  *      to `dir`, the host `.gitignore` entry is written as above, and the
  *      board is opened once so its events are folded into the cache
  *      (`openBoard(dir).close()`): `action` `cloned`, `created` true,
@@ -232,8 +266,10 @@ export function originUrl(url: string, base: string): string {
  *      holds no board (no `events/` directory) and that `--remote` needs
  *      an empty repository or one that holds a board; nothing is left
  *      behind: no `dir`, no temporary directory, no host `.gitignore`
- *      entry. A failed `git clone` is removed the same way and reported
- *      as `remote-unreachable`.
+ *      entry. A failed `git clone` (a remote whose objects are missing,
+ *      found only now because `ls-remote` reads refs alone) is removed
+ *      the same way and reported as `BoardError(3, 'remote-unreachable')`
+ *      quoting git's first error line.
  *
  * In every case `model` is `standalone` and `repair` null. The board the
  * command leaves is one `agentboard remote` reports as `standalone` with

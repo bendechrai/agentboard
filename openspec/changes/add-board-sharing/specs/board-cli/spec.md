@@ -238,6 +238,45 @@ repository's refs untouched:
   URLs and `git -C .board remote set-url`.
 - When `.board` is a host-model board, it SHALL exit 1 with reason
   `board-in-host` and change nothing.
+- When `.board` is a standalone board with several remotes and none chosen
+  by the rules of board-concurrency "Sync converges", it SHALL exit 1 with
+  reason `ambiguous-remote` and change nothing.
+- When `.board` exists and is not a board (a directory holding any entry
+  but no `events/`, a regular file, or a symbolic link that does not
+  resolve to a board directory), it SHALL exit 2 with reason
+  `board-not-a-repository` before any write (no bare repository, no
+  temporary directory, no host `.gitignore` entry), telling the user to
+  move it aside; whatever it holds is left byte for byte. An empty
+  directory counts as absent.
+
+`<url>` SHALL be checked before anything runs: an empty value, a value
+that starts with `-`, or a `file://` URL whose host part is neither empty
+nor `localhost` SHALL exit 1 with reason `usage`, and no git command SHALL
+be given the value (in particular the host repository's own remote is
+never contacted). Every git command that takes `<url>` SHALL pass it
+after `--`. A relative local path SHALL be resolved against the host
+repository's top level when the board was found through a git repository
+(the same directory from every linked worktree), else against the current
+directory, and the `origin` URL stored SHALL be the absolute path;
+`file://localhost/x` and `file:///x` both name the path `/x`; a `file://`
+URL and a non-local URL SHALL be stored as given. The matching-URL
+comparison SHALL use the raw `remote.<name>.url` as well as the URL
+`git remote get-url` prints, so a URL rewritten by `url.<base>.insteadOf`
+is not reported as `remote-mismatch`; a matching URL SHALL run no `sync`.
+The `remote-mismatch` message SHALL name `git -C .board remote set-url`
+only when the remote exists; when `agentboard.remote` names a remote the
+board repository does not have, it SHALL name `agentboard.remote` instead.
+
+A board is cloned into a temporary sibling of `.board` named
+`.board-clone-<random>`, renamed to `.board` only once its working tree
+holds `events/`. A clone that fails after `ls-remote` succeeded (a remote
+whose objects are missing) SHALL exit 3 with reason `remote-unreachable`
+and leave nothing behind. When the remote's HEAD names a branch the remote
+does not have and the remote has exactly one branch, that branch SHALL be
+checked out first; when that checkout fails, `init` SHALL exit 1 with
+reason `not-a-board` and leave nothing behind. A `.board-clone-*` left by
+an interrupted run SHALL be removed by the next `init --remote`, which
+names it in its message.
 
 When the `sync` that `init --remote` runs fails, `init` SHALL exit with that
 failure's code and reason, keeping the board and the remote it set.
@@ -269,6 +308,30 @@ failure's code and reason, keeping the board and the remote it set.
 #### Scenario: Remote flags are exclusive
 - **WHEN** `agentboard init --remote <url> --into-host` runs
 - **THEN** it exits 1 with reason `usage` and nothing changes
+
+#### Scenario: Remote URL that is an option
+- **WHEN** `agentboard init --remote '--upload-pack=touch PWNED;:x'` runs in a clone whose host repository has an `origin`
+- **THEN** it exits 1 with reason `usage`, no git command received the value, `origin` was not contacted, no file was created and nothing changes
+
+#### Scenario: Existing directory that is not a board
+- **WHEN** `.board` is a directory holding `notes.txt` and no `events/`, and `agentboard init --remote <url>` runs, whether `<url>` holds a board or is empty
+- **THEN** it exits 2 with reason `board-not-a-repository` telling the user to move the directory aside, `notes.txt` is unchanged, and no bare repository, temporary directory or host `.gitignore` entry was created
+
+#### Scenario: Init with a remote on a board with several remotes
+- **WHEN** `.board` is a standalone board with the remotes `fork` and `upstream`, no `origin`, no upstream and no `agentboard.remote`, and `agentboard init --remote <url>` runs
+- **THEN** it exits 1 with reason `ambiguous-remote` naming both remotes and `agentboard init`, and nothing changes
+
+#### Scenario: Matching URL rewritten by insteadOf
+- **WHEN** a standalone board's `origin` is `https://host/d.git`, the board repository has `url.<path>.insteadOf=https://host/`, and `agentboard init --remote https://host/d.git` runs
+- **THEN** it exits 0 reporting that nothing changed, and runs no `sync`
+
+#### Scenario: Clone fails after ls-remote
+- **WHEN** `agentboard init --remote file://<path>` runs against a repository whose tip commit object is missing
+- **THEN** it exits 3 with reason `remote-unreachable` quoting git, and no `.board` or temporary directory is left behind
+
+#### Scenario: Leftover clone directory
+- **WHEN** `.board-clone-abc123` was left by an interrupted run and `agentboard init --remote <url>` runs
+- **THEN** the leftover is removed, the message names it, and the command otherwise completes as it would have
 
 ### Requirement: Moving a standalone board into the host repository
 `agentboard init --into-host` SHALL move a standalone board into the host
