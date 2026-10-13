@@ -12,7 +12,7 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -284,7 +284,9 @@ describe('a second init while the first is inside worktree add', () => {
     expect(git(root, 'status', '--porcelain')).toBe('');
     const kept = join(root, '.git', 'agentboard');
     expect(existsSync(kept) ? readdirSync(kept) : []).toEqual([]);
-    expect(worktreeEntries(root).filter((entry) => entry.path.includes('agentboard'))).toEqual([]);
+    const names = worktreeEntries(root).map((entry) => basename(entry.path));
+    expect(names.filter((name) => name === 'repairing')).toEqual([]);
+    expect(names.filter((name) => name === '.board')).toHaveLength(1);
   });
 });
 
