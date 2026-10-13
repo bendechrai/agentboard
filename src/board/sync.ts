@@ -3,21 +3,33 @@
  * "Cache is not synced"; add-board-core design.md: "Git sync model"; risk "Host project
  * forgets `.board/` in its gitignore").
  *
- * The board directory is its own git repository (`initBoard` makes it one).
- * `sync` commits new event files, pulls with rebase from the board's
- * remote, pushes, and then folds whatever arrived into the cache. Event
- * files are add-only and named by the hash of their content, so two clones
- * never produce a conflicting change to the same event path; any conflict
- * git does report is handed to a human with exit 3.
+ * A standalone board directory is its own git repository (`initBoard`
+ * makes it one). `sync` commits new event files, pulls with rebase from the
+ * board's remote, pushes, and then folds whatever arrived into the cache.
+ * Event files are add-only and named by the hash of their content, so two
+ * clones never produce a conflicting change to the same event path; any
+ * conflict git does report is handed to a human with exit 3. The board's
+ * model is decided by `detectBoardModel` (board-events "Board model
+ * detection"): a host-model board whose link to the host is broken is
+ * refused with exit 2 before anything is staged.
  */
 
-import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
 import type { Board } from '../store/board.js';
 import { catchUp } from '../store/cache.js';
 import { BoardError } from '../store/errors.js';
+import {
+  GIT_IDENTITY,
+  firstErrorLine,
+  gitRunner,
+  isGitFailure,
+  type GitFailure,
+  type GitRunner,
+} from './git.js';
+import { detectBoardModel } from './model.js';
+import { ambiguousRemoteError, chooseRemote } from './remote.js';
 import { asciiText, type Env } from './text.js';
 
 /**
@@ -27,8 +39,10 @@ import { asciiText, type Env } from './text.js';
  * commits are recognisably machine-made. It is used for the commit `sync`
  * makes (author and committer) and as the committer of commits replayed by
  * `pull --rebase`; the user's own identity, if any, is never consulted.
+ * The same value as `GIT_IDENTITY`, which every git command of agentboard
+ * uses.
  */
-export const SYNC_IDENTITY = { name: 'agentboard', email: 'agentboard@localhost' } as const;
+export const SYNC_IDENTITY: typeof GIT_IDENTITY = GIT_IDENTITY;
 
 /**
  * Subject of the commit `sync` makes: `agentboard sync: <n> event file(s)`,
@@ -44,13 +58,13 @@ export function syncCommitMessage(eventFiles: number): string {
 export interface SyncOptions {
   /**
    * Environment for the git child processes. Defaults to `process.env`.
-   * Whatever is given, `sync` removes the variables that would point git at
-   * another repository (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`,
-   * `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`,
-   * `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_PREFIX`), so
-   * running from inside a host git hook still syncs the board repository,
-   * and sets `GIT_TERMINAL_PROMPT=0` so a remote needing credentials fails
-   * instead of waiting for input.
+   * Whatever is given, the git runner (`gitRunner` in `src/board/git.ts`)
+   * removes the variables that would point git at another repository
+   * (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`,
+   * `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`,
+   * `GIT_NAMESPACE`, `GIT_PREFIX`), so running from inside a host git hook
+   * still syncs the board repository, and sets `GIT_TERMINAL_PROMPT=0` so a
+   * remote needing credentials fails instead of waiting for input.
    */
   env?: Env | undefined;
 }
@@ -129,14 +143,18 @@ export interface SyncResult {
 
 /**
  * `agentboard sync`. Every git command runs with the board directory as its
- * working directory, the environment described in `SyncOptions.env`, and
+ * working directory, through `gitRunner` with the environment described in
+ * `SyncOptions.env` and the fixed prefix
  * `-c user.name=<SYNC_IDENTITY.name> -c user.email=<SYNC_IDENTITY.email>
  * -c commit.gpgsign=false`; git is run with `execFileSync`, never a shell.
  *
  * Preconditions, checked before anything is staged:
  * 1. `git` can be run, else `BoardError(1, 'git-missing')`.
- * 2. The board directory is the top level of its own git repository (a
- *    board whose directory is not a repository, or which is only a
+ * 2. The board's model (`detectBoardModel`) is not a broken host link:
+ *    else `BoardError(2, 'board-link-broken')` naming the directory, what
+ *    is wrong with the link and that `agentboard init` repairs it. Then
+ *    the board directory is the top level of a git repository or worktree
+ *    (a board whose directory is not a repository, or which is only a
  *    subdirectory of the host repository, is refused rather than synced
  *    through the host): else `BoardError(2, 'board-not-a-repository')`
  *    naming the directory and saying `agentboard init` or `git init` there
@@ -174,13 +192,18 @@ export interface SyncResult {
  *    committed nor pushed by sync and is still staged afterwards; when only
  *    such content is staged, no commit is made. `committedEvents` counts
  *    the event files of this commit.
- * 3. Remote: the remote of the branch's configured upstream when there is
- *    one; otherwise `origin` when it exists; otherwise the only remote.
- *    With no remote at all this is the no-remote path: stop here and return
- *    with `remote: null`, `pulled` and `pushed` false, `arrived` empty and a
- *    message containing `no remote configured`. Exit 0. Several remotes, no
- *    upstream and no `origin`: `BoardError(1, 'ambiguous-remote')` naming
- *    them (after the commit).
+ * 3. Remote: `chooseRemote` for the board repository and its branch
+ *    (board-concurrency "Sync converges"): the remote named by
+ *    `git config agentboard.remote` when set; else the remote of the
+ *    branch's configured upstream when there is one (an upstream remote of
+ *    `.` is ignored); otherwise `origin` when it exists; otherwise the only
+ *    remote. With no remote at all this is the no-remote path: stop here
+ *    and return with `remote: null`, `pulled` and `pushed` false, `arrived`
+ *    empty and a message containing `no remote configured`. Exit 0. Several
+ *    remotes and none chosen: `ambiguousRemoteError`, exit 1
+ *    `ambiguous-remote` naming them and `git config agentboard.remote
+ *    <name>` (after the commit). A configured remote that the repository
+ *    does not have is used as named, so reaching it fails with exit 3.
  * 4. Pull: first, when anything is still staged after step 2 (content
  *    sync does not commit), `BoardError(3, 'sync-failed')` naming those
  *    paths and saying to commit or unstage them in the board repository;
@@ -203,7 +226,8 @@ export interface SyncResult {
  *      `BoardError(3, 'sync-failed')` with git's first error line; the
  *      local commit from step 2 is kept.
  * 5. Push: `git push <remote> <branch>`, with `-u` when the branch had no
- *    upstream (`upstreamSet: true`). Push hooks are not skipped. A rejected
+ *    upstream at all (`upstreamSet: true`; a branch whose upstream another
+ *    rule overrode keeps its upstream). Push hooks are not skipped. A rejected
  *    push (the remote moved between pull and push) is retried once from
  *    step 4, so what arrived in between is pulled, reported in `arrived`
  *    and folded; a second rejection, or any other push failure, is
@@ -222,7 +246,8 @@ export interface SyncResult {
  * event contents.
  */
 export function syncBoard(board: Board, options?: SyncOptions): SyncResult {
-  const git = gitRunner(board.dir, options?.env ?? process.env);
+  const env = options?.env ?? process.env;
+  const git = gitRunner(board.dir, { env });
   const dir = board.dir;
 
   // Preconditions.
@@ -235,7 +260,7 @@ export function syncBoard(board: Board, options?: SyncOptions): SyncResult {
       'agentboard sync needs git (the board is a git repository of its own), but git could not be run',
     );
   }
-  checkOwnRepository(git, dir);
+  checkRepository(dir, env);
   checkNothingInProgress(git, dir);
   const branch = currentBranch(git);
   checkCommittedEventsPresent(git, board);
@@ -253,8 +278,11 @@ export function syncBoard(board: Board, options?: SyncOptions): SyncResult {
   const base = { dir, commit, committedEvents, branch, hostTracked, warnings };
 
   // 3. Remote.
-  const upstream = upstreamOf(git, branch);
-  const remote = chooseRemote(git, upstream);
+  const choice = chooseRemote(dir, branch, { env });
+  if (choice.ambiguous) {
+    throw ambiguousRemoteError(choice);
+  }
+  const remote = choice.chosen?.name ?? null;
   if (remote === null) {
     lines.push(`no remote configured; the board repository at ${dir} was not pulled or pushed`);
     return {
@@ -272,7 +300,7 @@ export function syncBoard(board: Board, options?: SyncOptions): SyncResult {
   // 4. Pull and 5. push, retried once when the push is rejected.
   checkNothingForeignStaged(git, dir);
   const before = new Set(eventFileNames(board));
-  const upstreamSet = upstream === null;
+  const upstreamSet = !hasUpstream(git, branch);
   let pulled = false;
   for (let attempt = 1; ; attempt += 1) {
     if (remoteHasBranch(git, remote, branch)) {
@@ -313,94 +341,6 @@ export function syncBoard(board: Board, options?: SyncOptions): SyncResult {
   };
 }
 
-/** Variables that would point git at a repository other than the board's. */
-const REPOSITORY_VARIABLES = [
-  'GIT_DIR',
-  'GIT_WORK_TREE',
-  'GIT_INDEX_FILE',
-  'GIT_COMMON_DIR',
-  'GIT_OBJECT_DIRECTORY',
-  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-  'GIT_NAMESPACE',
-  'GIT_PREFIX',
-] as const;
-
-/** A git command that failed: its exit status and its captured output. */
-interface GitFailure {
-  status: number | null;
-  stdout: string;
-  stderr: string;
-}
-
-/** Runs git in the board directory (or another directory) with the sync environment. */
-interface GitRunner {
-  /** Runs git with `args` and returns stdout; throws the child process error on failure. */
-  run(...args: string[]): string;
-  /** Like `run`, but in `cwd`. */
-  runIn(cwd: string, ...args: string[]): string;
-  /** Runs git and returns stdout, or the failure instead of throwing. */
-  attempt(...args: string[]): string | GitFailure;
-}
-
-function gitRunner(dir: string, given: Env): GitRunner {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(given)) {
-    if (value !== undefined) {
-      env[key] = value;
-    }
-  }
-  for (const key of REPOSITORY_VARIABLES) {
-    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
-    delete env[key];
-  }
-  env.GIT_TERMINAL_PROMPT = '0';
-  // The fixed identity wins over any identity in the environment.
-  env.GIT_AUTHOR_NAME = SYNC_IDENTITY.name;
-  env.GIT_AUTHOR_EMAIL = SYNC_IDENTITY.email;
-  env.GIT_COMMITTER_NAME = SYNC_IDENTITY.name;
-  env.GIT_COMMITTER_EMAIL = SYNC_IDENTITY.email;
-  const prefix = [
-    '-c',
-    `user.name=${SYNC_IDENTITY.name}`,
-    '-c',
-    `user.email=${SYNC_IDENTITY.email}`,
-    '-c',
-    'commit.gpgsign=false',
-  ];
-  const runIn = (cwd: string, ...args: string[]): string =>
-    execFileSync('git', [...prefix, ...args], {
-      cwd,
-      env,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      maxBuffer: 256 * 1024 * 1024,
-    });
-  return {
-    run: (...args) => runIn(dir, ...args),
-    runIn,
-    attempt(...args) {
-      try {
-        return runIn(dir, ...args);
-      } catch (error) {
-        return asFailure(error);
-      }
-    },
-  };
-}
-
-function asFailure(error: unknown): GitFailure {
-  const e = error as { status?: unknown; stdout?: unknown; stderr?: unknown };
-  return {
-    status: typeof e.status === 'number' ? e.status : null,
-    stdout: typeof e.stdout === 'string' ? e.stdout : '',
-    stderr: typeof e.stderr === 'string' ? e.stderr : error instanceof Error ? error.message : '',
-  };
-}
-
-function failed(result: string | GitFailure): result is GitFailure {
-  return typeof result !== 'string';
-}
-
 /** NUL-separated output as a list, without empty entries. */
 function zList(text: string): string[] {
   return text.split('\0').filter((entry) => entry !== '');
@@ -408,16 +348,6 @@ function zList(text: string): string[] {
 
 function plural(n: number, noun: string): string {
   return `${String(n)} ${noun}${n === 1 ? '' : 's'}`;
-}
-
-/** The first `fatal:` or `error:` line of git's stderr, else its first line. */
-function firstErrorLine(failure: GitFailure): string {
-  const all = `${failure.stderr}\n${failure.stdout}`
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line !== '');
-  const line = all.find((l) => /^(fatal|error):/.test(l)) ?? all[0] ?? 'git failed';
-  return asciiText(line);
 }
 
 function realpathOrSelf(path: string): string {
@@ -428,10 +358,21 @@ function realpathOrSelf(path: string): string {
   }
 }
 
-/** Precondition 2: the board directory is the top level of its own repository. */
-function checkOwnRepository(git: GitRunner, dir: string): void {
-  const top = git.attempt('rev-parse', '--show-toplevel');
-  if (failed(top) || realpathOrSelf(top.trim()) !== realpathOrSelf(dir)) {
+/**
+ * Precondition 2: the board's link to the host is not broken, and the
+ * board directory is the top level of a repository or worktree.
+ */
+function checkRepository(dir: string, env: Env): void {
+  const info = detectBoardModel(dir, { env });
+  if (info.model === 'broken-host-link') {
+    throw new BoardError(
+      2,
+      'board-link-broken',
+      `the board at ${dir} is a worktree of the host repository whose link is broken ` +
+        `(${info.detail ?? 'the link cannot be read'}); run agentboard init to repair it`,
+    );
+  }
+  if (info.model === 'not-a-repository') {
     throw new BoardError(
       2,
       'board-not-a-repository',
@@ -459,7 +400,7 @@ function checkNothingInProgress(git: GitRunner, dir: string): void {
 /** Precondition 4: HEAD is on a branch, possibly unborn. */
 function currentBranch(git: GitRunner): string {
   const ref = git.attempt('symbolic-ref', '--quiet', '--short', 'HEAD');
-  if (failed(ref)) {
+  if (isGitFailure(ref)) {
     throw new BoardError(
       3,
       'detached-head',
@@ -472,7 +413,7 @@ function currentBranch(git: GitRunner): string {
 const EVENT_PATH = /^events\/[^/]+\.json$/;
 
 function headExists(git: GitRunner): boolean {
-  return !failed(git.attempt('rev-parse', '--quiet', '--verify', 'HEAD^{commit}'));
+  return !isGitFailure(git.attempt('rev-parse', '--quiet', '--verify', 'HEAD^{commit}'));
 }
 
 /** Precondition 5: every event file recorded in HEAD is present in `events/`. */
@@ -554,38 +495,11 @@ function checkNothingForeignStaged(git: GitRunner, dir: string): void {
   }
 }
 
-/** The remote of the branch's configured upstream, or null when it has none. */
-function upstreamOf(git: GitRunner, branch: string): string | null {
+/** Whether `branch` has a configured upstream (`branch.<branch>.remote` and `.merge`, whatever the remote). */
+function hasUpstream(git: GitRunner, branch: string): boolean {
   const remote = git.attempt('config', '--get', `branch.${branch}.remote`);
   const merge = git.attempt('config', '--get', `branch.${branch}.merge`);
-  if (failed(remote) || failed(merge)) {
-    return null;
-  }
-  return remote.trim();
-}
-
-/** Step 3: the remote to sync with, or null when there is none. */
-function chooseRemote(git: GitRunner, upstream: string | null): string | null {
-  if (upstream !== null) {
-    return upstream;
-  }
-  const remotes = git
-    .run('remote')
-    .split('\n')
-    .map((name) => name.trim())
-    .filter((name) => name !== '');
-  if (remotes.includes('origin')) {
-    return 'origin';
-  }
-  if (remotes.length <= 1) {
-    return remotes[0] ?? null;
-  }
-  throw new BoardError(
-    1,
-    'ambiguous-remote',
-    `the board repository has several remotes (${remotes.map((r) => asciiText(r)).join(', ')}), ` +
-      'no upstream and no origin; set an upstream (git push -u <remote> <branch>) and run agentboard sync again',
-  );
+  return !isGitFailure(remote) && !isGitFailure(merge);
 }
 
 function syncFailed(what: string, failure: GitFailure): BoardError {
@@ -595,7 +509,7 @@ function syncFailed(what: string, failure: GitFailure): BoardError {
 /** Whether `branch` exists on `remote` (contacts the remote). */
 function remoteHasBranch(git: GitRunner, remote: string, branch: string): boolean {
   const out = git.attempt('ls-remote', '--heads', remote, `refs/heads/${branch}`);
-  if (failed(out)) {
+  if (isGitFailure(out)) {
     throw syncFailed(`reaching ${asciiText(remote)}`, out);
   }
   return out.trim() !== '';
@@ -604,7 +518,7 @@ function remoteHasBranch(git: GitRunner, remote: string, branch: string): boolea
 /** Step 4: pull with rebase, mapping a conflict and any other failure. */
 function pull(git: GitRunner, dir: string, remote: string, branch: string): void {
   const out = git.attempt('pull', '--quiet', '--rebase', '--no-autostash', remote, branch);
-  if (!failed(out)) {
+  if (!isGitFailure(out)) {
     return;
   }
   const conflicted = zList(git.run('diff', '--name-only', '--diff-filter=U', '-z')).sort();
@@ -633,7 +547,7 @@ function push(
 ): boolean {
   const args = ['push', '--porcelain', ...(setUpstream ? ['-u'] : []), remote, branch];
   const out = git.attempt(...args);
-  if (!failed(out)) {
+  if (!isGitFailure(out)) {
     return true;
   }
   const rejected = out.stdout.split('\n').some((line) => line.startsWith('!'));

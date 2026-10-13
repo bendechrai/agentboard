@@ -48,6 +48,7 @@ describe('the command registry', () => {
       'health',
       'rebuild',
       'sync',
+      'remote',
       'import-change',
       'close-merged',
       'mcp',

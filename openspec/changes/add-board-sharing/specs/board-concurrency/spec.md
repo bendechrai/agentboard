@@ -44,9 +44,18 @@ remote of `.`; `origin` when it exists; the only remote. With no remote,
 `sync` commits locally, reports that no remote is configured and exits 0.
 With several remotes and none chosen by these rules, `sync` SHALL exit 1
 with reason `ambiguous-remote`, naming the remotes and saying how to set
-`agentboard.remote`, after committing locally. A host-model board's remote
-SHALL be reachable with the host's own URL and credentials; agentboard
-SHALL never store a second URL for it.
+`agentboard.remote`, after committing locally. When `agentboard.remote`
+names a remote the repository does not have, `sync` SHALL use it as named,
+so after committing locally it exits 3 with reason `sync-failed` naming
+that remote (and `agentboard remote` lists the problem, see board-cli). A
+host-model board's remote SHALL be reachable with the host's own URL and
+credentials; agentboard SHALL never store a second URL for it. For a
+standalone board, `sync` SHALL set the branch's upstream (`push -u`) only
+when the branch has none (neither `branch.<name>.remote` nor
+`branch.<name>.merge` is set); when `agentboard.remote` or the `origin`
+rule chooses a remote other than the branch's upstream (including an
+upstream of `.`), the branch's upstream SHALL be left unchanged, so the
+override never changes what the user's own `git pull` does.
 
 #### Scenario: Deleted event file is not synced
 - **WHEN** a committed event file is deleted from `.board/events` and `sync` runs
@@ -83,6 +92,14 @@ SHALL never store a second URL for it.
 #### Scenario: Configured remote wins
 - **WHEN** `agentboard.remote` is set to `fork` in the host repository and the main checkout's branch tracks `upstream/main`
 - **THEN** `sync` fetches from and pushes to `fork`
+
+#### Scenario: Configured remote does not change the upstream
+- **WHEN** a standalone board's `main` tracks `upstream/main`, `agentboard.remote` is set to `fork` in the board repository, and `sync` runs
+- **THEN** `sync` pushes to `fork` without setting an upstream, `branch.main.remote` is still `upstream` and `branch.main.merge` still `refs/heads/main`, and `upstream` received nothing
+
+#### Scenario: Configured remote that does not exist
+- **WHEN** `agentboard.remote` is set to `nope`, no remote of that name exists, and `sync` runs on a board with a new event
+- **THEN** `sync` commits locally, exits 3 with reason `sync-failed` naming `nope`, and pushes nothing
 
 #### Scenario: Conflict on a host-model board
 - **WHEN** clones A and B change `.board/.gitignore` differently, A syncs, and B runs `sync`

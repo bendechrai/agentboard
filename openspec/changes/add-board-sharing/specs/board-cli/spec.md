@@ -292,12 +292,32 @@ set `agentboard.remote`; and every remote of that repository with its URL.
 For a broken link or an ambiguous choice it SHALL say how to fix it. It
 SHALL exit 0 whenever a board exists, and 2 when there is none. With
 `--json` it SHALL print one object with at least `dir`, `model`, `gitDir`,
-`ref` (host model, else null), `branch` (standalone model, else null),
-`head`, `remote` (`{name, url, rule}` or null), `remotes` and `problems`.
+`ref` (host model, else null), `refCommit` (host model: the commit
+`refs/agentboard/board` points to, null when the ref is missing; null for
+every other model), `branch` (standalone model, else null), `head`,
+`remote` (`{name, url, rule}` or null), `remotes` and `problems`. The
+`rule` SHALL be one of the literal tokens `agentboard.remote`, `upstream`,
+`origin` or `only`. `remote` SHALL never open the board, so it creates no
+cache file and its only exit codes are 0, 1 (usage) and 2 (no board). When
+`agentboard.remote` names a remote the repository does not have, `remote`
+SHALL still report it as the chosen remote (`url` null) and list a problem
+naming it and the remotes that exist. When git cannot be run at all,
+`remote` SHALL still exit 0, reporting the model as `not a repository`,
+every git-derived field null or empty, and one problem that names git. For
+a broken link or a non-repository it SHALL print only the board directory,
+the model and its problems.
 
 #### Scenario: Remote on a host-model board
 - **WHEN** `agentboard remote` runs on a host-model board whose host repository's main checkout tracks `origin/main`
-- **THEN** it prints the model `host`, `refs/agentboard/board` with its commit, `origin` with its URL chosen as the upstream, and exits 0 without contacting `origin`
+- **THEN** it prints the model `host`, `refs/agentboard/board` with its commit, `origin` with its URL chosen as the upstream, and exits 0 without contacting `origin`; with `--json`, `refCommit` is that commit and `remote.rule` is `upstream`
+
+#### Scenario: Remote with agentboard.remote naming a missing remote
+- **WHEN** `agentboard remote --json` runs on a board whose repository has only `origin` and `agentboard.remote` set to `nope`
+- **THEN** `remote` is `{"name": "nope", "url": null, "rule": "agentboard.remote"}`, `problems` holds one line naming `nope` and `origin`, and the command exits 0
+
+#### Scenario: Remote when git cannot be run
+- **WHEN** `agentboard remote` runs on an existing board with no `git` on the PATH
+- **THEN** it exits 0, reports the model `not a repository`, no history, remote or remotes, and one problem that names git
 
 #### Scenario: Remote on a standalone board without a remote
 - **WHEN** `agentboard remote --json` runs on a standalone board with no remote

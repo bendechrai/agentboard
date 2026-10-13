@@ -23,6 +23,7 @@ import { readInbox } from '../board/inbox.js';
 import { initBoard } from '../board/init.js';
 import { boardHealth } from '../board/health.js';
 import { closeMerged } from '../board/merged.js';
+import { remoteReport, renderRemote } from '../board/remote.js';
 import { syncBoard } from '../board/sync.js';
 import { TASK_RULE } from '../board/text.js';
 import { parseTaskFilter, taskRefFromArgs, type TaskFilter } from '../board/resolve.js';
@@ -1438,7 +1439,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'sync',
     summary: "Commit new events, pull with rebase from the board's remote and push",
     description:
-      'Shares the board with other clones: commits new event files in the board repository, pulls with rebase from its remote and pushes. Event files never conflict with each other; a problem that needs a human (a conflict, a rebase in progress, a detached HEAD, an unreachable remote) exits 3. Needs no actor.',
+      'Shares the board with other clones: commits new event files in the board repository, pulls with rebase from its remote and pushes. The remote is the one named by git config agentboard.remote, else the upstream of the branch, else origin, else the only remote. Event files never conflict with each other; a problem that needs a human (a conflict, a rebase in progress, a detached HEAD, an unreachable remote) exits 3. Needs no actor.',
     group: 'maintenance',
     examples: [{ command: 'agentboard sync', summary: "Commit, pull and push the board's events" }],
     exitCodes: [
@@ -1448,13 +1449,19 @@ export const COMMANDS: readonly CommandSpec[] = [
       {
         code: 1,
         reason: 'ambiguous-remote',
-        meaning: 'The board repository has several remotes and no upstream or origin',
+        meaning:
+          'The repository has several remotes and none is agentboard.remote, the upstream or origin',
       },
       EXIT_NO_BOARD,
       {
         code: 2,
         reason: 'board-not-a-repository',
         meaning: 'The board directory is not the top of its own git repository',
+      },
+      {
+        code: 2,
+        reason: 'board-link-broken',
+        meaning: 'The board is a worktree whose link to the host repository is broken',
       },
       {
         code: 3,
@@ -1478,6 +1485,39 @@ export const COMMANDS: readonly CommandSpec[] = [
     run: (ctx) => {
       const result = syncBoard(ctx.board(), { env: ctx.env });
       return { json: result, text: `${result.message}\n`, warnings: result.warnings };
+    },
+  },
+  {
+    name: 'remote',
+    summary:
+      'Show how the board is shared: its model, where its history lives and the remote sync uses',
+    description:
+      'Prints how the board is shared: the board directory; its model (host, when the board is a worktree of the host repository with its history under refs/agentboard/board; standalone, when .board is a repository of its own; broken host link; or not a repository); where the history lives; the remote sync would use with its URL and the rule that chose it (agentboard.remote, the upstream of the branch, origin, or the only remote), or that there is none or the choice is ambiguous; and every remote with its URL. A broken link or an ambiguous choice comes with how to fix it (agentboard init, or git config agentboard.remote <name>). It is read-only, never contacts the network and never changes anything, so it is safe to run when something is wrong: it exits 0 whenever a board exists and puts problems in its output. Needs no actor.',
+    group: 'setup',
+    examples: [
+      {
+        command: 'agentboard remote',
+        summary: 'Show the model, the history and the remote sync would use',
+      },
+      {
+        command: 'agentboard remote --json',
+        summary:
+          'The same, as one JSON document with dir, model, gitDir, ref, branch, head, remote, remotes and problems',
+      },
+    ],
+    exitCodes: [
+      { code: 0, meaning: 'The board exists; problems, if any, are in the output' },
+      EXIT_USAGE,
+      EXIT_NO_BOARD,
+    ],
+    positionals: [],
+    flags: [],
+    exclusive: [],
+    writes: false,
+    operation: 'remoteReport',
+    run: (ctx) => {
+      const report = remoteReport(ctx.boardDir(), { env: ctx.env });
+      return { json: report, text: renderRemote(report) };
     },
   },
   {
@@ -1585,7 +1625,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'mcp',
     summary: 'Serve the board as MCP tools over stdio',
     description:
-      'Serves the board as MCP tools over stdio, one tool per board command (not init, watch, serve, top, rebuild, sync, mcp, version, help or the agents commands), for agents that prefer tools to the shell. Runs until the client disconnects or the process gets SIGINT or SIGTERM. --as sets the default actor for tool calls that pass no as of their own, before AGENTBOARD_ACTOR. Nothing but protocol messages is written to stdout. It exits 2 when no board is found from this directory.',
+      'Serves the board as MCP tools over stdio, one tool per board command (not init, watch, serve, top, rebuild, sync, remote, mcp, version, help or the agents commands), for agents that prefer tools to the shell. Runs until the client disconnects or the process gets SIGINT or SIGTERM. --as sets the default actor for tool calls that pass no as of their own, before AGENTBOARD_ACTOR. Nothing but protocol messages is written to stdout. It exits 2 when no board is found from this directory.',
     group: 'setup',
     examples: [
       { command: 'agentboard mcp', summary: 'Serve the board over MCP on stdio' },

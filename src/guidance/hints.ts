@@ -73,6 +73,7 @@ export const HINT_REASONS: readonly string[] = [
   'already-assigned',
   'ambiguous-id',
   'ambiguous-remote',
+  'board-link-broken',
   'board-not-a-repository',
   'board-not-found',
   'body-too-large',
@@ -138,6 +139,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'already-assigned': 4,
   'ambiguous-id': 1,
   'ambiguous-remote': 1,
+  'board-link-broken': 2,
   'board-not-a-repository': 2,
   'board-not-found': 2,
   'body-too-large': 1,
@@ -340,8 +342,10 @@ export function hintStep(
  * - `git-missing`, `gh-missing`: install `git` or `gh` and put it on the
  *   `PATH` (the word `PATH` appears); `gh-missing` also names
  *   `gh auth login`.
- * - `ambiguous-remote`: set an upstream or a remote named `origin` in the
- *   board repository, then step `sync`.
+ * - `ambiguous-remote`: choose the remote with
+ *   `git config agentboard.remote <name>` (that text appears) in the
+ *   repository that holds the board's history, or name one `origin`, then
+ *   step `sync`.
  * - `streaming-command`: run the command from the agentboard executable
  *   (step `<command>` when the command is known).
  * - `no-targets`: `agents install` detected nothing to install; names the
@@ -351,7 +355,8 @@ export function hintStep(
  *   stream step `watch` with `as` A.
  *
  * Exit 2: `board-not-found`: step `init`, and `AGENTBOARD_DIR`;
- * `board-not-a-repository`: step `help sync`.
+ * `board-not-a-repository`: step `help sync`; `board-link-broken`: step
+ * `init`, which repairs the board's link to the host repository.
  *
  * Exit 3: `sync-in-progress`, `detached-head`, `sync-conflict`,
  * `sync-failed`: what a human does in the board repository, then step
@@ -612,7 +617,7 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
       [['as', h.actor]],
     )} again`,
   'ambiguous-remote': syncHint(
-    'in the board repository, set an upstream for the branch or name one remote origin',
+    'in the repository that holds the board history, choose the remote with git config agentboard.remote <name> (or name one of them origin)',
   ),
   'streaming-command': streamingHint,
   'port-in-use': (h) =>
@@ -642,6 +647,8 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     `create the board with ${h.step('init')} at the root of the main checkout, or set AGENTBOARD_DIR to an existing board`,
   'board-not-a-repository': (h) =>
     `the board directory must be the top level of its own git repository; see ${h.step('help', [['topic', 'sync']])}`,
+  'board-link-broken': (h) =>
+    `the board is a worktree of the host repository whose link is broken; run ${h.step('init')} at the root of the main checkout to repair it`,
   // Exit 3.
   'sync-in-progress': syncHint(
     'a human finishes or aborts the rebase, merge or cherry-pick in progress in the board repository',

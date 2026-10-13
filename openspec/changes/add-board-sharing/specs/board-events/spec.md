@@ -58,7 +58,12 @@ independently in clones of one project share their root commit. The
 worktree SHALL be registered in the host repository and locked with the
 reason `agentboard board` so `git worktree prune` and `git worktree remove`
 leave it alone. Every git command agentboard runs against the host
-repository for the board SHALL run with the host's git hooks disabled.
+repository for the board SHALL run with the host's git hooks disabled,
+without writing the host's configuration: each command is given
+`core.hooksPath` pointing at an empty directory `agentboard-no-hooks` that
+agentboard creates under the board worktree's git directory (a temporary
+directory when git cannot name it), and `git config core.hooksPath` in the
+host is unchanged afterwards.
 Apart from the `.board/` entry `init` adds to the host `.gitignore`,
 agentboard SHALL never modify a branch, a tag, the index or the working
 tree of any other worktree of the host. `git clone` of the host and `git fetch` without an
@@ -92,18 +97,34 @@ contains the board directory:
 
 - **host**: the board directory is the top level of a linked worktree whose
   git common directory is the git common directory of `<parent>`;
-- **standalone**: the board directory is the top level of a git repository
-  whose git directory is inside the board directory;
+- **standalone**: the board directory is the top level of a repository that
+  is not a linked worktree (its git common directory is its git directory,
+  after resolving), whether `.git` is a directory or a file naming a git
+  directory elsewhere (`git init --separate-git-dir`, a submodule of the
+  host whose git directory is `<host>/.git/modules/<name>`);
 - **broken host link**: the board directory contains a `.git` file whose
-  target is missing, or is a linked worktree of a different repository than
-  `<parent>`'s (the host was moved, or a `.board` was copied from another
-  clone);
-- **not a repository**: none of the above.
+  target is missing, or is a linked worktree whose git common directory is
+  not `<parent>`'s (the host was moved, or a `.board` was copied from
+  another clone);
+- **not a repository**: none of the above (no `.git`, or a plain
+  subdirectory of the host repository).
 
+Where a standalone board's git directory lies SHALL NOT change how it is
+treated: `sync` and `remote` SHALL handle a standalone board whose `.git`
+is a file exactly as one whose git directory is `.board/.git`, so every
+board that synced before the host model existed keeps syncing unchanged.
 A board's model never affects commands that only read or write events. On
 a broken host link, `sync` SHALL exit 2 with reason `board-link-broken`,
 naming the directory and that `agentboard init` repairs it, and SHALL change
 nothing.
+
+#### Scenario: Separate git directory is standalone
+- **WHEN** `.board` was made with `git init --separate-git-dir <dir> .board` (its `.git` is a file naming a git directory outside `.board`), has `origin` configured and a new event file, and `agentboard sync` runs
+- **THEN** the model is `standalone`, `sync` commits the event, pushes `main` to `origin` and exits 0, exactly as on a standalone board whose git directory is `.board/.git`
+
+#### Scenario: Submodule board is standalone
+- **WHEN** `.board` is a submodule of the host repository (its `.git` file names `<host>/.git/modules/.board`) and `agentboard remote` runs
+- **THEN** it reports the model `standalone` with the git directory the `.git` file names, not a broken host link
 
 #### Scenario: Stale board copied into a fresh clone
 - **WHEN** a host-model `.board` directory is copied from clone A into a fresh clone C of the same project and `agentboard sync` runs in C
