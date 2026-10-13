@@ -662,6 +662,12 @@ export const COMMANDS: readonly CommandSpec[] = [
           'The existing board is in the host repository (refs/agentboard/board), so --remote does not apply; nothing changed',
       },
       {
+        code: 2,
+        reason: 'board-not-a-repository',
+        meaning:
+          'With --remote: .board exists but is not a board (a directory with other content, a file, a dangling link); move it aside; nothing was created',
+      },
+      {
         code: 3,
         reason: 'remote-unreachable',
         meaning:

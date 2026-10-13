@@ -357,7 +357,9 @@ export function hintStep(
  * - `ambiguous-remote`: choose the remote with
  *   `git config agentboard.remote <name>` (that text appears) in the
  *   repository that holds the board's history, or name one `origin`, then
- *   step `sync`.
+ *   step `sync`; when the command is `init` (which refuses before writing
+ *   anything), step `init` again, and step `sync` as the command that
+ *   uses the same choice.
  * - `git-too-old`: a board in the host repository needs git 2.32 or later
  *   (the text `2.32` and the word `upgrade` appear); upgrade git, then
  *   step `init` with `into-host` when the command is `init`, else step
@@ -651,9 +653,12 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
       'close-merged',
       [['as', h.actor]],
     )} again`,
-  'ambiguous-remote': syncHint(
-    'in the repository that holds the board history, choose the remote with git config agentboard.remote <name> (or name one of them origin)',
-  ),
+  'ambiguous-remote': (h) =>
+    `in the repository that holds the board history, choose the remote with git config agentboard.remote <name> (or name one of them origin), then run ${
+      h.command?.name === 'init'
+        ? `${h.step('init')} again (${h.step('sync')} uses the same choice)`
+        : h.step('sync')
+    }`,
   'git-too-old': (h) =>
     `a board in the host repository needs git 2.32 or later; upgrade git, then run ${
       h.command?.name === 'init' ? h.step('init', [['into-host', true]]) : h.step('sync')

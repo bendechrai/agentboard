@@ -17,13 +17,29 @@
  * the host repository's hooks never run, because no command runs in it.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { openBoard } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
 import { boardExists, locateBoard, type LocateOptions } from '../store/locate.js';
-import { firstErrorLine, gitRunner, gitVersion, isGitFailure, type GitRunner } from './git.js';
+import {
+  firstErrorLine,
+  gitRunner,
+  gitVersion,
+  isGitFailure,
+  type GitFailure,
+  type GitRunner,
+} from './git.js';
 import {
   countEvents,
   hasInTreeGitDir,
@@ -113,7 +129,7 @@ export function localPath(url: string, base: string): string | null {
     return null;
   }
   if (url.startsWith(FILE_SCHEME)) {
-    return url.slice(FILE_SCHEME.length);
+    return fileUrlPath(url);
   }
   return isAbsolute(url) ? url : resolve(base, url);
 }
@@ -276,13 +292,11 @@ export function originUrl(url: string, base: string): string {
  * `origin` at `remoteUrl`, and `agentboard sync` syncs it on its branch.
  */
 export function initBoardWithRemote(url: string, options?: LocateOptions): InitRemoteResult {
-  if (url.trim() === '') {
-    throw new BoardError(
-      1,
-      'usage',
-      'agentboard init --remote needs the URL or local path of the repository that holds the board (--remote <url>)',
-    );
-  }
+  // The value is checked before any git command runs: git would read a
+  // value starting with `-` as an option (`--upload-pack=<command>`, run
+  // against the host's own remote), and a file:// URL with a foreign host
+  // names no path on this machine.
+  checkUrl(url);
   const { dir, source } = locateBoard(options);
   const env: Env = options?.env ?? process.env;
   const cwd = options?.cwd ?? process.cwd();
@@ -302,13 +316,15 @@ export function initBoardWithRemote(url: string, options?: LocateOptions): InitR
   if (boardExists(dir)) {
     return existingBoard(dir, remoteUrl, env);
   }
+  checkNothingInTheWay(dir);
+  const removed = removeLeftoverClones(dir);
   const writeHostGitignore = source === 'git' && hasInTreeGitDir(dirname(dir), env);
   const path = localPath(url, base);
   if (path !== null && !existsSync(path)) {
     createBareRepository(path, env);
   }
   const git = gitRunner(base, { env });
-  const refs = git.attempt('ls-remote', remoteUrl);
+  const refs = git.attempt('ls-remote', '--', remoteUrl);
   if (isGitFailure(refs)) {
     throw new BoardError(
       3,
@@ -318,13 +334,118 @@ export function initBoardWithRemote(url: string, options?: LocateOptions): InitR
         'access to it, then run agentboard init --remote again',
     );
   }
-  return refs.trim() === ''
-    ? createBoard(dir, remoteUrl, writeHostGitignore, env)
-    : cloneBoard(dir, remoteUrl, writeHostGitignore, env);
+  const result =
+    refs.trim() === ''
+      ? createBoard(dir, remoteUrl, writeHostGitignore, env)
+      : cloneBoard(dir, remoteUrl, writeHostGitignore, env);
+  if (removed.length === 0) {
+    return result;
+  }
+  const names = removed.map((name) => asciiText(join(dirname(dir), name))).join(', ');
+  return {
+    ...result,
+    message: `${result.message}\nremoved ${names}, left by an interrupted init --remote`,
+  };
 }
 
 /** The prefix of a `file://` URL. */
 const FILE_SCHEME = 'file://';
+
+/** The prefix of the temporary clone directory, a sibling of the board directory. */
+const CLONE_PREFIX = '.board-clone-';
+
+/**
+ * Step 1 of `initBoardWithRemote`: `url` is refused as usage when it is
+ * empty or whitespace, starts with `-`, or is a `file://` URL whose host
+ * part is neither empty nor `localhost`. Runs no git command.
+ */
+function checkUrl(url: string): void {
+  const usage = (why: string): BoardError =>
+    new BoardError(
+      1,
+      'usage',
+      `agentboard init --remote needs the URL or local path of the repository that holds the ` +
+        `board (--remote <url>): ${why}`,
+    );
+  if (url.trim() === '') {
+    throw usage('the value is empty');
+  }
+  if (url.startsWith('-')) {
+    throw usage(`${asciiText(url)} starts with -, which git would read as an option`);
+  }
+  if (url.startsWith(FILE_SCHEME) && fileUrlPath(url) === null) {
+    throw usage(
+      `${asciiText(url)} names a host other than localhost, so it is no path on this machine`,
+    );
+  }
+}
+
+/**
+ * The path a `file://` URL names when its host part is empty or
+ * `localhost` (`file:///x` and `file://localhost/x` are `/x`), else null.
+ */
+function fileUrlPath(url: string): string | null {
+  const rest = url.slice(FILE_SCHEME.length);
+  const slash = rest.indexOf('/');
+  const host = slash === -1 ? rest : rest.slice(0, slash);
+  if (host !== '' && host !== 'localhost') {
+    return null;
+  }
+  return slash === -1 ? '' : rest.slice(slash);
+}
+
+/**
+ * Step 3 of `initBoardWithRemote`, before any write: `dir` is absent or an
+ * empty directory. Anything else that is not a board (a directory holding
+ * entries but no `events/`, a regular file, a symbolic link that does not
+ * resolve to a board directory) is refused with exit 2
+ * `board-not-a-repository`, so the user's content is never renamed over
+ * or turned into a repository.
+ */
+function checkNothingInTheWay(dir: string): void {
+  let kind: string | null;
+  try {
+    const stat = lstatSync(dir);
+    kind = stat.isSymbolicLink()
+      ? 'a symbolic link that does not lead to a board'
+      : stat.isDirectory()
+        ? readdirSync(dir).length === 0
+          ? null
+          : 'a directory without an events/ directory'
+        : 'not a directory';
+  } catch {
+    return;
+  }
+  if (kind !== null) {
+    throw new BoardError(
+      2,
+      'board-not-a-repository',
+      `${dir} exists but is not a board (${kind}); move it aside, then run ` +
+        'agentboard init --remote again',
+    );
+  }
+}
+
+/**
+ * Removes every `.board-clone-*` sibling of `dir` left by an interrupted
+ * earlier run (the names are random, so a leftover is never reused) and
+ * returns their names.
+ */
+function removeLeftoverClones(dir: string): string[] {
+  const parent = dirname(dir);
+  let names: string[];
+  try {
+    names = readdirSync(parent)
+      .filter((name) => name.startsWith(CLONE_PREFIX))
+      .sort();
+  } catch {
+    return [];
+  }
+  for (const name of names) {
+    rmSync(join(parent, name), { recursive: true, force: true });
+  }
+  return names;
+}
 
 /** The ten keys of `InitResult` that every `init --remote` result shares, for a standalone board. */
 function standaloneBase(dir: string, events: number): Omit<InitResult, 'created' | 'joined' | 'remote' | 'message' | 'warnings'> {
@@ -355,7 +476,9 @@ function existingBoard(dir: string, remoteUrl: string, env: Env): InitRemoteResu
   if (chosen === null) {
     return attachBoard(dir, info, remoteUrl, env);
   }
-  if (chosen.url === remoteUrl) {
+  // `git remote get-url` applies `url.<base>.insteadOf`; the raw value is
+  // compared too, so a rewritten URL still matches the one given.
+  if (chosen.url === remoteUrl || rawRemoteUrl(info, chosen.name, env) === remoteUrl) {
     return {
       ...standaloneBase(dir, countEvents(dir)),
       action: 'unchanged',
@@ -370,14 +493,33 @@ function existingBoard(dir: string, remoteUrl: string, env: Env): InitRemoteResu
         `${asciiText(chosen.name)} at ${asciiText(remoteUrl)}; nothing changed`,
     };
   }
+  if (chosen.url === null) {
+    // `agentboard.remote` names a remote the repository does not have:
+    // `remote set-url` would fail, so the configuration is what to fix.
+    throw new BoardError(
+      1,
+      'remote-mismatch',
+      `the board at ${dir} is configured to sync with the remote ${asciiText(chosen.name)} ` +
+        `(git config agentboard.remote), which the board repository does not have, so ` +
+        `${asciiText(remoteUrl)} was not added; unset it with git -C ${dir} config --unset ` +
+        `agentboard.remote, or add that remote with git -C ${dir} remote add ` +
+        `${asciiText(chosen.name)} ${asciiText(remoteUrl)}; nothing changed`,
+    );
+  }
   throw new BoardError(
     1,
     'remote-mismatch',
     `the board at ${dir} already has the remote ${asciiText(chosen.name)} at ` +
-      `${chosen.url === null ? 'no URL (no such remote)' : asciiText(chosen.url)}, not ` +
-      `${asciiText(remoteUrl)}; keep it, or change it with git -C ${dir} remote set-url ` +
-      `${asciiText(chosen.name)} ${asciiText(remoteUrl)}; nothing changed`,
+      `${asciiText(chosen.url)}, not ${asciiText(remoteUrl)}; keep it, or change it with ` +
+      `git -C ${dir} remote set-url ${asciiText(chosen.name)} ${asciiText(remoteUrl)}; ` +
+      'nothing changed',
   );
+}
+
+/** The raw `remote.<name>.url` of the board repository, before any `insteadOf` rewrite, or null when unset. */
+function rawRemoteUrl(info: BoardModelInfo, name: string, env: Env): string | null {
+  const out = gitRunner(info.dir, { env }).attempt('config', '--get', `remote.${name}.url`);
+  return isGitFailure(out) ? null : out.trim();
 }
 
 /** A standalone board with no remote: `origin` is added at `remoteUrl` and the board is synced. */
@@ -463,7 +605,17 @@ function cloneBoard(
           'access to it, then run agentboard init --remote again',
       );
     }
-    checkoutOnlyBranch(git);
+    const checkout = checkoutOnlyBranch(git);
+    if (isGitFailure(checkout.result)) {
+      throw new BoardError(
+        1,
+        'not-a-board',
+        `the repository at ${asciiText(remoteUrl)} holds no board: its branch ` +
+          `${asciiText(checkout.branch ?? '')} cannot be checked out ` +
+          `(${firstErrorLine(checkout.result)}); --remote needs an empty repository, or one ` +
+          'that holds a board',
+      );
+    }
     if (!isDirectory(join(temporary, 'events'))) {
       const branch = currentBranch(git);
       throw new BoardError(
@@ -501,21 +653,30 @@ function cloneBoard(
 /**
  * When the clone checked nothing out because the remote's HEAD names a
  * branch the remote does not have, and the remote has exactly one branch,
- * checks that branch out, tracking `origin`.
+ * checks that branch out, tracking `origin`. Returns the branch it tried
+ * (null when there was nothing to do) and the checkout's outcome (an
+ * empty string when none ran).
  */
-function checkoutOnlyBranch(git: GitRunner): void {
+function checkoutOnlyBranch(git: GitRunner): {
+  branch: string | null;
+  result: string | GitFailure;
+} {
   if (!isGitFailure(git.attempt('rev-parse', '--quiet', '--verify', 'HEAD^{commit}'))) {
-    return;
+    return { branch: null, result: '' };
   }
-  const branches = git
-    .run('for-each-ref', '--format=%(refname:strip=3)', 'refs/remotes/origin/')
+  const listed = git.attempt('for-each-ref', '--format=%(refname:strip=3)', 'refs/remotes/origin/');
+  const branches = (isGitFailure(listed) ? '' : listed)
     .split('\n')
     .map((line) => line.trim())
     .filter((name) => name !== '' && name !== 'HEAD');
   const only = branches.length === 1 ? branches[0] : undefined;
-  if (only !== undefined) {
-    git.run('checkout', '--quiet', '-b', only, '--track', `origin/${only}`);
+  if (only === undefined) {
+    return { branch: null, result: '' };
   }
+  return {
+    branch: only,
+    result: git.attempt('checkout', '--quiet', '-b', only, '--track', `origin/${only}`),
+  };
 }
 
 /** The current branch of the repository `git` runs in, or null when HEAD is detached. */
