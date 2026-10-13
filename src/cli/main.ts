@@ -5,6 +5,7 @@
  * process with captured streams.
  */
 
+import { MoveSyncFailure } from '../board/into-host.js';
 import { openBoard, type Board } from '../store/board.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
 import type { WriteHooks } from '../store/eventfile.js';
@@ -70,6 +71,13 @@ export interface ErrorDocument {
      * reason (an unexpected failure). Always present.
      */
     hint: string | null;
+    /**
+     * The kept old repository of a completed `init --into-host` whose
+     * final `sync` failed (`MoveSyncFailure` in `src/board/into-host.ts`),
+     * and the old remote's URL; present exactly when the error is one.
+     */
+    keptAt?: string | null;
+    oldRemoteUrl?: string | null;
   };
 }
 
@@ -89,13 +97,17 @@ export function exitCodeFor(error: unknown): Exclude<ExitCode, 0> {
  * Pure.
  */
 export function errorDocument(error: unknown, context?: HintContext): ErrorDocument {
+  const base: ErrorDocument['error'] = {
+    exitCode: exitCodeFor(error),
+    reason: error instanceof BoardError ? error.reason : null,
+    message: error instanceof Error ? error.message : String(error),
+    hint: hintFor(error, context ?? { surface: 'cli', command: null }),
+  };
   return {
-    error: {
-      exitCode: exitCodeFor(error),
-      reason: error instanceof BoardError ? error.reason : null,
-      message: error instanceof Error ? error.message : String(error),
-      hint: hintFor(error, context ?? { surface: 'cli', command: null }),
-    },
+    error:
+      error instanceof MoveSyncFailure
+        ? { ...base, keptAt: error.keptAt, oldRemoteUrl: error.oldRemoteUrl }
+        : base,
   };
 }
 

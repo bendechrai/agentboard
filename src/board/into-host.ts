@@ -26,9 +26,21 @@
  * a concurrent run fail), as `init.lock` treats its holder.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmdirSync,
+  statSync,
+  utimesSync,
+} from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 
+import { sha256Hex } from '../events/canonical.js';
 import { openBoard } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
 import { boardExists, locateBoard, type LocateOptions } from '../store/locate.js';
@@ -43,6 +55,7 @@ import {
 } from './git.js';
 import {
   AGENTBOARD_GIT_SUBDIR,
+  INIT_LOCK_FILE,
   addBoardWorktree,
   boardWorktreeLocked,
   registeredAt,
@@ -179,9 +192,10 @@ export function findMigratingWorktrees(
  * Removes every temporary worktree under `<git common dir>/agentboard/migrating/`
  * that holds nothing a re-run needs: its pid is not running
  * (`MigratingWorktree.alive` false, which a pid that is not a number
- * counts as; a temporary named by this process's own pid counts as dead
- * too, since one process runs one move at a time under the init lock),
- * it has no rebase state (`rebasing` false), and it is either
+ * counts as; one named by this process's own pid is left to the move,
+ * which treats it as dead itself, since one process runs one move at a
+ * time under the init lock), it has no rebase state (`rebasing` false),
+ * and it is either
  * not registered (a plain directory) or registered with a HEAD equal to
  * `MIGRATING_REF` (nothing was integrated in it yet). Each is
  * unregistered (unlocked and removed by force when registered, as
@@ -246,15 +260,42 @@ export function adoptMigratingWorktree(
   const git = hostGit(hostDir, options);
   git.run('worktree', 'move', candidate, dir);
   addBoardWorktree(hostDir, dir, options);
-  removeEmptyMigratingDir(hostDir, options);
   return true;
 }
 
 /**
- * Removes `<git common dir>/agentboard/migrating` once the last temporary
- * worktree has been moved into place, so a completed move leaves no
- * directory behind; a directory that still holds an entry (another move's
- * temporary) or that is already gone is left alone.
+ * What plain `init` and a move on a board already in the host do to the
+ * leftovers of dead moves (design.md decision 9, ruling E): every
+ * temporary worktree under `<git common dir>/agentboard/migrating/` whose
+ * pid is dead (or this process's own) and that has no rebase state is
+ * removed whatever its HEAD (the board is in place, so there is nothing
+ * to adopt), `MIGRATING_REF` is deleted when no temporary remains, and the
+ * `migrating` directory goes when it is then empty. A temporary with a
+ * rebase stopped in it, or a live pid, is left alone. Returns the paths
+ * removed, ascending.
+ */
+export function cleanDeadMigratingWorktrees(hostDir: string, options?: HostInitOptions): string[] {
+  const git = hostGit(hostDir, options);
+  const removed: string[] = [];
+  for (const worktree of findMigratingWorktrees(hostDir, options)) {
+    if (!dead(worktree) || worktree.rebasing) {
+      continue;
+    }
+    removeLeftoverWorktree(git, worktree.path);
+    removed.push(worktree.path);
+  }
+  if (refValue(git, MIGRATING_REF) !== '' && findMigratingWorktrees(hostDir, options).length === 0) {
+    git.attempt('update-ref', '-d', MIGRATING_REF);
+  }
+  removeEmptyMigratingDir(hostDir, options);
+  return removed.sort();
+}
+
+/**
+ * Removes `<git common dir>/agentboard/migrating` when it is empty: at the
+ * end of step 7 (the marker of a move whose sync has not completed) and
+ * after dead temporaries were cleaned. A directory that still holds an
+ * entry (another move's temporary) or that is already gone is left alone.
  */
 function removeEmptyMigratingDir(hostDir: string, options?: HostInitOptions): void {
   const base = migratingDir(hostDir, options);
@@ -347,9 +388,27 @@ export interface EventCarryOver {
  * missing `from` copies nothing. Never deletes or overwrites anything.
  */
 export function carryOverEventFiles(from: string, to: string): EventCarryOver {
-  void from;
-  void to;
-  throw new Error('not implemented');
+  const copied: string[] = [];
+  const mismatched: string[] = [];
+  if (!existsSync(from)) {
+    return { copied, mismatched };
+  }
+  for (const entry of readdirSync(from, { withFileTypes: true })) {
+    if (!entry.isFile() || !EVENT_FILE.test(entry.name)) {
+      continue;
+    }
+    const content = readFileSync(join(from, entry.name));
+    const copy = join(to, entry.name);
+    if (sha256Hex(content) !== entry.name.slice(0, 64)) {
+      mismatched.push(entry.name);
+    } else if (!existsSync(copy)) {
+      copyFileSync(join(from, entry.name), copy);
+      copied.push(entry.name);
+    } else if (!content.equals(readFileSync(copy))) {
+      mismatched.push(entry.name);
+    }
+  }
+  return { copied: copied.sort(), mismatched: mismatched.sort() };
 }
 
 /**
@@ -727,7 +786,7 @@ export function moveBoardIntoHost(options?: LocateOptions): IntoHostResult {
     // moving its worktree into place leaves no board here; everything
     // else is a missing board, refused before any lock is taken.
     if (resumable(hostRoot, dir, { env }) !== null) {
-      const remote = hostRemote(hostRoot, env);
+      const remote = lenientHostRemote(hostRoot, env);
       const resumed = withInitLock(
         hostRoot,
         () =>
@@ -744,7 +803,13 @@ export function moveBoardIntoHost(options?: LocateOptions): IntoHostResult {
   }
   const info = detectBoardModel(dir, { env });
   if (info.model === 'host') {
-    return unchangedBoard(dir, info, env);
+    // A healthy board is reported without the lock, unless the marker
+    // directory of a move says there is something to resume or to clean.
+    if (!existsSync(migratingDir(hostRoot, { env }))) {
+      return unchangedBoard(dir, info, env, []);
+    }
+    const remote = lenientHostRemote(hostRoot, env);
+    return withInitLock(hostRoot, () => hostBoardUnderLock(dir, hostRoot, remote, env), { env });
   }
   if (info.model !== 'standalone') {
     return repairedBoard(initBoard(options));
@@ -792,6 +857,28 @@ interface MovePlan {
   readonly sourceTip: string;
   /** The raw `remote.<name>.url` of the chosen remote, or null without one. */
   readonly oldRemoteUrl: string | null;
+  /** The identity of the standalone repository's git directory, re-checked before the rename. */
+  readonly gitDir: string | null;
+}
+
+/**
+ * The identity of the git directory of the repository `git` runs in: its
+ * realpath with the device and inode of that directory (a repository
+ * replaced by another at the same path has the same realpath and a
+ * different inode), or null when it is not a repository.
+ */
+function boardGitDir(git: GitRunner): string | null {
+  const out = git.attempt('rev-parse', '--absolute-git-dir');
+  if (isGitFailure(out)) {
+    return null;
+  }
+  try {
+    const path = realpathSync(out.trim());
+    const stats = statSync(path);
+    return `${path}:${String(stats.dev)}:${String(stats.ino)}`;
+  } catch {
+    return null;
+  }
 }
 
 /** Step 1, check 4 (standalone) and 5: the standalone board can be moved without losing an event. */
@@ -846,13 +933,14 @@ function checkStandalone(dir: string, info: BoardModelInfo, env: Env): MovePlan 
     );
   }
 
+  const gitDir = boardGitDir(git);
   const choice = boardRemote(info, { env });
   if (choice.ambiguous) {
     throw ambiguousRemoteError(choice, 'init');
   }
   const remote = choice.chosen;
   if (remote === null) {
-    return { sourceTip: `refs/heads/${branch.trim()}`, oldRemoteUrl: null };
+    return { sourceTip: `refs/heads/${branch.trim()}`, oldRemoteUrl: null, gitDir };
   }
   const name = remote.name;
   const tracking = `refs/remotes/${name}/${branch.trim()}`;
@@ -875,7 +963,7 @@ function checkStandalone(dir: string, info: BoardModelInfo, env: Env): MovePlan 
     );
   }
   const url = git.attempt('config', '--get', `remote.${name}.url`);
-  return { sourceTip: tracking, oldRemoteUrl: isGitFailure(url) ? null : url.trim() };
+  return { sourceTip: tracking, oldRemoteUrl: isGitFailure(url) ? null : url.trim(), gitDir };
 }
 
 /** Step 1, check 6: the host repository's remote, refused when ambiguous. */
@@ -886,6 +974,49 @@ function hostRemote(hostRoot: string, env: Env): ChosenRemote | null {
     throw ambiguousRemoteError(choice, 'init');
   }
   return choice.chosen;
+}
+
+/**
+ * The host repository's remote for a resumed move: null when the choice is
+ * ambiguous (the `sync` of step 7 then refuses as `ambiguous-remote`, the
+ * move done), so a resumption never refuses before it has tried.
+ */
+function lenientHostRemote(hostRoot: string, env: Env): ChosenRemote | null {
+  const branch = gitRunner(hostRoot, { env }).attempt('symbolic-ref', '--quiet', '--short', 'HEAD');
+  const choice = chooseRemote(hostRoot, isGitFailure(branch) ? null : branch.trim(), { env });
+  return choice.ambiguous ? null : choice.chosen;
+}
+
+/** True for a temporary worktree a re-run may touch: its pid is dead, or it is this process's own (one move at a time under the lock). */
+function dead(worktree: MigratingWorktree): boolean {
+  return !worktree.alive || worktree.pid === process.pid;
+}
+
+/**
+ * A host-model board found under the init lock with the `migrating`
+ * marker directory present: a move whose `sync` has not completed (no
+ * temporary worktree left in it, and a kept repository to carry over from)
+ * is resumed; otherwise the dead temporaries are removed and the board is
+ * reported unchanged.
+ */
+function hostBoardUnderLock(
+  dir: string,
+  hostRoot: string,
+  remote: ChosenRemote | null,
+  env: Env,
+): IntoHostResult {
+  const info = detectBoardModel(dir, { env });
+  const scratch = join(commonDir(gitRunner(hostRoot, { env }), hostRoot), AGENTBOARD_GIT_SUBDIR);
+  const marker = migratingDir(hostRoot, { env });
+  const resume = existsSync(marker) && newestKept(scratch) !== null;
+  const removed = resume ? [] : cleanDeadMigratingWorktrees(hostRoot, { env });
+  if (resume && findMigratingWorktrees(hostRoot, { env }).length === 0) {
+    if (!boardWorktreeLocked(hostRoot, dir, { env })) {
+      addBoardWorktree(hostRoot, dir, { env });
+    }
+    return resumedMove(dir, hostRoot, remote, env);
+  }
+  return unchangedBoard(dir, info, env, removed);
 }
 
 /**
@@ -908,23 +1039,18 @@ function lockedMove(
   }
   const info = detectBoardModel(dir, { env });
   if (info.model === 'host') {
-    return unchangedBoard(dir, info, env);
+    return hostBoardUnderLock(dir, hostRoot, remote, env);
   }
   if (info.model !== 'standalone') {
     return 'repair';
   }
   const host = hostGit(hostRoot, { env });
   const scratch = join(commonDir(host, hostRoot), AGENTBOARD_GIT_SUBDIR);
+  const lock = join(scratch, INIT_LOCK_FILE);
 
   // Leftovers of earlier moves: a stopped rebase waits for a human, what
-  // holds nothing is removed, and a finished rebase is adopted. A
-  // temporary named by this process's own pid is one an earlier call in
-  // this process left (it holds the lock alone and runs one move at a
-  // time), so it is treated as a dead one here, although the helpers
-  // report it alive.
-  const done = (w: MigratingWorktree): boolean => !w.alive || w.pid === process.pid;
-  const leftovers = findMigratingWorktrees(hostRoot, { env });
-  const stopped = leftovers.find((w) => done(w) && w.rebasing);
+  // holds nothing is removed, and a finished rebase is adopted.
+  const stopped = findMigratingWorktrees(hostRoot, { env }).find((w) => dead(w) && w.rebasing);
   if (stopped !== undefined) {
     throw new BoardError(
       3,
@@ -936,22 +1062,28 @@ function lockedMove(
     );
   }
   const removed = removeDeadMigratingWorktrees(hostRoot, { env });
-  const migratingRef = refValue(host, MIGRATING_REF);
-  for (const own of leftovers.filter(
-    (w) => w.pid === process.pid && !w.rebasing && (w.head === null || w.head === migratingRef),
+  // The source tip the adopted temporary was made from, before step 2
+  // replaces it: the base of the replay when the histories share no commit.
+  const oldSource = refValue(host, MIGRATING_REF);
+  // A temporary named by this process's own pid was left by an earlier
+  // call in this process; the helper leaves it alone, the move treats it
+  // as dead: removed when nothing was integrated in it, adopted otherwise.
+  for (const own of findMigratingWorktrees(hostRoot, { env }).filter(
+    (w) => w.pid === process.pid && !w.rebasing && (w.head === null || w.head === oldSource),
   )) {
     removeLeftoverWorktree(host, own.path);
     removed.push(own.path);
   }
+  removed.sort();
   const adoptable = findMigratingWorktrees(hostRoot, { env }).find(
-    (w) => done(w) && !w.rebasing && w.registered && w.head !== null && w.head !== migratingRef,
+    (w) => dead(w) && !w.rebasing && w.registered && w.head !== null && w.head !== oldSource,
   );
-  const hostGitignore = ignoreBoardInHost(hostRoot);
 
   // 2. The source tip into the temporary ref; 3. the temporary worktree.
+  host.run('fetch', '--no-tags', '--no-write-fetch-head', dir, `+${plan.sourceTip}:${MIGRATING_REF}`);
+  const adopted = adoptable !== undefined;
   let temp: string;
   if (adoptable === undefined) {
-    host.run('fetch', '--no-tags', '--no-write-fetch-head', dir, `+${plan.sourceTip}:${MIGRATING_REF}`);
     temp = migratingWorktreePath(hostRoot, process.pid, { env });
     mkdirSync(dirname(temp), { recursive: true });
     host.run('worktree', 'add', '--detach', temp, MIGRATING_REF);
@@ -959,14 +1091,29 @@ function lockedMove(
     temp = adoptable.path;
   }
   const worktree = gitRunner(temp, { env, disableHooks: true });
+  if (adopted && !isAncestor(worktree, MIGRATING_REF, 'HEAD')) {
+    // Source commits the adopted worktree lacks (synced to the old remote
+    // since it was made) are replayed onto what it already integrated.
+    const base = replayBase(worktree, oldSource);
+    rebaseOnto(
+      host,
+      worktree,
+      dir,
+      temp,
+      adopted,
+      ['--onto', 'HEAD', base, MIGRATING_REF],
+      'the events synced to the old remote since the earlier move',
+    );
+  }
   const old = refValue(host, BOARD_REF);
   if (old !== '' && !isAncestor(worktree, BOARD_REF, 'HEAD')) {
-    rebaseOnto(host, worktree, dir, temp, BOARD_REF, `the local ${BOARD_REF}`);
+    rebaseOnto(host, worktree, dir, temp, adopted, [BOARD_REF], `the local ${BOARD_REF}`);
   }
   const warnings: string[] = [];
   let joined = false;
   if (remote !== null) {
     const target = resolveRemoteTarget(remote.name, remote.url, hostRoot);
+    refreshLock(lock);
     const listed = worktree.attempt('ls-remote', target, BOARD_REF);
     if (isGitFailure(listed)) {
       warnings.push(
@@ -977,54 +1124,69 @@ function lockedMove(
     } else if (listed.trim() !== '') {
       const fetched = worktree.attempt('fetch', '--no-tags', target, BOARD_REF);
       if (isGitFailure(fetched)) {
-        discardTemporary(host, temp);
+        if (!adopted) {
+          discardTemporary(host, temp);
+        }
         throw syncFailed(`fetching ${BOARD_REF} from ${asciiText(remote.name)}`, fetched);
       }
       if (!isAncestor(worktree, 'FETCH_HEAD', 'HEAD')) {
-        rebaseOnto(host, worktree, dir, temp, 'FETCH_HEAD', `what ${asciiText(remote.name)} holds`);
+        rebaseOnto(
+          host,
+          worktree,
+          dir,
+          temp,
+          adopted,
+          ['FETCH_HEAD'],
+          `what ${asciiText(remote.name)} holds`,
+        );
       }
       joined = true;
     }
   }
 
-  // 4. The compare-and-swap, then the temporary ref goes.
+  // 4. The compare-and-swap, then the temporary ref goes, then the host
+  // .gitignore entry.
   const head = worktree.run('rev-parse', 'HEAD').trim();
   if (isGitFailure(host.attempt('update-ref', BOARD_REF, head, old))) {
-    discardTemporary(host, temp);
     throw new BoardError(
       3,
       'sync-failed',
       `updating ${BOARD_REF} in the host repository failed because something else moved it ` +
-        `meanwhile; nothing was moved; run ${AGAIN} again`,
+        `meanwhile; nothing was moved, the board at ${asciiText(dir)} is untouched and the ` +
+        `temporary worktree at ${asciiText(temp)} is kept; run ${AGAIN} again, which integrates ` +
+        "the ref's new value",
     );
   }
   host.run('update-ref', '-d', MIGRATING_REF);
+  const hostGitignore = ignoreBoardInHost(hostRoot);
 
-  // 5. Every old event file, byte for byte.
-  const check = verifyEventFiles(join(dir, 'events'), join(temp, 'events'));
-  if (check.missing.length > 0 || check.different.length > 0) {
-    discardTemporary(host, temp);
-    const names = (list: readonly string[]): string => list.map((n) => asciiText(n)).join(', ');
-    throw new BoardError(
-      5,
-      'integrity',
-      `the new worktree at ${asciiText(temp)} did not hold every event file of ${asciiText(dir)} ` +
-        `byte for byte (${check.missing.length > 0 ? `missing: ${names(check.missing)}` : ''}` +
-        `${check.missing.length > 0 && check.different.length > 0 ? '; ' : ''}` +
-        `${check.different.length > 0 ? `different: ${names(check.different)}` : ''}); nothing was ` +
-        `moved and the board at ${asciiText(dir)} is untouched; run ${AGAIN} again`,
-    );
+  // 5. Every old event file, carried over hash-verified.
+  const carried = carryOverEventFiles(join(dir, 'events'), join(temp, 'events'));
+  if (carried.mismatched.length > 0) {
+    throw mismatchedEvents(carried.mismatched, join(dir, 'events'), temp, false);
   }
 
-  // 6. Keep the old repository, move the worktree into place, lock it.
+  // 6. Keep the old repository, move the worktree into place, lock it,
+  // carry over what landed in the rename window.
+  if (boardGitDir(gitRunner(dir, { env })) !== plan.gitDir || registeredAt(host, dir) !== null) {
+    throw new BoardError(
+      3,
+      'sync-failed',
+      `the board at ${asciiText(dir)} is not the repository the move checked (it was replaced ` +
+        `meanwhile); nothing was renamed, and the temporary worktree at ${asciiText(temp)} is ` +
+        `kept; run ${AGAIN} again`,
+    );
+  }
   const keptAt = freshKeptName(scratch, new Date());
   renameSync(dir, keptAt);
   host.run('worktree', 'move', temp, dir);
   addBoardWorktree(hostRoot, dir, { env });
-  removeEmptyMigratingDir(hostRoot, { env });
+  const late = carryOverEventFiles(join(keptAt, 'events'), join(dir, 'events'));
+  if (late.mismatched.length > 0) {
+    throw mismatchedEvents(late.mismatched, join(keptAt, 'events'), dir, true);
+  }
 
   // 7. Publish and catch up.
-  const sync = syncNow(dir, env);
   const lines = [
     `moved the board at ${asciiText(dir)} into the host repository (host model: a worktree of ` +
       `the host repository at ${BOARD_REF})`,
@@ -1033,6 +1195,7 @@ function lockedMove(
   if (removed.length > 0) {
     lines.push(`removed ${removed.map((p) => asciiText(p)).join(', ')}, left by an interrupted move`);
   }
+  const sync = syncOrFail(dir, hostRoot, [...lines, ...warnings], keptAt, plan.oldRemoteUrl, env);
   lines.push(...sync.message.split('\n'));
   return {
     dir,
@@ -1052,7 +1215,51 @@ function lockedMove(
   };
 }
 
-/** The move finished by `adoptMigratingWorktree` (action `resumed`): step 7 and the report. */
+/**
+ * The upstream of the replay of fresh source commits onto an adopted
+ * worktree: the merge base of HEAD and `MIGRATING_REF` when the histories
+ * share a commit; else the source tip the temporary was made from (what
+ * it integrated, rewritten by its rebases), when that tip is an ancestor
+ * of the fresh one; else `--root`, which lets git skip the commits whose
+ * patches HEAD already holds.
+ */
+function replayBase(worktree: GitRunner, oldSource: string): string {
+  const base = worktree.attempt('merge-base', 'HEAD', MIGRATING_REF);
+  if (!isGitFailure(base) && base.trim() !== '') {
+    return base.trim();
+  }
+  if (oldSource !== '' && isAncestor(worktree, oldSource, MIGRATING_REF)) {
+    return oldSource;
+  }
+  return '--root';
+}
+
+/** The `integrity` refusal of a carry-over that found files it cannot copy (step 5, or the rename window with `done`). */
+function mismatchedEvents(
+  names: readonly string[],
+  from: string,
+  to: string,
+  done: boolean,
+): BoardError {
+  const list = names.map((n) => asciiText(n)).join(', ');
+  return new BoardError(
+    5,
+    'integrity',
+    `${plural(names.length, 'event file')} in ${asciiText(from)} cannot be carried over to ` +
+      `${asciiText(to)}: ${list} (the content does not match the name, or the copy there differs); ` +
+      (done
+        ? `the move is done and the old repository is kept; fix the files and run ${AGAIN} again, ` +
+          'which carries them over'
+        : `nothing was moved, the board is untouched and the temporary worktree at ${asciiText(to)} ` +
+          `is kept; fix the files (agentboard rebuild --check names corrupt ones) and run ${AGAIN} again`),
+  );
+}
+
+/**
+ * The move finished after the old repository was kept aside (action
+ * `resumed`): the carry-over from the newest kept repository, step 7 and
+ * the report.
+ */
 function resumedMove(
   dir: string,
   hostRoot: string,
@@ -1062,16 +1269,22 @@ function resumedMove(
   const scratch = join(commonDir(gitRunner(hostRoot, { env }), hostRoot), AGENTBOARD_GIT_SUBDIR);
   const keptAt = newestKept(scratch);
   const oldRemoteUrl = keptAt === null ? null : keptRemoteUrl(keptAt, env);
-  const sync = syncNow(dir, env);
+  if (keptAt !== null) {
+    const late = carryOverEventFiles(join(keptAt, 'events'), join(dir, 'events'));
+    if (late.mismatched.length > 0) {
+      throw mismatchedEvents(late.mismatched, join(keptAt, 'events'), dir, true);
+    }
+  }
   const lines = [
     `finished moving the board at ${asciiText(dir)} into the host repository (host model: a ` +
-      `worktree of the host repository at ${BOARD_REF}): moved the worktree of an interrupted ` +
-      'move into place',
+      `worktree of the host repository at ${BOARD_REF}): an earlier move was interrupted before ` +
+      'its sync completed',
     ...(keptAt === null
       ? ['no kept copy of the old board repository was found']
       : keptLines(keptAt, oldRemoteUrl)),
-    ...sync.message.split('\n'),
   ];
+  const sync = syncOrFail(dir, hostRoot, lines, keptAt, oldRemoteUrl, env);
+  lines.push(...sync.message.split('\n'));
   return {
     dir,
     created: false,
@@ -1090,17 +1303,30 @@ function resumedMove(
   };
 }
 
-/** A board already in the host repository (action `unchanged`), the lock restored as `initBoard` does. */
-function unchangedBoard(dir: string, info: BoardModelInfo, env: Env): IntoHostResult {
+/** A board already in the host repository (action `unchanged`), the lock restored as `initBoard` does; `removed` names the dead temporaries cleaned. */
+function unchangedBoard(
+  dir: string,
+  info: BoardModelInfo,
+  env: Env,
+  removed: readonly string[],
+): IntoHostResult {
   const hostRoot = dirname(dir);
   const choice = boardRemote(info, { env });
   const remote = choice.chosen?.name ?? null;
   let changed = 'nothing changed';
   if (!boardWorktreeLocked(hostRoot, dir, { env })) {
-    // Finishes a move or an init interrupted after the worktree was moved
-    // or added and before its lock: locks it.
+    // Finishes an init interrupted after the worktree was added and
+    // before its lock: locks it.
     addBoardWorktree(hostRoot, dir, { env });
     changed = 'restored the worktree lock that an interrupted init had not set';
+  }
+  const lines = [
+    `the board at ${asciiText(dir)} is already in the host repository (host model: its ` +
+      `history is ${BOARD_REF}; ${remote === null ? 'no remote configured' : `remote: ${asciiText(remote)}`}); ` +
+      changed,
+  ];
+  if (removed.length > 0) {
+    lines.push(`removed ${removed.map((p) => asciiText(p)).join(', ')}, left by an interrupted move`);
   }
   return {
     dir,
@@ -1112,10 +1338,7 @@ function unchangedBoard(dir: string, info: BoardModelInfo, env: Env): IntoHostRe
     hostGitignore: null,
     warnings: [],
     repair: null,
-    message:
-      `the board at ${asciiText(dir)} is already in the host repository (host model: its ` +
-      `history is ${BOARD_REF}; ${remote === null ? 'no remote configured' : `remote: ${asciiText(remote)}`}); ` +
-      changed,
+    message: lines.join('\n'),
     action: 'unchanged',
     keptAt: null,
     oldRemoteUrl: null,
@@ -1145,30 +1368,69 @@ function keptLines(keptAt: string, oldRemoteUrl: string | null): string[] {
   ];
 }
 
-/** `syncBoard` on the board at `dir`, closed afterwards whatever happens. */
-function syncNow(dir: string, env: Env): SyncResult {
+/**
+ * Step 7: the lock refreshed, `syncBoard` on the board at `dir` (closed
+ * afterwards), then the `migrating` marker directory removed. A failure
+ * of the sync is rethrown as a `MoveSyncFailure` carrying `moveLines`,
+ * `keptAt` and `oldRemoteUrl`; the marker stays, so the next run resumes.
+ */
+function syncOrFail(
+  dir: string,
+  hostRoot: string,
+  moveLines: readonly string[],
+  keptAt: string | null,
+  oldRemoteUrl: string | null,
+  env: Env,
+): SyncResult {
+  const scratch = join(commonDir(gitRunner(hostRoot, { env }), hostRoot), AGENTBOARD_GIT_SUBDIR);
+  refreshLock(join(scratch, INIT_LOCK_FILE));
   const board = openBoard(dir);
+  let sync: SyncResult;
   try {
-    return syncBoard(board, { env });
+    sync = syncBoard(board, { env });
+  } catch (error) {
+    if (error instanceof BoardError) {
+      throw new MoveSyncFailure(
+        error,
+        [...moveLines, ...error.message.split('\n')].join('\n'),
+        keptAt,
+        oldRemoteUrl,
+      );
+    }
+    throw error;
   } finally {
     board.close();
+  }
+  removeEmptyMigratingDir(hostRoot, { env });
+  return sync;
+}
+
+/** Sets the init lock's mtime to now, so a move waiting on a remote is not taken for stale; a missing lock is ignored. */
+function refreshLock(lock: string): void {
+  try {
+    const now = new Date();
+    utimesSync(lock, now, now);
+  } catch {
+    // The lock is this process's own; a vanished file changes nothing here.
   }
 }
 
 /**
- * Rebases the temporary worktree's HEAD onto `onto`. A conflict is left in
- * place for a human (the worktree and `MIGRATING_REF` stay); any other
- * failure removes the worktree.
+ * Rebases the temporary worktree's HEAD with `args` (an upstream, or
+ * `--onto HEAD <base> <ref>`). A conflict is left in place for a human
+ * (the worktree and `MIGRATING_REF` stay); any other failure removes the
+ * worktree unless it was adopted (it may hold a human's work).
  */
 function rebaseOnto(
   host: GitRunner,
   worktree: GitRunner,
   dir: string,
   temp: string,
-  onto: string,
+  adopted: boolean,
+  args: readonly string[],
   what: string,
 ): void {
-  const out = worktree.attempt('rebase', '--no-verify', onto);
+  const out = worktree.attempt('rebase', '--no-verify', ...args);
   if (!isGitFailure(out)) {
     return;
   }
@@ -1183,14 +1445,20 @@ function rebaseOnto(
         `again; the board at ${asciiText(dir)} is untouched`,
     );
   }
-  discardTemporary(host, temp);
+  if (!adopted) {
+    discardTemporary(host, temp);
+  }
   throw syncFailed(`integrating ${what}`, out);
 }
 
-/** Removes the temporary worktree at `temp` and the temporary ref after a refusal in steps 3 to 5. */
+/** Removes the temporary worktree at `temp`, the temporary ref and an empty `migrating` directory after a refusal in step 3. */
 function discardTemporary(host: GitRunner, temp: string): void {
   removeLeftoverWorktree(host, temp);
   host.attempt('update-ref', '-d', MIGRATING_REF);
+  const base = dirname(temp);
+  if (existsSync(base) && readdirSync(base).length === 0) {
+    rmdirSync(base);
+  }
 }
 
 /** A runner for the host repository at `hostDir` with its hooks disabled. */

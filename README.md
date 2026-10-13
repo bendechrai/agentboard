@@ -896,14 +896,18 @@ history into the host repository under a temporary ref, checks it out in
 a temporary worktree under `.git/agentboard/migrating/<pid>`, integrates
 any `refs/agentboard/board` the host or its remote already has (another
 clone moved first: this clone's history is rebased onto it, as `sync`
-would), sets `refs/agentboard/board`, verifies that every event file of
-the old `.board/events` is in the new worktree byte for byte, and only
-then moves the old repository aside and the new worktree into place. The
-old repository is kept, never deleted, at
-`.git/agentboard/standalone-<UTC timestamp>`, inside the git directory
-where the host's `git status` never shows it; the output names it and the
-old remote's URL as written in its configuration. The host `.gitignore`
-gets the `.board/` entry when it lacks it.
+would), sets `refs/agentboard/board`, carries over every event file of
+the old `.board/events` that the new worktree lacks (hash-verified, so an
+event written while the move ran is not left behind; a file whose content
+does not match its name is exit 5 `integrity`, with nothing moved), checks
+that `.board` is still the repository it examined, and only then moves the
+old repository aside and the new worktree into place, carrying over
+anything that landed in between. The old repository is kept, never
+deleted, at `.git/agentboard/standalone-<UTC timestamp>`, inside the git
+directory where the host's `git status` never shows it; the output names
+it and the old remote's URL as written in its configuration. The host
+`.gitignore` gets the `.board/` entry once `refs/agentboard/board` is
+set, so a refusal leaves the host's working tree as it was.
 
 ```
 $ agentboard init --into-host
@@ -947,12 +951,18 @@ rebase and completes the move. While the rebase is still in progress a
 re-run exits 3 `sync-in-progress` naming the same path and removes
 nothing. A move killed at any point is resumed by running it again:
 `.board` is either still the old standalone board or becomes the
-host-model board, with every event and exactly one kept repository;
-leftovers of a dead move that hold nothing are removed and named, and a
-move that is still running on the same host is never touched. When the
-final `sync` fails (the project's remote unreachable, a host that refuses
-custom refs), the move is done and `init` exits with the failure's code;
-the next `agentboard sync` publishes the board.
+host-model board, with every event and exactly one kept repository. A
+re-run that picks up an interrupted move's worktree also integrates the
+events synced to the old remote since, and never discards what a human
+resolved there; leftovers of a dead move that hold nothing are removed and
+named (plain `agentboard init` removes them too), and a move that is still
+running on the same host is never touched. When the final `sync` fails
+(the project's remote unreachable, a host that refuses custom refs), the
+move is done and `init` exits with the failure's code, still naming the
+kept repository and the old remote (with `--json`, `keptAt` and
+`oldRemoteUrl` are in the error document); the next
+`agentboard init --into-host` resumes the move by running the `sync`
+again, and `agentboard sync` publishes the board too.
 
 Rolling a move back. The kept repository is the complete old board, so a
 move is undone by hand in that clone. Copy out the events written since

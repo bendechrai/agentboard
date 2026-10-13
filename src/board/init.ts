@@ -22,6 +22,7 @@ import { openBoard } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
 import { boardExists, locateBoard, type LocateOptions } from '../store/locate.js';
 import { gitRunner, gitVersion, isGitFailure, meetsGitFloor, type GitVersion } from './git.js';
+import { cleanDeadMigratingWorktrees } from './into-host.js';
 import {
   BOARD_GITIGNORE_LINES,
   addBoardWorktree,
@@ -395,6 +396,21 @@ function existingBoard(
       `board already exists at ${asciiText(dir)} (host model: its history is ${BOARD_REF} ` +
         `in the host repository; ${remoteText}); ${changed}`,
     );
+    if (hostModel) {
+      // Temporary worktrees of a move that died: removed under the init
+      // lock, as `init --into-host` removes them on a board already moved.
+      const removed = withInitLock(
+        dirname(dir),
+        () => cleanDeadMigratingWorktrees(dirname(dir), { env }),
+        { env },
+      );
+      if (removed.length > 0) {
+        lines.push(
+          `removed ${removed.map((p) => asciiText(p)).join(', ')}, left by an interrupted ` +
+            'agentboard init --into-host',
+        );
+      }
+    }
   } else {
     const history =
       choice.branch === null

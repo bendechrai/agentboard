@@ -584,7 +584,11 @@ the empty `migrating` marker (a move killed between the `worktree move`
 and the end of step 7, or whose `sync` failed) restores the lock when it
 is missing, repeats the carry-over from the newest kept repository, runs
 step 7 and reports `resumed` with the kept repository; only a board
-without the marker is `unchanged`. When the `sync` of step 7 fails, the
+without the marker is `unchanged`. The marker counts only with a kept
+repository to carry over from (every move keeps one before it moves the
+worktree into place): a `migrating` directory left empty by the removal
+of dead temporaries on a board that was never moved is removed, and the
+board is `unchanged`. When the `sync` of step 7 fails, the
 move stays done, `init` exits with the sync's code and reason, and its
 output still carries the move's lines (the kept repository, the old
 remote) with `keptAt` and `oldRemoteUrl` in the `--json` error document.
