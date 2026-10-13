@@ -133,11 +133,15 @@ creates):
 
 - When a healthy board exists, it SHALL change nothing and report the
   model, where the history lives (`refs/agentboard/board` or the branch of
-  the board repository) and the remote `sync` would use. For a standalone
-  board inside a git repository with git 2.32 or later it SHALL also
-  suggest `agentboard init --into-host`.
+  the board repository) and the remote `sync` would use, with one
+  exception: a host-model worktree that is not locked (an `init`
+  interrupted after `git worktree add`) is locked again, and the message
+  says so. For a standalone board inside a git repository with git 2.32
+  or later it SHALL also suggest `agentboard init --into-host`.
 - When a host-model board's link is broken (board-events "Board model
-  detection"), it SHALL repair it: first by asking git to repair the
+  detection"), or `.board` exists inside a host with an in-tree git
+  directory but is not a repository (it holds event files without a
+  `.git`, or is a stray directory), it SHALL repair it: first by asking git to repair the
   worktree link, only when the board's `.git` file names a git directory
   that is missing (which fixes a moved host; a copied board whose named
   directory still exists in another clone is never repaired that way,
@@ -149,7 +153,11 @@ creates):
   lacks, keeping the old directory at
   `<host git common dir>/agentboard/stale-board-<UTC timestamp>`, and moving
   the fresh worktree into place. Copied event files are committed by the
-  next `sync`.
+  next `sync`. The repair step applies only to a broken link; a
+  non-repository `.board` goes straight to the fresh worktree. A re-run
+  after a repair interrupted between keeping the old directory and moving
+  the fresh worktree into place SHALL move it into place, report the kept
+  `stale-board-<UTC timestamp>` copy and set `repair` in its `--json`.
 - When no board exists and a host-model board is to be created, it SHALL
   choose the remote with the rules of board-concurrency "Sync converges"
   (several remotes and none chosen: exit 1 with reason `ambiguous-remote`,
@@ -159,7 +167,10 @@ creates):
   the remote cannot be reached it SHALL warn, naming the remote and that
   the next `sync` joins any board there, and create a new empty board.
   After joining it SHALL fold the board's events into the cache and report
-  how many there are.
+  how many there are. A board re-created from the local
+  `refs/agentboard/board` (the directory was deleted) SHALL say that it was
+  restored from the local ref, with the number of event files, never that
+  it is a new empty board.
 - `init` without flags SHALL never push; the first `sync` publishes a new
   board.
 - An interrupted `init` SHALL be completed by running `init` again.
@@ -168,7 +179,7 @@ With `--json`, `init` SHALL print one object with at least `dir`,
 `created`, `model` (`host` or `standalone`), `joined` (true when the board
 came from the remote), `remote` (the chosen remote's name, or null),
 `events` (the number of event files in the board), `hostGitignore`,
-`warnings` and `message`.
+`warnings`, `repair` (what a repair did, or null) and `message`.
 
 #### Scenario: Init in a git host with no remote
 - **WHEN** `agentboard init` runs in a git repository with no remote and no board

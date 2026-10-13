@@ -209,23 +209,31 @@ describe('two init processes racing on one host', () => {
     });
   }
 
-  it('leaves one ref and one locked worktree, and both processes exit 0', async () => {
+  // A missing lock lets both `git worktree add` succeed only now and then
+  // (about one run in twenty when measured), so the race is repeated.
+  const RUNS = 20;
+
+  it(`leaves one ref and one locked worktree, and both processes exit 0 (${String(RUNS)} runs)`, async () => {
     const env = syncEnv();
-    const root = hostRepo();
+    for (let run = 1; run <= RUNS; run += 1) {
+      const root = hostRepo(join(tempDir(), `host-${String(run)}`));
 
-    const [first, second] = await Promise.all([initAsync(root, env), initAsync(root, env)]);
+      const [first, second] = await Promise.all([initAsync(root, env), initAsync(root, env)]);
 
-    expect(first.code, first.stderr).toBe(0);
-    expect(second.code, second.stderr).toBe(0);
-    expect(oneJson(first)).toMatchObject({ model: 'host' });
-    expect(oneJson(second)).toMatchObject({ model: 'host' });
-    expect(refCommit(root)).toBe(EMPTY_BOARD_COMMIT_ID);
-    expectComplete(root);
-    expect(git(root, 'status', '--porcelain')).toBe('');
-    expect(readdirSync(join(root, '.board', 'events'))).toEqual(['.gitkeep']);
-    // Both inits see the same ref; one of them created it.
-    const docs = [oneJson(first), oneJson(second)] as { created: boolean }[];
-    expect(docs.some((doc) => doc.created)).toBe(true);
+      const label = `run ${String(run)}: ${first.stderr}${second.stderr}`;
+      expect(first.code, label).toBe(0);
+      expect(second.code, label).toBe(0);
+      expect(oneJson(first)).toMatchObject({ model: 'host' });
+      expect(oneJson(second)).toMatchObject({ model: 'host' });
+      expect(refCommit(root), label).toBe(EMPTY_BOARD_COMMIT_ID);
+      expectComplete(root);
+      expect(git(root, 'status', '--porcelain'), label).toBe('');
+      expect(readdirSync(join(root, '.board', 'events')), label).toEqual(['.gitkeep']);
+      // Both inits see the same ref; one of them created it.
+      const docs = [oneJson(first), oneJson(second)] as { created: boolean }[];
+      expect(docs.some((doc) => doc.created), label).toBe(true);
+      expect(existsSync(join(root, '.git', 'agentboard', 'init.lock')), label).toBe(false);
+    }
   });
 });
 

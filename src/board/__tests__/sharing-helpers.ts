@@ -449,3 +449,47 @@ export function withKillingGitShim(env: Env, trigger: readonly string[], when: K
     PATH: `${killingGitShim(trigger, when)}:${env.PATH ?? process.env.PATH ?? ''}`,
   };
 }
+
+/**
+ * A directory holding a `git` shim that delegates every invocation to the
+ * real git, except that before the first invocation whose arguments
+ * contain the words of `trigger` in order it runs the shell text `before`
+ * (with `GIT` set to the real git's path and the same working directory),
+ * then runs the real command. Later matching invocations run unchanged
+ * (a marker file records the first). Prepend it to `PATH`;
+ * `withGitShimBefore` does. Used to make another process win a race, for
+ * example creating `refs/agentboard/board` just before `init`'s
+ * create-only `update-ref`.
+ */
+export function gitShimBefore(trigger: readonly string[], before: string): string {
+  const dir = join(tempDir(), 'before-shim-bin');
+  mkdirSync(dir);
+  const marker = join(dir, 'fired');
+  writeFileSync(
+    join(dir, 'git'),
+    [
+      '#!/bin/sh',
+      `GIT='${realGit()}'`,
+      'case " $* " in',
+      `  *${JSON.stringify(trigger.join(' '))}*)`,
+      `    if [ ! -e '${marker}' ]; then`,
+      `      : > '${marker}'`,
+      `      ${before}`,
+      '    fi',
+      '    ;;',
+      'esac',
+      'exec "$GIT" "$@"',
+      '',
+    ].join('\n'),
+  );
+  chmodSync(join(dir, 'git'), 0o755);
+  return dir;
+}
+
+/** `env` with `gitShimBefore(trigger, before)` first on its PATH. */
+export function withGitShimBefore(env: Env, trigger: readonly string[], before: string): Env {
+  return {
+    ...env,
+    PATH: `${gitShimBefore(trigger, before)}:${env.PATH ?? process.env.PATH ?? ''}`,
+  };
+}

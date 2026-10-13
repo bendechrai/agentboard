@@ -106,6 +106,20 @@ Git names the worktree's administrative directory itself (`-board` on
 2.52 for the path `.board`); agentboard never assumes the name and always
 asks git (`git rev-parse --absolute-git-dir` in `.board`).
 
+The host model needs a host whose git directory is inside its working
+tree: `init` takes it only when the parent of `.board` (discovery's parent
+of the git common directory) is the top level of a working tree and that
+working tree's common directory is `<top level>/.git`, compared as
+realpaths. A bare repository with linked worktrees, a `--separate-git-dir`
+repository and a submodule (common directory
+`<superproject>/.git/modules/<name>`) fail that check: discovery puts
+`.board` beside the git directory, outside any working tree or inside the
+superproject's `.git`, and a worktree added there would belong to the
+wrong repository. They get a standalone board with a message naming the
+git directory, like the old-git fallback, and no host `.gitignore` is
+written, because the parent is not a working tree. The check runs before
+anything is written.
+
 The create-only `update-ref` makes two racing `init`s agree on the ref,
 but not on the worktree: two concurrent `git worktree add` of one path can
 both pass git's non-empty check and register two worktrees (`-board` and
@@ -116,6 +130,11 @@ when `init` is done. A lock whose pid is not running, or which is older
 than 60 seconds, is stale and is broken by the next `init`, so a killed
 `init` never blocks the one that completes the board. The lock lives
 inside the git directory, where the host's `git status` never shows it.
+Known limit: a holder that is still alive after 60 seconds (a slow fetch,
+a credential prompt inside `ensureBoardRef`) has its lock broken by a
+waiting `init`, which then runs concurrently with it; the create-only
+`update-ref` and the idempotent worktree steps keep the outcome
+consistent, and 60 seconds is far beyond a normal `init`.
 
 `git worktree add --orphan` would create the first commit without
 plumbing, but it needs git 2.42 and makes a non-deterministic commit.
@@ -247,7 +266,17 @@ choose the remote (an ambiguous choice stops before anything is written);
 add the host `.gitignore` entry; find or make the ref (local, else fetch,
 else create); add and lock the worktree; disable sparse checkout; catch up
 the cache. `.board/events` only appears with the worktree checkout, so a
-half-made board is never mistaken for a board.
+half-made board is never mistaken for a board. An `init` interrupted after
+`git worktree add` and before the lock leaves a board that exists; the
+next `init` finds it healthy, restores the lock and says so (the only
+change `init` makes to an existing board). A board re-created from the
+local ref after its directory was deleted reports that it was restored
+from the local ref with the number of event files; only a board whose ref
+was written fresh is reported as a new empty board.
+
+The standalone fallbacks (old git, a host whose git directory is not in
+its working tree) put the reason in both `message` and `warnings`, so the
+CLI prints it on stderr even with `--json`.
 
 Repair of a broken link: `git worktree repair .board` first, and only when
 `.board/.git` names a git directory that is missing (the host was moved
@@ -262,8 +291,18 @@ the best history available, every event file of the old `events/` it lacks
 is copied in (names are content hashes, so a copy can never change an
 existing event; a file whose content does not match its name is skipped and
 reported), the old directory is renamed to
-`<git common dir>/agentboard/stale-board-<UTC timestamp>`, and the fresh
-worktree is moved into place with `git worktree move`, then locked.
+`<git common dir>/agentboard/stale-board-<UTC timestamp>` (the timestamp
+as `YYYYMMDDTHHMMSSZ`, with a numeric suffix when that name is taken), and
+the fresh worktree is moved into place with `git worktree move`, then
+locked. A `.board` that exists in such a host but is not a repository
+(event files without a `.git`, or a stray directory) takes the same
+fresh-worktree path, skipping the `git worktree repair` step. A repair
+interrupted between the rename and the move leaves `.board` missing and
+the `repairing` worktree registered; the next `init` moves it into place
+and reports the kept copy with `repair` set. A `repairing` worktree left
+by a repair interrupted earlier is removed and the repair starts again.
+Every path in a broken-link detail (`detectBoardModel`) is a realpath, so
+the message never mixes a symlinked spelling with a resolved one.
 
 ### 8. `init --remote <url>`
 

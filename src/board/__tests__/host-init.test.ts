@@ -20,23 +20,32 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
+import { spawnSync } from 'node:child_process';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { P, T1, ev, putEvent } from '../../store/__tests__/helpers.js';
+import { gitRunner } from '../git.js';
 import {
   AGENTBOARD_GIT_SUBDIR,
   EMPTY_BOARD_COMMIT_MESSAGE,
+  INIT_LOCK_FILE,
   REPAIRING_WORKTREE,
   STALE_BOARD_PREFIX,
+  STALE_LOCK_MS,
   WORKTREE_LOCK_REASON,
   addBoardWorktree,
+  adoptRepairingWorktree,
   ensureBoardRef,
+  removeLeftoverWorktree,
   repairBoardLink,
   staleBoardName,
+  withInitLock,
   writeEmptyBoardCommit,
 } from '../host-init.js';
 import { initBoard } from '../init.js';
@@ -49,6 +58,7 @@ import {
   SSH_URL,
   cloneHost,
   commitHostEvent,
+  emptyBoardCommit,
   hostBoard,
   hostRepo,
   pushBoardRef,
@@ -58,6 +68,8 @@ import {
   rootCommit,
   snapshotDir,
   sshShim,
+  withGitShimBefore,
+  worktreeEntries,
   worktreeEntry,
   worktrees,
 } from './sharing-helpers.js';
@@ -411,6 +423,10 @@ describe('scenario: init joins the board from the remote', () => {
       repair: null,
     });
     expect(ssh.calls()).toEqual([]);
+    expect(result.message).toMatch(/restored/);
+    expect(result.message).toMatch(/local/);
+    expect(result.message).toContain('2 event files');
+    expect(result.message).not.toMatch(/new empty board/);
     expect(refCommit(root)).toBe(commit);
     expect(eventFiles(dir)).toEqual(hashes.map((h) => `${h}.json`).sort());
     expectHealthy(root, env);
@@ -429,8 +445,19 @@ describe('scenario: init joins the board from the remote', () => {
     const result = initBoard({ cwd: root, env });
 
     expect(result).toMatchObject({ created: true, model: 'host', joined: false, events: 1 });
+    expect(result.message).toMatch(/restored/);
+    expect(result.message).toContain('1 event file');
+    expect(result.message).not.toMatch(/new empty board/);
     expect(eventFiles(dir)).toEqual([`${hash}.json`]);
     expectHealthy(root, env);
+  });
+
+  it('a new empty board is reported as such only when the ref was written fresh', () => {
+    const env = syncEnv();
+    const root = hostRepo();
+    const result = initBoard({ cwd: root, env });
+    expect(result.message).toMatch(/new empty board/);
+    expect(result.message).not.toMatch(/restored/);
   });
 });
 
@@ -697,5 +724,287 @@ describe('scenario: init repairs a stale board copied into a fresh clone', () =>
       expect(name.startsWith(STALE_BOARD_PREFIX)).toBe(true);
     }
     expectHealthy(first.c, env);
+  });
+});
+
+describe('withInitLock', () => {
+  const lockPath = (root: string): string =>
+    join(root, '.git', AGENTBOARD_GIT_SUBDIR, INIT_LOCK_FILE);
+
+  it('fresh: holds this pid while fn runs, runs it once, removes the lock, passes results and errors on', () => {
+    const env = syncEnv();
+    const root = hostRepo();
+    let runs = 0;
+    let seen = '';
+
+    const out = withInitLock(
+      root,
+      () => {
+        runs += 1;
+        seen = readFileSync(lockPath(root), 'utf8').trim();
+        return 42;
+      },
+      { env },
+    );
+
+    expect(out).toBe(42);
+    expect(runs).toBe(1);
+    expect(seen).toBe(String(process.pid));
+    expect(existsSync(lockPath(root))).toBe(false);
+    expect(() =>
+      withInitLock(
+        root,
+        () => {
+          throw new Error('boom');
+        },
+        { env },
+      ),
+    ).toThrow('boom');
+    expect(existsSync(lockPath(root))).toBe(false);
+  });
+
+  it('held by a live process: waits until that process has exited', () => {
+    const env = syncEnv();
+    const root = hostRepo();
+    mkdirSync(join(root, '.git', AGENTBOARD_GIT_SUBDIR), { recursive: true });
+    // The holder must not be this process's child: withInitLock blocks the
+    // event loop, so a child that exits would stay an unreaped zombie and
+    // still look alive. A grandchild is reaped by init when it exits.
+    const started = Date.now();
+    const holder = spawnSync('sh', ['-c', 'sleep 2 >/dev/null 2>&1 </dev/null & echo $!'], {
+      encoding: 'utf8',
+    });
+    const pid = Number(holder.stdout.trim());
+    expect(pid).toBeGreaterThan(0);
+    writeFileSync(lockPath(root), String(pid));
+    let runs = 0;
+
+    withInitLock(
+      root,
+      () => {
+        runs += 1;
+      },
+      { env },
+    );
+
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1500);
+    expect(runs).toBe(1);
+    expect(existsSync(lockPath(root))).toBe(false);
+  });
+
+  it('held by a process that is gone: breaks the lock at once', () => {
+    const env = syncEnv();
+    const root = hostRepo();
+    mkdirSync(join(root, '.git', AGENTBOARD_GIT_SUBDIR), { recursive: true });
+    const gone = spawnSync('true');
+    expect(gone.status).toBe(0);
+    writeFileSync(lockPath(root), String(gone.pid));
+    const started = Date.now();
+    let runs = 0;
+
+    withInitLock(
+      root,
+      () => {
+        runs += 1;
+      },
+      { env },
+    );
+
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(runs).toBe(1);
+    expect(existsSync(lockPath(root))).toBe(false);
+  });
+
+  it('older than 60 s with a live holder: breaks the lock (the known limit)', () => {
+    const env = syncEnv();
+    const root = hostRepo();
+    mkdirSync(join(root, '.git', AGENTBOARD_GIT_SUBDIR), { recursive: true });
+    writeFileSync(lockPath(root), String(process.pid));
+    const old = (Date.now() - STALE_LOCK_MS - 5_000) / 1000;
+    utimesSync(lockPath(root), old, old);
+    expect(STALE_LOCK_MS).toBe(60_000);
+    const started = Date.now();
+    let runs = 0;
+
+    withInitLock(
+      root,
+      () => {
+        runs += 1;
+      },
+      { env },
+    );
+
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(runs).toBe(1);
+    expect(existsSync(lockPath(root))).toBe(false);
+  });
+});
+
+describe('the create-only update-ref race', () => {
+  it('the loser uses the ref the winner wrote and reports source local', () => {
+    const base = syncEnv();
+    const root = hostRepo();
+    const other = revParse(root);
+    const env = withGitShimBefore(
+      base,
+      ['update-ref', BOARD_REF],
+      `"$GIT" update-ref ${BOARD_REF} ${other}`,
+    );
+
+    const outcome = ensureBoardRef(root, null, { env });
+
+    expect(outcome).toEqual({ commit: other, source: 'local', warnings: [] });
+    expect(refCommit(root)).toBe(other);
+    expect(git(root, 'for-each-ref', '--format=%(refname)', 'refs/agentboard/')).toBe(
+      `${BOARD_REF}\n`,
+    );
+  });
+});
+
+describe('an interrupted repair', () => {
+  /**
+   * The state a repair leaves when killed between keeping the old
+   * directory aside and `git worktree move`: `.board` missing, the
+   * `repairing` worktree registered at the ref with one carried-over
+   * (uncommitted) event file, and one kept `stale-board-*` directory.
+   */
+  function interruptedRepair(env: Env): {
+    root: string;
+    dir: string;
+    repairing: string;
+    kept: string;
+    hash: string;
+  } {
+    const root = hostRepo();
+    git(root, 'update-ref', BOARD_REF, emptyBoardCommit(root, env), '');
+    const agentboardDir = join(root, '.git', AGENTBOARD_GIT_SUBDIR);
+    mkdirSync(agentboardDir, { recursive: true });
+    const repairing = join(agentboardDir, REPAIRING_WORKTREE);
+    git(root, 'worktree', 'add', '-q', '--detach', repairing, BOARD_REF);
+    const hash = putEvent(join(repairing, 'events'), ev(P.create(T1, 'Carried'), 'orch', 1000));
+    const kept = join(agentboardDir, `${STALE_BOARD_PREFIX}20260101T000000Z`);
+    mkdirSync(join(kept, 'events'), { recursive: true });
+    writeFileSync(join(kept, '.git'), 'gitdir: /nowhere/.git/worktrees/-board\n');
+    putEvent(join(kept, 'events'), ev(P.create(T1, 'Carried'), 'orch', 1000));
+    return { root, dir: join(root, '.board'), repairing, kept, hash };
+  }
+
+  it('adoptRepairingWorktree moves the repairing worktree into place when .board is missing', () => {
+    const env = syncEnv();
+    const { root, dir, repairing, hash } = interruptedRepair(env);
+
+    expect(adoptRepairingWorktree(root, dir, { env })).toBe(true);
+
+    expect(existsSync(repairing)).toBe(false);
+    expect(worktreeEntry(root, repairing)).toBeNull();
+    expect(worktreeEntry(root, dir)).not.toBeNull();
+    expect(eventFiles(dir)).toEqual([`${hash}.json`]);
+    expect(revParse(dir)).toBe(refCommit(root));
+    // Nothing left to adopt.
+    expect(adoptRepairingWorktree(root, dir, { env })).toBe(false);
+  });
+
+  it('adoptRepairingWorktree changes nothing when .board exists or nothing is registered at repairing', () => {
+    const env = syncEnv();
+    const present = hostBoard(env);
+    const agentboardDir = join(present.root, '.git', AGENTBOARD_GIT_SUBDIR);
+    const repairing = join(agentboardDir, REPAIRING_WORKTREE);
+    git(present.root, 'worktree', 'add', '-q', '--detach', repairing, BOARD_REF);
+    const before = [worktrees(present.root), snapshotDir(present.dir)];
+    expect(adoptRepairingWorktree(present.root, present.dir, { env })).toBe(false);
+    expect([worktrees(present.root), snapshotDir(present.dir)]).toEqual(before);
+    expect(existsSync(repairing)).toBe(true);
+
+    const plain = hostRepo();
+    const plainDir = join(plain, '.git', AGENTBOARD_GIT_SUBDIR, REPAIRING_WORKTREE);
+    mkdirSync(plainDir, { recursive: true });
+    writeFileSync(join(plainDir, 'stray.txt'), 'not a worktree\n');
+    expect(adoptRepairingWorktree(plain, join(plain, '.board'), { env })).toBe(false);
+    expect(existsSync(join(plain, '.board'))).toBe(false);
+    expect(existsSync(join(plainDir, 'stray.txt'))).toBe(true);
+
+    expect(adoptRepairingWorktree(hostRepo(), join(tempDir(), '.board'), { env })).toBe(false);
+  });
+
+  it('removeLeftoverWorktree unregisters and deletes a leftover, deletes a plain directory, ignores a missing path', () => {
+    const env = syncEnv();
+    const { root, repairing } = interruptedRepair(env);
+    const runner = gitRunner(root, { env, disableHooks: true });
+    git(root, 'worktree', 'lock', repairing);
+    const refsBefore = refs(root);
+
+    removeLeftoverWorktree(runner, repairing);
+
+    expect(existsSync(repairing)).toBe(false);
+    expect(worktreeEntry(root, repairing)).toBeNull();
+    expect(worktreeEntries(root)).toHaveLength(1);
+    expect(refs(root)).toBe(refsBefore);
+
+    mkdirSync(repairing, { recursive: true });
+    writeFileSync(join(repairing, 'stray.txt'), 'x\n');
+    removeLeftoverWorktree(runner, repairing);
+    expect(existsSync(repairing)).toBe(false);
+
+    expect(() => {
+      removeLeftoverWorktree(runner, repairing);
+    }).not.toThrow();
+    expect(worktreeEntries(root)).toHaveLength(1);
+  });
+
+  it('scenario: a re-run after an interrupted repair adopts the fresh worktree and reports the kept copy', () => {
+    const env = syncEnv();
+    const { root, dir, repairing, kept, hash } = interruptedRepair(env);
+
+    const result = initBoard({ cwd: root, env });
+
+    expect(result).toMatchObject({
+      dir,
+      created: false,
+      model: 'host',
+      joined: false,
+      remote: null,
+      events: 1,
+      hostGitignore: null,
+      warnings: [],
+    });
+    expect(result.repair).toEqual({
+      method: 'fresh-worktree',
+      copied: [],
+      skipped: [],
+      keptAt: kept,
+      source: null,
+    });
+    expect(result.message).toContain(kept);
+    expect(result.message).not.toMatch(/new empty board/);
+    expectHealthy(root, env);
+    expect(eventFiles(dir)).toEqual([`${hash}.json`]);
+    expect(git(dir, 'status', '--porcelain').trim()).toBe(`?? events/${hash}.json`);
+    expect(existsSync(repairing)).toBe(false);
+    expect(worktreeEntry(root, repairing)).toBeNull();
+    expect(keptEntries(root)).toEqual([basename(kept)]);
+    expect(existsSync(join(kept, '.git'))).toBe(true);
+    expect(listTickets(openTracked(dir)).map((t) => t.id)).toEqual([T1]);
+  });
+
+  it('a repairing worktree left by a repair interrupted earlier is removed and the repair starts again', () => {
+    const env = syncEnv();
+    const a = publishedBoard(env, 1);
+    const c = cloneHost(a.remote, 'clone-c');
+    const cDir = join(c, '.board');
+    cpSync(a.dir, cDir, { recursive: true });
+    // A leftover from an earlier attempt: registered, with the ref already fetched.
+    git(c, 'fetch', '-q', 'origin', `${BOARD_REF}:${BOARD_REF}`);
+    const repairing = join(c, '.git', AGENTBOARD_GIT_SUBDIR, REPAIRING_WORKTREE);
+    git(c, 'worktree', 'add', '-q', '--detach', repairing, BOARD_REF);
+    writeFileSync(join(repairing, 'events', 'stray.json'), '{}');
+
+    const result = initBoard({ cwd: c, env });
+
+    expect(result.repair).toMatchObject({ method: 'fresh-worktree', copied: [], skipped: [] });
+    expectHealthy(c, env);
+    expect(existsSync(join(cDir, 'events', 'stray.json'))).toBe(false);
+    expect(eventFiles(cDir)).toEqual([`${a.hashes[0] ?? ''}.json`]);
+    expect(worktreeEntry(c, repairing)).toBeNull();
+    expect(worktreeEntries(c).map((entry) => basename(entry.path)).sort()).toEqual(['.board', 'clone-c']);
   });
 });

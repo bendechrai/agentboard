@@ -114,20 +114,34 @@ export interface InitResult {
  * Needs no actor. Never pushes: the first `sync` publishes a new board.
  *
  * Which model (board-events "Board directory per project"): the host model
- * when discovery's source is `git` and the git found on the `PATH` of
- * `options.env` is 2.32 or later (`gitVersion` and `meetsGitFloor`); the
- * standalone model otherwise: source `cwd` (not inside a git repository),
- * source `env` (`AGENTBOARD_DIR`), or an older git, in which case
- * `warnings` and `message` say the host model needs git 2.32 or later.
+ * when discovery's source is `git`, the git found on the `PATH` of
+ * `options.env` is 2.32 or later (`gitVersion` and `meetsGitFloor`), and
+ * the host has an in-tree git directory: `hostRoot` (the parent of `dir`)
+ * is the top level of a working tree (`git rev-parse --show-toplevel` run
+ * in `hostRoot` prints `hostRoot`) whose git common directory is
+ * `<hostRoot>/.git`, compared as realpaths. The standalone model otherwise:
+ * source `cwd` (not inside a git repository), source `env`
+ * (`AGENTBOARD_DIR`), an older git (`warnings` and `message` say the host
+ * model needs git 2.32 or later), or a host whose git directory is not in
+ * its working tree (a bare repository with linked worktrees, a
+ * `--separate-git-dir` repository, a submodule: `warnings` and `message`
+ * say the host model needs the repository's `.git` directory inside its
+ * working tree and name the git directory found). The decision is taken
+ * before anything is written; nothing is created under `refs/agentboard/`
+ * and no worktree is registered in such a repository or its superproject.
  *
  * Existing board (`boardExists(dir)` and `detectBoardModel(dir)` is `host`
  * or `standalone`): nothing is created or modified, not even the host
- * `.gitignore`; `created` false, `hostGitignore` null, `repair` null,
- * `joined` false, `model` the detected model, `remote` the remote `sync`
- * would use (`boardRemote`), `events` the count in the board, and a message
- * that says the board already exists at `dir`, names its model (`host` or
- * `standalone`), where the history lives (`refs/agentboard/board`, or the
- * branch of the board repository) and the remote (or that there is none).
+ * `.gitignore`, with one exception: a host-model worktree that is not
+ * locked (an `init` killed after `git worktree add`) is locked again with
+ * `WORKTREE_LOCK_REASON`, and the message says the lock was restored (the
+ * word `lock` appears); `created` false, `hostGitignore` null, `repair`
+ * null, `joined` false, `model` the detected model, `remote` the remote
+ * `sync` would use (`boardRemote`), `events` the count in the board, and a
+ * message that says the board already exists at `dir`, names its model
+ * (`host` or `standalone`), where the history lives
+ * (`refs/agentboard/board`, or the branch of the board repository) and the
+ * remote (or that there is none).
  * For a standalone board found through a git repository (source `git`) with
  * git 2.32 or later the message also suggests `agentboard init --into-host`
  * (that text appears); otherwise it does not. Exit 0. One exception, so
@@ -149,6 +163,16 @@ export interface InitResult {
  * treated the same way: its content is kept aside and the board is built
  * fresh. Outside the host model (standalone fallback) such a directory is
  * completed in place (see "New standalone board").
+ *
+ * Interrupted repair: when `dir` is missing and
+ * `<git common dir>/agentboard/repairing` is a registered, present
+ * worktree (a repair killed between keeping the old directory aside and
+ * `git worktree move`), `adoptRepairingWorktree` moves it into place and
+ * the result is reported as a repair: `created` false, `repair` with
+ * `method` `fresh-worktree`, `copied` and `skipped` empty, `source` null
+ * and `keptAt` the newest `stale-board-*` directory under
+ * `<git common dir>/agentboard/` (null when there is none), and a message
+ * naming that kept directory.
  *
  * New host-model board, in this order (design.md decision 7), so that
  * every step is idempotent and an interrupted `init` is completed by
@@ -172,11 +196,15 @@ export interface InitResult {
  * Steps 3 and 4 run under `withInitLock`, so two `init` processes on one
  * host take turns and leave one ref and one worktree.
  * The result has `created` true, `model` `host`, `remote` the chosen name
- * or null, and a message naming `dir`, the model, and either how many
- * events were joined from the remote (`joined <n> events from <remote>`
- * style wording, the count and the remote appear), or that the board is
- * new and that `agentboard sync` publishes it (to `<remote>`, or once the
- * repository has a remote: the words `sync` and `remote` appear).
+ * or null, and a message naming `dir`, the model, and, by the ref's
+ * source: `remote`, how many events were joined from the remote
+ * (`joined <n> events from <remote>` style wording, the count and the
+ * remote appear); `local`, that the board was restored from the local
+ * `refs/agentboard/board` with the number of event files (the words
+ * `restored` and `local` and the count appear, never `new empty board`);
+ * `created`, that the board is new and that `agentboard sync` publishes
+ * it (to `<remote>`, or once the repository has a remote: the words `sync`
+ * and `remote` appear).
  *
  * New standalone board, creating only what is missing and never
  * overwriting an existing file:
@@ -189,13 +217,16 @@ export interface InitResult {
  * The result has `created` true, `model` `standalone`, `joined` false,
  * `remote` null, `events` 0 and a message naming `dir`.
  *
- * Host `.gitignore` (both models): when discovery's source is `git`, the
- * host `.gitignore` is `<parent of dir>/.gitignore`. When no line of it,
+ * Host `.gitignore` (both models): when discovery's source is `git` and
+ * `hostRoot` is the top level of a working tree (the host model, or the
+ * old-git fallback in such a host), the host `.gitignore` is
+ * `<parent of dir>/.gitignore`. When no line of it,
  * trimmed, equals `.board/`, `.board`, `/.board/` or `/.board`, the line
  * `.board/` is appended (after a newline when the file does not end with
  * one), or the file is created containing `.board/\n`. Existing content is
- * kept byte for byte. When the source is `env` or `cwd` no host file is
- * touched (`hostGitignore` null).
+ * kept byte for byte. When the source is `env` or `cwd`, or `hostRoot` is
+ * not a working tree (a bare repository's or a submodule's git directory
+ * container), no host file is touched (`hostGitignore` null).
  *
  * Apart from that entry, `init` never modifies a branch, a tag, the index
  * or the working tree of the host repository: `git status --porcelain` in

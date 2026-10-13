@@ -19,9 +19,10 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -42,6 +43,7 @@ import {
   snapshotDir,
   standaloneBoard,
   withGitShim,
+  worktreeEntries,
   worktreeEntry,
   worktrees,
 } from './sharing-helpers.js';
@@ -504,6 +506,7 @@ describe('scenario: init is idempotent', () => {
     expect(again.message).toContain(BOARD_REF);
     expect(again.message).toContain('origin');
     expect(again.message).not.toContain('--into-host');
+    expect(again.message).not.toMatch(/restor/);
     expect(hash).toMatch(/^[0-9a-f]{64}$/);
     expect(state()).toEqual(before);
     // The host .gitignore is not touched when the board exists.
@@ -567,6 +570,22 @@ describe('scenario: init is idempotent', () => {
     expect(again.message).toContain('origin');
     expect(again.message).not.toContain('--into-host');
     expect(snapshot(parent)).toEqual(before);
+  });
+
+  it('on a host-model board whose worktree is not locked: restores the lock and says so', () => {
+    const env = syncEnv();
+    const { root, dir } = hostBoard(env);
+    git(root, 'worktree', 'unlock', dir);
+    const before = [refs(root), snapshotDir(dir), git(root, 'status', '--porcelain')];
+
+    const again = initBoard({ cwd: root, env });
+
+    expect(again).toMatchObject({ dir, created: false, model: 'host', repair: null, events: 0 });
+    expect(again.message).toMatch(/already exists/);
+    expect(again.message).toMatch(/lock/);
+    expect(again.message).toMatch(/restor/);
+    expect(worktreeEntry(root, dir)?.locked).toBe('agentboard board');
+    expect([refs(root), snapshotDir(dir), git(root, 'status', '--porcelain')]).toEqual(before);
   });
 
   it('on a host-model board without a remote says there is none', () => {
@@ -638,5 +657,115 @@ describe('initBoard without git', () => {
     expectBoardError(() => initBoard({ cwd: root, env: cleanEnv({ PATH: '' }) }), 1, 'git-missing');
     expect(existsSync(join(root, '.board'))).toBe(false);
     expect(existsSync(join(root, '.gitignore'))).toBe(false);
+  });
+});
+
+describe('scenario: init in a host whose git directory is not in its working tree', () => {
+  /**
+   * Asserts the standalone fallback: a repository of its own at `dir`
+   * (nothing committed), no host `.gitignore` (the parent of `dir` is not
+   * a working tree), the reason in `warnings` and `message` naming the git
+   * directory `gitDir`, and no host-model trace (no ref under
+   * `refs/agentboard/`, no worktree for `.board`) in the repository at
+   * `repo`.
+   */
+  function expectFallback(result: InitResult, dir: string, gitDir: string, repo: string): void {
+    expect(result).toMatchObject({
+      dir,
+      created: true,
+      model: 'standalone',
+      joined: false,
+      remote: null,
+      events: 0,
+      hostGitignore: null,
+      repair: null,
+    });
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toMatch(/working tree/);
+    expect(result.warnings[0]).toMatch(/standalone/);
+    expect(result.warnings[0]).toContain(gitDir);
+    expect(result.warnings[0]).toMatch(/^[\x20-\x7e]+$/);
+    expect(result.message).toMatch(/standalone/);
+    expect(result.message).toMatch(/working tree/);
+    expect(git(dir, 'rev-parse', '--git-dir').trim()).toBe('.git');
+    expect(detectBoardModel(dir, { env: syncEnv() }).model).toBe('standalone');
+    expect(refCommit(dir, 'HEAD')).toBeNull();
+    expect(readdirSync(join(dir, 'events'))).toEqual(['.gitkeep']);
+    expect(existsSync(join(dirname(dir), '.gitignore'))).toBe(false);
+    expect(git(repo, 'for-each-ref', 'refs/agentboard/')).toBe('');
+    expect(worktreeEntries(repo).some((entry) => entry.path.endsWith('.board'))).toBe(false);
+  }
+
+  it('a linked worktree of a bare repository: a standalone board beside the bare repository, nothing else', () => {
+    const env = syncEnv();
+    const parent = tempDir();
+    const source = gitRepo(join(tempDir(), 'source'));
+    const bare = join(parent, 'b.git');
+    git(parent, 'clone', '-q', '--bare', source, bare);
+    const linked = join(parent, 'bw');
+    git(bare, 'worktree', 'add', '-q', linked, 'main');
+    const status = git(linked, 'status', '--porcelain');
+
+    const result = initBoard({ cwd: linked, env });
+
+    expectFallback(result, join(parent, '.board'), bare, bare);
+    expect(git(linked, 'status', '--porcelain')).toBe(status);
+    expect(existsSync(join(linked, '.gitignore'))).toBe(false);
+    expect(worktreeEntries(bare).map((entry) => entry.path)).toEqual([bare, linked]);
+  });
+
+  it('a repository made with --separate-git-dir: a standalone board, nothing in the git directory', () => {
+    const env = syncEnv();
+    const parent = tempDir();
+    const gitDir = join(parent, 'gd');
+    const tree = join(parent, 'wt');
+    mkdirSync(tree);
+    git(parent, 'init', '-q', '--separate-git-dir', gitDir, tree);
+    git(tree, 'commit', '-q', '--allow-empty', '-m', 'init');
+    const status = git(tree, 'status', '--porcelain');
+
+    const result = initBoard({ cwd: tree, env });
+
+    expectFallback(result, join(parent, '.board'), gitDir, tree);
+    expect(git(tree, 'status', '--porcelain')).toBe(status);
+    expect(existsSync(join(tree, '.gitignore'))).toBe(false);
+  });
+
+  it('inside a submodule: a standalone board, nothing written in the superproject', () => {
+    const env = syncEnv();
+    const lib = gitRepo(join(tempDir(), 'lib'));
+    const superproject = hostRepo();
+    git(superproject, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'lib');
+    git(superproject, 'commit', '-q', '-m', 'add lib');
+    const inside = join(superproject, 'lib');
+    const modules = join(superproject, '.git', 'modules');
+    const state = (): unknown[] => [
+      refs(superproject),
+      worktrees(superproject),
+      git(superproject, 'status', '--porcelain'),
+      refs(inside),
+      worktrees(inside),
+      readFileSync(join(superproject, '.gitignore'), 'utf8'),
+    ];
+    const before = state();
+
+    const result = initBoard({ cwd: inside, env });
+
+    expectFallback(result, join(modules, '.board'), join(modules, 'lib'), superproject);
+    expect(git(inside, 'for-each-ref', 'refs/agentboard/')).toBe('');
+    expect(existsSync(join(modules, '.gitignore'))).toBe(false);
+    expect(existsSync(join(inside, '.gitignore'))).toBe(false);
+    expect(state()).toEqual(before);
+  });
+
+  it('the host model is taken when the host .git is in its working tree, through a symlinked path too', () => {
+    const env = syncEnv();
+    const root = gitRepo(join(tempDir(), 'proj'));
+    const link = join(tempDir(), 'via-link');
+    symlinkSync(root, link);
+    const result = initBoard({ cwd: link, env });
+    expect(result.model).toBe('host');
+    expect(result.warnings).toEqual([]);
+    expectHostBoard(root, env);
   });
 });

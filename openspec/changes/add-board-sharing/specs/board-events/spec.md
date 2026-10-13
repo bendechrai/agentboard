@@ -14,14 +14,27 @@ SHALL be versioned in git in one of two models:
 
 `agentboard init` without flags SHALL create a host-model board when it
 runs inside a git repository (discovery source `git`) with git 2.32 or
-later, and a standalone board otherwise: outside a git repository, when
-`AGENTBOARD_DIR` is set, or when git is older than 2.32 (in which case it
-SHALL say that the host model needs git 2.32 or later). `init --remote
-<url>` SHALL always create a standalone board (see board-cli). An existing
-board of either model SHALL keep its model until it is moved with
+later and the host has an in-tree git directory: the parent of `.board`
+(the parent of the git common directory) is the top level of a working
+tree, and that working tree's git common directory is `<top level>/.git`,
+compared as realpaths. It SHALL create a standalone board otherwise:
+outside a git repository, when `AGENTBOARD_DIR` is set, when git is older
+than 2.32 (in which case it SHALL say that the host model needs git 2.32
+or later), or when the host's git directory is not in its working tree (a
+bare repository with linked worktrees, a `--separate-git-dir` repository,
+or a submodule whose git directory is `<superproject>/.git/modules/<name>`;
+in which case it SHALL say that the host model needs the repository's
+`.git` directory inside its working tree, naming the git directory found).
+That decision is taken before anything is written. `init --remote <url>`
+SHALL always create a standalone board (see board-cli). An existing board
+of either model SHALL keep its model until it is moved with
 `init --into-host`. The host project SHALL ignore `.board/` in its own
-`.gitignore`; `agentboard init` SHALL add that entry when it is missing,
-before it creates the board, in both models.
+`.gitignore`; whenever the parent of `.board` is the top level of a
+working tree (the host model, or a standalone fallback inside such a
+repository), `agentboard init` SHALL add that entry when it is missing,
+before it creates the board; outside a working tree (no git repository,
+`AGENTBOARD_DIR`, or a parent that is a git directory's container) it
+SHALL write no host `.gitignore`.
 
 #### Scenario: Init creates the board
 - **WHEN** `agentboard init` runs at the root of a git repository with git 2.32 or later, no `.board` directory, no `refs/agentboard/board` and no remote
@@ -37,7 +50,11 @@ before it creates the board, in both models.
 
 #### Scenario: Init is idempotent
 - **WHEN** `agentboard init` runs where a healthy `.board` of either model already exists
-- **THEN** nothing is created or modified and the command exits 0 with a message that the board already exists, naming its model
+- **THEN** nothing is created or modified and the command exits 0 with a message that the board already exists, naming its model; the one exception is a host-model worktree that is not locked (an `init` interrupted after the worktree was added), whose lock `init` restores and reports
+
+#### Scenario: Init in a host whose git directory is not in its working tree
+- **WHEN** `agentboard init` runs with git 2.32 or later in a linked worktree of a bare repository, in a repository made with `git init --separate-git-dir`, or inside a submodule of a superproject
+- **THEN** it creates a standalone board where discovery puts it, exits 0 with a message that the host model needs the repository's `.git` directory inside its working tree, writes no `.gitignore` outside a working tree, and creates no ref under `refs/agentboard/` and no worktree in the repository or the superproject
 
 ## ADDED Requirements
 
@@ -118,7 +135,12 @@ Where a standalone board's git directory lies SHALL NOT change how it is
 treated: `sync` and `remote` SHALL handle a standalone board whose `.git`
 is a file exactly as one whose git directory is `.board/.git`, so every
 board that synced before the host model existed keeps syncing unchanged.
-A board's model never affects commands that only read or write events. On
+A board's model never affects commands that only read or write events.
+Detection decides the model of an existing board; `init` SHALL take the
+host model for a new board only in a host with an in-tree git directory
+(see "Board directory per project"), so a board that detection would
+report as a worktree of a bare repository or of a superproject is never
+created. On
 a broken host link, `sync` SHALL exit 2 with reason `board-link-broken`,
 naming the directory and that `agentboard init` repairs it, and SHALL change
 nothing.

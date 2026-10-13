@@ -81,8 +81,12 @@ export const STALE_BOARD_PREFIX = 'stale-board-';
  */
 export const INIT_LOCK_FILE = 'init.lock';
 
-/** A lock whose holder is gone, or older than this, is broken by the next `init`. */
-const STALE_LOCK_MS = 60_000;
+/**
+ * A lock whose holder is gone, or older than this, is broken by the next
+ * `init` (design.md decision 2: a holder still alive after this long has
+ * its lock broken, a known limit).
+ */
+export const STALE_LOCK_MS = 60_000;
 
 /** Options of every function in this module. */
 export type HostInitOptions = Pick<GitRunnerOptions, 'env'>;
@@ -407,10 +411,14 @@ export function adoptRepairingWorktree(
  * or repair the board one after the other (design.md decision 2: the loser
  * of the create-only `update-ref` uses the winner's ref; without the lock,
  * two `git worktree add` of one path can both succeed and register two
- * worktrees). The file holds the holder's pid; a lock whose holder is no
- * longer running (an `init` that was killed) or that is older than a
- * minute is broken. Waits in 50 ms steps. The lock is removed when `fn`
- * returns or throws.
+ * worktrees). The file holds the holder's pid (this process's, as decimal
+ * text) while `fn` runs. When the file exists: a holder that is no longer
+ * running (an `init` that was killed; `kill(pid, 0)` fails with ESRCH) or
+ * a file older than `STALE_LOCK_MS` is stale and is removed, then the
+ * lock is taken; a live holder is waited for in 50 ms steps until it
+ * releases the lock or its lock turns stale. `fn` runs exactly once. The
+ * lock is removed when `fn` returns or throws, and `fn`'s result or error
+ * is passed on unchanged.
  */
 export function withInitLock<T>(hostDir: string, fn: () => T, options?: HostInitOptions): T {
   const lock = join(agentboardGitDir(hostGit(hostDir, options), hostDir), INIT_LOCK_FILE);
@@ -575,9 +583,12 @@ function gitfileTargetMissing(dir: string): boolean {
 /**
  * Removes the `repairing` worktree or directory a previous, interrupted
  * repair left at `path`: unregistered (unlocked and removed by force when
- * it is registered) and deleted from disk.
+ * it is registered) and deleted from disk. `git` is a runner for the host
+ * repository (`gitRunner(hostDir, { env, disableHooks: true })`). A path
+ * that is neither registered nor present is left alone; nothing else in
+ * the repository changes. Never throws for a missing path.
  */
-function removeLeftoverWorktree(git: GitRunner, path: string): void {
+export function removeLeftoverWorktree(git: GitRunner, path: string): void {
   if (registeredAt(git, path) !== null) {
     git.attempt('worktree', 'unlock', path);
     git.attempt('worktree', 'remove', '--force', '--force', path);
