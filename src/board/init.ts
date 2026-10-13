@@ -152,6 +152,14 @@ export interface InitResult {
  * that an `init` interrupted after `git worktree add` is completed by
  * running it again: a host-model board whose worktree is not locked is
  * locked (`addBoardWorktree`, which changes nothing on a healthy board).
+ * A second exception, for the temporary worktrees of `init --into-host`
+ * (`src/board/into-host.ts`; add-board-sharing design.md decision 9,
+ * ruling E): on a host-model board, under the init lock,
+ * `removeDeadMigratingWorktrees` removes every dead-pid temporary
+ * worktree without rebase state under `<git common dir>/agentboard/migrating/`
+ * (one with a rebase stopped in it, or a live pid, is left alone) and the
+ * `migrating` directory when it is then empty; the board, its ref and its
+ * events are untouched, and the message names what was removed.
  *
  * Broken host link or a `.board` directory that is not a repository
  * (`detectBoardModel` is `broken-host-link` or `not-a-repository` and the

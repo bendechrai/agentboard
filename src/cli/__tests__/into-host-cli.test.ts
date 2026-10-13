@@ -562,7 +562,7 @@ describe('an interrupted move is finished by running init --into-host again', ()
     expectFinished(fx, env);
   });
 
-  it('killed after the worktree move, before the lock (step 6): the re-run restores the lock and reports the board unchanged', () => {
+  it('killed after the worktree move, before the lock (step 6): the re-run restores the lock, syncs and reports resumed with the kept repository (ruling E)', () => {
     const env = syncEnv();
     const fx = fixture(env);
 
@@ -570,15 +570,20 @@ describe('an interrupted move is finished by running init --into-host again', ()
 
     expect(detectBoardModel(fx.dir, { env }).model).toBe('host');
     expect(worktreeEntry(fx.root, fx.dir)?.locked).toBeNull();
+    const [kept] = keptRepositories(fx.root);
     expect(keptRepositories(fx.root)).toHaveLength(1);
+    expect(git(fx.remote, 'for-each-ref', '--format=%(refname)', 'refs/agentboard/')).toBe('');
 
     const doc = intoHostOk(fx.root, env);
-    expect(doc).toMatchObject({ action: 'unchanged', model: 'host' });
-    expect(String(doc.message)).toMatch(/lock/);
+    expect(doc).toMatchObject({ action: 'resumed', model: 'host', keptAt: kept, oldRemoteUrl: fx.boardRemote });
+    expect(doc.sync).toMatchObject({ model: 'host', pushed: true });
+    expect(String(doc.message)).toContain(String(kept));
+    expect(git(fx.remote, 'rev-parse', BOARD_REF).trim()).toBe(refCommit(fx.root));
     expectFinished(fx, env);
+    expect(intoHostOk(fx.root, env)).toMatchObject({ action: 'unchanged' });
   });
 
-  it('killed after the lock, before the sync (step 7): the re-run is unchanged and the next sync publishes', () => {
+  it('killed after the lock, before the sync (step 7): the re-run is resumed and publishes', () => {
     const env = syncEnv();
     const fx = fixture(env);
 
@@ -587,11 +592,15 @@ describe('an interrupted move is finished by running init --into-host again', ()
     expect(worktreeEntry(fx.root, fx.dir)?.locked).toBe('agentboard board');
     expect(git(fx.remote, 'for-each-ref', '--format=%(refname)', 'refs/agentboard/')).toBe('');
 
-    expect(intoHostOk(fx.root, env)).toMatchObject({ action: 'unchanged' });
+    const doc = intoHostOk(fx.root, env);
+    expect(doc).toMatchObject({ action: 'resumed', oldRemoteUrl: fx.boardRemote });
+    expect(doc.sync).toMatchObject({ model: 'host', pushed: true });
+    expect(git(fx.remote, 'rev-parse', BOARD_REF).trim()).toBe(refCommit(fx.root));
     expectFinished(fx, env);
+    expect(intoHostOk(fx.root, env)).toMatchObject({ action: 'unchanged' });
   });
 
-  it('killed after the push, before the catch-up (step 7): the board is published; the re-run is unchanged', () => {
+  it('killed after the push, before the catch-up (step 7): the board is published; the re-run is resumed (its sync had not completed), then unchanged', () => {
     const env = syncEnv();
     const fx = fixture(env);
 
@@ -600,9 +609,33 @@ describe('an interrupted move is finished by running init --into-host again', ()
     expect(git(fx.remote, 'rev-parse', BOARD_REF).trim()).toBe(refCommit(fx.root));
     expectMoved(fx.root, env);
 
-    expect(intoHostOk(fx.root, env)).toMatchObject({ action: 'unchanged' });
+    const doc = intoHostOk(fx.root, env);
+    expect(doc).toMatchObject({ action: 'resumed' });
+    expect(doc.sync).toMatchObject({ model: 'host', pushed: true, commit: null });
     expectFinished(fx, env);
     expect(titles(fx.root, env)).toEqual(['Shared ticket']);
+    expect(intoHostOk(fx.root, env)).toMatchObject({ action: 'unchanged' });
+  });
+
+  it('killed after the rebase onto a local refs/agentboard/board, then one more standalone event synced: the re-run adopts the temporary and integrates it in one run (ruling A)', () => {
+    const env = syncEnv();
+    const fx = fixture(env);
+    const other = hostBoard(env);
+    const fromOther = commitHostEvent(other.dir, ev(P.create(T2, 'From the host ref'), 'x', 2000), env);
+    git(fx.root, 'fetch', '-q', other.root, `${BOARD_REF}:${BOARD_REF}`);
+
+    killedAt(fx.root, env, [...COMMANDS.rebaseLocal], 'after');
+
+    expect(detectBoardModel(fx.dir, { env }).model).toBe('standalone');
+    expect(migratingEntries(fx.root)).toHaveLength(1);
+    const [late] = writeEvents(fx.dir, 1, 'late', 900);
+    syncStandalone(fx.dir, env);
+    const after = { ...fx, tip: revParse(fx.dir), files: eventFiles(fx.dir) };
+    expect(after.files).toContain(`${String(late)}.json`);
+
+    const doc = intoHostOk(fx.root, env);
+    expect(doc).toMatchObject({ action: 'moved', events: 5 });
+    expectFinished(after, env, [`${fromOther}.json`]);
   });
 });
 

@@ -144,7 +144,9 @@ Known limit: a holder that is still alive after 60 seconds (a slow fetch,
 a credential prompt inside `ensureBoardRef`) has its lock broken by a
 waiting `init`, which then runs concurrently with it; the create-only
 `update-ref` and the idempotent worktree steps keep the outcome
-consistent, and 60 seconds is far beyond a normal `init`.
+consistent, and 60 seconds is far beyond a normal `init`. The move of
+decision 9, whose steps are not all idempotent, refreshes the lock's
+mtime before each of its network steps instead.
 
 `git worktree add --orphan` would create the first commit without
 plumbing, but it needs git 2.42 and makes a non-deterministic commit.
@@ -519,11 +521,20 @@ and `refs/agentboard/migrating` is one ref, deleted at the end of step 4
 and when no temporary worktree remains at all. A leftover of an earlier
 move is touched only when its pid is dead (the group 4 review of
 `init --remote`, whose cleanup of every `.board-clone-*` can make a
-concurrent run fail): a live-pid temporary is left alone. The step 1
-checks run before the init lock, so a refusal creates no
-`<git common dir>/agentboard` directory; steps 2 to 7 run under it.
+concurrent run fail): a live-pid temporary is left alone; a temporary
+named by the running process's own pid counts as dead, since one process
+runs one move at a time under the init lock (this also covers pid
+namespaces in containers). The step 1 checks run before the init lock, so
+a refusal creates no `<git common dir>/agentboard` directory; steps 2 to
+7 run under it, and the move refreshes the lock file's mtime immediately
+before each network step (the `ls-remote` and the fetch of step 3, the
+`sync` of step 7), so a move waiting on a slow remote is not broken as
+stale at 60 seconds while it is alive (the known limit of decision 2 does
+not apply to it). The host `.gitignore` entry is written only after the
+compare-and-swap of step 4 succeeded, so a refusal of steps 2 to 4 leaves
+the host's working tree as it was.
 
-Conflicts are not a dead end (orchestrator ruling, group 5): a rebase of
+Conflicts are not a dead end (orchestrator rulings, group 5): a rebase of
 step 3 that stops on a conflict exits 3 `sync-conflict` with the
 temporary worktree left as git left it, the old `.board` untouched and
 `refs/agentboard/board` unchanged, and the message names the worktree's
@@ -533,16 +544,50 @@ removes a dead-pid temporary worktree that has rebase state: it exits 3
 `sync-in-progress` naming the path with the same instructions and changes
 nothing. A dead-pid temporary worktree without rebase state whose HEAD
 differs from `refs/agentboard/migrating` (its rebase finished, by the move
-before it was killed or by a human) is adopted: the move goes on in it
-from the integration of step 3 (whose rebases are no-ops for what is
-already integrated) through step 7. Only dead-pid temporaries with no
-rebase state and nothing integrated (HEAD still at the temporary ref, or
-not registered at all) are removed, and the output names them.
+before it was killed or by a human, or its compare-and-swap was lost) is
+adopted, and adoption integrates: the re-run fetches its source tip into
+`refs/agentboard/migrating` as step 2 does, replays onto the adopted HEAD
+the source commits it lacks (`git rebase --onto HEAD <merge-base>
+refs/agentboard/migrating`, so events that reached the standalone board
+or its remote since the temporary was made, from this clone's own `sync`
+or from a third clone, are integrated and nothing the human resolved is
+replayed), then integrates the current local and remote board refs as
+step 3 does (no-ops for what is already integrated), then runs steps 4 to
+7. Nothing a human resolved in a temporary worktree is ever discarded.
+Only dead-pid temporaries with no rebase state and nothing integrated
+(HEAD still at the temporary ref, or not registered at all) are removed,
+and the output names them; plain `init` on a host-model board removes
+such leftovers too, and an empty `migrating` directory with them.
+
+Step 5 is a carry-over, not a bare verification, as the repair of
+decision 7: every event file of the old `.board/events` that the new
+worktree lacks (written by a writer or a standalone `sync` after step 1)
+is copied in when its content hashes to its name, and the `sync` of step
+7 commits it; only a file whose content does not match its name (or whose
+copy in the worktree differs) is exit 5 `integrity`, with nothing moved
+and the temporary left for the re-run. Immediately before the rename,
+step 6 re-checks that `.board` is still the standalone repository step 1
+saw (the same resolved git directory, no host worktree registered there)
+and refuses with exit 3 `sync-failed` otherwise, so a move that lost its
+lock to a second one never renames the second move's worktree away. After
+the `worktree move` the carry-over runs again from the kept repository,
+for an event that landed in the old `.board` between step 5 and the
+rename (the rename window). The `migrating` directory stays, empty, until
+the `sync` of step 7 has completed: it marks a move whose publication is
+not done.
 
 Resuming: a re-run that finds `.board` missing and a registered worktree
 under `<git common dir>/agentboard/migrating/` with a dead pid, no rebase
 state and a HEAD equal to `refs/agentboard/board` finishes step 6 and
-runs step 7.
+runs step 7 (`resumed`); one that finds `.board` a host-model board with
+the empty `migrating` marker (a move killed between the `worktree move`
+and the end of step 7, or whose `sync` failed) restores the lock when it
+is missing, repeats the carry-over from the newest kept repository, runs
+step 7 and reports `resumed` with the kept repository; only a board
+without the marker is `unchanged`. When the `sync` of step 7 fails, the
+move stays done, `init` exits with the sync's code and reason, and its
+output still carries the move's lines (the kept repository, the old
+remote) with `keptAt` and `oldRemoteUrl` in the `--json` error document.
 
 Other details of step 1: a committed event file whose content differs
 from its committed blob (a content-addressed file modified in place) is
@@ -560,10 +605,13 @@ remote) from the standalone repository as a local path. In step 3 a host
 remote whose `ls-remote` fails is treated as having no board ref, with a
 warning naming it; the move completes and the `sync` of step 7 then fails
 with exit 3 `sync-failed`, the move done, the next `sync` publishing. A
-compare-and-swap failure in step 4 and an `integrity` refusal in step 5
-remove the temporary worktree and `refs/agentboard/migrating`, leave the
-old `.board` untouched and leave `refs/agentboard/board` at whatever
-value step 4 gave it (a correct board history either way).
+compare-and-swap failure in step 4 (the old value is the one read before
+the rebases of step 3) leaves the old `.board` untouched, the host
+`.gitignore` unwritten and the temporary worktree in place for the re-run
+to adopt; a rebase that fails without a conflict, or a fetch of the
+remote's ref that fails after the `ls-remote`, removes the temporary (it
+holds nothing a human did); `refs/agentboard/board` keeps whatever value
+step 4 gave it (a correct board history either way).
 
 The old repository is kept rather than deleted: it is the only copy of
 anything a bug in steps 2 to 5 might miss, and inside the git directory it

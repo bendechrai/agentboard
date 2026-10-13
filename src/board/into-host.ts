@@ -179,7 +179,9 @@ export function findMigratingWorktrees(
  * Removes every temporary worktree under `<git common dir>/agentboard/migrating/`
  * that holds nothing a re-run needs: its pid is not running
  * (`MigratingWorktree.alive` false, which a pid that is not a number
- * counts as), it has no rebase state (`rebasing` false), and it is either
+ * counts as; a temporary named by this process's own pid counts as dead
+ * too, since one process runs one move at a time under the init lock),
+ * it has no rebase state (`rebasing` false), and it is either
  * not registered (a plain directory) or registered with a HEAD equal to
  * `MIGRATING_REF` (nothing was integrated in it yet). Each is
  * unregistered (unlocked and removed by force when registered, as
@@ -319,13 +321,71 @@ export function verifyEventFiles(from: string, to: string): EventVerification {
   return { missing: missing.sort(), different: different.sort() };
 }
 
+/** The outcome of `carryOverEventFiles`. */
+export interface EventCarryOver {
+  /** Names (`<hash>.json`, ascending) copied from `from` into `to` because `to` lacked them. */
+  readonly copied: readonly string[];
+  /**
+   * Names (ascending) of files in `from` whose content does not hash
+   * (SHA-256, lower-case hex) to their name, or whose copy in `to` differs
+   * from them byte for byte: never copied, never overwritten.
+   */
+  readonly mismatched: readonly string[];
+}
+
+/**
+ * Step 5 of the move and its repeat after the rename (design.md decision
+ * 9, orchestrator ruling A): the carry-over the repair of decision 7 does.
+ * Every event file (`<64 hex>.json`; dot-named entries, temporaries and
+ * subdirectories are ignored) of the directory `from` (the old
+ * `.board/events`, or the kept repository's `events/`) that `to` (the new
+ * worktree's `events/`) lacks is copied in when its content hashes to its
+ * name (event files are content-addressed, so a copy can never change an
+ * existing event); one whose content does not hash to its name, or whose
+ * copy in `to` has different bytes, is reported in `mismatched` and left
+ * alone. Copied files are left uncommitted for the `sync` of step 7. A
+ * missing `from` copies nothing. Never deletes or overwrites anything.
+ */
+export function carryOverEventFiles(from: string, to: string): EventCarryOver {
+  void from;
+  void to;
+  throw new Error('not implemented');
+}
+
+/**
+ * The failure of the `sync` of step 7 (orchestrator ruling C): a
+ * `BoardError` with the sync's exit code and reason, whose message starts
+ * with the move's lines (the board moved, the kept repository, the old
+ * remote, the command for the other clones) and ends with the sync's
+ * message, and which carries `keptAt` and `oldRemoteUrl` so the CLI's
+ * `--json` error document (`errorDocument` in `src/cli/main.ts`) can
+ * print them beside `exitCode`, `reason`, `message` and `hint`: the
+ * document's `error` object gains the keys `keptAt` and `oldRemoteUrl`
+ * exactly when the thrown error is a `MoveSyncFailure`.
+ */
+export class MoveSyncFailure extends BoardError {
+  /** As `IntoHostResult.keptAt`. */
+  readonly keptAt: string | null;
+  /** As `IntoHostResult.oldRemoteUrl`. */
+  readonly oldRemoteUrl: string | null;
+
+  constructor(cause: BoardError, message: string, keptAt: string | null, oldRemoteUrl: string | null) {
+    super(cause.exitCode, cause.reason, message);
+    this.name = 'MoveSyncFailure';
+    this.keptAt = keptAt;
+    this.oldRemoteUrl = oldRemoteUrl;
+  }
+}
+
 /**
  * What `moveBoardIntoHost` did:
  * - `moved`: the standalone board was moved into the host model in this
  *   run (steps 2 to 7).
- * - `resumed`: a move interrupted between keeping the old repository
- *   aside and moving the temporary worktree into place was finished
- *   (`adoptMigratingWorktree`), then step 7 ran.
+ * - `resumed`: a move interrupted after the old repository was kept aside
+ *   (between the rename and the `worktree move`, finished by
+ *   `adoptMigratingWorktree`; or between the `worktree move` and the end
+ *   of the `sync` of step 7, found by the `migrating` marker directory)
+ *   was finished: the lock restored when missing, then step 7 ran.
  * - `unchanged`: the board was already a healthy host-model board;
  *   nothing was done (the one exception of `initBoard`: an unlocked
  *   worktree is locked again).
@@ -460,11 +520,17 @@ export interface IntoHostResult extends InitResult {
  *
  * Steps 2 to 7 run under `withInitLock(hostRoot, ...)` (design.md decision
  * 2: `<git common dir>/agentboard/init.lock`), so two moves or an `init`
- * and a move on one host take turns. Under the lock the model is read
- * again; a `.board` that is a host-model board by then is `unchanged`.
- * First, leftovers (`findMigratingWorktrees(hostRoot)`): a dead-pid
- * temporary worktree with a rebase stopped in it (a move that stopped on
- * a conflict in step 3) is never removed: `BoardError(3,
+ * and a move on one host take turns. The lock file's mtime is refreshed
+ * (`utimes` to now) immediately before each network step (the
+ * `ls-remote` and the fetch of step 3, the `sync` of step 7), so a move
+ * that waits on a slow remote is not broken as stale at 60 seconds while
+ * it is alive (ruling B). Under the lock the model is read again; a
+ * `.board` that is a host-model board by then is `unchanged` (or
+ * `resumed`, see "Resuming"). First, leftovers
+ * (`findMigratingWorktrees(hostRoot)`; a temporary named by this
+ * process's own pid counts as dead, ruling G): a dead-pid temporary
+ * worktree with a rebase stopped in it (a move that stopped on a
+ * conflict in step 3) is never removed: `BoardError(3,
  * 'sync-in-progress')` whose message names its path and the human steps
  * of step 3 (resolve, `git add`, `git rebase --continue` in that
  * worktree, then `agentboard init --into-host` again; the texts
@@ -475,15 +541,26 @@ export interface IntoHostResult extends InitResult {
  * hold nothing (the message names what was removed), and a dead-pid
  * temporary worktree without rebase state whose HEAD differs from
  * `MIGRATING_REF` (or whose ref is gone: a rebase finished in it, by the
- * move before it was killed or by a human's `git rebase --continue`) is
- * adopted: steps 2 and the `worktree add` of step 3 are skipped and the
- * move goes on in it from the integration of step 3 (its rebases are
- * no-ops for what is already integrated), through steps 4 to 7; `action`
- * is `moved`. Then the host `.gitignore` entry
- * (`ignoreBoardInHost(hostRoot)` when the parent of `dir` is the top level
- * of a working tree, as `initBoard`). Each git command line below is given
- * as the move runs it, after the runner's `-c` prefix, so a shim on the
- * PATH can match it:
+ * move before it was killed or by a human's `git rebase --continue`, or a
+ * compare-and-swap lost in step 4) is adopted (ruling A): step 2 runs as
+ * in a first run (the re-run's freshly fetched source tip replaces
+ * `MIGRATING_REF`), the `worktree add` of step 3 is skipped, and in the
+ * adopted worktree, before the rebases of step 3, the source commits HEAD
+ * lacks are replayed onto it: when `refs/agentboard/migrating` is not an
+ * ancestor of HEAD, `rebase --no-verify --onto HEAD <merge-base of HEAD
+ * and refs/agentboard/migrating> refs/agentboard/migrating` (which moves
+ * HEAD to the result and never replays what the human already resolved;
+ * a conflict is the `sync-conflict` refusal of step 3, the worktree kept).
+ * Then the rebases of step 3 onto the current local and remote board refs
+ * run as in a first run (no-ops for what is already integrated), then
+ * steps 4 to 7; `action` is `moved`. Nothing a human resolved in a
+ * temporary worktree is ever discarded by a re-run. The host `.gitignore`
+ * entry (`ignoreBoardInHost(hostRoot)` when the parent of `dir` is the top
+ * level of a working tree, as `initBoard`) is written only after the
+ * compare-and-swap of step 4 succeeded (ruling D), so a refusal of steps
+ * 2 to 4 leaves the host's working tree as it was. Each git command line
+ * below is given as the move runs it, after the runner's `-c` prefix, so
+ * a shim on the PATH can match it:
  *
  * 2. `fetch --no-tags --no-write-fetch-head <dir>
  *    +<source tip>:refs/agentboard/migrating` run in `hostRoot` (`<dir>`
@@ -524,46 +601,92 @@ export interface IntoHostResult extends InitResult {
  *    removes nothing (see "leftovers" above); a re-run after the human
  *    finished the rebase adopts the worktree and completes the move with
  *    every event (the resolved `.gitignore` as the human left it). A
- *    rebase that fails for another reason is `BoardError(3, 'sync-failed')`
- *    with git's first error line, the temporary worktree removed.
+ *    rebase that fails for another reason (an untracked file in the
+ *    temporary worktree that the commits would overwrite) is
+ *    `BoardError(3, 'sync-failed')` with git's first error line, the
+ *    temporary worktree and `MIGRATING_REF` removed (it holds nothing a
+ *    human did), the old `.board` untouched. A fetch of the remote's ref
+ *    that fails after the `ls-remote` listed it is `BoardError(3,
+ *    'sync-failed')` naming `refs/agentboard/board` and the remote with
+ *    git's first error line, the temporary removed the same way.
  * 4. `update-ref refs/agentboard/board <HEAD of the worktree> <old>` in
- *    `hostRoot` (the compare-and-swap against the value seen in step 3;
- *    the empty old value creates the ref); a failure (something moved the
- *    ref in between) is `BoardError(3, 'sync-failed')` naming the ref, the
- *    temporary worktree removed and the old `.board` untouched. Then
- *    `update-ref -d refs/agentboard/migrating`.
- * 5. `verifyEventFiles(<dir>/events, <temporary worktree>/events)`: when
- *    anything is missing or differs, `BoardError(5, 'integrity')` naming
- *    every such file and the temporary worktree; the old `.board` is
- *    untouched and still standalone, the temporary worktree and
- *    `MIGRATING_REF` are removed (`refs/agentboard/board` keeps the value
- *    step 4 gave it: every commit of it is a correct board history).
- * 6. The old `.board` is renamed to
- *    `<git common dir>/agentboard/<standaloneKeptName(now)>` (same file
- *    system, one rename; a numeric suffix keeps two moves kept in one
- *    second apart), then `worktree move <temporary worktree> <dir>`, then
- *    `worktree lock --reason "agentboard board" <dir>`, then sparse
- *    checkout disabled as `addBoardWorktree` does. The old repository is
- *    never deleted and never modified (its cache file goes with it).
+ *    `hostRoot` (the compare-and-swap against `<old>`, the value read in
+ *    step 3 before any rebase; the empty old value creates the ref); a
+ *    failure (something moved the ref in between, for example a hand
+ *    fetch into it) is `BoardError(3, 'sync-failed')` naming the ref and
+ *    `agentboard init --into-host`; the old `.board` is untouched, the
+ *    host `.gitignore` unwritten, and the temporary worktree and
+ *    `MIGRATING_REF` stay, so the re-run adopts it and integrates the
+ *    ref's new value (it may hold a human's resolution). Then
+ *    `update-ref -d refs/agentboard/migrating`, then the host `.gitignore`
+ *    entry.
+ * 5. `carryOverEventFiles(<dir>/events, <temporary worktree>/events)`
+ *    (ruling A): every event file of the old `.board` that the new
+ *    worktree lacks (one written by a writer or a standalone `sync` after
+ *    step 1, or after the temporary was made) is copied in, hash-verified,
+ *    and committed by the `sync` of step 7, so no event present in
+ *    `.board/events` at any point of the move is left behind; when any
+ *    file is `mismatched` (its content does not hash to its name, or the
+ *    worktree's copy differs), `BoardError(5, 'integrity')` naming every
+ *    such file, the old `.board` untouched and still standalone, the
+ *    temporary worktree and `MIGRATING_REF` left as they are for the
+ *    re-run (which adopts or removes it by the leftover rules), and
+ *    `refs/agentboard/board` at the value step 4 gave it (a correct board
+ *    history).
+ * 6. Immediately before the rename, `.board` is checked to be still the
+ *    standalone repository of step 1 (`git rev-parse --absolute-git-dir`
+ *    in it resolves, as a realpath, to the git directory step 1 saw, and
+ *    no worktree of the host is registered at `dir`); otherwise
+ *    `BoardError(3, 'sync-failed')` saying `.board` changed meanwhile and
+ *    to run `agentboard init --into-host` again, with nothing renamed and
+ *    the temporary left for the re-run (ruling B). Then the old `.board`
+ *    is renamed to `<git common dir>/agentboard/<standaloneKeptName(now)>`
+ *    (same file system, one rename; a numeric suffix keeps two moves kept
+ *    in one second apart), then `worktree move <temporary worktree>
+ *    <dir>`, then `worktree lock --reason "agentboard board" <dir>`, then
+ *    sparse checkout disabled as `addBoardWorktree` does. Then
+ *    `carryOverEventFiles(<kept>/events, <dir>/events)` once more, for an
+ *    event file that landed in the old `.board` between step 5 and the
+ *    rename (the rename window): copied, hash-verified, committed by step
+ *    7; a `mismatched` file there is `BoardError(5, 'integrity')` naming
+ *    it and the kept repository, with the move done (the re-run resumes
+ *    and repeats this carry-over). The old repository is never deleted
+ *    and never modified (its cache file goes with it). The directory
+ *    `<git common dir>/agentboard/migrating` stays (empty) until the end
+ *    of step 7: it is the marker of a move whose `sync` has not completed.
  * 7. `syncBoard` on the board at `dir` (`openBoard`, closed afterwards),
- *    which publishes `refs/agentboard/board` on the host's remote and
- *    catches the cache up. When that `sync` throws a `BoardError`
- *    (`sync-failed` for an unreachable remote or a refused push,
- *    `sync-conflict`, `ambiguous-remote`), the move stays done (`.board`
- *    is the locked host-model worktree, the old repository is kept,
- *    `refs/agentboard/board` equals HEAD or lags it as `syncHostBoard`
- *    describes) and the error propagates unchanged, so `init` exits with
- *    the failure's code and reason; the next `agentboard sync` publishes
- *    the board.
+ *    which commits the carried-over files, publishes
+ *    `refs/agentboard/board` on the host's remote and catches the cache
+ *    up; then the `migrating` marker directory is removed. When that
+ *    `sync` throws a `BoardError` (`sync-failed` for an unreachable remote
+ *    or a refused push, `sync-conflict`, `ambiguous-remote`), the move
+ *    stays done (`.board` is the locked host-model worktree, the old
+ *    repository is kept, `refs/agentboard/board` equals HEAD or lags it as
+ *    `syncHostBoard` describes, the marker directory stays) and a
+ *    `MoveSyncFailure` propagates (ruling C): the sync's exit code and
+ *    reason, a message whose lines are the move's lines (`dir`, the kept
+ *    repository's path, the old remote's URL, `agentboard init
+ *    --into-host` for the other clones, the step 3 warning when there is
+ *    one) followed by the sync's message, and `keptAt` and `oldRemoteUrl`
+ *    as the result would carry them; so `init` exits with the failure's
+ *    code and reason, prints the kept path and the old remote, and the
+ *    `--json` error document carries `keptAt` and `oldRemoteUrl`. The next
+ *    `agentboard init --into-host` is `resumed` (it runs the `sync`
+ *    again), and `agentboard sync` publishes the board too.
  *
- * Resuming (design.md decision 9): under the lock, when `dir` is missing
- * and `adoptMigratingWorktree(hostRoot, dir)` moves a temporary worktree
- * into place, step 7 runs and the action is `resumed`, `keptAt` the newest
- * `standalone-*` directory under `<git common dir>/agentboard/` (null when
- * there is none), `oldRemoteUrl` read from it. When `dir` is missing and
- * nothing can be adopted, `BoardError(2, 'board-not-found')`. The
- * adoption of a temporary worktree whose rebase finished while `.board`
- * is still standalone is described under "leftovers" above.
+ * Resuming (design.md decision 9, ruling E): under the lock, when `dir`
+ * is missing and `adoptMigratingWorktree(hostRoot, dir)` moves a
+ * temporary worktree into place, or when `dir` is a host-model board and
+ * the `migrating` marker directory exists with no temporary worktree in
+ * it (a move killed between the `worktree move` and the end of step 7,
+ * or whose `sync` failed), the lock is restored when it is missing, the
+ * carry-over from the newest kept repository runs as in step 6, step 7
+ * runs, and the action is `resumed`, `keptAt` the newest `standalone-*`
+ * directory under `<git common dir>/agentboard/` (null when there is
+ * none), `oldRemoteUrl` read from it. When `dir` is missing and nothing
+ * can be adopted, `BoardError(2, 'board-not-found')`. The adoption of a
+ * temporary worktree whose rebase finished while `.board` is still
+ * standalone is described under "leftovers" above.
  *
  * Result for `moved`: `action` `moved`, `keptAt`, `oldRemoteUrl`, `sync`
  * as `IntoHostResult` says, and a message whose lines name `dir` and the
@@ -575,7 +698,11 @@ export interface IntoHostResult extends InitResult {
  * trailing newline.
  *
  * Running it again after success is `unchanged`: exit 0 and nothing
- * changes (no second kept repository, no ref or worktree added, no push).
+ * changes (no second kept repository, no ref or worktree added, no push),
+ * except that dead-pid temporary worktrees without rebase state under
+ * `<git common dir>/agentboard/migrating/` are removed and an empty
+ * `migrating` directory with them, as plain `init` does on a host-model
+ * board (ruling E; `initBoard`).
  *
  * @throws BoardError as listed above.
  */

@@ -344,14 +344,20 @@ and exit 2 when there is no board. On a host-model board it SHALL change
 nothing and exit 0 (repairing a broken link as `init` does). After the
 move it SHALL run `sync`, so the board is published on the host's remote;
 when that `sync` fails, the move stays done and `init` exits with the
-failure's code and reason. Its output SHALL name the kept old repository,
+failure's code and reason, and its output SHALL still name the kept
+repository and the old remote, with `keptAt` and `oldRemoteUrl` in the
+`--json` error document. Its output SHALL name the kept old repository,
 the old remote's URL as written in the board's configuration, and say that
 every other clone runs `agentboard init --into-host` too and that the old
 remote can be retired once they have. With `--json` it SHALL print the
-`init` document plus `action` (`moved`, `resumed` after an interrupted
-move, `unchanged` on a board already in the host, `repaired` for a broken
-link), `keptAt` (the kept repository's path, else null), `oldRemoteUrl`
-(else null) and `sync` (the result of the `sync` it ran, else null). It
+`init` document plus `action` (`moved`; `resumed` after an interrupted
+move, including one killed after the new worktree was in place but before
+its `sync` completed, which the re-run syncs; `unchanged` on a board
+already in the host; `repaired` for a broken link), `keptAt` (the kept
+repository's path, else null), `oldRemoteUrl` (else null) and `sync` (the
+result of the `sync` it ran, else null). `init` without flags on a
+host-model board SHALL remove the temporary worktrees of dead moves that
+hold no rebase state. It
 SHALL exit 1 with reason `no-host-repository` also when the host's git
 directory is not inside its working tree, exit 3 as `sync` does
 (`sync-in-progress`, `detached-head`, `sync-failed`, `sync-conflict`) and

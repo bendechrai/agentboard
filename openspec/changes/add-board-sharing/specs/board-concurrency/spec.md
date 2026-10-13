@@ -196,8 +196,19 @@ path and the steps (resolve, `git add`, `git rebase --continue` there, then
 progress, `init --into-host` SHALL exit 3 with reason `sync-in-progress`
 naming the path with the same steps and SHALL remove nothing; once the
 rebase is finished it SHALL adopt that worktree and complete the move with
-every event. A temporary worktree is named by the pid of the move that
-made it, and one left by a process that is still running is never touched.
+every event, including every commit that reached the standalone board or
+its remote since the worktree was made, integrated as a first run
+integrates its source tip, and SHALL never discard what the human
+resolved. Every event file present in the old `.board/events` at any
+point of the move (written by another writer or a standalone `sync`
+while the move ran, even between the verification and the moment the old
+repository is kept aside) SHALL end in the new worktree, carried over
+content-addressed and committed by the move's `sync`; only a file whose
+content does not match its name is an `integrity` refusal. The move SHALL
+refuse with exit 3 instead of keeping the old repository aside when
+`.board` is no longer the standalone repository it checked. A temporary
+worktree is named by the pid of the move that made it, and one left by a
+process that is still running is never touched.
 
 #### Scenario: Migration success
 - **WHEN** a standalone board with a remote, fully synced, holding 40 committed events, runs `agentboard init --into-host` in a host repository with no board ref, and `sync` then runs
@@ -224,8 +235,12 @@ made it, and one left by a process that is still running is never touched.
 - **THEN** it exits 3 with reason `sync-conflict` naming `.gitignore`, the temporary worktree under `<host git common dir>/agentboard/migrating/` and `git rebase --continue`, the old `.board` is unchanged and still standalone, the host has no `refs/agentboard/board`, and running it again before the rebase is finished exits 3 with reason `sync-in-progress` naming the same path and removes nothing
 
 #### Scenario: Migration completes after the conflict is resolved
-- **WHEN** a human resolves `.gitignore` in that temporary worktree, runs `git add` and `git rebase --continue` until the rebase is finished, and runs `agentboard init --into-host` again
-- **THEN** the move completes: `.board` is the host-model board holding every event of both histories and the resolved `.gitignore`, exactly one old repository is kept, and no temporary ref or worktree remains
+- **WHEN** a human resolves `.gitignore` in that temporary worktree, runs `git add` and `git rebase --continue` until the rebase is finished, a third clone meanwhile syncs an event to the old standalone remote, and `agentboard init --into-host` runs again
+- **THEN** the move completes: `.board` is the host-model board holding every event of both histories, the third clone's event and the resolved `.gitignore`, exactly one old repository is kept, and no temporary ref or worktree remains
+
+#### Scenario: Event written during the move is carried over
+- **WHEN** another writer adds an event file to the standalone `.board/events` after `agentboard init --into-host` has verified the events and before it keeps the old repository aside
+- **THEN** the move exits 0, the event file is in the new `.board/events` and in `refs/agentboard/board`, and the kept repository holds it too
 
 #### Scenario: Interrupted migration resumes
 - **WHEN** `agentboard init --into-host` is killed after the old `.board` was moved aside but before the new worktree was moved into place, and it runs again

@@ -11,22 +11,23 @@
  * disk; nothing touches the network.
  */
 
-import { existsSync, readdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { expect } from 'vitest';
 
 import { openBoard } from '../../store/board.js';
 import { P, T1, ev, putEvent } from '../../store/__tests__/helpers.js';
-import { AGENTBOARD_GIT_SUBDIR } from '../host-init.js';
+import { AGENTBOARD_GIT_SUBDIR, INIT_LOCK_FILE } from '../host-init.js';
 import { MIGRATING_DIR, MIGRATING_REF, STANDALONE_KEPT_PREFIX } from '../into-host.js';
 import { detectBoardModel } from '../model.js';
 import { syncBoard } from '../sync.js';
-import { git, tempDir } from './helpers.js';
+import { git, gitRepo, tempDir } from './helpers.js';
 import {
   BOARD_REF,
   cloneHost,
   hostRepo,
+  realGit,
   refCommit,
   refs,
   snapshotDir,
@@ -264,4 +265,45 @@ export function commitIgnoreLine(dir: string, line: string): string {
   git(dir, 'add', '--', '.gitignore');
   git(dir, 'commit', '-q', '--no-verify', '-m', `ignore ${line}`);
   return revParse(dir);
+}
+
+/** The init lock file of the host at `root`. */
+export function lockFile(root: string): string {
+  return join(agentboardDir(root), INIT_LOCK_FILE);
+}
+
+/**
+ * `env` with a `git` shim first on its PATH whose body is the shell text
+ * `body`, run with `GIT` set to the real git's path and the invocation's
+ * arguments in `$@`, before `exec "$GIT" "$@"`. The body decides what to
+ * do with a `case " $* " in` of its own, so one shim can act at several
+ * commands (record a time, sleep, move a repository away, write a file).
+ */
+export function withShellGitShim(env: Env, body: string): Env {
+  const dir = join(tempDir(), 'shell-shim-bin');
+  mkdirSync(dir);
+  writeFileSync(
+    join(dir, 'git'),
+    ['#!/bin/sh', `GIT='${realGit()}'`, body, 'exec "$GIT" "$@"', ''].join('\n'),
+  );
+  chmodSync(join(dir, 'git'), 0o755);
+  return { ...env, PATH: `${dir}:${env.PATH ?? process.env.PATH ?? ''}` };
+}
+
+/**
+ * A standalone board as `syncedStandalone` makes one, in a host made with
+ * `gitRepo` (no `.gitignore` of its own), with the `.board/` line that
+ * `standaloneBoard` writes removed again: a host whose `.gitignore` entry
+ * the move has to add. Returns the host root, the board directory and the
+ * tip of `main`.
+ */
+export function standaloneInHostWithoutIgnore(
+  env: Env,
+  events: number,
+  remote?: string,
+): { root: string; dir: string; tip: string } {
+  const root = gitRepo(join(tempDir(), 'noignore'));
+  const { dir, tip } = syncedStandalone(root, env, events, remote);
+  rmSync(join(root, '.gitignore'), { force: true });
+  return { root, dir, tip };
 }

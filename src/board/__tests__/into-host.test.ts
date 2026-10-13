@@ -14,20 +14,34 @@
  * and `src/__tests__/into-host-race.test.ts`.
  */
 
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import fs, {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { basename, join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
 import { canonicalDump, expectCheckClean } from '../../__tests__/harness/host-sync.js';
+import { canonicalEncode, sha256Hex } from '../../events/canonical.js';
 import { openBoard } from '../../store/board.js';
-import { P, T1, T2, ev, putEvent } from '../../store/__tests__/helpers.js';
+import { P, T1, T2, T3, ev, putEvent } from '../../store/__tests__/helpers.js';
 import { AGENTBOARD_GIT_SUBDIR, BOARD_GITIGNORE_LINES, WORKTREE_LOCK_REASON } from '../host-init.js';
+import { initBoard } from '../init.js';
 import {
   MIGRATING_DIR,
   MIGRATING_REF,
+  MoveSyncFailure,
   STANDALONE_KEPT_PREFIX,
   adoptMigratingWorktree,
+  carryOverEventFiles,
   findMigratingWorktrees,
   migratingWorktreePath,
   moveBoardIntoHost,
@@ -50,13 +64,16 @@ import {
   expectMoved,
   expectUntouched,
   keptRepositories,
+  lockFile,
   migratingEntries,
   project,
   refEvents,
+  standaloneInHostWithoutIgnore,
   standaloneProject,
   syncStandalone,
   syncedStandalone,
   untouched,
+  withShellGitShim,
   writeEvents,
 } from './into-host-helpers.js';
 import {
@@ -183,6 +200,50 @@ describe('verifyEventFiles', () => {
   });
 });
 
+describe('carryOverEventFiles (step 5 and the rename window, ruling A)', () => {
+  /** A valid event file: its canonical bytes under their hash. */
+  function validEvent(text: string): { name: string; bytes: Buffer } {
+    const bytes = Buffer.from(canonicalEncode(ev(P.comment(T1, text), 'w', 30_000)));
+    return { name: `${sha256Hex(bytes)}.json`, bytes };
+  }
+  function dirWith(files: Record<string, Buffer | string>): string {
+    const dir = join(tempDir(), 'events');
+    mkdirSync(dir);
+    for (const [name, content] of Object.entries(files)) {
+      writeFileSync(join(dir, name), content);
+    }
+    return dir;
+  }
+
+  it('copies the missing files whose content hashes to their name, leaves present ones, reports nothing else', () => {
+    const a = validEvent('a');
+    const b = validEvent('b');
+    const from = dirWith({ [a.name]: a.bytes, [b.name]: b.bytes, '.gitkeep': '', '.tmp-x': 'x' });
+    const to = dirWith({ [a.name]: a.bytes });
+    mkdirSync(join(from, 'sub'));
+
+    expect(carryOverEventFiles(from, to)).toEqual({ copied: [b.name], mismatched: [] });
+
+    expect(readFileSync(join(to, b.name))).toEqual(b.bytes);
+    expect(readFileSync(join(to, a.name))).toEqual(a.bytes);
+    expect(existsSync(join(to, '.tmp-x'))).toBe(false);
+    expect(carryOverEventFiles(from, to)).toEqual({ copied: [], mismatched: [] });
+  });
+
+  it('never copies a file whose content does not hash to its name, never overwrites a differing copy, and reports both', () => {
+    const a = validEvent('a');
+    const bad = `${'f'.repeat(64)}.json`;
+    const from = dirWith({ [a.name]: a.bytes, [bad]: '{"not":"hashed"}' });
+    const to = dirWith({ [a.name]: 'other bytes' });
+
+    expect(carryOverEventFiles(from, to)).toEqual({ copied: [], mismatched: [a.name, bad].sort() });
+
+    expect(existsSync(join(to, bad))).toBe(false);
+    expect(readFileSync(join(to, a.name), 'utf8')).toBe('other bytes');
+    expect(carryOverEventFiles(join(tempDir(), 'nowhere'), to)).toEqual({ copied: [], mismatched: [] });
+  });
+});
+
 describe('step 1 refusals change nothing', () => {
   it('git-too-old: exit 1 with 2.32 in the message, on a standalone board, a host-model board and outside a git repository', () => {
     const env = syncEnv();
@@ -269,6 +330,56 @@ describe('step 1 refusals change nothing', () => {
     expect(err.message).toMatch(/git repository/);
     expect(snapshotDir(dir)).toEqual(board);
     expect(git(work, 'for-each-ref', '--format=%(refname)', 'refs/agentboard/')).toBe('');
+  });
+
+  it('in a linked worktree of a bare repository: exit 1 no-host-repository, the board beside the bare repository untouched', () => {
+    const env = syncEnv();
+    const parent = tempDir();
+    const source = gitRepo(join(tempDir(), 'source'));
+    const bare = join(parent, 'b.git');
+    git(parent, 'clone', '-q', '--bare', source, bare);
+    const linked = join(parent, 'bw');
+    git(bare, 'worktree', 'add', '-q', linked, 'main');
+    // Discovery puts the board beside the bare repository.
+    const { dir } = syncedStandalone(parent, env, 1);
+    const board = snapshotDir(dir);
+    const before = [git(bare, 'for-each-ref'), git(bare, 'worktree', 'list', '--porcelain')];
+
+    const err = expectBoardError(() => move(linked, env), 1, 'no-host-repository');
+
+    expect(err.message).toMatch(/git repository/);
+    expect(snapshotDir(dir)).toEqual(board);
+    expect([git(bare, 'for-each-ref'), git(bare, 'worktree', 'list', '--porcelain')]).toEqual(before);
+    expect(existsSync(join(bare, AGENTBOARD_GIT_SUBDIR))).toBe(false);
+  });
+
+  it('inside a submodule: exit 1 no-host-repository, nothing written in the superproject', () => {
+    const env = syncEnv();
+    const lib = gitRepo(join(tempDir(), 'lib'));
+    const superproject = bareHost('super');
+    git(superproject, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'lib');
+    git(superproject, 'commit', '-q', '-m', 'add lib');
+    const inside = join(superproject, 'lib');
+    const modules = join(superproject, '.git', 'modules');
+    // Discovery puts the board beside the submodule's git directory.
+    const { dir } = syncedStandalone(modules, env, 1);
+    const board = snapshotDir(dir);
+    const state = (): unknown[] => [
+      git(superproject, 'for-each-ref'),
+      git(superproject, 'worktree', 'list', '--porcelain'),
+      git(superproject, 'status', '--porcelain'),
+      git(inside, 'for-each-ref'),
+      git(inside, 'worktree', 'list', '--porcelain'),
+    ];
+    const before = state();
+
+    const err = expectBoardError(() => move(inside, env), 1, 'no-host-repository');
+
+    expect(err.message).toMatch(/git repository/);
+    expect(snapshotDir(dir)).toEqual(board);
+    expect(state()).toEqual(before);
+    expect(existsSync(join(superproject, '.git', AGENTBOARD_GIT_SUBDIR))).toBe(false);
+    expect(existsSync(join(modules, 'lib', AGENTBOARD_GIT_SUBDIR))).toBe(false);
   });
 
   it('no board: exit 2 board-not-found naming the directory, nothing written', () => {
@@ -655,6 +766,8 @@ describe('integrating board refs that already exist', () => {
    * `.gitignore`.
    */
   function conflictingClones(env: Env): {
+    remote: string;
+    boardRemote: string;
     bRoot: string;
     bDir: string;
     fromA: string;
@@ -670,10 +783,29 @@ describe('integrating board refs that already exist', () => {
     const bRoot = cloneProject(remote, 'b');
     const bDir = standaloneBoard(bRoot);
     git(bDir, 'symbolic-ref', 'HEAD', 'refs/heads/main');
+    const boardRemote = bareRemote();
+    git(bDir, 'remote', 'add', 'origin', boardRemote);
     const fromB = writeEvents(bDir, 1);
     syncStandalone(bDir, env);
     commitIgnoreLine(bDir, 'bar');
-    return { bRoot, bDir, fromA, fromB, before: untouched(bRoot, bDir) };
+    syncStandalone(bDir, env);
+    return { remote, boardRemote, bRoot, bDir, fromA, fromB, before: untouched(bRoot, bDir) };
+  }
+
+  /** Resolves every stop of the rebase in `temporary` by keeping both lines, until it is finished. */
+  function resolveIgnoreConflicts(temporary: string): string {
+    const resolved = [...BOARD_GITIGNORE_LINES, 'foo', 'bar'].map((line) => `${line}\n`).join('');
+    for (let step = 0; rebaseInProgress(temporary); step += 1) {
+      expect(step).toBeLessThan(5);
+      writeFileSync(join(temporary, '.gitignore'), resolved);
+      git(temporary, 'add', '--', '.gitignore');
+      try {
+        git(temporary, '-c', 'core.editor=true', 'rebase', '--continue');
+      } catch {
+        // The next commit conflicts too; the loop resolves it.
+      }
+    }
+    return resolved;
   }
 
   /** The registered worktrees of `root` under `agentboard/migrating/`. */
@@ -737,20 +869,10 @@ describe('integrating board refs that already exist', () => {
     const files = eventFiles(bDir);
     expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
     const [temporary] = registeredMigrating(bRoot);
-    const resolved = [...BOARD_GITIGNORE_LINES, 'foo', 'bar'].map((line) => `${line}\n`).join('');
     // The human keeps both lines and continues until the rebase is finished;
     // both of B's commits stop on .gitignore, so the continue that applies
     // the first exits non-zero on the second, and the loop resolves again.
-    for (let step = 0; rebaseInProgress(String(temporary)); step += 1) {
-      expect(step).toBeLessThan(5);
-      writeFileSync(join(String(temporary), '.gitignore'), resolved);
-      git(String(temporary), 'add', '--', '.gitignore');
-      try {
-        git(String(temporary), '-c', 'core.editor=true', 'rebase', '--continue');
-      } catch {
-        // The next commit conflicts too; the loop resolves it.
-      }
-    }
+    const resolved = resolveIgnoreConflicts(String(temporary));
     expect(revParse(String(temporary))).not.toBe(refCommit(bRoot, MIGRATING_REF));
 
     const result = move(bRoot, env);
@@ -765,58 +887,424 @@ describe('integrating board refs that already exist', () => {
     expectCheckClean(bRoot, env);
   });
 
-  it('an unreachable host remote: the move completes, exits 3 sync-failed from the sync, and the next sync publishes', () => {
+  it('scenario: the conflict resolved while a third clone pushed to the old remote: the re-run adopts, integrates the new event and keeps the resolution (ruling A)', () => {
     const env = syncEnv();
-    const { root, remote, dir, tip } = standaloneProject(env, 2);
+    const { remote, boardRemote, bRoot, bDir, fromA, fromB } = conflictingClones(env);
+    const tip = revParse(bDir);
+    const files = eventFiles(bDir);
+    expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+    const [temporary] = registeredMigrating(bRoot);
+    const resolved = resolveIgnoreConflicts(String(temporary));
+    const resolvedHead = revParse(String(temporary));
+    // Meanwhile a third clone, which has not moved, syncs an event to the old board remote.
+    const c = cloneWithStandalone(remote, boardRemote, 'c');
+    const [fromC] = writeEvents(c.dir, 1, 'c', 500);
+    syncStandalone(c.dir, env);
+    // And this clone's own standalone sync pulls it in.
+    syncStandalone(bDir, env);
+    expect(eventFiles(bDir)).toContain(`${String(fromC)}.json`);
+
+    const result = move(bRoot, env);
+
+    expect(result).toMatchObject({ action: 'moved', model: 'host', joined: true, events: 3 });
+    expectMoved(bRoot, env);
+    const all = [`${fromA}.json`, ...fromB.map((h) => `${h}.json`), `${String(fromC)}.json`].sort();
+    expect(eventFiles(bDir)).toEqual(all);
+    expect(refEvents(bRoot)).toEqual(all);
+    expect(refEvents(remote)).toEqual(all);
+    // The human's resolution is what the result descends from, not a replay of it.
+    expect(isAncestor(bRoot, resolvedHead, BOARD_REF)).toBe(true);
+    expect(readFileSync(join(bDir, '.gitignore'), 'utf8')).toBe(resolved);
+    expect(existsSync(String(temporary))).toBe(false);
+    // The kept repository is the standalone board as it was when the move ran: tip and its events.
+    const [kept] = keptRepositories(bRoot);
+    expect(revParse(String(kept))).not.toBe(tip);
+    expect(eventFiles(String(kept))).toEqual([...files, `${String(fromC)}.json`].sort());
+    expectCheckClean(bRoot, env);
+  });
+
+  it('an unreachable host remote: the move completes, exits 3 sync-failed carrying the kept path and the old remote, and the next sync publishes (ruling C)', () => {
+    const env = syncEnv();
+    const { root, remote, dir, boardRemote, tip } = standaloneProject(env, 2);
     const files = eventFiles(dir);
     git(root, 'remote', 'set-url', 'origin', join(tempDir(), 'gone.git'));
 
     const err = expectBoardError(() => move(root, env), 3, 'sync-failed');
 
     expect(err.message).toContain('origin');
+    expect(err).toBeInstanceOf(MoveSyncFailure);
+    const failure = err as MoveSyncFailure;
+    const [kept] = keptRepositories(root);
+    expect(failure.keptAt).toBe(kept);
+    expect(failure.oldRemoteUrl).toBe(boardRemote);
+    expect(err.message).toContain(String(kept));
+    expect(err.message).toContain(boardRemote);
+    expect(err.message).toContain(dir);
+    expect(err.message).toMatch(/retire/);
     expectMoved(root, env);
     expect(isAncestor(root, tip, BOARD_REF)).toBe(true);
     expect(eventFiles(dir)).toEqual(files);
 
     git(root, 'remote', 'set-url', 'origin', remote);
-    syncHost(dir, env);
+    // The re-run resumes (the move's sync had not completed) and publishes.
+    const resumed = move(root, env);
+    expect(resumed).toMatchObject({ action: 'resumed', keptAt: kept, oldRemoteUrl: boardRemote });
+    expect(resumed.sync).toMatchObject({ model: 'host', pushed: true });
     expect(git(remote, 'rev-parse', BOARD_REF).trim()).toBe(refCommit(root));
     expect(move(root, env).action).toBe('unchanged');
+    expectMoved(root, env);
+    expect(eventFiles(dir)).toEqual(files);
+    expect(isAncestor(root, tip, BOARD_REF)).toBe(true);
     expectCheckClean(root, env);
   });
 });
 
-describe('step 5: byte-for-byte verification', () => {
-  it('a temporary worktree whose event file differs from the old board: exit 5 integrity, nothing moved, the temporary ref and worktree removed, a clean re-run succeeds', () => {
+describe('step 5 and the rename window: events written during the move are carried over (ruling A)', () => {
+  /** A valid event file written into `<dir>/events` by a shim at the moment `trigger` runs. */
+  function eventWriter(dir: string, text: string): { name: string; bytes: Buffer; command: string } {
+    const bytes = Buffer.from(canonicalEncode(ev(P.comment(T1, text), 'writer', 40_000)));
+    const name = `${sha256Hex(bytes)}.json`;
+    const source = join(tempDir(), name);
+    writeFileSync(source, bytes);
+    return { name, bytes, command: `cp '${source}' '${join(dir, 'events', name)}'` };
+  }
+
+  it('an event written into the old .board after the checks is carried over, committed by the sync and published', () => {
     const env = syncEnv();
-    const root = bareHost();
-    const { dir, tip } = syncedStandalone(root, env, 2);
+    const { root, remote, dir, tip } = standaloneProject(env, 2);
     const files = eventFiles(dir);
-    const [victim] = files;
-    // Right after the temporary worktree is checked out, one of its event
-    // files is overwritten, as a bug in steps 2 to 4 would.
+    const late = eventWriter(dir, 'after the checks');
+    // Lands after the compare-and-swap, before the carry-over of step 5.
+    const writing = withGitShimBefore(env, ['update-ref', '-d', MIGRATING_REF], late.command);
+
+    const result = move(root, writing);
+
+    expect(result).toMatchObject({ action: 'moved', events: 3 });
+    expectMoved(root, env);
+    const all = [...files, late.name].sort();
+    expect(eventFiles(dir)).toEqual(all);
+    expect(refEvents(root)).toEqual(all);
+    expect(refEvents(remote)).toEqual(all);
+    expect(readFileSync(join(dir, 'events', late.name))).toEqual(late.bytes);
+    expectKept(String(result.keptAt), tip, all);
+    expectCheckClean(root, env);
+  });
+
+  it('a file whose content does not match its name: exit 5 integrity naming it, nothing moved, the temporary kept; a clean re-run moves', () => {
+    const env = syncEnv();
+    const { root, dir, tip } = standaloneProject(env, 2);
+    const files = eventFiles(dir);
+    const bad = `${'e'.repeat(64)}.json`;
     const corrupting = withGitShimBefore(
       env,
-      ['worktree', 'add', '--detach'],
-      `"$GIT" "$@"; for f in '${join(agentboardDir(root), MIGRATING_DIR)}'/*/events/${String(victim)}; do echo corrupt > "$f"; done; exit 0`,
+      ['update-ref', '-d', MIGRATING_REF],
+      `echo '{"not":"hashed"}' > '${join(dir, 'events', bad)}'`,
     );
-    const before = untouched(root, dir);
 
     const err = expectBoardError(() => move(root, corrupting), 5, 'integrity');
 
-    expect(err.message).toContain(String(victim));
-    expect(snapshotDir(dir)).toEqual(before.board);
+    expect(err.message).toContain(bad);
     expect(detectBoardModel(dir, { env }).model).toBe('standalone');
+    expect(eventFiles(dir)).toEqual([...files, bad].sort());
     expect(keptRepositories(root)).toEqual([]);
-    expect(refCommit(root, MIGRATING_REF)).toBeNull();
-    expect(migratingEntries(root)).toEqual([]);
-    expect(worktrees(root)).not.toContain(`/${MIGRATING_DIR}/`);
+    expect(migratingEntries(root)).toHaveLength(1);
+    expect(worktrees(root)).toContain(`/${MIGRATING_DIR}/`);
 
+    rmSync(join(dir, 'events', bad));
     const result = move(root, env);
     expect(result.action).toBe('moved');
     expectMoved(root, env);
     expect(eventFiles(dir)).toEqual(files);
     expectKept(String(result.keptAt), tip, files);
+    expectCheckClean(root, env);
+  });
+
+  it('scenario: Event written during the move is carried over: one landing between the carry-over and the rename ends in the new worktree and the ref', () => {
+    const env = syncEnv();
+    const { root, remote, dir, tip } = standaloneProject(env, 2);
+    const files = eventFiles(dir);
+    const bytes = Buffer.from(canonicalEncode(ev(P.comment(T1, 'in the rename window'), 'writer', 41_000)));
+    const name = `${sha256Hex(bytes)}.json`;
+    // The rename of .board is the first thing that happens after the carry-over of step 5:
+    // a writer lands an event just before it.
+    const realRename = fs.renameSync;
+    let landed = 0;
+    fs.renameSync = ((from: fs.PathLike, to: fs.PathLike): void => {
+      if (String(from) === dir && landed === 0) {
+        landed += 1;
+        writeFileSync(join(dir, 'events', name), bytes);
+      }
+      realRename(from, to);
+    }) as typeof fs.renameSync;
+    syncBuiltinESMExports();
+    let result: IntoHostResult;
+    try {
+      result = move(root, env);
+    } finally {
+      fs.renameSync = realRename;
+      syncBuiltinESMExports();
+    }
+
+    expect(landed).toBe(1);
+    expect(result).toMatchObject({ action: 'moved', events: 3 });
+    expectMoved(root, env);
+    const all = [...files, name].sort();
+    expect(eventFiles(dir)).toEqual(all);
+    expect(refEvents(root)).toEqual(all);
+    expect(refEvents(remote)).toEqual(all);
+    expectKept(String(result.keptAt), tip, all);
+    expectCheckClean(root, env);
+  });
+});
+
+describe('refusals of steps 3 to 6 (ruling B, D and F)', () => {
+  /** A host holding a local refs/agentboard/board with one event, from another repository. */
+  function hostWithLocalRef(root: string, env: Env): { commit: string; hash: string; other: ReturnType<typeof hostBoard> } {
+    const other = hostBoard(env);
+    const hash = commitHostEvent(other.dir, ev(P.create(T2, 'From the host ref'), 'x', 2000), env);
+    git(root, 'fetch', '-q', other.root, `${BOARD_REF}:${BOARD_REF}`);
+    return { commit: String(refCommit(root)), hash, other };
+  }
+
+  it('the compare-and-swap lost in step 4: exit 3 sync-failed, .board and the host .gitignore untouched, the temporary kept; the re-run adopts it with the new events (one run)', () => {
+    const env = syncEnv();
+    const boardRemote = bareRemote();
+    const { root, dir, tip } = standaloneInHostWithoutIgnore(env, 2, boardRemote);
+    const files = eventFiles(dir);
+    const other = hostBoard(env);
+    const fromOther = commitHostEvent(other.dir, ev(P.create(T2, 'From the host ref'), 'x', 2000), env);
+    git(root, 'fetch', '-q', other.root, `${BOARD_REF}:refs/test/other`);
+    const otherCommit = git(root, 'rev-parse', 'refs/test/other').trim();
+    const before = untouched(root, dir);
+    // A hand fetch creates the ref between the read of its (empty) old value and the swap.
+    const racing = withGitShimBefore(
+      env,
+      ['update-ref', BOARD_REF],
+      `"$GIT" -C '${root}' update-ref ${BOARD_REF} ${otherCommit}`,
+    );
+
+    const err = expectBoardError(() => move(root, racing), 3, 'sync-failed');
+
+    expect(err.message).toContain(BOARD_REF);
+    expect(err.message).toContain('agentboard init --into-host');
+    expect(snapshotDir(dir)).toEqual(before.board);
+    expect(detectBoardModel(dir, { env }).model).toBe('standalone');
+    expect(existsSync(join(root, '.gitignore'))).toBe(false);
+    expect(refCommit(root)).toBe(otherCommit);
+    expect(keptRepositories(root)).toEqual([]);
+    expect(migratingEntries(root)).toHaveLength(1);
+    expect(worktrees(root)).toContain(`/${MIGRATING_DIR}/`);
+
+    // One more standalone event, synced to the old remote, then the re-run.
+    const [late] = writeEvents(dir, 1, 'late', 700);
+    syncStandalone(dir, env);
+    const newTip = revParse(dir);
+    const result = move(root, env);
+    expect(result).toMatchObject({ action: 'moved', joined: false, events: 4 });
+    expectMoved(root, env);
+    const all = [...files, `${fromOther}.json`, `${String(late)}.json`].sort();
+    expect(eventFiles(dir)).toEqual(all);
+    expect(refEvents(root)).toEqual(all);
+    expect(isAncestor(root, otherCommit, BOARD_REF)).toBe(true);
+    expect(readFileSync(join(root, '.gitignore'), 'utf8')).toBe('.board/\n');
+    expect(result.hostGitignore).toBe(join(root, '.gitignore'));
+    expectKept(String(result.keptAt), newTip, [...files, `${String(late)}.json`]);
+    expect(tip).not.toBe(newTip);
+    expectCheckClean(root, env);
+  });
+
+  it('the old value of the compare-and-swap is read before the rebases: a ref moved during the rebase loses the swap', () => {
+    const env = syncEnv();
+    const { root, dir } = standaloneProject(env, 2);
+    const { commit: c1, other } = hostWithLocalRef(root, env);
+    commitHostEvent(other.dir, ev(P.comment(T2, 'second'), 'x', 2100), env);
+    git(root, 'fetch', '-q', other.root, `${BOARD_REF}:refs/test/c2`);
+    const c2 = git(root, 'rev-parse', 'refs/test/c2').trim();
+    const before = untouched(root, dir);
+    // The ref moves from c1 to c2 while the rebase onto it runs.
+    const racing = withGitShimBefore(
+      env,
+      ['rebase', '--no-verify', BOARD_REF],
+      `"$GIT" -C '${root}' update-ref ${BOARD_REF} ${c2} ${c1}`,
+    );
+
+    expectBoardError(() => move(root, racing), 3, 'sync-failed');
+
+    expect(refCommit(root)).toBe(c2);
+    expect(snapshotDir(dir)).toEqual(before.board);
+    expect(keptRepositories(root)).toEqual([]);
+
+    const result = move(root, env);
+    expect(result.action).toBe('moved');
+    expectMoved(root, env);
+    expect(isAncestor(root, c2, BOARD_REF)).toBe(true);
+    expect(eventFiles(dir)).toHaveLength(4);
+    expectCheckClean(root, env);
+  });
+
+  it('a rebase that fails without a conflict: exit 3 sync-failed quoting git, .board untouched, the temporary removed; the re-run moves', () => {
+    const env = syncEnv();
+    const { root, dir, tip } = standaloneProject(env, 2);
+    const files = eventFiles(dir);
+    const { commit, hash } = hostWithLocalRef(root, env);
+    const before = untouched(root, dir);
+    // An untracked file in the temporary worktree that the rebase would overwrite.
+    const blocking = withGitShimBefore(
+      env,
+      ['rebase', '--no-verify', BOARD_REF],
+      `for d in '${join(agentboardDir(root), MIGRATING_DIR)}'/*/events; do echo other > "$d/${hash}.json"; done`,
+    );
+
+    const err = expectBoardError(() => move(root, blocking), 3, 'sync-failed');
+
+    expect(err.message).toMatch(/untracked|overwritten/);
+    expect(snapshotDir(dir)).toEqual(before.board);
+    expect(detectBoardModel(dir, { env }).model).toBe('standalone');
+    expect(refCommit(root)).toBe(commit);
+    expect(refCommit(root, MIGRATING_REF)).toBeNull();
+    expect(migratingEntries(root)).toEqual([]);
+    expect(worktrees(root)).not.toContain(`/${MIGRATING_DIR}/`);
+    expect(keptRepositories(root)).toEqual([]);
+
+    const result = move(root, env);
+    expect(result.action).toBe('moved');
+    expectMoved(root, env);
+    expect(eventFiles(dir)).toEqual([...files, `${hash}.json`].sort());
+    expectKept(String(result.keptAt), tip, files);
+    expectCheckClean(root, env);
+  });
+
+  it('a fetch of the host remote ref that fails after ls-remote listed it: exit 3 sync-failed naming the remote, .board untouched, the temporary removed; the re-run joins', () => {
+    const env = syncEnv();
+    const { root: aRoot, remote } = project('a');
+    const a = hostBoard(env, aRoot);
+    const fromA = commitHostEvent(a.dir, ev(P.create(T2, 'From A'), 'a', 2000), env);
+    pushBoardRef(a.root);
+    const bRoot = cloneProject(remote, 'b');
+    const { dir, tip } = syncedStandalone(bRoot, env, 2);
+    const files = eventFiles(dir);
+    const before = untouched(bRoot, dir);
+    const away = `${remote}.away`;
+    const breaking = withGitShimBefore(
+      env,
+      ['fetch', '--no-tags', 'origin', BOARD_REF],
+      `mv '${remote}' '${away}'`,
+    );
+
+    const err = expectBoardError(() => move(bRoot, breaking), 3, 'sync-failed');
+
+    expect(err.message).toContain('origin');
+    expect(err.message).toContain(BOARD_REF);
+    expect(snapshotDir(dir)).toEqual(before.board);
+    expect(detectBoardModel(dir, { env }).model).toBe('standalone');
+    expect(refCommit(bRoot)).toBeNull();
+    expect(migratingEntries(bRoot)).toEqual([]);
+    expect(keptRepositories(bRoot)).toEqual([]);
+
+    fs.renameSync(away, remote);
+    const result = move(bRoot, env);
+    expect(result).toMatchObject({ action: 'moved', joined: true });
+    expectMoved(bRoot, env);
+    expect(eventFiles(dir)).toEqual([...files, `${fromA}.json`].sort());
+    expectKept(String(result.keptAt), tip, files);
+    expectCheckClean(bRoot, env);
+  });
+
+  it('.board replaced by another repository before the rename: exit 3 sync-failed, nothing kept aside, the replacement untouched (ruling B)', () => {
+    const env = syncEnv();
+    const { root, dir, tip } = standaloneProject(env, 2);
+    const aside = `${dir}-aside`;
+    // Between the compare-and-swap and the rename, .board becomes a clone of itself: another git directory.
+    const swapping = withGitShimBefore(
+      env,
+      ['update-ref', '-d', MIGRATING_REF],
+      `mv '${dir}' '${aside}' && "$GIT" clone -q '${aside}' '${dir}'`,
+    );
+
+    const err = expectBoardError(() => move(root, swapping), 3, 'sync-failed');
+
+    expect(err.message).toContain(dir);
+    expect(err.message).toContain('agentboard init --into-host');
+    expect(keptRepositories(root)).toEqual([]);
+    expect(detectBoardModel(dir, { env }).model).toBe('standalone');
+    expect(revParse(dir)).toBe(tip);
+    expect(git(dir, 'remote', 'get-url', 'origin').trim()).toBe(aside);
+    expect(worktreeEntry(root, dir)).toBeNull();
+    expect(migratingEntries(root)).toHaveLength(1);
+  });
+
+  it('the init lock mtime is refreshed before each network step, so a stalled move is not stale at 60 s (ruling B)', () => {
+    const env = syncEnv();
+    const { root } = standaloneProject(env, 1);
+    const lock = lockFile(root);
+    const log = join(tempDir(), 'lock-times');
+    mkdirSync(log);
+    const stalling = withShellGitShim(
+      env,
+      [
+        'case " $* " in',
+        `  *":${MIGRATING_REF}"*) date -r '${lock}' +%s > '${log}/start'; sleep 2 ;;`,
+        `  *" ls-remote "*) [ -e '${log}/net' ] || date -r '${lock}' +%s > '${log}/net' ;;`,
+        `  *" worktree move "*) sleep 2 ;;`,
+        `  *" push --porcelain "*) date -r '${lock}' +%s > '${log}/push' ;;`,
+        'esac',
+      ].join('\n'),
+    );
+
+    expect(move(root, stalling).action).toBe('moved');
+
+    const at = (name: string): number => Number(readFileSync(join(log, name), 'utf8').trim());
+    expect(at('net') - at('start')).toBeGreaterThanOrEqual(2);
+    expect(at('push') - at('start')).toBeGreaterThanOrEqual(4);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it('the final push losing the create race on the remote (reference already exists) is retried once and succeeds', () => {
+    const env = syncEnv();
+    const { root, remote, dir } = standaloneProject(env, 2);
+    const files = eventFiles(dir);
+    // The remote's update hook creates the ref with the pushed commit before
+    // receive-pack's own update, once: the push sees the ref it was told
+    // did not exist, exactly as a push received at the same time leaves it.
+    const hooks = join(remote, 'hooks');
+    mkdirSync(hooks, { recursive: true });
+    writeFileSync(
+      join(hooks, 'update'),
+      [
+        '#!/bin/sh',
+        `if [ "$1" = ${BOARD_REF} ] && [ ! -e "$GIT_DIR/hooked" ]; then`,
+        '  : > "$GIT_DIR/hooked"',
+        '  git update-ref "$1" "$3"',
+        'fi',
+        'exit 0',
+        '',
+      ].join('\n'),
+    );
+    chmodSync(join(hooks, 'update'), 0o755);
+    const log = join(tempDir(), 'pushes.log');
+    const recording = withShellGitShim(
+      env,
+      [
+        'case " $* " in',
+        '  *" push --porcelain "*)',
+        `    out=$(mktemp); err=$(mktemp); "$GIT" "$@" > "$out" 2> "$err"; status=$?`,
+        `    { echo "== push"; cat "$out"; cat "$err"; } >> '${log}'`,
+        '    cat "$out"; cat "$err" >&2; exit $status ;;',
+        'esac',
+      ].join('\n'),
+    );
+
+    const result = move(root, recording);
+
+    expect(result).toMatchObject({ action: 'moved' });
+    expect(result.sync).toMatchObject({ pushed: true });
+    const pushes = readFileSync(log, 'utf8').split('== push').filter((p) => p.trim() !== '');
+    expect(pushes).toHaveLength(2);
+    expect(pushes[0]).toMatch(/\[remote rejected\]|\[rejected\]/);
+    expect(pushes[0]).toMatch(/reference already exists|failed to (update|lock)|cannot lock ref|incorrect old value/);
+    expect(git(remote, 'rev-parse', BOARD_REF).trim()).toBe(refCommit(root));
+    expect(refEvents(remote)).toEqual(files);
+    expectMoved(root, env);
     expectCheckClean(root, env);
   });
 });
@@ -1035,5 +1523,92 @@ describe('the temporary worktree helpers', () => {
     expect(result.action).toBe('unchanged');
     expect(result.message).toMatch(/lock/);
     expect(worktreeEntry(root, dir)?.locked).toBe(WORKTREE_LOCK_REASON);
+  });
+});
+
+describe('resuming after the worktree is in place, and cleaning dead temporaries (ruling E)', () => {
+  it('a move killed between the worktree move and the end of its sync is resumed with the sync, carrying over what the kept repository gained', () => {
+    const env = syncEnv();
+    const { root, remote, dir, boardRemote } = standaloneProject(env, 2);
+    const first = move(root, env);
+    expect(first.action).toBe('moved');
+    const kept = String(first.keptAt);
+    // The state a kill after the worktree move leaves: the lock not yet set,
+    // the migrating marker still there, nothing published, and an event
+    // that landed in the old directory in the rename window.
+    git(root, 'worktree', 'unlock', dir);
+    mkdirSync(join(agentboardDir(root), MIGRATING_DIR), { recursive: true });
+    git(remote, 'update-ref', '-d', BOARD_REF);
+    const [late] = writeEvents(kept, 1, 'late', 800);
+    const files = [...eventFiles(dir), `${String(late)}.json`].sort();
+
+    const result = move(root, env);
+
+    expect(result).toMatchObject({ action: 'resumed', keptAt: kept, oldRemoteUrl: boardRemote, events: 3 });
+    expect(result.sync).toMatchObject({ model: 'host', pushed: true });
+    expect(result.message).toContain(kept);
+    expectMoved(root, env);
+    expect(eventFiles(dir)).toEqual(files);
+    expect(refEvents(root)).toEqual(files);
+    expect(git(remote, 'rev-parse', BOARD_REF).trim()).toBe(refCommit(root));
+    expect(existsSync(join(agentboardDir(root), MIGRATING_DIR))).toBe(false);
+    expect(move(root, env).action).toBe('unchanged');
+    expectCheckClean(root, env);
+  });
+
+  it('plain init on a host-model board removes dead temporaries without rebase state, keeps a stopped one, and touches nothing else', () => {
+    const env = syncEnv();
+    const { root, dir, commit } = hostBoard(env);
+    const hash = commitHostEvent(dir, ev(P.create(T3, 'Kept'), 'orch', 1000), env);
+    const base = join(agentboardDir(root), MIGRATING_DIR);
+    mkdirSync(base, { recursive: true });
+    const dead = join(base, String(DEAD_PID));
+    git(root, 'worktree', 'add', '-q', '--detach', dead, BOARD_REF);
+    const stopped = join(base, String(DEAD_PID + 1));
+    git(root, 'worktree', 'add', '-q', '--detach', stopped, commit);
+    mkdirSync(join(git(stopped, 'rev-parse', '--absolute-git-dir').trim(), 'rebase-merge'));
+    const plain = join(base, '123');
+    mkdirSync(plain);
+    const before = [refCommit(root), snapshotDir(dir), worktreeEntry(root, dir)];
+
+    const result = initBoard({ cwd: root, env });
+
+    expect(result).toMatchObject({ created: false, model: 'host', repair: null });
+    expect(result.message).toContain(dead);
+    expect(existsSync(dead)).toBe(false);
+    expect(existsSync(plain)).toBe(false);
+    expect(worktreeEntry(root, dead)).toBeNull();
+    expect(existsSync(stopped)).toBe(true);
+    expect(worktreeEntry(root, stopped)).not.toBeNull();
+    expect([refCommit(root), snapshotDir(dir), worktreeEntry(root, dir)]).toEqual(before);
+    expect(eventFiles(dir)).toEqual([`${hash}.json`]);
+
+    // init --into-host on the same board does the same, and the empty directory goes once the last one is gone.
+    git(root, 'worktree', 'remove', '--force', '--force', stopped);
+    rmSync(stopped, { recursive: true, force: true });
+    const again = move(root, env);
+    expect(again.action).toBe('unchanged');
+    expect(existsSync(base)).toBe(false);
+    expect(eventFiles(dir)).toEqual([`${hash}.json`]);
+  });
+
+  it('a temporary named by the running process own pid counts as dead for the move (ruling G)', () => {
+    const env = syncEnv();
+    const { root, dir, tip } = standaloneProject(env, 2);
+    const files = eventFiles(dir);
+    git(root, 'update-ref', MIGRATING_REF, 'HEAD');
+    const own = join(agentboardDir(root), MIGRATING_DIR, String(process.pid));
+    mkdirSync(join(agentboardDir(root), MIGRATING_DIR), { recursive: true });
+    git(root, 'worktree', 'add', '-q', '--detach', own, MIGRATING_REF);
+    const stamp = new Date(Date.now() - 120_000);
+    utimesSync(own, stamp, stamp);
+
+    const result = move(root, env);
+
+    expect(result.action).toBe('moved');
+    expect(result.message).toContain(own);
+    expectMoved(root, env);
+    expect(eventFiles(dir)).toEqual(files);
+    expectKept(String(result.keptAt), tip, files);
   });
 });
