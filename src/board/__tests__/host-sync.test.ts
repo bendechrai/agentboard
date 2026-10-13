@@ -33,6 +33,7 @@ import { HOST_MODEL_GIT_FLOOR, gitVersion } from '../git.js';
 import { BOARD_REF } from '../model.js';
 import { syncBoard, syncCommitMessage, type SyncResult } from '../sync.js';
 import { listTickets } from '../tickets.js';
+import { BUILT_CLI } from '../../cli/__tests__/cli-helpers.js';
 import { create, expectBoardError, git, openTracked, tempDir } from './helpers.js';
 import {
   EMPTY_BOARD_COMMIT_ID,
@@ -979,6 +980,51 @@ describe('scenario: Init with an unreachable remote, second half: a board create
     expect(err.message).toContain('.gitignore');
     expect(rebaseInProgress(dir)).toBe(true);
     expect(refs(root)).toContain(BOARD_REF);
+  });
+});
+
+describe('a second sync during the rebase of a first', () => {
+  it('exits 3 sync-in-progress while the first holds the worktree in its rebase, and the first completes', () => {
+    const base = syncEnv();
+    const { remote, aRoot, bRoot, a, b } = twoClones(base);
+    addTickets(b, 1, 'bob');
+    syncBoard(b, { env: base });
+    const [fromA] = addTickets(a, 1, 'alice');
+    const outcome = join(tempDir(), 'second-sync');
+    // The shim replaces the first sync's rebase onto FETCH_HEAD by the same
+    // rebase with an exec step after each replayed commit, which runs a
+    // second sync through the built CLI while git's rebase is still in
+    // progress (its state directory exists), and records how it ended; the
+    // shim exits with the rebase's status instead of running the command
+    // a second time.
+    const second =
+      `'${process.execPath}' '${BUILT_CLI}' sync --json > '${outcome}.out' 2> '${outcome}.err'; ` +
+      `echo $? > '${outcome}.code'`;
+    const env = withGitShimBefore(
+      base,
+      ['rebase', '--no-verify', 'FETCH_HEAD'],
+      `"$GIT" "$@" -x "${second.replace(/["$]/g, '\\$&')}"; exit $?`,
+    );
+
+    const first = syncBoard(a, { env });
+
+    expect(readFileSync(`${outcome}.code`, 'utf8').trim()).toBe('3');
+    const document = JSON.parse(readFileSync(`${outcome}.out`, 'utf8')) as {
+      error: { exitCode: number; reason: string; message: string };
+    };
+    expect(document.error).toMatchObject({ exitCode: 3, reason: 'sync-in-progress' });
+    expect(document.error.message).toContain(a.dir);
+    expect(readFileSync(`${outcome}.err`, 'utf8')).toMatch(/^agentboard: .*rebase/m);
+    expect(first).toMatchObject({ committedEvents: 1, pulled: true, pushed: true });
+    expect(first.arrived).toHaveLength(1);
+    expectRefAtHead(aRoot, a.dir, first);
+    expect(rebaseInProgress(a.dir)).toBe(false);
+    expect(git(remote, 'rev-parse', BOARD_REF).trim()).toBe(refCommit(aRoot));
+    expect(refEvents(remote)).toContain(`${String(fromA)}.json`);
+    expect(refEvents(remote)).toHaveLength(2);
+    expect(git(a.dir, 'status', '--porcelain')).toBe('');
+    syncBoard(b, { env: base });
+    expect(refCommit(bRoot)).toBe(refCommit(aRoot));
   });
 });
 

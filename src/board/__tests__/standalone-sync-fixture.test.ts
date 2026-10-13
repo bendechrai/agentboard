@@ -10,8 +10,9 @@
  * compares, against the fixture: the `SyncResult` of each step (board
  * directories replaced by placeholders), the text and the JSON document
  * the built CLI prints, and the whole commit history of every repository
- * involved (ids, trees, parents, identities, dates, messages and the
- * paths each commit touches).
+ * involved (ids, trees, parents, identities, dates as epoch seconds,
+ * messages and the paths each commit touches), so the comparison is the
+ * same on every git version.
  *
  * A `SyncResult` may gain keys after the recording (the sharing fields of
  * group 3); only the recorded keys are compared, so a new key never breaks
@@ -72,13 +73,18 @@ function anonymise(value: unknown, places: ReadonlyMap<string, string>): unknown
   return value;
 }
 
-/** The full history of `ref` in the repository at `repo`, as git describes it, with the paths of each commit. */
+/**
+ * The full history of `ref` in the repository at `repo`, as git describes
+ * it, with the paths of each commit. Dates are epoch seconds (`%at`,
+ * `%ct`), which every git version prints the same way; a rendered date
+ * (`--date=iso-strict`) differs between git 2.45 and later (`20Z`) and
+ * older versions (`20+00:00`), which is not a difference in the commits.
+ */
 function history(repo: string, ref: string): string {
   return git(
     repo,
     'log',
-    '--date=iso-strict',
-    '--format=commit %H%ntree %T%nparents %P%nauthor %an <%ae> %ad%ncommitter %cn <%ce> %cd%nsubject %s%nbody %b%nend',
+    '--format=commit %H%ntree %T%nparents %P%nauthor %an <%ae> %at%ncommitter %cn <%ce> %ct%nsubject %s%nbody %b%nend',
     '--name-status',
     '--no-decorate',
     ref,
@@ -225,6 +231,8 @@ describe('standalone sync against the fixture recorded before host-model sync', 
 
   it('the recording holds real commits, not placeholders left unfilled', () => {
     expect(fixture.histories.a).toMatch(/^commit [0-9a-f]{40}\n/);
+    expect(fixture.histories.a).toContain('author agentboard <agentboard@localhost> 1700000000\n');
+    expect(fixture.histories.a).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
     expect(fixture.histories.remote).toBe(fixture.histories.b);
     expect(fixture.cli['e-first']?.stdout).toContain(
       'pushed main to origin and set it as the upstream',
