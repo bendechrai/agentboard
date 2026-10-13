@@ -58,8 +58,4 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
 
 ## Known gaps
 
-- `add-claim-leases` adds the `config` command (not an MCP tool) and new
-  `claim` and `release` flags, but its `board-cli` delta does not modify
-  "Command surface" (the full command list) or "MCP server" (the excluded
-  commands). Add both as MODIFIED requirements, restated from the current
-  main spec, before its task group 1 starts.
+None open.

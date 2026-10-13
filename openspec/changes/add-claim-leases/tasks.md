@@ -2,7 +2,8 @@
 
 Independent of `add-board-insights` and `add-board-web-actions`: this
 change's MODIFIED text restates requirements those changes do not touch
-(`board-cli` "Claim, release and handoff", `board-events` "Event kinds" and
+(`board-cli` "Command surface", "MCP server" and "Claim, release and
+handoff", `board-events` "Event kinds" and
 "Fold semantics", `board-cache` "Cache schema", `board-view-model`
 "Activity feed entries", `board-agent-guidance` "Agent guide",
 `board-openspec-integration` "Import a change", `board-concurrency`
@@ -12,6 +13,10 @@ the main spec before archiving this change. `add-board-web-actions` builds
 the web action bodies from the registry, so `claim` and `release` gain
 their new optional arguments there without further work (`--timeout` is
 CLI-only); lease and queue controls in the web app are out of scope.
+`add-harness-integration` also modifies `board-cli` "Command surface" and
+"MCP server" (`hook`, `--command`); whichever change is archived second
+re-syncs both requirements with the main spec first, keeping the other
+change's additions.
 
 Every group is delivered by a test author, an implementer and a reviewer
 in turn (see CONTRIBUTING.md), on one branch per group named
@@ -41,9 +46,9 @@ environment variable.
 
 ## 3. Lease, queue and forced-release commands (`board/lease-commands`)
 
-- [ ] 3.1 Implement ttl, timeout and setting parsers, `claimTicket` with `ttl` and `wait` (timestamp before validation; takeover only when the fold rule and the local clock allow it; join when the ticket is held), `renewTicket` (default ttl from the lease), `unqueueTicket`, `releaseTicket` with `force` and `reason`, `config set` and `config get`, the reserved actor refusal, and the registry entries and flags (`--timeout` CLI-only). Verify: tests for every scenario of the modified "Claim, release and handoff", "Leases on the command line", "Forced release on the command line" and "Board settings command", with an injected clock; parsers accepting `30s`, `7d`, `10m` and refusing `29s`, `8d`, `0m`, `10min`, `m`, `-1m`; the help drift guard; validation failures creating no event or temporary file
+- [ ] 3.1 Implement ttl, timeout and setting parsers, `claimTicket` with `ttl` and `wait` (timestamp before validation; takeover only when the fold rule and the local clock allow it; join when the ticket is held), `renewTicket` (default ttl from the lease), `unqueueTicket`, `releaseTicket` with `force` and `reason`, `config set` and `config get`, the reserved actor refusal, and the registry entries and flags (`--timeout` CLI-only). Verify: tests for every scenario of the modified "Claim, release and handoff", "Leases on the command line", "Forced release on the command line" and "Board settings command", with an injected clock; parsers accepting `30s`, `7d`, `10m` and refusing `29s`, `8d`, `0m`, `10min`, `m`, `-1m`; the help drift guard and the "Claim has help for leases and waiting" and "Renew, unqueue and config have help" scenarios of the modified "Command surface"; validation failures creating no event or temporary file
 - [ ] 3.2 Render leases and queues: `show` (lease line with grace or confirmed, queue with join times, pending or applied grant, takeover with both walls, forced release with actor, holder and reason), the `list` assignee token, `--json` `lease` and `queue`, inbox `affects`, `to` for grants, `note` for forced release, and the `GRANTED: ` and `LOST: ` prefixes; add the hints of "Lease and queue hints". Verify: golden CLI outputs (human and `--json`) for `show`, `list` and `inbox` on a fixture board at a fixed clock with tickets that are free, in grace, confirmed, expired, claimable, queued with three waiters, granted and pending acceptance, taken over and force-released; the inbox and hint scenarios; the hint completeness test
-- [ ] 3.3 MCP: `board_renew`, `board_unqueue`, `board_claim` `ttl` and `wait` (non-blocking), `board_release` `force` and `reason`, no `timeout` and no `config` tool. Verify: the three "Lease and queue tools over MCP" scenarios, a `board_claim` call with `timeout` refused as `usage`; golden MCP outputs (text content, structured content and tool errors with `exitCode`, `reason` and `hint`) for a leased claim, a renew, a queued claim (`{queued, position, holder, ticket}`), a refused takeover, a grant seen through `board_inbox` and a forced release; each event written through MCP byte-identical in body to the CLI's for the same arguments and actor on a copy of the board
+- [ ] 3.3 MCP: `board_renew`, `board_unqueue`, `board_claim` `ttl` and `wait` (non-blocking), `board_release` `force` and `reason`, no `timeout` and no `config` tool. Verify: the three "Lease and queue tools over MCP" scenarios and the modified "MCP server" scenarios "Tools are listed from the registry", "Excluded config tool" and "CLI-only flag is refused over MCP"; golden MCP outputs (text content, structured content and tool errors with `exitCode`, `reason` and `hint`) for a leased claim, a renew, a queued claim (`{queued, position, holder, ticket}`), a refused takeover, a grant seen through `board_inbox` and a forced release; each event written through MCP byte-identical in body to the CLI's for the same arguments and actor on a copy of the board
 
 ## 4. Waiting in the foreground (`board/claim-wait`)
 
