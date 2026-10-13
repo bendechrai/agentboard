@@ -209,8 +209,13 @@ Run `make hooks` in each new worktree, and remove the worktree with
 This repository coordinates its own agents with agentboard:
 
 - `agentboard init` once per clone, at the root of the main checkout,
-  creates `.board/` (its own git repository, ignored by this one). Linked
-  worktrees find it on their own.
+  creates `.board/` (ignored by this repository); linked worktrees find
+  it on their own. This repository's own board is a standalone board (a
+  git repository of its own) and stays one: it is not moved into the host
+  repository with `init --into-host`, because that would publish
+  `refs/agentboard/board` with the public repository. In a project of
+  your own, `init` inside a git repository creates a host-model board
+  instead (README, "Set up a project").
 - `agentboard import-change <name> --as orchestrator` creates one ticket
   per task group of a merged OpenSpec change; run it again when `tasks.md`
   gains lines.

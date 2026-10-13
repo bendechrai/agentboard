@@ -16,6 +16,7 @@ import {
   hostBoard,
   refs,
   snapshotDir,
+  standaloneBoard,
   worktrees,
 } from '../../board/__tests__/sharing-helpers.js';
 import {
@@ -196,7 +197,7 @@ describe('agentboard sync (built CLI)', () => {
     writeFileSync(join(host, '.board', 'notes.txt'), 'tracked by mistake\n');
     git(host, 'add', '.board/notes.txt');
     git(host, 'commit', '-q', '-m', 'track board by mistake');
-    expect(spawnCli(['init'], host, env).code).toBe(0);
+    standaloneBoard(host);
     newTicket(host, env, 'one');
 
     const out = sync(host, env);

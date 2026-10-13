@@ -19,7 +19,6 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { run } from '../../cli/__tests__/cli-helpers.js';
 import { P, T1, T3, ev, putEvent } from '../../store/__tests__/helpers.js';
-import { initBoard } from '../init.js';
 import { BOARD_REF, BOARD_REF_NAMESPACE, MODEL_TEXT, detectBoardModel } from '../model.js';
 import { syncBoard, type SyncResult } from '../sync.js';
 import {
@@ -39,6 +38,7 @@ import {
   refs,
   separateGitDirBoard,
   snapshotDir,
+  standaloneBoard,
   submoduleBoard,
   worktrees,
 } from './sharing-helpers.js';
@@ -60,9 +60,9 @@ describe('the board ref', () => {
   });
 });
 
-/** A standalone board (its own repository, as `init` makes one today) at `<root>/.board`; `root` may be a git repository. */
+/** A standalone board (its own repository, built without `init`) at `<root>/.board`; `root` may be a git repository. */
 function standalone(root = tempDir()): string {
-  return initBoard({ cwd: root, env: syncEnv() }).dir;
+  return standaloneBoard(root);
 }
 
 describe('detectBoardModel', () => {
@@ -193,6 +193,36 @@ describe('detectBoardModel', () => {
     expect(info.detail).toMatch(/other|another|different/i);
     // Clone A is still healthy.
     expect(detectBoardModel(a.dir, { env }).model).toBe('host');
+  });
+
+  it('broken host link: the detail names every path as its realpath, however the directory was given', () => {
+    const env = syncEnv();
+    const a = hostBoard(env);
+    const c = hostRepo(join(tempDir(), 'clone-c'));
+    cpSync(a.dir, join(c, '.board'), { recursive: true });
+    // Reach the same board through a symlink, so the as-given path differs from the realpath.
+    const link = join(tempDir(), 'via-link');
+    symlinkSync(c, link);
+    const given = join(link, '.board');
+
+    const info = detectBoardModel(given, { env });
+
+    expect(info.model).toBe('broken-host-link');
+    expect(info.dir).toBe(given);
+    const detail = info.detail ?? '';
+    expect(detail).toContain(real(a.root));
+    expect(detail).toContain(real(c));
+    expect(detail).not.toContain(link);
+    // A .git file whose target is missing: the same rule.
+    const { root } = hostBoard(env);
+    const moved = join(tempDir(), 'moved-host');
+    renameSync(root, moved);
+    const movedLink = join(tempDir(), 'moved-link');
+    symlinkSync(moved, movedLink);
+    const movedInfo = detectBoardModel(join(movedLink, '.board'), { env });
+    expect(movedInfo.model).toBe('broken-host-link');
+    expect(movedInfo.detail ?? '').toContain(join(real(moved), '.board', '.git'));
+    expect(movedInfo.detail ?? '').not.toContain(movedLink);
   });
 
   it('broken host link: a copied worktree whose parent is not a repository at all', () => {

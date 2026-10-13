@@ -24,7 +24,6 @@ import { catchUp, dumpCache } from '../../store/cache.js';
 import { rebuild } from '../../store/rebuild.js';
 import { P, T1, T2, T3, ev } from '../../store/__tests__/helpers.js';
 import { BoardError } from '../../store/errors.js';
-import { initBoard } from '../init.js';
 import { SYNC_IDENTITY, syncBoard, syncCommitMessage, type SyncResult } from '../sync.js';
 import { listTickets } from '../tickets.js';
 import {
@@ -50,6 +49,7 @@ import {
   unmerged,
   type Env,
 } from './sync-helpers.js';
+import { standaloneBoard } from './sharing-helpers.js';
 
 // Every test spawns several git processes; keep well clear of the 5 s default under load.
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -203,7 +203,7 @@ describe('sync with no remote', () => {
   it('syncs the board repository even when GIT_DIR points at the host repository', () => {
     const base = syncEnv();
     const host = gitRepo(join(tempDir(), 'host'));
-    initBoard({ cwd: host, env: base });
+    standaloneBoard(host);
     const dir = join(host, '.board');
     const board = openTracked(dir);
     addTickets(board, 1, 'orch');
@@ -674,20 +674,20 @@ describe('the cache is never committed (board-cache: "Cache is not synced")', ()
 });
 
 describe('host repository tracking the board', () => {
-  /** A host git repository that tracks `.board/notes.txt`, with a board initialized in it. */
-  function trackedHost(env: Env): { host: string; board: Board } {
+  /** A host git repository that tracks `.board/notes.txt`, with a standalone board in it. */
+  function trackedHost(): { host: string; board: Board } {
     const host = gitRepo(join(tempDir(), 'host'));
     mkdirSync(join(host, '.board'));
     writeFileSync(join(host, '.board', 'notes.txt'), 'tracked by mistake\n');
     git(host, 'add', '.board/notes.txt');
     git(host, 'commit', '-q', '-m', 'track board by mistake');
-    initBoard({ cwd: host, env });
+    standaloneBoard(host);
     return { host, board: openTracked(join(host, '.board')) };
   }
 
   it('warns, naming the tracked path, and still syncs', () => {
     const env = syncEnv();
-    const { host, board } = trackedHost(env);
+    const { host, board } = trackedHost();
     addTickets(board, 1, 'orch');
     const hostHead = revParse(host);
     const hostStatus = git(host, 'status', '--porcelain');
@@ -709,7 +709,7 @@ describe('host repository tracking the board', () => {
   it('warns when the host tracks the board directory as a gitlink', () => {
     const env = syncEnv();
     const host = gitRepo(join(tempDir(), 'host'));
-    initBoard({ cwd: host, env });
+    standaloneBoard(host);
     const board = openTracked(join(host, '.board'));
     syncBoard(board, { env });
     git(host, 'add', '-f', '.board');
@@ -724,7 +724,7 @@ describe('host repository tracking the board', () => {
   it('does not warn when the host ignores the board', () => {
     const env = syncEnv();
     const host = gitRepo(join(tempDir(), 'host'));
-    initBoard({ cwd: host, env });
+    standaloneBoard(host);
     const board = openTracked(join(host, '.board'));
     addTickets(board, 1, 'orch');
 
