@@ -66,11 +66,19 @@ malformed.
 Folding SHALL produce, per ticket: id, title, description, status, assignee,
 lease (null, or its requested ttl, expiresAt, the hash of the event that set
 it and whether it is confirmed), the waiting queue (in order, each waiter's
-actor, requested ttl and join event), labels, task reference or ad hoc reason, checklist with done flags, ordered comments (each
+actor, requested ttl and join event), availability (null, or when and by
+which event the ticket becomes or became available for a grant), labels,
+task reference or ad hoc reason, checklist with done flags, ordered comments (each
 with actor, timestamp and text), links, closed flag with its decision record
 path or explicit no-decision marker, `version` (the count of folded events
 that changed the ticket), and `updated_at` (the timestamp of the last such
-event). A `ticket.create` SHALL be the first event for its id; any other event
+event). Availability SHALL be derived after every applied event: for an
+unassigned ticket, the wall and hash of the latest applied
+`ticket.release` or `ticket.release.force` (null when there has been
+none); for a ticket held under a lease, the lease's `expiresAt` plus
+`LEASE_SKEW_MS` and the hash of the event that set the lease; for a ticket
+held without a lease, null. It SHALL appear as `available` in the ticket's
+`--json` document, because that document is the folded ticket. A `ticket.create` SHALL be the first event for its id; any other event
 for an unknown ticket id SHALL be reported as rejected with reason
 `unknown-ticket` and held aside. A second `ticket.create` for an existing id
 SHALL be rejected with reason `duplicate-create`. A `ticket.move` to a status
@@ -202,7 +210,11 @@ SHALL remove its actor from the queue, and SHALL be rejected with reason
 `invalid-queue` when the actor is not queued. While the queue is not
 empty, a `ticket.claim` by any actor SHALL be rejected with reason
 `queued`, except a claim by the assignee, which is handled as before.
-`ticket.handoff` SHALL NOT be constrained by the queue.
+`ticket.handoff` SHALL NOT be constrained by the queue. An applied
+`ticket.handoff` or `ticket.assign` whose `to` is a queued actor SHALL
+remove that actor from the queue in the same fold step, so the assignee
+is never queued; one whose `to` is not queued SHALL leave the queue
+unchanged.
 
 #### Scenario: Join order is fold order
 - **WHEN** `a` joins at wall 1000 and `b` joins at wall 900, arriving in the order a then b
@@ -215,6 +227,10 @@ empty, a `ticket.claim` by any actor SHALL be rejected with reason
 #### Scenario: Queue-jumping claim is refused
 - **WHEN** T1 has waiters and `x`, not queued, writes a claim with a valid `supersedes` after the holder's lease lapsed
 - **THEN** the claim is rejected with reason `queued`
+
+#### Scenario: Hand-off to a waiter removes it from the queue
+- **WHEN** `h` holds T1, `a`, `b` and `c` are queued in that order, and `h` hands T1 off to `b`
+- **THEN** T1 is assigned to `b`, the queue is `a`, `c`, and when `b` later releases the derived grant is to `a`
 
 #### Scenario: Join on a free ticket
 - **WHEN** T1 is unassigned with no waiters and `a` writes a join

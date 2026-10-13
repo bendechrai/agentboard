@@ -14,13 +14,16 @@ import {
   applyEvent,
   compareFoldOrder,
   type ApplyOutcome,
+  type Availability,
   type BoardState,
   type ChecklistItem,
   type FoldInput,
+  type Lease,
   type Rejected,
   type Ticket,
   type TicketLink,
   type UnknownReport,
+  type Waiter,
 } from '../events/fold.js';
 import { compareHlc, decodeHlc, encodeHlc, type Hlc } from '../events/hlc.js';
 import { isKnownEvent, type Status } from '../events/schema.js';
@@ -209,6 +212,36 @@ function int(row: Row, column: string): number {
   return value;
 }
 
+/** The lease of a ticket row: null when `lease_ttl` is null (the four columns go together). */
+function toLease(row: Row): Lease | null {
+  if (row.lease_ttl === null) {
+    return null;
+  }
+  return {
+    ttl: int(row, 'lease_ttl'),
+    expiresAt: int(row, 'lease_expires_at'),
+    event: text(row, 'lease_event'),
+    confirmed: int(row, 'lease_confirmed') === 1,
+  };
+}
+
+/** The availability of a ticket row: null when `available_at` is null. */
+function toAvailability(row: Row): Availability | null {
+  if (row.available_at === null) {
+    return null;
+  }
+  return { at: int(row, 'available_at'), event: text(row, 'available_event') };
+}
+
+function toWaiter(row: Row): Waiter {
+  return {
+    actor: text(row, 'actor'),
+    ttl: int(row, 'ttl'),
+    event: text(row, 'hash'),
+    joined: decodeHlc(text(row, 'ts')),
+  };
+}
+
 /** Canonical JSON text of a value, as stored in JSON columns. */
 export function jsonText(value: unknown): string {
   return new TextDecoder().decode(canonicalEncode(value));
@@ -229,7 +262,7 @@ export function jsonRow(row: Row): Record<string, JsonValue> {
 // ---------------------------------------------------------------------------
 // Tickets <-> rows
 
-function toTicket(row: Row, comments: Row[], links: Row[]): Ticket {
+function toTicket(row: Row, comments: Row[], links: Row[], waiters: Row[]): Ticket {
   const closed = int(row, 'closed') === 1;
   const decision = nullableText(row, 'decision');
   const source = nullableText(row, 'task_source');
@@ -240,6 +273,9 @@ function toTicket(row: Row, comments: Row[], links: Row[]): Ticket {
     status: text(row, 'status') as Status,
     blockedFrom: nullableText(row, 'blocked_from') as Status | null,
     assignee: nullableText(row, 'assignee'),
+    lease: toLease(row),
+    queue: waiters.map(toWaiter),
+    available: toAvailability(row),
     labels: JSON.parse(text(row, 'labels')) as string[],
     task:
       source === null ? null : { source, ref: text(row, 'task_ref'), item: text(row, 'task_item') },
@@ -281,7 +317,8 @@ export function loadTicket(db: DatabaseSync, id: string): Ticket | null {
   }
   const comments = stmt(db, 'SELECT * FROM comments WHERE ticket = ? ORDER BY seq').all(id);
   const links = stmt(db, 'SELECT * FROM links WHERE ticket = ? ORDER BY seq').all(id);
-  return toTicket(row, comments, links);
+  const waiters = stmt(db, 'SELECT * FROM waiters WHERE ticket = ? ORDER BY position').all(id);
+  return toTicket(row, comments, links, waiters);
 }
 
 /** The whole board state from the cache rows. */
@@ -301,10 +338,11 @@ export function loadState(db: DatabaseSync): BoardState {
   };
   const comments = byTicket('SELECT * FROM comments ORDER BY ticket, seq');
   const links = byTicket('SELECT * FROM links ORDER BY ticket, seq');
+  const waiters = byTicket('SELECT * FROM waiters ORDER BY ticket, position');
   const tickets: Record<string, Ticket> = {};
   for (const row of stmt(db, 'SELECT * FROM tickets ORDER BY id').all()) {
     const id = text(row, 'id');
-    tickets[id] = toTicket(row, comments.get(id) ?? [], links.get(id) ?? []);
+    tickets[id] = toTicket(row, comments.get(id) ?? [], links.get(id) ?? [], waiters.get(id) ?? []);
   }
   return { tickets, meta: loadMeta(db) };
 }
@@ -333,19 +371,25 @@ interface Stored {
 
 /**
  * Writes `ticket` to the rows. Comments and links are append-only in the
- * fold, so only those beyond the counts already stored are inserted.
+ * fold, so only those beyond the counts already stored are inserted. The
+ * queue is not append-only (leaves, grants and hand-offs remove waiters
+ * from anywhere in it), so its rows are replaced.
  */
 function saveTicket(db: DatabaseSync, ticket: Ticket, stored: Stored | null): void {
-  const disposition = ticket.disposition;
+  const { disposition, lease, available } = ticket;
   stmt(
     db,
-    `INSERT INTO tickets (id, title, description, status, blocked_from, assignee, version,
+    `INSERT INTO tickets (id, title, description, status, blocked_from, assignee, lease_ttl,
+       lease_expires_at, lease_event, lease_confirmed, available_at, available_event, version,
        updated_at, created_by, created_at, task_source, task_ref, task_item, adhoc, labels,
        closed, decision, checklist)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (id) DO UPDATE SET
        title = excluded.title, description = excluded.description, status = excluded.status,
        blocked_from = excluded.blocked_from, assignee = excluded.assignee,
+       lease_ttl = excluded.lease_ttl, lease_expires_at = excluded.lease_expires_at,
+       lease_event = excluded.lease_event, lease_confirmed = excluded.lease_confirmed,
+       available_at = excluded.available_at, available_event = excluded.available_event,
        version = excluded.version, updated_at = excluded.updated_at,
        created_by = excluded.created_by, created_at = excluded.created_at,
        task_source = excluded.task_source, task_ref = excluded.task_ref,
@@ -358,6 +402,12 @@ function saveTicket(db: DatabaseSync, ticket: Ticket, stored: Stored | null): vo
     ticket.status,
     ticket.blockedFrom,
     ticket.assignee,
+    lease?.ttl ?? null,
+    lease?.expiresAt ?? null,
+    lease?.event ?? null,
+    lease === null ? null : lease.confirmed ? 1 : 0,
+    available?.at ?? null,
+    available?.event ?? null,
     ticket.version,
     encodeHlc(ticket.updatedAt),
     ticket.createdBy,
@@ -388,6 +438,19 @@ function saveTicket(db: DatabaseSync, ticket: Ticket, stored: Stored | null): vo
     const value = jsonText(l.type === 'pr' ? l.pr : l.path);
     insertLink.run(ticket.id, seq, l.type, value, l.actor, encodeHlc(l.ts), l.hash);
   }
+  saveWaiters(db, ticket);
+}
+
+/** Replaces the `waiters` rows of `ticket` with its queue, in order. */
+function saveWaiters(db: DatabaseSync, ticket: Ticket): void {
+  stmt(db, 'DELETE FROM waiters WHERE ticket = ?').run(ticket.id);
+  const insertWaiter = stmt(
+    db,
+    'INSERT INTO waiters (ticket, position, actor, ttl, hash, ts) VALUES (?, ?, ?, ?, ?, ?)',
+  );
+  ticket.queue.forEach((w, position) => {
+    insertWaiter.run(ticket.id, position, w.actor, w.ttl, w.event, encodeHlc(w.joined));
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -396,20 +459,20 @@ function saveTicket(db: DatabaseSync, ticket: Ticket, stored: Stored | null): vo
 /**
  * Applies events to the cache rows with the fold's own step. Tickets are
  * loaded from the rows on first use and written back by `flush`, so a
- * rejected event (which `applyEvent` never applies) changes no row.
+ * rejected event (which `applyEvent` never applies) changes no row. The
+ * board settings are loaded from the rows when the session starts, because
+ * the fold reads them (a grant's window) at the position of each event.
  */
 export class FoldSession {
   private readonly db: DatabaseSync;
-  private readonly state: BoardState = {
-    tickets: {},
-    meta: Object.create(null) as Record<string, JsonValue>,
-  };
+  private readonly state: BoardState;
   private readonly stored = new Map<string, Stored | null>();
   private readonly dirty = new Set<string>();
   private readonly metaKeys = new Set<string>();
 
   constructor(db: DatabaseSync) {
     this.db = db;
+    this.state = { tickets: {}, meta: loadMeta(db) };
   }
 
   /** The ticket as of the events applied so far in this session. */
@@ -556,11 +619,12 @@ export interface RefoldResult extends BatchReport {
 
 /**
  * Deletes every derived row (all but `cursors`, `cursor_seen` and
- * `meta.schema_version`)
+ * `meta.schema_version`), board settings included,
  * and folds every event file from scratch. Caller holds the transaction.
  */
 export function refold(db: DatabaseSync, eventsDir: string): RefoldResult {
-  db.exec(`DELETE FROM comments; DELETE FROM links; DELETE FROM tickets; DELETE FROM folded;
+  db.exec(`DELETE FROM comments; DELETE FROM links; DELETE FROM waiters; DELETE FROM tickets;
+    DELETE FROM folded;
     DELETE FROM meta WHERE key <> 'schema_version';
     INSERT INTO meta (key, value) VALUES ('last_position', 'null');`);
   const log = readEventLog(eventsDir);
@@ -708,6 +772,7 @@ const PRIMARY_KEY: Record<DumpTable, string> = {
   links: 'ticket, seq',
   meta: 'key',
   tickets: 'id',
+  waiters: 'ticket, position',
 };
 
 /** One dumped row with its primary key as text and its ticket, if any. */
@@ -730,6 +795,12 @@ export function tableRows(db: DatabaseSync, table: DumpTable): KeyedRow[] {
         case 'links':
           return {
             key: `${String(row.ticket)}#${String(row.seq)}`,
+            ticket: String(row.ticket),
+            row,
+          };
+        case 'waiters':
+          return {
+            key: `${String(row.ticket)}#${String(row.position)}`,
             ticket: String(row.ticket),
             row,
           };

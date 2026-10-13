@@ -88,5 +88,14 @@ export function describeEvent(event: BoardEvent | UnknownKindEvent): string {
       return `added ${String(event.body.items.length)} checklist line(s)`;
     case 'board.meta':
       return `set ${oneLine(event.body.key)}`;
+    case 'ticket.renew':
+    case 'ticket.release.force':
+    case 'ticket.queue.join':
+    case 'ticket.queue.leave':
+    case 'ticket.grant':
+      // Provisional: the kind itself, until the lease, queue and grant
+      // summaries of board-view-model are written (add-claim-leases 6.2).
+      // It must not throw: this module is bundled into the web client.
+      return event.kind;
   }
 }

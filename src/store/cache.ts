@@ -19,6 +19,12 @@
  *   status       TEXT NOT NULL,
  *   blocked_from TEXT,            -- Ticket.blockedFrom
  *   assignee     TEXT,
+ *   lease_ttl        INTEGER,     -- Ticket.lease: the four lease_* columns
+ *   lease_expires_at INTEGER,     --   are all null (no lease) or all
+ *   lease_event      TEXT,        --   non-null; lease_confirmed is 0 or 1
+ *   lease_confirmed  INTEGER,
+ *   available_at     INTEGER,     -- Ticket.available: both null or both
+ *   available_event  TEXT,        --   non-null
  *   version      INTEGER NOT NULL,
  *   updated_at   TEXT NOT NULL,   -- encodeHlc(Ticket.updatedAt)
  *   created_by   TEXT NOT NULL,
@@ -32,6 +38,15 @@
  *   decision     TEXT,            -- decision path when closed with one;
  *                                 --   null when open or closed with noDecision
  *   checklist    TEXT NOT NULL    -- JSON array of {"done":bool,"text":string}
+ * );
+ * CREATE TABLE waiters (
+ *   ticket   TEXT NOT NULL REFERENCES tickets(id),
+ *   position INTEGER NOT NULL,    -- 0-based index in Ticket.queue
+ *   actor    TEXT NOT NULL,
+ *   ttl      INTEGER NOT NULL,
+ *   hash     TEXT NOT NULL,       -- Waiter.event, the join event
+ *   ts       TEXT NOT NULL,       -- encodeHlc(Waiter.joined)
+ *   PRIMARY KEY (ticket, position)
  * );
  * CREATE TABLE comments (
  *   ticket TEXT NOT NULL REFERENCES tickets(id),
@@ -94,9 +109,9 @@
  * more table, `cursor_seen (actor, hash, wall)`, documented there. It is
  * part of the cursors and is treated exactly like `cursors`: kept by
  * `rebuild`, not covered by `dumpCache` or `rebuild --check`, dropped with
- * every other table when the schema version differs. `openCache` creates it
- * with `CREATE TABLE IF NOT EXISTS` on every open, so a version 1 cache
- * without it gains it without a version change.
+ * every other table when the schema version differs. The schema step does
+ * not create it: `openCache` creates it, when missing, on every preparing
+ * open, after the schema step.
  */
 
 import { existsSync } from 'node:fs';
@@ -122,8 +137,12 @@ import type { CorruptFile, MalformedFile } from './eventfile.js';
 /** File name of the cache inside the board directory. */
 export const CACHE_FILE = 'cache.sqlite';
 
-/** Version of the cache schema above, stored in `meta.schema_version`. */
-export const CACHE_SCHEMA_VERSION = 1;
+/**
+ * Version of the cache schema above, stored in `meta.schema_version`. It is
+ * 2 from the lease and queue columns and the `waiters` table on (board-cache:
+ * "Cache schema"), so a version 1 cache is rebuilt on first open.
+ */
+export const CACHE_SCHEMA_VERSION = 2;
 
 /** Minimum busy timeout on every connection, in milliseconds. */
 export const BUSY_TIMEOUT_MS = 5000;
@@ -230,7 +249,8 @@ export function openCache(path: string, options?: OpenCacheOptions): DatabaseSyn
 }
 
 /**
- * Creates `cursor_seen` when it is missing (a version 1 cache without it).
+ * Creates `cursor_seen` when it is missing (the schema step drops it and
+ * does not create it).
  * Looks first, so an open that finds the table never
  * writes and never waits for a concurrent writer's lock.
  */
@@ -317,6 +337,7 @@ function storedSchemaVersion(db: DatabaseSync): string | null {
 const SCHEMA = `
 DROP TABLE IF EXISTS comments;
 DROP TABLE IF EXISTS links;
+DROP TABLE IF EXISTS waiters;
 DROP TABLE IF EXISTS tickets;
 DROP TABLE IF EXISTS cursors;
 DROP TABLE IF EXISTS cursor_seen;
@@ -329,6 +350,12 @@ CREATE TABLE tickets (
   status       TEXT NOT NULL,
   blocked_from TEXT,
   assignee     TEXT,
+  lease_ttl        INTEGER,
+  lease_expires_at INTEGER,
+  lease_event      TEXT,
+  lease_confirmed  INTEGER,
+  available_at     INTEGER,
+  available_event  TEXT,
   version      INTEGER NOT NULL,
   updated_at   TEXT NOT NULL,
   created_by   TEXT NOT NULL,
@@ -341,6 +368,15 @@ CREATE TABLE tickets (
   closed       INTEGER NOT NULL,
   decision     TEXT,
   checklist    TEXT NOT NULL
+);
+CREATE TABLE waiters (
+  ticket   TEXT NOT NULL REFERENCES tickets(id),
+  position INTEGER NOT NULL,
+  actor    TEXT NOT NULL,
+  ttl      INTEGER NOT NULL,
+  hash     TEXT NOT NULL,
+  ts       TEXT NOT NULL,
+  PRIMARY KEY (ticket, position)
 );
 CREATE TABLE comments (
   ticket TEXT NOT NULL REFERENCES tickets(id),
@@ -489,8 +525,12 @@ export function readState(db: DatabaseSync): BoardState {
   return inSnapshot(db, () => loadState(db));
 }
 
-/** Tables covered by the canonical dump, in dump key order. */
-export const DUMP_TABLES = ['comments', 'folded', 'links', 'meta', 'tickets'] as const;
+/**
+ * Tables covered by the canonical dump, in dump key order: `comments`,
+ * `folded`, `links`, `meta`, `tickets` and `waiters` (by ticket, then
+ * position; a `CacheDifference` key `<ticket>#<position>`).
+ */
+export const DUMP_TABLES = ['comments', 'folded', 'links', 'meta', 'tickets', 'waiters'] as const;
 
 /** A table covered by the canonical dump. */
 export type DumpTable = (typeof DUMP_TABLES)[number];
@@ -501,7 +541,8 @@ export type DumpTable = (typeof DUMP_TABLES)[number];
  * The result is the UTF-8 text of `canonicalEncode` applied to an object
  * with one key per `DUMP_TABLES` entry, each an array of that table's rows in
  * ascending primary key order (`tickets` by id; `comments` and `links` by
- * ticket then seq; `folded` by hash; `meta` by key), each row an object
+ * ticket then seq; `waiters` by ticket then position; `folded` by hash;
+ * `meta` by key), each row an object
  * mapping every column name to its value (INTEGER as a number, TEXT as a
  * string, NULL as null). `cursors` is excluded. Two caches holding the same
  * derived rows produce identical strings.

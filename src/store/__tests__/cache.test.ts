@@ -256,6 +256,12 @@ describe('openCache', () => {
         'status',
         'blocked_from',
         'assignee',
+        'lease_ttl',
+        'lease_expires_at',
+        'lease_event',
+        'lease_confirmed',
+        'available_at',
+        'available_event',
         'version',
         'updated_at',
         'created_by',
@@ -270,6 +276,7 @@ describe('openCache', () => {
         'checklist',
       ].sort(),
     );
+    expect(columns(db, 'waiters')).toEqual(['actor', 'hash', 'position', 'ticket', 'ts', 'ttl']);
     expect(columns(db, 'comments')).toEqual(['actor', 'hash', 'seq', 'text', 'ticket', 'ts']);
     expect(columns(db, 'links')).toEqual(['actor', 'hash', 'kind', 'seq', 'ticket', 'ts', 'value']);
     expect(columns(db, 'cursors')).toEqual([
@@ -290,7 +297,7 @@ describe('openCache', () => {
       { key: 'last_position', value: 'null' },
       { key: 'schema_version', value: String(CACHE_SCHEMA_VERSION) },
     ]);
-    expect(CACHE_SCHEMA_VERSION).toBe(1);
+    expect(CACHE_SCHEMA_VERSION).toBe(2);
   });
 
   it('enforces the foreign key from comments to tickets', () => {
@@ -768,7 +775,7 @@ describe('dumpCache', () => {
     const text = dumpCache(board.db);
     const parsed = canonicalDecode(new TextEncoder().encode(text)) as Record<string, Row[]>;
     expect(Object.keys(parsed)).toEqual([...DUMP_TABLES]);
-    expect(DUMP_TABLES).toEqual(['comments', 'folded', 'links', 'meta', 'tickets']);
+    expect(DUMP_TABLES).toEqual(['comments', 'folded', 'links', 'meta', 'tickets', 'waiters']);
     const ids = (parsed.tickets ?? []).map((r) => String(r.id));
     expect(ids).toEqual([...ids].sort());
     const hashes = (parsed.folded ?? []).map((r) => String(r.hash));
