@@ -1101,13 +1101,19 @@ describe('refusals of steps 3 to 6 (ruling B, D and F)', () => {
     const newTip = revParse(dir);
     const result = move(root, env);
     expect(result).toMatchObject({ action: 'moved', joined: false, events: 4 });
+    // The move wrote the host .gitignore entry (untracked, as init leaves
+    // it); committing it here lets expectMoved check that the move wrote
+    // nothing else into the host's working tree.
+    expect(result.hostGitignore).toBe(join(root, '.gitignore'));
+    expect(readFileSync(join(root, '.gitignore'), 'utf8')).toBe('.board/\n');
+    expect(git(root, 'status', '--porcelain')).toBe('?? .gitignore\n');
+    git(root, 'add', '.gitignore');
+    git(root, 'commit', '-q', '-m', 'ignore the board');
     expectMoved(root, env);
     const all = [...files, `${fromOther}.json`, `${String(late)}.json`].sort();
     expect(eventFiles(dir)).toEqual(all);
     expect(refEvents(root)).toEqual(all);
     expect(isAncestor(root, otherCommit, BOARD_REF)).toBe(true);
-    expect(readFileSync(join(root, '.gitignore'), 'utf8')).toBe('.board/\n');
-    expect(result.hostGitignore).toBe(join(root, '.gitignore'));
     expectKept(String(result.keptAt), newTip, [...files, `${String(late)}.json`]);
     expect(tip).not.toBe(newTip);
     expectCheckClean(root, env);
