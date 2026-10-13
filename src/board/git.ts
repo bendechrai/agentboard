@@ -189,8 +189,8 @@ export interface GitRunnerOptions {
  * fixed configuration prefix
  * `-c user.name=<GIT_IDENTITY.name> -c user.email=<GIT_IDENTITY.email> -c commit.gpgsign=false`
  * (plus `-c core.hooksPath=<empty directory>` when hooks are disabled),
- * with `execFileSync`, never a shell, stdin ignored, stdout and stderr
- * captured as UTF-8 (a 256 MiB buffer).
+ * with `execFileSync`, never a shell, stdin ignored (except for `runInput`),
+ * stdout and stderr captured as UTF-8 (a 256 MiB buffer).
  */
 export interface GitRunner {
   /** The directory `run` and `attempt` run in. */
@@ -199,6 +199,11 @@ export interface GitRunner {
   run(...args: string[]): string;
   /** Like `run`, but in `cwd`. */
   runIn(cwd: string, ...args: string[]): string;
+  /**
+   * Like `run`, but with `input` on git's stdin (for plumbing that reads
+   * it: `hash-object --stdin`, `mktree`).
+   */
+  runInput(input: string, ...args: string[]): string;
   /** Runs git in `dir` and returns stdout, or the failure instead of throwing. */
   attempt(...args: string[]): string | GitFailure;
   /** Like `attempt`, but in `cwd`. */
@@ -222,12 +227,18 @@ export function gitRunner(dir: string, options?: GitRunnerOptions): GitRunner {
     '-c',
     'commit.gpgsign=false',
   ];
-  const runWith = (config: readonly string[], cwd: string, args: readonly string[]): string =>
+  const runWith = (
+    config: readonly string[],
+    cwd: string,
+    args: readonly string[],
+    input?: string,
+  ): string =>
     execFileSync('git', [...config, ...args], {
       cwd,
       env,
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      input,
       maxBuffer: 256 * 1024 * 1024,
     });
   if (options?.disableHooks === true) {
@@ -246,6 +257,7 @@ export function gitRunner(dir: string, options?: GitRunnerOptions): GitRunner {
     dir,
     run: (...args) => runIn(dir, ...args),
     runIn,
+    runInput: (input, ...args) => runWith(prefix, dir, args, input),
     attempt: (...args) => attemptIn(dir, ...args),
     attemptIn,
   };

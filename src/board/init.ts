@@ -7,24 +7,35 @@
  * the host-model mechanics live in `src/board/host-init.ts`.
  */
 
-import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 
+import { openBoard } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
-import { boardExists, locateBoard, type LocateOptions } from '../store/locate.js';
-import type { RepairOutcome } from './host-init.js';
+import { boardExists, locateBoard, type BoardSource, type LocateOptions } from '../store/locate.js';
+import { gitRunner, gitVersion, isGitFailure, meetsGitFloor, type GitVersion } from './git.js';
+import {
+  BOARD_GITIGNORE_LINES,
+  addBoardWorktree,
+  adoptRepairingWorktree,
+  ensureBoardRef,
+  repairBoardLink,
+  withInitLock,
+  type BoardRefSource,
+  type RepairOutcome,
+} from './host-init.js';
+import { BOARD_REF, detectBoardModel, type BoardModelInfo } from './model.js';
+import { ambiguousRemoteError, boardRemote, chooseRemote } from './remote.js';
+import { asciiText, type Env } from './text.js';
 
-/**
- * Lines of the `.gitignore` that `init` writes inside the board directory,
- * in this order, each followed by a newline: the cache file and its SQLite
- * WAL and shared-memory companions, so `sync` never commits them.
- */
-export const BOARD_GITIGNORE_LINES = [
-  'cache.sqlite',
-  'cache.sqlite-wal',
-  'cache.sqlite-shm',
-] as const;
+export { BOARD_GITIGNORE_LINES };
 
 /** The entry `init` adds to the host project's `.gitignore`. */
 export const HOST_GITIGNORE_ENTRY = '.board/';
@@ -119,7 +130,10 @@ export interface InitResult {
  * branch of the board repository) and the remote (or that there is none).
  * For a standalone board found through a git repository (source `git`) with
  * git 2.32 or later the message also suggests `agentboard init --into-host`
- * (that text appears); otherwise it does not. Exit 0.
+ * (that text appears); otherwise it does not. Exit 0. One exception, so
+ * that an `init` interrupted after `git worktree add` is completed by
+ * running it again: a host-model board whose worktree is not locked is
+ * locked (`addBoardWorktree`, which changes nothing on a healthy board).
  *
  * Broken host link or a `.board` directory that is not a repository
  * (`detectBoardModel` is `broken-host-link` or `not-a-repository` and the
@@ -150,9 +164,13 @@ export interface InitResult {
  *    (`joined` true), else a new empty board (`joined` false; a warning
  *    when the remote could not be reached).
  * 4. `addBoardWorktree(hostRoot, dir)`: add (or re-add a deleted but
- *    registered worktree), lock, disable sparse checkout.
+ *    registered worktree), lock, disable sparse checkout. A fresh worktree
+ *    left by an interrupted repair is moved into place instead
+ *    (`adoptRepairingWorktree`).
  * 5. Catch up the cache (`openBoard` then close), so the next command sees
  *    every event; `events` counts the event files.
+ * Steps 3 and 4 run under `withInitLock`, so two `init` processes on one
+ * host take turns and leave one ref and one worktree.
  * The result has `created` true, `model` `host`, `remote` the chosen name
  * or null, and a message naming `dir`, the model, and either how many
  * events were joined from the remote (`joined <n> events from <remote>`
@@ -189,43 +207,194 @@ export interface InitResult {
  */
 export function initBoard(options?: LocateOptions): InitResult {
   const { dir, source } = locateBoard(options);
-  if (boardExists(dir)) {
-    return {
-      dir,
-      created: false,
-      model: 'standalone',
-      joined: false,
-      remote: null,
-      events: 0,
-      hostGitignore: null,
-      warnings: [],
-      repair: null,
-      message: `board already exists at ${dir}; nothing changed`,
-    };
-  }
-  const env = { ...(options?.env ?? process.env) };
-  const git = (cwd: string, ...args: string[]): void => {
-    execFileSync('git', args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
-  };
-  try {
-    git(options?.cwd ?? process.cwd(), '--version');
-  } catch {
+  const env: Env = options?.env ?? process.env;
+  const version = gitVersion(env, options?.cwd);
+  if (version === null) {
     throw new BoardError(
       1,
       'git-missing',
-      'agentboard init needs git (the board is a git repository of its own), but git could not be run',
+      'agentboard init needs git (the board is kept in a git repository), but git could not be run',
     );
   }
+  const hostModel = source === 'git' && meetsGitFloor(version);
+  const warnings =
+    source === 'git' && !hostModel
+      ? [
+          `git ${formatVersion(version)} was found, but a board in the host repository needs ` +
+            'git 2.32 or later; created a standalone board (a repository of its own) instead',
+        ]
+      : [];
+
+  if (boardExists(dir)) {
+    const info = detectBoardModel(dir, { env });
+    if (info.model === 'host' || info.model === 'standalone') {
+      return existingBoard(dir, info, hostModel, env);
+    }
+  }
+  if (hostModel) {
+    return existsSync(dir) ? repairBoard(dir, env) : createHostBoard(dir, env);
+  }
+  return createStandaloneBoard(dir, source, warnings, env);
+}
+
+/** The existing-board report (`initBoard`): nothing is created or modified. */
+function existingBoard(
+  dir: string,
+  info: BoardModelInfo,
+  hostModel: boolean,
+  env: Env,
+): InitResult {
+  const choice = boardRemote(info, { env });
+  const remote = choice.chosen?.name ?? null;
+  const remoteText = remote === null ? 'no remote configured' : `remote: ${asciiText(remote)}`;
+  const lines: string[] = [];
+  if (info.model === 'host') {
+    if (hostModel) {
+      // Finishes an init interrupted after `git worktree add`: locks an unlocked worktree.
+      addBoardWorktree(dirname(dir), dir, { env });
+    }
+    lines.push(
+      `board already exists at ${asciiText(dir)} (host model: its history is ${BOARD_REF} ` +
+        `in the host repository; ${remoteText}); nothing changed`,
+    );
+  } else {
+    const history =
+      choice.branch === null
+        ? 'a detached HEAD in the board repository'
+        : `branch ${asciiText(choice.branch)} of the board repository`;
+    lines.push(
+      `board already exists at ${asciiText(dir)} (standalone model: its history is ${history}; ` +
+        `${remoteText}); nothing changed`,
+    );
+    if (hostModel) {
+      lines.push('run agentboard init --into-host to move the board into the host repository');
+    }
+  }
+  return {
+    dir,
+    created: false,
+    model: info.model === 'host' ? 'host' : 'standalone',
+    joined: false,
+    remote,
+    events: countEvents(dir),
+    hostGitignore: null,
+    warnings: [],
+    repair: null,
+    message: lines.join('\n'),
+  };
+}
+
+/** The remote choice for the host repository at `hostRoot`, refused when ambiguous. */
+function hostRemote(hostRoot: string, env: Env): string | null {
+  const branch = gitRunner(hostRoot, { env }).attempt('symbolic-ref', '--quiet', '--short', 'HEAD');
+  const choice = chooseRemote(hostRoot, isGitFailure(branch) ? null : branch.trim(), { env });
+  if (choice.ambiguous) {
+    throw ambiguousRemoteError(choice, 'init');
+  }
+  return choice.chosen?.name ?? null;
+}
+
+/** A new host-model board at `dir` (`initBoard`, "New host-model board"). */
+function createHostBoard(dir: string, env: Env): InitResult {
+  const hostRoot = dirname(dir);
+  const remote = hostRemote(hostRoot, env);
+  const hostGitignore = ignoreBoardInHost(hostRoot);
+  const ref = withInitLock(
+    hostRoot,
+    () => {
+      const outcome = ensureBoardRef(hostRoot, remote, { env });
+      adoptRepairingWorktree(hostRoot, dir, { env });
+      addBoardWorktree(hostRoot, dir, { env });
+      return outcome;
+    },
+    { env },
+  );
+  openBoard(dir).close();
+  const events = countEvents(dir);
+  const where = `created the board at ${asciiText(dir)} (host model: a worktree of the host repository at ${BOARD_REF})`;
+  const how =
+    ref.source === 'remote'
+      ? `joined ${plural(events, 'event')} from ${asciiText(remote ?? '')}`
+      : remote === null
+        ? 'a new empty board; agentboard sync publishes it once the repository has a remote'
+        : `a new empty board; agentboard sync publishes it to ${asciiText(remote)}, ` +
+          'where everyone who can fetch the remote can read it';
+  return {
+    dir,
+    created: true,
+    model: 'host',
+    joined: ref.source === 'remote',
+    remote,
+    events,
+    hostGitignore,
+    warnings: [...ref.warnings],
+    repair: null,
+    message: `${where}; ${how}`,
+  };
+}
+
+/** Repairs the board directory `dir` whose host link is broken or which is not a repository. */
+function repairBoard(dir: string, env: Env): InitResult {
+  const hostRoot = dirname(dir);
+  const remote = hostRemote(hostRoot, env);
+  const hostGitignore = ignoreBoardInHost(hostRoot);
+  const repair = withInitLock(hostRoot, () => repairBoardLink(hostRoot, dir, remote, { env }), {
+    env,
+  });
+  openBoard(dir).close();
+  const events = countEvents(dir);
+  const kept = repair.keptAt ?? '';
+  const message =
+    repair.method === 'worktree-repair'
+      ? `repaired the board at ${asciiText(dir)}: relinked the worktree to the host repository ` +
+        `at ${asciiText(hostRoot)}; nothing was copied or kept aside`
+      : `repaired the board at ${asciiText(dir)}: built a fresh worktree at ${BOARD_REF} ` +
+        `(${sourceText(repair.source, remote)}), copied ${plural(repair.copied.length, 'event file')} ` +
+        `from the old directory, which is kept at ${asciiText(kept)}`;
+  return {
+    dir,
+    created: false,
+    model: 'host',
+    joined: repair.source === 'remote',
+    remote,
+    events,
+    hostGitignore,
+    warnings: repair.skipped.map(
+      (name) =>
+        `skipped the event file ${asciiText(name)} (kept at ${asciiText(join(kept, 'events'))}): ` +
+        'its content does not match its name',
+    ),
+    repair,
+    message,
+  };
+}
+
+/** Where a repaired board's history came from, for the repair message. */
+function sourceText(source: BoardRefSource | null, remote: string | null): string {
+  if (source === 'remote') {
+    return `joined from ${asciiText(remote ?? '')}`;
+  }
+  return source === 'local' ? 'from the local ref' : 'a new empty board';
+}
+
+/** A new standalone board at `dir` (`initBoard`, "New standalone board"), completing what is there. */
+function createStandaloneBoard(
+  dir: string,
+  source: BoardSource,
+  warnings: string[],
+  env: Env,
+): InitResult {
   // The events directory is created last: it is what makes the board exist,
   // so an interrupted init is completed by running init again.
   mkdirSync(dir, { recursive: true });
   if (!existsSync(join(dir, '.git'))) {
-    git(dir, 'init', '-q');
+    gitRunner(dir, { env }).run('init', '-q');
   }
   writeIfMissing(join(dir, '.gitignore'), BOARD_GITIGNORE_LINES.map((l) => `${l}\n`).join(''));
   mkdirSync(join(dir, 'events'), { recursive: true });
   writeIfMissing(join(dir, 'events', '.gitkeep'), '');
-  const hostGitignore = source === 'env' ? null : ignoreBoardInHost(dirname(dir));
+  const hostGitignore = source === 'git' ? ignoreBoardInHost(dirname(dir)) : null;
+  const why = warnings.length === 0 ? '' : '; the host model needs git 2.32 or later';
   return {
     dir,
     created: true,
@@ -234,10 +403,26 @@ export function initBoard(options?: LocateOptions): InitResult {
     remote: null,
     events: 0,
     hostGitignore,
-    warnings: [],
+    warnings,
     repair: null,
-    message: `created the board at ${dir}`,
+    message: `created the board at ${asciiText(dir)} (standalone model: a git repository of its own${why})`,
   };
+}
+
+/** `<major>.<minor>.<patch>`. */
+function formatVersion(version: GitVersion): string {
+  return `${String(version.major)}.${String(version.minor)}.${String(version.patch)}`;
+}
+
+/** `<n> <noun>` or `<n> <noun>s`. */
+function plural(n: number, noun: string): string {
+  return `${String(n)} ${noun}${n === 1 ? '' : 's'}`;
+}
+
+/** The number of event files (`<64 hex>.json`) in `<dir>/events`. */
+function countEvents(dir: string): number {
+  return readdirSync(join(dir, 'events')).filter((name) => /^[0-9a-f]{64}\.json$/.test(name))
+    .length;
 }
 
 /** Writes `content` to `path` unless a file is already there. */

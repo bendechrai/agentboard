@@ -66,8 +66,9 @@ export interface BoardModelInfo {
   /**
    * For `broken-host-link`, one plain ASCII line saying what is wrong: that
    * the `.git` file's target is missing (naming it), or that the board is a
-   * worktree of another repository (naming its git common directory). Null
-   * for every other model.
+   * worktree of another repository (naming its git common directory).
+   * Every path in it is a realpath, however `dir` was given. Null for
+   * every other model.
    */
   readonly detail: string | null;
 }
@@ -121,7 +122,12 @@ export function detectBoardModel(dir: string, options?: DetectOptions): BoardMod
   const dotGitIsFile = isFile(join(real, '.git'));
 
   const git = gitRunner(real, { env: options?.env });
-  const first = git.attempt('rev-parse', '--show-toplevel', '--git-common-dir', '--absolute-git-dir');
+  const first = git.attempt(
+    'rev-parse',
+    '--show-toplevel',
+    '--git-common-dir',
+    '--absolute-git-dir',
+  );
   if (isGitFailure(first)) {
     if (first.status !== null && dotGitIsFile) {
       return result('broken-host-link', null, missingTargetDetail(real));
@@ -144,11 +150,12 @@ export function detectBoardModel(dir: string, options?: DetectOptions): BoardMod
         return result('host', realCommon);
       }
     }
+    // Every path in the detail is a realpath, however `dir` was given.
     return result(
       'broken-host-link',
       null,
-      `the board at ${asciiText(absolute)} is a worktree of another repository ` +
-        `(its git directory is ${asciiText(realCommon)}, not the one of ${asciiText(dirname(absolute))})`,
+      `the board at ${asciiText(real)} is a worktree of another repository ` +
+        `(its git directory is ${asciiText(realCommon)}, not the one of ${asciiText(dirname(real))})`,
     );
   }
   // Not a linked worktree: a repository of its own, wherever its git

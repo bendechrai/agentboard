@@ -15,7 +15,43 @@
  * "Board ref in the host repository": hooks never run for the board).
  */
 
-import type { GitRunnerOptions } from './git.js';
+import {
+  copyFileSync,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  mkdirSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
+
+import { sha256Hex } from '../events/canonical.js';
+import { BoardError } from '../store/errors.js';
+import {
+  firstErrorLine,
+  gitRunner,
+  isGitFailure,
+  type GitRunner,
+  type GitRunnerOptions,
+} from './git.js';
+import { BOARD_REF, detectBoardModel } from './model.js';
+import { asciiText } from './text.js';
+
+/**
+ * Lines of the `.gitignore` that `init` writes inside the board directory,
+ * in this order, each followed by a newline: the cache file and its SQLite
+ * WAL and shared-memory companions, so `sync` never commits them. Also
+ * exported from `src/board/init.ts`.
+ */
+export const BOARD_GITIGNORE_LINES = [
+  'cache.sqlite',
+  'cache.sqlite-wal',
+  'cache.sqlite-shm',
+] as const;
 
 /** The reason the board worktree is locked with (`git worktree lock --reason`). */
 export const WORKTREE_LOCK_REASON = 'agentboard board';
@@ -37,8 +73,25 @@ export const REPAIRING_WORKTREE = 'repairing';
 /** The prefix of a kept-aside board directory: `stale-board-<UTC timestamp>`. */
 export const STALE_BOARD_PREFIX = 'stale-board-';
 
+/**
+ * The lock file `withInitLock` holds under `AGENTBOARD_GIT_SUBDIR` while an
+ * `init` makes or repairs the host-model board, so two `init` processes on
+ * one host never race `git worktree add` (which can register two worktrees
+ * for one path). Removed when the holder is done.
+ */
+export const INIT_LOCK_FILE = 'init.lock';
+
+/** A lock whose holder is gone, or older than this, is broken by the next `init`. */
+const STALE_LOCK_MS = 60_000;
+
 /** Options of every function in this module. */
 export type HostInitOptions = Pick<GitRunnerOptions, 'env'>;
+
+/** The fixed time of the deterministic empty-board commit. */
+const EPOCH = '@0 +0000';
+
+/** The name of a committed event file. */
+const EVENT_FILE = /^[0-9a-f]{64}\.json$/;
 
 /**
  * The name of a kept-aside board directory for the moment `now`:
@@ -47,8 +100,12 @@ export type HostInitOptions = Pick<GitRunnerOptions, 'env'>;
  * ASCII, no separators other than `T` and `Z`, sortable by time. Pure.
  */
 export function staleBoardName(now: Date): string {
-  void now;
-  throw new Error('not implemented');
+  const pad = (n: number, width = 2): string => String(n).padStart(width, '0');
+  return (
+    `${STALE_BOARD_PREFIX}${pad(now.getUTCFullYear(), 4)}${pad(now.getUTCMonth() + 1)}` +
+    `${pad(now.getUTCDate())}T${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}` +
+    `${pad(now.getUTCSeconds())}Z`
+  );
 }
 
 /**
@@ -68,9 +125,21 @@ export function staleBoardName(now: Date): string {
  * @throws the git child process error when a plumbing command fails.
  */
 export function writeEmptyBoardCommit(hostDir: string, options?: HostInitOptions): string {
-  void hostDir;
-  void options;
-  throw new Error('not implemented');
+  const git = gitRunner(hostDir, {
+    env: { ...(options?.env ?? process.env), GIT_AUTHOR_DATE: EPOCH, GIT_COMMITTER_DATE: EPOCH },
+    disableHooks: true,
+  });
+  const ignore = BOARD_GITIGNORE_LINES.map((line) => `${line}\n`).join('');
+  const ignoreBlob = git.runInput(ignore, 'hash-object', '-w', '--stdin').trim();
+  const keepBlob = git.runInput('', 'hash-object', '-w', '--stdin').trim();
+  const eventsTree = git.runInput(`100644 blob ${keepBlob}\t.gitkeep\n`, 'mktree').trim();
+  const rootTree = git
+    .runInput(
+      `100644 blob ${ignoreBlob}\t.gitignore\n040000 tree ${eventsTree}\tevents\n`,
+      'mktree',
+    )
+    .trim();
+  return git.run('commit-tree', rootTree, '-m', EMPTY_BOARD_COMMIT_MESSAGE).trim();
 }
 
 /** Where `ensureBoardRef` found the history it put under `BOARD_REF`. */
@@ -121,10 +190,37 @@ export function ensureBoardRef(
   remote: string | null,
   options?: HostInitOptions,
 ): BoardRefOutcome {
-  void hostDir;
-  void remote;
-  void options;
-  throw new Error('not implemented');
+  const git = hostGit(hostDir, options);
+  const local = commitOf(git, BOARD_REF);
+  if (local !== null) {
+    return { commit: local, source: 'local', warnings: [] };
+  }
+  const warnings: string[] = [];
+  if (remote !== null) {
+    const listed = git.attempt('ls-remote', remote, BOARD_REF);
+    if (isGitFailure(listed)) {
+      warnings.push(
+        `the remote ${asciiText(remote)} could not be reached (${firstErrorLine(listed)}); ` +
+          'created a new empty board, and the next agentboard sync joins any board there',
+      );
+    } else if (listed.trim() !== '') {
+      git.run('fetch', '--no-tags', remote, `${BOARD_REF}:${BOARD_REF}`);
+      const fetched = git.run('rev-parse', '--verify', `${BOARD_REF}^{commit}`).trim();
+      return { commit: fetched, source: 'remote', warnings };
+    }
+  }
+  const commit = writeEmptyBoardCommit(hostDir, options);
+  try {
+    git.run('update-ref', BOARD_REF, commit, '');
+  } catch (error) {
+    // Another process created the ref in between: use what it made.
+    const raced = commitOf(git, BOARD_REF);
+    if (raced === null) {
+      throw error;
+    }
+    return { commit: raced, source: 'local', warnings };
+  }
+  return { commit, source: 'created', warnings };
 }
 
 /**
@@ -158,10 +254,22 @@ export function ensureBoardRef(
  *   otherwise the git child process error of a failing command.
  */
 export function addBoardWorktree(hostDir: string, dir: string, options?: HostInitOptions): void {
-  void hostDir;
-  void dir;
-  void options;
-  throw new Error('not implemented');
+  const git = hostGit(hostDir, options);
+  const entry = registeredAt(git, dir);
+  if (entry === null) {
+    try {
+      git.run('worktree', 'add', '--detach', dir, BOARD_REF);
+    } catch (error) {
+      // Another process added the worktree in between: not an error.
+      if (registeredAt(git, dir) === null) {
+        throw error;
+      }
+    }
+  } else if (!existsSync(dir)) {
+    git.run('worktree', 'add', '-f', '-f', '--detach', dir, BOARD_REF);
+  }
+  lockWorktree(git, dir);
+  disableSparseCheckout(dir, options);
 }
 
 /** How `repairBoardLink` repaired the board. */
@@ -208,10 +316,15 @@ export interface RepairOutcome {
  * joining a shared board"; design.md decision 7), with `remote` the
  * remote chosen in the host repository (null when there is none):
  *
- * 1. For `broken-host-link` only: `git worktree repair <dir>` in `hostDir`.
- *    When `detectBoardModel(dir)` is then `host`, the repair is done:
- *    method `worktree-repair`, nothing copied, nothing kept aside, and the
- *    worktree is locked when it is not.
+ * 1. For a `broken-host-link` whose `.git` file names a git directory that
+ *    is missing (the host was moved together with its `.board`):
+ *    `git worktree repair <dir>` in `hostDir`. When `detectBoardModel(dir)`
+ *    is then `host`, the repair is done: method `worktree-repair`, nothing
+ *    copied, nothing kept aside, and the worktree is locked when it is not.
+ *    A `.git` file naming a directory that exists (a `.board` copied from
+ *    another clone, whose repository still has it) skips this step:
+ *    `git worktree repair` would otherwise rewrite that other repository's
+ *    worktree entry to point here.
  * 2. Otherwise a fresh worktree: `ensureBoardRef(hostDir, remote)` (the
  *    local ref, else the remote's, else a new empty board), then
  *    `git worktree add --detach <git common dir>/agentboard/repairing refs/agentboard/board`
@@ -222,7 +335,8 @@ export interface RepairOutcome {
  *    skipped and reported; event files are content-addressed, so a copy
  *    never changes an existing event. Then the old directory is renamed to
  *    `<git common dir>/agentboard/<staleBoardName(now)>` (same file system,
- *    one rename), the fresh worktree is moved into place with
+ *    one rename; a numeric suffix keeps two copies kept in one second
+ *    apart), the fresh worktree is moved into place with
  *    `git worktree move <repairing> <dir>`, locked with
  *    `WORKTREE_LOCK_REASON`, and sparse checkout is disabled as
  *    `addBoardWorktree` does. Copied files are left uncommitted for the
@@ -241,9 +355,273 @@ export function repairBoardLink(
   remote: string | null,
   options?: HostInitOptions,
 ): RepairOutcome {
-  void hostDir;
-  void dir;
-  void remote;
-  void options;
-  throw new Error('not implemented');
+  const git = hostGit(hostDir, options);
+  const env = options?.env;
+  if (detectBoardModel(dir, { env }).model === 'broken-host-link' && gitfileTargetMissing(dir)) {
+    git.attempt('worktree', 'repair', dir);
+    if (detectBoardModel(dir, { env }).model === 'host') {
+      lockWorktree(git, dir);
+      return { method: 'worktree-repair', copied: [], skipped: [], keptAt: null, source: null };
+    }
+  }
+
+  const ref = ensureBoardRef(hostDir, remote, options);
+  const scratch = agentboardGitDir(git, hostDir);
+  const repairing = join(scratch, REPAIRING_WORKTREE);
+  removeLeftoverWorktree(git, repairing);
+  git.run('worktree', 'add', '--detach', repairing, BOARD_REF);
+  const { copied, skipped } = carryOverEvents(join(dir, 'events'), join(repairing, 'events'));
+  const keptAt = freshStaleName(scratch, new Date());
+  renameSync(dir, keptAt);
+  git.run('worktree', 'move', repairing, dir);
+  lockWorktree(git, dir);
+  disableSparseCheckout(dir, options);
+  return { method: 'fresh-worktree', copied, skipped, keptAt, source: ref.source };
+}
+
+/**
+ * Finishes a repair that was interrupted after the old directory was
+ * renamed away and before the fresh worktree was moved into place: when
+ * `dir` is missing and `<git common dir>/agentboard/repairing` is a
+ * registered, present worktree, `git worktree move` it to `dir` (its
+ * `events/` holds what the repair carried over). Returns true when it did.
+ * Otherwise changes nothing and returns false.
+ */
+export function adoptRepairingWorktree(
+  hostDir: string,
+  dir: string,
+  options?: HostInitOptions,
+): boolean {
+  const git = hostGit(hostDir, options);
+  const repairing = join(agentboardGitDir(git, hostDir), REPAIRING_WORKTREE);
+  if (existsSync(dir) || !existsSync(repairing) || registeredAt(git, repairing) === null) {
+    return false;
+  }
+  git.run('worktree', 'move', repairing, dir);
+  return true;
+}
+
+/**
+ * Runs `fn` while holding `<git common dir>/agentboard/init.lock` of the
+ * repository at `hostDir`, so that two `init` processes on one host make
+ * or repair the board one after the other (design.md decision 2: the loser
+ * of the create-only `update-ref` uses the winner's ref; without the lock,
+ * two `git worktree add` of one path can both succeed and register two
+ * worktrees). The file holds the holder's pid; a lock whose holder is no
+ * longer running (an `init` that was killed) or that is older than a
+ * minute is broken. Waits in 50 ms steps. The lock is removed when `fn`
+ * returns or throws.
+ */
+export function withInitLock<T>(hostDir: string, fn: () => T, options?: HostInitOptions): T {
+  const lock = join(agentboardGitDir(hostGit(hostDir, options), hostDir), INIT_LOCK_FILE);
+  for (;;) {
+    try {
+      writeFileSync(lock, String(process.pid), { flag: 'wx' });
+      break;
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== 'EEXIST') {
+        throw error;
+      }
+    }
+    if (lockIsStale(lock)) {
+      rmSync(lock, { force: true });
+    } else {
+      sleep(50);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    rmSync(lock, { force: true });
+  }
+}
+
+/** True when the holder named in `lock` is not running, or the file is older than `STALE_LOCK_MS`. */
+function lockIsStale(lock: string): boolean {
+  try {
+    const stats = statSync(lock);
+    if (Date.now() - stats.mtimeMs > STALE_LOCK_MS) {
+      return true;
+    }
+    const pid = Number(readFileSync(lock, 'utf8').trim());
+    if (!Number.isInteger(pid) || pid <= 0) {
+      return false;
+    }
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    // ESRCH: no such process. Anything else (EPERM, a vanished file): keep waiting.
+    return (error as { code?: unknown }).code === 'ESRCH';
+  }
+}
+
+/** Blocks the current thread for `ms` milliseconds. */
+function sleep(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** A runner for the host repository at `hostDir` with its hooks disabled. */
+function hostGit(hostDir: string, options?: HostInitOptions): GitRunner {
+  return gitRunner(hostDir, { env: options?.env, disableHooks: true });
+}
+
+/** The full id of the commit `rev` names in the repository `git` runs in, or null. */
+function commitOf(git: GitRunner, rev: string): string | null {
+  const out = git.attempt('rev-parse', '--quiet', '--verify', `${rev}^{commit}`);
+  return isGitFailure(out) ? null : out.trim();
+}
+
+/** `<git common dir>/agentboard` of the repository at `hostDir`, created when missing. */
+function agentboardGitDir(git: GitRunner, hostDir: string): string {
+  const common = resolve(hostDir, git.run('rev-parse', '--git-common-dir').trim());
+  const dir = join(common, AGENTBOARD_GIT_SUBDIR);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** One entry of `git worktree list --porcelain`. */
+interface WorktreeEntry {
+  readonly path: string;
+  readonly locked: boolean;
+}
+
+/**
+ * Every worktree of the repository `git` runs in.
+ *
+ * @throws BoardError exit 1, reason `git-missing`, when git cannot be run.
+ */
+function listWorktrees(git: GitRunner): WorktreeEntry[] {
+  const out = git.attempt('worktree', 'list', '--porcelain');
+  if (isGitFailure(out)) {
+    throw out.status === null
+      ? new BoardError(1, 'git-missing', 'agentboard init needs git, but git could not be run')
+      : new Error(`git worktree list failed: ${firstErrorLine(out)}`);
+  }
+  return out
+    .split('\n\n')
+    .map((block) => block.trim())
+    .filter((block) => block !== '')
+    .map((block) => {
+      const lines = block.split('\n');
+      const path =
+        lines.find((line) => line.startsWith('worktree '))?.slice('worktree '.length) ?? '';
+      return {
+        path,
+        locked: lines.some((line) => line === 'locked' || line.startsWith('locked ')),
+      };
+    });
+}
+
+/**
+ * The worktree entry registered at exactly `dir`, compared as realpaths
+ * (of the parent when the directory itself is missing), or null.
+ */
+function registeredAt(git: GitRunner, dir: string): WorktreeEntry | null {
+  const wanted = comparablePath(dir);
+  return listWorktrees(git).find((entry) => comparablePath(entry.path) === wanted) ?? null;
+}
+
+/** `path` as a realpath; when it is missing, its parent's realpath joined with its name. */
+function comparablePath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return join(realpathOrSelf(dirname(path)), basename(path));
+  }
+}
+
+function realpathOrSelf(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/** Locks the worktree at `dir` with `WORKTREE_LOCK_REASON` unless it is already locked (any reason). */
+function lockWorktree(git: GitRunner, dir: string): void {
+  if (registeredAt(git, dir)?.locked !== false) {
+    return;
+  }
+  try {
+    git.run('worktree', 'lock', '--reason', WORKTREE_LOCK_REASON, dir);
+  } catch (error) {
+    // Another process locked it in between: not an error.
+    if (registeredAt(git, dir)?.locked !== true) {
+      throw error;
+    }
+  }
+}
+
+/** `git sparse-checkout disable` in the worktree at `dir` when sparse checkout is enabled for it. */
+function disableSparseCheckout(dir: string, options?: HostInitOptions): void {
+  const worktree = gitRunner(dir, { env: options?.env, disableHooks: true });
+  const sparse = worktree.attempt('config', '--get', 'core.sparseCheckout');
+  if (!isGitFailure(sparse) && sparse.trim() === 'true') {
+    worktree.run('sparse-checkout', 'disable');
+  }
+}
+
+/** True when `<dir>/.git` is a file whose `gitdir:` target does not exist. */
+function gitfileTargetMissing(dir: string): boolean {
+  try {
+    const target = /^gitdir:\s*(.*)$/m.exec(readFileSync(join(dir, '.git'), 'utf8'))?.[1]?.trim();
+    return target !== undefined && !existsSync(resolve(dir, target));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Removes the `repairing` worktree or directory a previous, interrupted
+ * repair left at `path`: unregistered (unlocked and removed by force when
+ * it is registered) and deleted from disk.
+ */
+function removeLeftoverWorktree(git: GitRunner, path: string): void {
+  if (registeredAt(git, path) !== null) {
+    git.attempt('worktree', 'unlock', path);
+    git.attempt('worktree', 'remove', '--force', '--force', path);
+  }
+  rmSync(path, { recursive: true, force: true });
+}
+
+/**
+ * Copies every event file of `from` that `to` lacks and whose content
+ * hashes to its name; returns the copied and the skipped names, ascending.
+ * Dot-named entries (`.gitkeep`, temporaries) and subdirectories are
+ * ignored; a missing `from` copies nothing.
+ */
+function carryOverEvents(from: string, to: string): { copied: string[]; skipped: string[] } {
+  const copied: string[] = [];
+  const skipped: string[] = [];
+  if (!existsSync(from)) {
+    return { copied, skipped };
+  }
+  for (const entry of readdirSync(from, { withFileTypes: true }).sort((a, b) =>
+    a.name < b.name ? -1 : 1,
+  )) {
+    if (!entry.isFile() || entry.name.startsWith('.')) {
+      continue;
+    }
+    const content = readFileSync(join(from, entry.name));
+    if (!EVENT_FILE.test(entry.name) || sha256Hex(content) !== entry.name.slice(0, 64)) {
+      skipped.push(entry.name);
+      continue;
+    }
+    if (!existsSync(join(to, entry.name))) {
+      copyFileSync(join(from, entry.name), join(to, entry.name));
+      copied.push(entry.name);
+    }
+  }
+  return { copied, skipped };
+}
+
+/** `<scratch>/<staleBoardName(now)>`, with `-2`, `-3`, ... appended while the name is taken. */
+function freshStaleName(scratch: string, now: Date): string {
+  const base = join(scratch, staleBoardName(now));
+  let candidate = base;
+  for (let n = 2; existsSync(candidate); n += 1) {
+    candidate = `${base}-${String(n)}`;
+  }
+  return candidate;
 }
