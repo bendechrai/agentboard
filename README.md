@@ -174,9 +174,10 @@ A board's history is kept in git in one of two models:
   set, when git is older than 2.32, or when the repository's `.git`
   directory is not inside its working tree (a bare repository with linked
   worktrees, `git init --separate-git-dir`, a submodule); it says so in
-  each case. Every board made before the host model existed is one. `init --remote <url>` creates a
-  standalone board shared through a repository of its own, for a board
-  that must stay out of a public project.
+  each case. Every board made before the host model existed is one.
+  `init --remote <url>` creates a standalone board shared through a
+  repository of its own, for a board that must stay out of a public
+  project.
 
 In both models `.board/` holds `events/` (with an empty `.gitkeep`) and a
 `.gitignore` that excludes the cache (`cache.sqlite` and its `-wal` and
