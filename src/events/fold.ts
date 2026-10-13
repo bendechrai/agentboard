@@ -724,16 +724,17 @@ function applyToTicket(
       return reason;
     }
     case 'ticket.unplanned':
-      // Stub (add-adhoc-ticket-lifecycle 1.2): the rule documented on
-      // `fold` is still to be written. The message avoids the phrase the
-      // web client bundle guard looks for, because this module is bundled
-      // into the client.
-      throw new Error('ticket.unplanned: fold rule pending');
+      if (ticket.task !== null) {
+        return 'already-linked';
+      }
+      ticket.unplanned = { reason: event.body.reason, actor, ts: { ...ts } };
+      return null;
     case 'ticket.link': {
       const { body } = event;
       if ('task' in body) {
         ticket.task = copyTaskRef(body.task);
         ticket.adhoc = null;
+        ticket.unplanned = null;
       } else if ('pr' in body) {
         ticket.links.push({ type: 'pr', pr: body.pr, actor, ts: { ...ts }, hash });
       } else {
@@ -773,13 +774,13 @@ function applyToTicket(
  * scope disposition (`needs-scope-disposition` when `task` and `unplanned`
  * are both null). Shared by `ticket.move` and a `ticket.handoff` that
  * changes status, so a hand-off into `merged` obeys the same rule.
- *
- * Stub (add-adhoc-ticket-lifecycle 1.2): the `needs-task-link` branch that
- * refused `implementing` is removed; the `merged` rule is not applied yet.
  */
 function moveTo(ticket: Ticket, to: Status): RejectionReason | null {
   if (!isTransitionAllowed(ticket.status, to, ticket.blockedFrom)) {
     return 'invalid-transition';
+  }
+  if (to === 'merged' && ticket.task === null && ticket.unplanned === null) {
+    return 'needs-scope-disposition';
   }
   ticket.blockedFrom = to === 'blocked' ? ticket.status : null;
   ticket.status = to;

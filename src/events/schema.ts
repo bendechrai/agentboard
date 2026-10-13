@@ -979,10 +979,8 @@ const BODY_CHECKS: Record<KnownKind, BodyCheck> = {
       report,
     );
   },
-  'ticket.unplanned': () => {
-    // Stub (add-adhoc-ticket-lifecycle 1.1): accepts any object body; the
-    // `reason` and extra-field checks documented on `validateEvent` are not
-    // implemented yet.
+  'ticket.unplanned': (body, report) => {
+    checkFields(body, { reason: nonEmptyString }, {}, report);
   },
   'ticket.checklist': (body, report) => {
     checkFields(

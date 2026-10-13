@@ -8,8 +8,8 @@ import { writeSync } from 'node:fs';
 
 import { canonicalHash } from '../events/canonical.js';
 import type { ApplyOutcome, BoardState, FoldInput, Ticket } from '../events/fold.js';
-import { nextHlc } from '../events/hlc.js';
-import { validateEvent, type BoardEvent } from '../events/schema.js';
+import { nextHlc, type Hlc } from '../events/hlc.js';
+import { formatTaskRef, validateEvent, type BoardEvent } from '../events/schema.js';
 import type { Board } from './board.js';
 import { readState, readTicket, type CatchUpReport } from './cache.js';
 import {
@@ -232,43 +232,70 @@ export function runCommand(
       }
       throw error;
     }
-    const { event, input, session, outcome } = decided;
+    const { session, events: accepted } = decided;
 
-    // 5. Write the event file (atomic), then 6. apply to rows and 7. commit.
-    const written = writeEventFile(board.eventsDir, event, hooks);
-    if (written.existed) {
-      // Catch-up recorded every file and ts sorts after all of them, so the
-      // file can only have been dropped out of band since: never fold it here.
-      throw new BoardError(
-        5,
-        'integrity',
-        `event file ${written.path} appeared while the command ran; nothing was written`,
-      );
+    // 5. Write the event files (atomic), in order. Every event was accepted
+    // in memory before the first file is written, so a refusal never
+    // leaves a file behind.
+    const write = (event: BoardEvent): WrittenEvent => {
+      const written = writeEventFile(board.eventsDir, event, hooks);
+      if (written.existed) {
+        // Catch-up recorded every file and ts sorts after all of them, so the
+        // file can only have been dropped out of band since: never fold it here.
+        throw new BoardError(
+          5,
+          'integrity',
+          `event file ${written.path} appeared while the command ran; nothing was written`,
+        );
+      }
+      return { hash: written.hash, path: written.path, event };
+    };
+    const [firstAccepted, ...moreAccepted] = accepted;
+    let last = write(firstAccepted.event);
+    const events = [last];
+    for (const next of moreAccepted) {
+      last = write(next.event);
+      events.push(last);
     }
-    commitOwnEvent(db, session, input, outcome);
-    const ticket = event.kind === 'board.meta' ? null : readTicket(db, event.ticket);
+
+    // 6. Apply to rows (the session holds the state after every event; the
+    // first flush writes it and each event is recorded in turn, so the last
+    // position is the last event's), then 7. commit.
+    for (const { input, outcome } of accepted) {
+      commitOwnEvent(db, session, input, outcome);
+    }
+    const ticket = last.event.kind === 'board.meta' ? null : readTicket(db, last.event.ticket);
     db.exec('COMMIT');
-    const own: WrittenEvent = { hash: written.hash, path: written.path, event };
-    return { hash: own.hash, path: own.path, event, events: [own], ticket, catchUp };
+    return { hash: last.hash, path: last.path, event: last.event, events, ticket, catchUp };
   } catch (error) {
     rollback(db);
     throw error;
   }
 }
 
-/** The command's event, validated and applied in memory by steps 2 to 4. */
-interface Decided {
+/** One of the command's events, validated and applied in memory by steps 3 and 4. */
+interface Accepted {
   event: BoardEvent;
   input: FoldInput;
-  session: FoldSession;
   outcome: ApplyOutcome;
 }
 
 /**
+ * The command's events in write order, validated and applied in memory by
+ * steps 2 to 4 against one fold session.
+ */
+interface Decided {
+  session: FoldSession;
+  events: readonly [Accepted, ...Accepted[]];
+}
+
+/**
  * Steps 2 to 4 of `runCommand`: the operation decides against the
- * caught-up state, the event is built later than every folded event and
- * validated with the fold's own rules. Writes nothing (the fold session
- * only applies the event in memory); a refusal is a `BoardError`.
+ * caught-up state, then each proposed event in order is built later than
+ * every folded event and than the one before it, and validated with the
+ * fold's own rules against the state the earlier events leave. Writes
+ * nothing (the fold session only applies the events in memory); a refusal
+ * of any event is a `BoardError`.
  */
 function decide(board: Board, actor: string, operation: Operation, t: number): Decided {
   const { db } = board;
@@ -281,16 +308,25 @@ function decide(board: Board, actor: string, operation: Operation, t: number): D
     throw new BoardError(decision.exitCode, decision.reason, decision.message);
   }
   const proposed: ProposedEvents = 'events' in decision ? decision.events : [decision.event];
-  const [first, second] = proposed;
-  if (second !== undefined) {
-    // Stub (add-adhoc-ticket-lifecycle 1.3): the two-event path documented
-    // on `runCommand` is not implemented yet.
-    throw new Error('not implemented: a two-event command');
+  const [firstProposed, ...moreProposed] = proposed;
+  const session = new FoldSession(db);
+  let ts = nextHlc(readLastPosition(db)?.ts ?? null, t, actor);
+  const first = accept(session, build(firstProposed, actor, ts));
+  const more: Accepted[] = [];
+  for (const next of moreProposed) {
+    ts = nextHlc(ts, t, actor);
+    more.push(accept(session, build(next, actor, ts)));
   }
+  return { session, events: [first, ...more] };
+}
 
-  // 3. Build the event, later than every folded event.
-  const ts = nextHlc(readLastPosition(db)?.ts ?? null, t, actor);
-  const built = { v: 1, ...first, actor, ts };
+/**
+ * Step 3: the full event of a proposed one, with `v` 1, the actor and
+ * `ts`, or `BoardError(1, 'malformed-event')` naming the offending fields
+ * or the unknown kind.
+ */
+function build(proposed: ProposedEvent, actor: string, ts: Hlc): BoardEvent {
+  const built = { v: 1, ...proposed, actor, ts };
   const validated = validateEvent(built);
   if (!validated.ok) {
     const fields = validated.reasons.map((r) => `${r.field}: ${r.message}`).join('; ');
@@ -299,22 +335,31 @@ function decide(board: Board, actor: string, operation: Operation, t: number): D
   if (!validated.known) {
     throw new BoardError(1, 'malformed-event', `unknown event kind ${built.kind}`);
   }
-  const event = validated.event;
+  return validated.event;
+}
 
-  // 4. Validate against the current state with the fold's own rules.
+/**
+ * Step 4: applies `event` to `session` in memory with the fold's own rules,
+ * or throws `BoardError(4, <fold rejection reason>)`; the message of
+ * `already-assigned` names the current assignee and that of
+ * `already-linked` the task reference the ticket already has.
+ */
+function accept(session: FoldSession, event: BoardEvent): Accepted {
   const input = { hash: canonicalHash(event), event };
-  const session = new FoldSession(db);
-  const holder = event.kind === 'board.meta' ? null : session.ticket(event.ticket)?.assignee;
+  const before = event.kind === 'board.meta' ? null : session.ticket(event.ticket);
   const outcome = session.apply(input);
   if (outcome.status === 'rejected') {
     const { reason, ticket, kind } = outcome.rejected;
+    const task = before?.task ?? null;
     const message =
       reason === 'already-assigned'
-        ? `ticket ${ticket} is already assigned to ${String(holder)}`
-        : `${kind} on ticket ${ticket} refused: ${reason}`;
+        ? `ticket ${ticket} is already assigned to ${String(before?.assignee)}`
+        : reason === 'already-linked' && task !== null
+          ? `${kind} on ticket ${ticket} refused: ${reason} (it is linked to ${formatTaskRef(task)})`
+          : `${kind} on ticket ${ticket} refused: ${reason}`;
     throw new BoardError(4, reason, message);
   }
-  return { event, input, session, outcome };
+  return { event, input, outcome };
 }
 
 /**

@@ -372,6 +372,7 @@ CREATE TABLE tickets (
   task_ref     TEXT,
   task_item    TEXT,
   adhoc        TEXT,
+  unplanned    TEXT,
   labels       TEXT NOT NULL,
   closed       INTEGER NOT NULL,
   decision     TEXT,
