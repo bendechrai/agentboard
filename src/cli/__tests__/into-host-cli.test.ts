@@ -13,7 +13,16 @@
  * design.md "Migration Plan" ending with a working standalone board.
  */
 
-import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -23,18 +32,24 @@ import { git, tempDir } from '../../board/__tests__/helpers.js';
 import {
   agentboardDir,
   cloneWithStandalone,
+  conflictingClones,
   eventFiles,
   expectKept,
   expectMoved,
   expectUntouched,
   keptRepositories,
+  lateEventFile,
+  lockFile,
   migratingEntries,
   project,
   refEvents,
+  registeredMigrating,
+  resolveIgnoreConflicts,
   standaloneProject,
   syncStandalone,
   syncedStandalone,
   untouched,
+  withShellGitShim,
   writeEvents,
 } from '../../board/__tests__/into-host-helpers.js';
 import {
@@ -44,11 +59,12 @@ import {
   refCommit,
   withGitShim,
   withKillingGitShim,
+  withRecordingGitShim,
   worktreeEntry,
   type KillWhen,
 } from '../../board/__tests__/sharing-helpers.js';
 import { bareRemote, revParse, syncEnv, type Env } from '../../board/__tests__/sync-helpers.js';
-import { MIGRATING_DIR, MIGRATING_REF } from '../../board/into-host.js';
+import { MIGRATING_DIR, MIGRATING_REF, STANDALONE_KEPT_PREFIX } from '../../board/into-host.js';
 import { detectBoardModel } from '../../board/model.js';
 import { P, T1, T2, ev } from '../../store/__tests__/helpers.js';
 import { splitCommandLine } from '../../guidance/__tests__/command-line.js';
@@ -56,7 +72,7 @@ import { renderHint } from '../../guidance/hints.js';
 import { INIT_SUGGESTION } from '../../guidance/install.js';
 import { parseArgs } from '../parse.js';
 import { findCommand } from '../registry.js';
-import { oneJson, spawnCli, written, type Run } from './cli-helpers.js';
+import { BUILT_CLI, oneJson, spawnCli, written, type Run } from './cli-helpers.js';
 
 // Every test spawns the CLI and git many times; keep well clear of the 5 s default.
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
@@ -528,18 +544,186 @@ describe('an interrupted move is finished by running init --into-host again', ()
     expectFinished(fx, env);
   });
 
-  it('killed after the temporary ref is deleted (end of step 4, before the verification): the re-run moves', () => {
+  it('killed after the temporary ref is deleted (step 6, the worktree in place and locked, before the carry-over): .board is the host-model board; the re-run is resumed and publishes (round 3 ruling 2)', () => {
     const env = syncEnv();
     const fx = fixture(env);
 
     killedAt(fx.root, env, ['update-ref', '-d', MIGRATING_REF], 'after');
 
+    // The temporary ref outlives the compare-and-swap: it goes only once
+    // the worktree is in place, so no re-run adopting a temporary is ever
+    // without the source tip it was made from.
+    expect(detectBoardModel(fx.dir, { env }).model).toBe('host');
+    expect(worktreeEntry(fx.root, fx.dir)?.locked).toBe('agentboard board');
     expect(refCommit(fx.root)).toBe(fx.tip);
     expect(refCommit(fx.root, MIGRATING_REF)).toBeNull();
-    expect(detectBoardModel(fx.dir, { env }).model).toBe('standalone');
-    expect(keptRepositories(fx.root)).toEqual([]);
+    expect(keptRepositories(fx.root)).toHaveLength(1);
+    expect(migratingEntries(fx.root)).toEqual([]);
+    expect(git(fx.remote, 'for-each-ref', '--format=%(refname)', 'refs/agentboard/')).toBe('');
 
-    expect(intoHostOk(fx.root, env)).toMatchObject({ action: 'moved' });
+    const doc = intoHostOk(fx.root, env);
+    expect(doc).toMatchObject({ action: 'resumed', oldRemoteUrl: fx.boardRemote });
+    expect(doc.sync).toMatchObject({ model: 'host', pushed: true });
+    expectFinished(fx, env);
+    expect(intoHostOk(fx.root, env)).toMatchObject({ action: 'unchanged' });
+  });
+
+  it('a re-run adopting the human-resolved worktree, killed at the end of step 4 (after the compare-and-swap): the next run completes without replaying anything, no conflict, the resolution kept (round 3 ruling 2)', () => {
+    const env = syncEnv();
+    const { remote, bRoot, bDir, shared, fromA, fromB } = conflictingClones(env);
+    const first = intoHost(bRoot, env);
+    expect(first.code).toBe(3);
+    expect(errorOf(first).reason).toBe('sync-conflict');
+    const [temporary] = registeredMigrating(bRoot);
+    const resolved = resolveIgnoreConflicts(String(temporary));
+    const resolvedHead = revParse(String(temporary));
+    const sourceBefore = refCommit(bRoot, MIGRATING_REF);
+
+    killedAt(bRoot, env, [...COMMANDS.updateRef], 'after');
+
+    expect(detectBoardModel(bDir, { env }).model).toBe('standalone');
+    expect(refCommit(bRoot)).toBe(resolvedHead);
+    expect(refCommit(bRoot, MIGRATING_REF)).toBe(sourceBefore);
+    expect(keptRepositories(bRoot)).toEqual([]);
+    expect(registeredMigrating(bRoot)).toEqual([temporary]);
+    const { env: recording, calls } = withRecordingGitShim(env);
+
+    const out = intoHost(bRoot, recording);
+
+    expect(out.code, out.stderr).toBe(0);
+    expect(oneJson(out)).toMatchObject({ action: 'moved', joined: true, events: 3 });
+    expect(calls().filter((c) => c.includes('--onto') || c.includes('--root'))).toEqual([]);
+    expectMoved(bRoot, env);
+    const all = [...shared, `${fromA}.json`, ...fromB.map((h) => `${h}.json`)].sort();
+    expect(eventFiles(bDir)).toEqual(all);
+    expect(refEvents(bRoot)).toEqual(all);
+    expect(refEvents(remote)).toEqual(all);
+    expect(git(bRoot, 'merge-base', '--is-ancestor', resolvedHead, BOARD_REF)).toBe('');
+    expect(git(bRoot, 'log', '--format=%s', BOARD_REF).split('\n').filter((s) => s === 'ignore bar')).toHaveLength(1);
+    expect(readFileSync(join(bDir, '.gitignore'), 'utf8')).toBe(resolved);
+    expect(intoHostOk(bRoot, env)).toMatchObject({ action: 'unchanged' });
+    expectCheckClean(bRoot, env);
+  });
+
+  it('a re-run adopting the human-resolved worktree, killed after the temporary ref is deleted: the next run resumes without a --root replay and without a new conflict, the resolution kept (round 3 ruling 2)', () => {
+    const env = syncEnv();
+    const { remote, bRoot, bDir, shared, fromA, fromB } = conflictingClones(env);
+    const first = intoHost(bRoot, env);
+    expect(first.code).toBe(3);
+    expect(errorOf(first).reason).toBe('sync-conflict');
+    const [temporary] = registeredMigrating(bRoot);
+    const resolved = resolveIgnoreConflicts(String(temporary));
+    const resolvedHead = revParse(String(temporary));
+
+    killedAt(bRoot, env, ['update-ref', '-d', MIGRATING_REF], 'after');
+
+    expect(detectBoardModel(bDir, { env }).model).toBe('host');
+    expect(refCommit(bRoot)).toBe(resolvedHead);
+    expect(refCommit(bRoot, MIGRATING_REF)).toBeNull();
+    expect(keptRepositories(bRoot)).toHaveLength(1);
+    const { env: recording, calls } = withRecordingGitShim(env);
+
+    const out = intoHost(bRoot, recording);
+
+    expect(out.code, out.stderr).toBe(0);
+    expect(oneJson(out)).toMatchObject({ action: 'resumed', events: 3 });
+    expect(calls().filter((c) => c.includes('--onto') || c.includes('--root'))).toEqual([]);
+    expectMoved(bRoot, env);
+    const all = [...shared, `${fromA}.json`, ...fromB.map((h) => `${h}.json`)].sort();
+    expect(eventFiles(bDir)).toEqual(all);
+    expect(refEvents(bRoot)).toEqual(all);
+    expect(refEvents(remote)).toEqual(all);
+    expect(git(bRoot, 'merge-base', '--is-ancestor', resolvedHead, BOARD_REF)).toBe('');
+    expect(git(bRoot, 'log', '--format=%s', BOARD_REF).split('\n').filter((s) => s === 'ignore bar')).toHaveLength(1);
+    expect(readFileSync(join(bDir, '.gitignore'), 'utf8')).toBe(resolved);
+    expect(intoHostOk(bRoot, env)).toMatchObject({ action: 'unchanged' });
+    expectCheckClean(bRoot, env);
+  });
+
+  it('plain init after a kill past the worktree move leaves the migrating marker and names the pending move; init --into-host then resumes with the rename-window event (round 3 ruling 3)', () => {
+    const env = syncEnv();
+    const fx = fixture(env);
+    const late = lateEventFile('in the rename window');
+    const marker = join(agentboardDir(fx.root), MIGRATING_DIR);
+    // The old repository is already kept aside when `worktree move` runs:
+    // an event dropped into it then is one that landed in the rename
+    // window; the move is killed right after the worktree is in place.
+    const killing = withShellGitShim(
+      env,
+      [
+        'case " $* " in',
+        `  *" worktree move "*) for d in '${agentboardDir(fx.root)}'/${STANDALONE_KEPT_PREFIX}*/events; do cp '${late.source}' "$d/${late.name}"; done; "$GIT" "$@"; kill -KILL "$PPID"; sleep 5; exit 1 ;;`,
+        'esac',
+      ].join('\n'),
+    );
+
+    expectKilled(intoHost(fx.root, killing));
+
+    expect(detectBoardModel(fx.dir, { env }).model).toBe('host');
+    const [kept] = keptRepositories(fx.root);
+    expect(keptRepositories(fx.root)).toHaveLength(1);
+    expect(eventFiles(String(kept))).toContain(late.name);
+    expect(eventFiles(fx.dir)).not.toContain(late.name);
+    expect(existsSync(marker)).toBe(true);
+    expect(migratingEntries(fx.root)).toEqual([]);
+    expect(git(fx.remote, 'for-each-ref', '--format=%(refname)', 'refs/agentboard/')).toBe('');
+
+    const plain = spawnCli(['init', '--json'], fx.root, env);
+
+    expect(plain.code, plain.stderr).toBe(0);
+    const doc = oneJson(plain) as Record<string, unknown>;
+    expect(doc).toMatchObject({ created: false, model: 'host', repair: null });
+    expect(String(doc.message)).toContain('agentboard init --into-host');
+    expect(existsSync(marker)).toBe(true);
+    expect(worktreeEntry(fx.root, fx.dir)?.locked).toBe('agentboard board');
+    expect(eventFiles(fx.dir)).not.toContain(late.name);
+    expect(git(fx.remote, 'for-each-ref', '--format=%(refname)', 'refs/agentboard/')).toBe('');
+
+    const resumed = intoHostOk(fx.root, env);
+
+    expect(resumed).toMatchObject({ action: 'resumed', keptAt: kept, oldRemoteUrl: fx.boardRemote, events: 4 });
+    expect(resumed.sync).toMatchObject({ model: 'host', pushed: true });
+    expect(existsSync(marker)).toBe(false);
+    const files = [...fx.files, late.name].sort();
+    expectMoved(fx.root, env);
+    expect(eventFiles(fx.dir)).toEqual(files);
+    expect(refEvents(fx.root)).toEqual(files);
+    expect(refEvents(fx.remote)).toEqual(files);
+    expect(git(fx.remote, 'rev-parse', BOARD_REF).trim()).toBe(refCommit(fx.root));
+    expect(intoHostOk(fx.root, env)).toMatchObject({ action: 'unchanged' });
+    expectCheckClean(fx.root, env);
+  });
+
+  it('the init lock broken while the move stalls before worktree add, another move finishing meanwhile: a typed exit 3 sync-failed naming agentboard init --into-host, the moved board intact, the re-run unchanged (round 3 ruling 5)', () => {
+    const env = syncEnv();
+    const fx = fixture(env);
+    const ran = join(tempDir(), 'second-move');
+    // At the first move's `worktree add` (its lock held, the source tip
+    // fetched into the temporary ref), the lock is made stale and a second
+    // move runs to completion, as one does after a 60 second stall: it
+    // breaks the lock, moves the board and deletes the temporary ref.
+    const stalled = withShellGitShim(
+      env,
+      [
+        'case " $* " in',
+        `  *" worktree add --detach "*) if [ ! -e '${ran}.started' ]; then : > '${ran}.started'; touch -t 202001010000 '${lockFile(fx.root)}'; '${process.execPath}' '${BUILT_CLI}' init --into-host --json > '${ran}.out' 2> '${ran}.err'; echo $? > '${ran}.code'; fi ;;`,
+        'esac',
+      ].join('\n'),
+    );
+
+    const out = intoHost(fx.root, stalled);
+
+    expect(readFileSync(`${ran}.code`, 'utf8').trim(), readFileSync(`${ran}.err`, 'utf8')).toBe('0');
+    expect(JSON.parse(readFileSync(`${ran}.out`, 'utf8'))).toMatchObject({ action: 'moved' });
+    expect(out.code, out.stderr).toBe(3);
+    const error = errorOf(out);
+    expect(error.reason).toBe('sync-failed');
+    expect(error.message).toContain('agentboard init --into-host');
+    expect(error.message).toMatch(/lock/);
+    expect(error.hint).not.toBeNull();
+    // The other move's board is intact and complete; nothing of this run is left.
+    expectMoved(fx.root, env);
+    expect(intoHostOk(fx.root, env)).toMatchObject({ action: 'unchanged' });
     expectFinished(fx, env);
   });
 

@@ -506,19 +506,24 @@ the host's `git status` never shows them and nothing can `git add` them):
    (a conflict stops with exit 3, the old `.board` untouched, and the
    message naming the temporary worktree).
 4. `update-ref refs/agentboard/board` to the result (compare-and-swap
-   against the value seen in step 3) and delete `refs/agentboard/migrating`.
+   against the value seen in step 3).
 5. Verify every `events/*.json` of the old `.board` is in the new worktree
    with identical bytes (exit 5 `integrity` otherwise, nothing moved).
 6. Rename the old `.board` to
    `<git common dir>/agentboard/standalone-<UTC timestamp>` (same file
    system, atomic), `git worktree move` the temporary worktree to `.board`,
-   lock it.
+   lock it, then delete `refs/agentboard/migrating`.
 7. `sync` (publishes the ref) and catch up the cache.
 
 The temporary worktree is `<git common dir>/agentboard/migrating/<pid>`,
 one subdirectory per move named by the pid of the process that made it,
-and `refs/agentboard/migrating` is one ref, deleted at the end of step 4
-and when no temporary worktree remains at all. A leftover of an earlier
+and `refs/agentboard/migrating` is one ref that lives as long as the
+temporary worktree does: deleted in step 6 once the worktree is in place
+(round 3 ruling: not at the end of step 4, so a kill between the
+compare-and-swap and the `worktree move` leaves a re-run that adopts the
+temporary with the source tip it was made from, and its replay is never
+based on a merge base or `--root`), by a resumed move when it still
+exists, and when no temporary worktree remains at all. A leftover of an earlier
 move is touched only when its pid is dead (the group 4 review of
 `init --remote`, whose cleanup of every `.board-clone-*` can make a
 concurrent run fail): a live-pid temporary is left alone; a temporary
@@ -545,19 +550,50 @@ removes a dead-pid temporary worktree that has rebase state: it exits 3
 nothing. A dead-pid temporary worktree without rebase state whose HEAD
 differs from `refs/agentboard/migrating` (its rebase finished, by the move
 before it was killed or by a human, or its compare-and-swap was lost) is
-adopted, and adoption integrates: the re-run fetches its source tip into
-`refs/agentboard/migrating` as step 2 does, replays onto the adopted HEAD
-the source commits it lacks (`git rebase --onto HEAD <merge-base>
-refs/agentboard/migrating`, so events that reached the standalone board
-or its remote since the temporary was made, from this clone's own `sync`
-or from a third clone, are integrated and nothing the human resolved is
-replayed), then integrates the current local and remote board refs as
-step 3 does (no-ops for what is already integrated), then runs steps 4 to
-7. Nothing a human resolved in a temporary worktree is ever discarded.
-Only dead-pid temporaries with no rebase state and nothing integrated
-(HEAD still at the temporary ref, or not registered at all) are removed,
-and the output names them; plain `init` on a host-model board removes
-such leftovers too, and an empty `migrating` directory with them.
+adopted, and adoption integrates: the re-run reads the value
+`refs/agentboard/migrating` still holds (the source tip the temporary was
+made from), fetches the fresh source tip into it as step 2 does, and
+replays onto the adopted HEAD exactly the source commits that reached the
+standalone board or its remote since the temporary was made, from this
+clone's own `sync` or from a third clone: nothing when the fresh tip
+equals the old value (no rebase runs), else `git rebase --onto HEAD
+<base> refs/agentboard/migrating` with `<base>` the old value when it is
+an ancestor of the fresh tip, which is the normal case (round 3 ruling:
+clones of one board share its history, so the merge base of the adopted
+HEAD and the fresh tip predates the commits the human resolved and a
+replay based on it applies them again, conflicting forever); the merge
+base is only the fallback when the old value is gone or unrelated, and
+`--root` the last one. Nothing the human resolved is replayed; the
+resolution stays the ancestor of the result. Then the re-run integrates
+the current local and remote board refs as step 3 does (no-ops for what
+is already integrated), then runs steps 4 to 7. Nothing a human resolved
+in a temporary worktree is ever discarded. Only dead-pid temporaries with
+no rebase state and nothing integrated (HEAD still at the temporary ref,
+or not registered at all) are removed, and the output names them.
+
+Leftovers on a board already in the host (plain `init` and
+`init --into-host`, round 3 rulings): both remove every dead-pid
+temporary without rebase state under `migrating/`, whatever its HEAD (the
+board is in place, there is nothing to adopt), naming it, and leave a
+stopped rebase or a live pid alone. The `migrating` directory emptied by
+that is removed only when no kept `standalone-*` repository exists; with
+one it is the marker of a move whose `sync` has not completed (see
+"Resuming"), and the two commands differ in what they do with it: plain
+`init` never removes it and never finishes the move, it reports that an
+`init --into-host` was interrupted before its sync completed and names
+`agentboard init --into-host`; `init --into-host` resumes it (the
+carry-over and the `sync`, both idempotent when nothing is pending, so a
+marker left by a cleaned temporary beside an old kept repository costs one
+no-op `sync`), and is `unchanged` only when the directory still holds a
+temporary or no kept repository exists.
+
+A move whose init lock went stale while it stalled before its `worktree
+add` (another `init --into-host` or `init` took the lock and finished,
+deleting `refs/agentboard/migrating` and moving the board) refuses with
+exit 3 `sync-failed` saying it lost its lock and naming
+`agentboard init --into-host` (round 3 ruling), never with a raw git
+failure; it leaves nothing behind, and the board the other init made is
+untouched.
 
 Step 5 is a carry-over, not a bare verification, as the repair of
 decision 7: every event file of the old `.board/events` that the new
@@ -567,7 +603,11 @@ is copied in when its content hashes to its name, and the `sync` of step
 copy in the worktree differs) is exit 5 `integrity`, with nothing moved
 and the temporary left for the re-run. Immediately before the rename,
 step 6 re-checks that `.board` is still the standalone repository step 1
-saw (the same resolved git directory, no host worktree registered there)
+saw (the same resolved git directory, by realpath, device and inode; the
+HEAD commit step 1 saw still an ancestor of, or equal to, its HEAD, so a
+repository rebuilt at the same path with another history is refused even
+where inode numbers are reused, while a standalone `sync` that committed
+meanwhile is not a replacement; no host worktree registered there)
 and refuses with exit 3 `sync-failed` otherwise, so a move that lost its
 lock to a second one never renames the second move's worktree away. After
 the `worktree move` the carry-over runs again from the kept repository,
@@ -582,13 +622,15 @@ state and a HEAD equal to `refs/agentboard/board` finishes step 6 and
 runs step 7 (`resumed`); one that finds `.board` a host-model board with
 the empty `migrating` marker (a move killed between the `worktree move`
 and the end of step 7, or whose `sync` failed) restores the lock when it
-is missing, repeats the carry-over from the newest kept repository, runs
+is missing, deletes `refs/agentboard/migrating` when it still exists,
+repeats the carry-over from the newest kept repository, runs
 step 7 and reports `resumed` with the kept repository; only a board
 without the marker is `unchanged`. The marker counts only with a kept
 repository to carry over from (every move keeps one before it moves the
 worktree into place): a `migrating` directory left empty by the removal
 of dead temporaries on a board that was never moved is removed, and the
-board is `unchanged`. When the `sync` of step 7 fails, the
+board is `unchanged`; beside a kept repository it is never removed by
+plain `init`, only by the `sync` of a resumed move. When the `sync` of step 7 fails, the
 move stays done, `init` exits with the sync's code and reason, and its
 output still carries the move's lines (the kept repository, the old
 remote) with `keptAt` and `oldRemoteUrl` in the `--json` error document.

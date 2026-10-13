@@ -357,7 +357,14 @@ already in the host; `repaired` for a broken link), `keptAt` (the kept
 repository's path, else null), `oldRemoteUrl` (else null) and `sync` (the
 result of the `sync` it ran, else null). `init` without flags on a
 host-model board SHALL remove the temporary worktrees of dead moves that
-hold no rebase state. It
+hold no rebase state, as `init --into-host` on such a board does; and
+while a kept old repository exists it SHALL leave the marker of a move
+whose `sync` has not completed, change nothing else, and say that
+`agentboard init --into-host` finishes the move, so that command then
+reports `resumed` and carries over and publishes what the move had not.
+A move that lost its init lock to another init that finished meanwhile
+SHALL exit 3 with reason `sync-failed` naming `agentboard init
+--into-host`, never with an untyped error. It
 SHALL exit 1 with reason `no-host-repository` also when the host's git
 directory is not inside its working tree, exit 3 as `sync` does
 (`sync-in-progress`, `detached-head`, `sync-failed`, `sync-conflict`) and

@@ -199,7 +199,10 @@ rebase is finished it SHALL adopt that worktree and complete the move with
 every event, including every commit that reached the standalone board or
 its remote since the worktree was made, integrated as a first run
 integrates its source tip, and SHALL never discard what the human
-resolved. Every event file present in the old `.board/events` at any
+resolved nor apply again a commit the human already resolved (the clones
+of one board share its history: the re-run replays only what reached the
+board since the worktree was made, and nothing when nothing did, so one
+re-run completes the move). Every event file present in the old `.board/events` at any
 point of the move (written by another writer or a standalone `sync`
 while the move ran, even between the verification and the moment the old
 repository is kept aside) SHALL end in the new worktree, carried over
@@ -235,8 +238,8 @@ process that is still running is never touched.
 - **THEN** it exits 3 with reason `sync-conflict` naming `.gitignore`, the temporary worktree under `<host git common dir>/agentboard/migrating/` and `git rebase --continue`, the old `.board` is unchanged and still standalone, the host has no `refs/agentboard/board`, and running it again before the rebase is finished exits 3 with reason `sync-in-progress` naming the same path and removes nothing
 
 #### Scenario: Migration completes after the conflict is resolved
-- **WHEN** a human resolves `.gitignore` in that temporary worktree, runs `git add` and `git rebase --continue` until the rebase is finished, a third clone meanwhile syncs an event to the old standalone remote, and `agentboard init --into-host` runs again
-- **THEN** the move completes: `.board` is the host-model board holding every event of both histories, the third clone's event and the resolved `.gitignore`, exactly one old repository is kept, and no temporary ref or worktree remains
+- **WHEN** the two clones are clones of one standalone board (they share its early commits), a human resolves `.gitignore` in that temporary worktree, runs `git add` and `git rebase --continue` until the rebase is finished, a third clone meanwhile syncs an event to the old standalone remote, and `agentboard init --into-host` runs again
+- **THEN** that one run completes the move with exit 0: `.board` is the host-model board holding every event of both histories, the third clone's event and the resolved `.gitignore`, the resolved commit is an ancestor of `refs/agentboard/board` and appears in its history once, exactly one old repository is kept, and no temporary ref or worktree remains
 
 #### Scenario: Event written during the move is carried over
 - **WHEN** another writer adds an event file to the standalone `.board/events` after `agentboard init --into-host` has verified the events and before it keeps the old repository aside

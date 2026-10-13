@@ -16,17 +16,25 @@ import { join } from 'node:path';
 
 import { expect } from 'vitest';
 
+import { canonicalEncode, sha256Hex } from '../../events/canonical.js';
 import { openBoard } from '../../store/board.js';
-import { P, T1, ev, putEvent } from '../../store/__tests__/helpers.js';
-import { AGENTBOARD_GIT_SUBDIR, INIT_LOCK_FILE } from '../host-init.js';
-import { MIGRATING_DIR, MIGRATING_REF, STANDALONE_KEPT_PREFIX } from '../into-host.js';
+import { P, T1, T2, ev, putEvent } from '../../store/__tests__/helpers.js';
+import { AGENTBOARD_GIT_SUBDIR, BOARD_GITIGNORE_LINES, INIT_LOCK_FILE } from '../host-init.js';
+import {
+  MIGRATING_DIR,
+  MIGRATING_REF,
+  STANDALONE_KEPT_PREFIX,
+  moveBoardIntoHost,
+} from '../into-host.js';
 import { detectBoardModel } from '../model.js';
 import { syncBoard } from '../sync.js';
 import { git, gitRepo, tempDir } from './helpers.js';
 import {
   BOARD_REF,
   cloneHost,
+  commitHostEvent,
   hostRepo,
+  pushBoardRef,
   realGit,
   refCommit,
   refs,
@@ -35,7 +43,7 @@ import {
   worktreeEntry,
   worktrees,
 } from './sharing-helpers.js';
-import { bareRemote, revParse, treeEvents, type Env } from './sync-helpers.js';
+import { bareRemote, rebaseInProgress, revParse, treeEvents, type Env } from './sync-helpers.js';
 
 /** The event file name pattern. */
 export const EVENT_FILE = /^[0-9a-f]{64}\.json$/;
@@ -306,4 +314,108 @@ export function standaloneInHostWithoutIgnore(
   const { dir, tip } = syncedStandalone(root, env, events, remote);
   rmSync(join(root, '.gitignore'), { force: true });
   return { root, dir, tip };
+}
+
+/** What `conflictingClones` builds. */
+export interface ConflictingClones {
+  /** The project's bare `origin`, where A published `refs/agentboard/board`. */
+  readonly remote: string;
+  /** The old bare board remote both clones synced with. */
+  readonly boardRemote: string;
+  /** Clone A's root, whose board is in the host model. */
+  readonly aRoot: string;
+  /** Clone B's root and standalone board, the one that moves. */
+  readonly bRoot: string;
+  readonly bDir: string;
+  /** The event file names (`<hash>.json`) both clones hold from the shared history. */
+  readonly shared: string[];
+  /** The hash of the event A synced after its move. */
+  readonly fromA: string;
+  /** The hashes of the events B synced to the old remote. */
+  readonly fromB: string[];
+  /** B's untouched snapshot, taken before any move of B. */
+  readonly before: Untouched;
+}
+
+/**
+ * Two clones of one standalone board, sharing its history as real clones
+ * do (clones of one board joined with `init --remote` both hold its early
+ * commits): the board of project A, synced to a bare board remote with
+ * one event; B a clone of the project whose `.board` is a clone of that
+ * board remote. A then moves its board into the host (in process),
+ * commits `foo` into the board's `.gitignore`, syncs one more event and
+ * publishes `refs/agentboard/board` on the project's `origin`. B, still
+ * standalone, syncs one event of its own to the old board remote and
+ * commits `bar` into its `.gitignore`. B's move therefore has to rebase
+ * B's commits onto A's, and stops on `.gitignore`; their merge base is the
+ * shared sync commit, which predates everything either clone did since.
+ */
+export function conflictingClones(env: Env): ConflictingClones {
+  const a = standaloneProject(env, 1, 'a');
+  const b = cloneWithStandalone(a.remote, a.boardRemote, 'b');
+  const shared = eventFiles(a.dir);
+  expect(moveBoardIntoHost({ cwd: a.root, env }).action).toBe('moved');
+  commitIgnoreLine(a.dir, 'foo');
+  git(a.dir, 'update-ref', BOARD_REF, 'HEAD');
+  const fromA = commitHostEvent(a.dir, ev(P.create(T2, 'From A'), 'a', 2000), env);
+  pushBoardRef(a.root);
+  const fromB = writeEvents(b.dir, 1, 'b', 200);
+  syncStandalone(b.dir, env);
+  commitIgnoreLine(b.dir, 'bar');
+  syncStandalone(b.dir, env);
+  return {
+    remote: a.remote,
+    boardRemote: a.boardRemote,
+    aRoot: a.root,
+    bRoot: b.root,
+    bDir: b.dir,
+    shared,
+    fromA,
+    fromB,
+    before: untouched(b.root, b.dir),
+  };
+}
+
+/**
+ * The human's resolution of the `.gitignore` conflict a move of
+ * `conflictingClones` stops on: resolves every stop of the rebase in
+ * `temporary` by keeping both lines (`foo` then `bar` after the board's
+ * own lines), `git add`, `git rebase --continue`, until the rebase is
+ * finished. Returns the resolved `.gitignore` content.
+ */
+export function resolveIgnoreConflicts(temporary: string): string {
+  const resolved = [...BOARD_GITIGNORE_LINES, 'foo', 'bar'].map((line) => `${line}\n`).join('');
+  for (let step = 0; rebaseInProgress(temporary); step += 1) {
+    expect(step).toBeLessThan(5);
+    writeFileSync(join(temporary, '.gitignore'), resolved);
+    git(temporary, 'add', '--', '.gitignore');
+    try {
+      git(temporary, '-c', 'core.editor=true', 'rebase', '--continue');
+    } catch {
+      // The next commit conflicts too; the loop resolves it.
+    }
+  }
+  return resolved;
+}
+
+/** The registered worktrees of `root` under `agentboard/migrating/`. */
+export function registeredMigrating(root: string): string[] {
+  return worktrees(root)
+    .split('\n')
+    .filter((line) => line.startsWith('worktree ') && line.includes(`/${MIGRATING_DIR}/`))
+    .map((line) => line.slice('worktree '.length));
+}
+
+/**
+ * A valid event file (a comment on `T1` by `writer` saying `text`) written
+ * to a source file under the temp directory, for a shim or a hook to drop
+ * into a board's `events/` at a chosen moment: its name, bytes and source
+ * path.
+ */
+export function lateEventFile(text: string): { name: string; bytes: Buffer; source: string } {
+  const bytes = Buffer.from(canonicalEncode(ev(P.comment(T1, text), 'writer', 40_000)));
+  const name = `${sha256Hex(bytes)}.json`;
+  const source = join(tempDir(), name);
+  writeFileSync(source, bytes);
+  return { name, bytes, source };
 }

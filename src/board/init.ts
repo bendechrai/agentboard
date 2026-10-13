@@ -157,11 +157,23 @@ export interface InitResult {
  * A second exception, for the temporary worktrees of `init --into-host`
  * (`src/board/into-host.ts`; add-board-sharing design.md decision 9,
  * ruling E): on a host-model board, under the init lock,
- * `removeDeadMigratingWorktrees` removes every dead-pid temporary
+ * `cleanDeadMigratingWorktrees` removes every dead-pid temporary
  * worktree without rebase state under `<git common dir>/agentboard/migrating/`
- * (one with a rebase stopped in it, or a live pid, is left alone) and the
- * `migrating` directory when it is then empty; the board, its ref and its
- * events are untouched, and the message names what was removed.
+ * (one with a rebase stopped in it, or a live pid, is left alone); the
+ * board, its ref and its events are untouched, and the message names what
+ * was removed. The `migrating` directory, when it is then empty, is
+ * removed only when no kept repository (`standalone-*`) exists under
+ * `<git common dir>/agentboard/` (round 3 ruling 3): beside one it is the
+ * marker of a move whose `sync` has not completed (a move killed after
+ * its `worktree move`, or whose `sync` failed; design.md decision 9,
+ * "Resuming"), which plain `init` never removes and never finishes: the
+ * message then says that an `agentboard init --into-host` was interrupted
+ * before its sync completed and names `agentboard init --into-host` to
+ * run (both texts `sync` and `agentboard init --into-host` appear), the
+ * worktree lock is restored as above, no carry-over and no `sync` run
+ * (the ref, the remote and the kept repository are as they were), and the
+ * next `agentboard init --into-host` is `resumed`. A healthy host-model
+ * board without the marker never says `agentboard init --into-host`.
  *
  * Broken host link or a `.board` directory that is not a repository
  * (`detectBoardModel` is `broken-host-link` or `not-a-repository` and the
