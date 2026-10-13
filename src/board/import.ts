@@ -824,14 +824,20 @@ export class ImportRefusedError extends BoardError {
  * Each event is written in its own command transaction (`runCommand`, with
  * `options`), whose operation re-checks the event against the caught-up
  * state, so a concurrent import of the same change never makes this one
- * write a stale or duplicate event: a renumber whose ticket's item no
- * longer equals `from`, a reconcile whose diff recomputed on the caught-up
- * ticket is null (one that is not null is written as recomputed), a
- * supersede of a ticket already superseded, and the create of a unit for
- * which a concurrent import has meanwhile created a ticket (a ticket of
- * the change, not superseded, with the unit's item and the unit's
- * normalised title) are skipped and not reported. A crash part way leaves
- * the events written so far; a re-import finishes the rest.
+ * write a stale or duplicate event: a renumber whose ticket's item differs
+ * from `from`, a reconcile whose diff recomputed on the caught-up ticket
+ * is null (one that is not null is written as recomputed), a supersede of
+ * a ticket already superseded, and the create of a unit for which a
+ * concurrent import has created a ticket (a ticket of the change, not
+ * superseded, with the unit's item and the unit's normalised title) are
+ * refused `stale-import` inside their transaction, which commits its
+ * catch-up and writes nothing, and are not reported. A crash part way
+ * leaves the events written so far, and a re-import pairs again and writes
+ * what is left, with one exception: a kill between a new ticket's create
+ * and its ticks or moves leaves that ticket in `todo` with unticked lines,
+ * which the next import reports `unchanged` (it pairs by title and its
+ * lines match, and a reconcile never changes done flags of unchanged lines
+ * or the status).
  *
  * Refusals after pairing (`ImportRefusedError`, exit 4):
  * - `reconcile-ambiguous` when the pairing is ambiguous: nothing at all
@@ -1057,9 +1063,8 @@ interface Writer {
 }
 
 /**
- * Thrown inside a transaction whose event a concurrent import has made
- * stale or redundant, so the transaction is rolled back without writing.
- * Never escapes this module.
+ * Thrown by a `propose` of `writeOne` when the event it would write is
+ * stale or redundant on the caught-up state. Never escapes this module.
  */
 class Skip extends Error {
   constructor() {
@@ -1069,14 +1074,36 @@ class Skip extends Error {
 
 /**
  * Writes one event in its own command transaction; `propose` re-checks it
- * against the caught-up state and returns it, or throws `Skip`. Returns the
- * hash, or null when skipped.
+ * against the caught-up state and returns it, or throws `Skip`. A skip is
+ * a refusal with reason `stale-import`, so the transaction commits its
+ * catch-up and writes no event of its own; a write the fold itself rejects
+ * `stale-import` is skipped the same way. Returns the command's result, or
+ * null when skipped.
  */
 function writeOne(w: Writer, propose: (ctx: TxContext) => ProposedEvent): CommandResult | null {
   try {
-    return runCommand(w.board, w.actor, (ctx) => ({ ok: true, event: propose(ctx) }), w.options);
+    return runCommand(
+      w.board,
+      w.actor,
+      (ctx) => {
+        try {
+          return { ok: true, event: propose(ctx) };
+        } catch (error) {
+          if (error instanceof Skip) {
+            return {
+              ok: false,
+              exitCode: 4,
+              reason: 'stale-import',
+              message: 'a concurrent import already made this change',
+            };
+          }
+          throw error;
+        }
+      },
+      w.options,
+    );
   } catch (error) {
-    if (error instanceof Skip) {
+    if (error instanceof BoardError && error.reason === 'stale-import') {
       return null;
     }
     throw error;

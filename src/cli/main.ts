@@ -5,6 +5,7 @@
  * process with captured streams.
  */
 
+import { ImportRefusedError, type ImportResult } from '../board/import.js';
 import { openBoard, type Board } from '../store/board.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
 import type { WriteHooks } from '../store/eventfile.js';
@@ -70,6 +71,13 @@ export interface ErrorDocument {
      * reason (an unexpected failure). Always present.
      */
     hint: string | null;
+    /**
+     * Present only for the `import-change` refusals `reconcile-blocked` and
+     * `reconcile-ambiguous` (an `ImportRefusedError`): the import's result,
+     * what was written for a blocked import and the dry run with the
+     * candidates for an ambiguous one. Absent for every other error.
+     */
+    result?: ImportResult;
   };
 }
 
@@ -86,7 +94,7 @@ export function exitCodeFor(error: unknown): Exclude<ExitCode, 0> {
  * `BoardError` reason (null for other errors), the error message and
  * `hintFor(error, context)`. `context` defaults to
  * `{ surface: 'cli', command: null }` (placeholders for the id and actor).
- * Pure.
+ * An `ImportRefusedError` adds its `result`. Pure.
  */
 export function errorDocument(error: unknown, context?: HintContext): ErrorDocument {
   return {
@@ -95,6 +103,7 @@ export function errorDocument(error: unknown, context?: HintContext): ErrorDocum
       reason: error instanceof BoardError ? error.reason : null,
       message: error instanceof Error ? error.message : String(error),
       hint: hintFor(error, context ?? { surface: 'cli', command: null }),
+      ...(error instanceof ImportRefusedError ? { result: error.result } : {}),
     },
   };
 }
