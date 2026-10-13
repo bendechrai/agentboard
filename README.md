@@ -655,9 +655,7 @@ host refuses pushes to custom refs, keeps its board in a repository of its
 own with `init --remote <url>`. The host model needs git 2.32 or later on
 every machine that shares the board; `init` on an older git falls back to
 a standalone board and says so, and older agentboard versions refuse to
-sync a host-model board. Never `git push --mirror` from a working clone:
-it rewinds the remote ref to that clone's board (other clones restore
-their own events on their next `sync`).
+sync a host-model board.
 
 `init` also repairs a host-model `.board` whose link to the repository is
 broken: a checkout moved to another directory is relinked in place, and a
@@ -681,39 +679,96 @@ it).
 
 `agentboard sync` stages only new event files and `.board/.gitignore`,
 commits them as the fixed identity `agentboard <agentboard@localhost>`
-(never your git identity, and only when something is staged), runs
-`git pull --rebase` from the upstream remote (or `origin`, or the only
-remote), pushes (retrying once if the remote moved in between) and folds
-the events that arrived. Event files are add-only and named by their
-content, so two machines that both added events always merge without
-conflict and end up with identical boards. Without a remote, `sync` commits
-and reports that no remote is configured, exiting 0. It warns (without
-failing) when the host repository tracks anything under `.board`.
+(never your git identity, and only when something is staged), integrates
+what the remote holds with a rebase, pushes (retrying once if the remote
+moved in between) and folds the events that arrived. Event files are
+add-only and named by their content, so two machines that both added
+events always merge without conflict and end up with identical boards.
+Without a remote, `sync` commits and reports that no remote is configured,
+exiting 0. It warns (without failing) when the host repository tracks
+anything under `.board`. The steps after the commit depend on the model:
 
-`sync` exits 3 and leaves things for a human when:
-
-- git reports a conflict (only possible on non-event paths such as
-  `.board/.gitignore`); the rebase is left in place: resolve it, `git add`,
-  `git rebase --continue` (or `--abort`) and run `sync` again;
-- a rebase, merge or cherry-pick is already in progress in `.board`;
-- `.board` is on a detached HEAD;
-- something you staged yourself in `.board` is still staged (sync commits
-  only its own paths; commit or unstage it);
-- the remote is unreachable or rejects the pull or push.
-
-It exits 5 without staging anything when event files recorded in the
-board's git history are missing from `events/` (restore them from git), 2
-when `.board` is not itself the top level of a git repository or when it is
-a worktree whose link to the host repository is broken
-(`board-link-broken`; `agentboard init` repairs it), and 1 when there are
-several remotes and none is chosen.
+- Host model (`.board` is a worktree of the host repository, its history
+  the ref `refs/agentboard/board`): `sync` first makes the local
+  `refs/agentboard/board` equal to the worktree's HEAD (rebasing HEAD onto
+  the ref when someone fetched into it by hand), then fetches
+  `refs/agentboard/board` from the host's remote into the worktree's own
+  `FETCH_HEAD` (no remote-tracking ref, no tags), rebases onto it when it
+  holds commits the worktree does not, updates the local ref with a
+  compare-and-swap, and pushes `HEAD:refs/agentboard/board` without force.
+  It never creates or moves a branch, and the host's git hooks
+  (`pre-commit`, `pre-rebase`, `pre-push`, `post-checkout`, ...) do not
+  run for the board: every command runs with an empty hooks directory,
+  and nothing is written to the host's configuration. `agentboard remote`
+  shows the ref and the commit it holds.
+- Standalone model (`.board` is a repository of its own): `sync` runs
+  `git pull --rebase` from its remote and pushes its branch, setting the
+  upstream only when the branch has none; the board repository's own
+  hooks run as git normally runs them.
 
 `sync` chooses the remote in this order: the one named by
 `git config agentboard.remote <name>` in the repository that holds the
-board's history, the upstream of the current branch (an upstream remote of
-`.` is ignored), `origin`, then the only remote. With several remotes and
-none chosen it exits 1 (`ambiguous-remote`) after committing; set
-`agentboard.remote` to pick one.
+board's history (the host repository, or the standalone board
+repository), the upstream of the current branch (for the host model, the
+branch checked out in the host's main checkout; an upstream remote of `.`
+is ignored), `origin`, then the only remote. `agentboard.remote` is for
+repositories with several remotes, such as a fork workflow with `fork` and
+`upstream` and no `origin`; setting it never changes the branch's upstream,
+so your own `git pull` behaves as before.
+
+What `sync` does when it cannot finish, and what a human does next:
+
+- 3 `sync-conflict`: git reported a conflict (only possible on non-event
+  paths such as `.board/.gitignore`). The rebase is left in place in
+  `.board`: resolve it, `git add` the paths, `git rebase --continue` (or
+  `git rebase --abort`) and run `sync` again. Until then every `sync`
+  exits 3 `sync-in-progress`.
+- 3 `sync-in-progress`: a rebase, merge or cherry-pick is already in
+  progress in `.board`; finish or abort it there.
+- 3 `board-on-branch` (host model): someone ran `git switch` in `.board`,
+  so the worktree is on a branch instead of the detached HEAD the board
+  ref needs. Run `git -C .board switch --detach refs/agentboard/board`
+  (delete the branch if it was only a scratch one) and `sync` again.
+- 3 `detached-head` (standalone model): `.board` is on a detached HEAD;
+  check out its branch (`git -C .board switch main`) and `sync` again.
+- 3 `sync-failed`: the remote is unreachable, rejected the push twice, or
+  `agentboard.remote` names a remote that does not exist; or (standalone)
+  something you staged yourself in `.board` is still staged (`sync`
+  commits only its own paths; commit or unstage it). The local commit is
+  kept; fix what the message names and `sync` again. A host that refuses
+  pushes to custom refs (Gerrit without a push permission on
+  `refs/agentboard/*`; GitHub and GitLab accept them) fails here on the
+  first push, is not retried, and the message carries the remote's own
+  reason (a hook's text): keep such a board in a repository of its own
+  with `init --remote <url>`.
+- 2 `board-link-broken` (host model): `.board` is a worktree whose link
+  to the host repository is broken (the checkout was moved, or `.board`
+  was copied from another clone); `agentboard init` repairs it. 2
+  `board-not-a-repository`: `.board` is not itself the top level of a git
+  repository or worktree.
+- 1 `git-too-old` (host model): the git found is older than 2.32, which
+  a board in the host repository needs; upgrade git (nothing is staged).
+  1 `ambiguous-remote`: there are several remotes and none is chosen;
+  `sync` has committed locally, so set `agentboard.remote` and run it
+  again.
+- 5 `integrity`: event files recorded in the board's git history are
+  missing from `events/`; nothing is staged (a deletion is never synced).
+  Restore them from git as the message says. Exit 5 without a reason is
+  an unexpected git failure; the one to expect is two `sync` processes
+  of one clone colliding on git's `index.lock` (nothing serialises them;
+  inside a rebase the second exits 3 `sync-in-progress` instead). The
+  ref equals HEAD afterwards and nothing is lost: run `sync` again.
+
+Two cautions for the host model. Never `git push --mirror` from a working
+clone: it rewinds the remote's `refs/agentboard/board` to that clone's
+board; the other clones restore their own events on their next `sync`,
+but an event whose only copy was on the remote is lost (a `--mirror` push
+from a backup clone made with `git clone --mirror` carries the board, as
+intended). And a board in a public repository is readable by anyone who
+can clone it; a project that needs a private board, or whose git host
+refuses custom refs, keeps it in a repository of its own with
+`init --remote <url>` (`agentboard init --into-host` moves it the other
+way, into the host repository).
 
 To see how a board is shared without changing anything:
 

@@ -76,6 +76,7 @@ export const HINT_REASONS: readonly string[] = [
   'board-link-broken',
   'board-not-a-repository',
   'board-not-found',
+  'board-on-branch',
   'body-too-large',
   'busy',
   'checklist-index',
@@ -86,6 +87,7 @@ export const HINT_REASONS: readonly string[] = [
   'forbidden-host',
   'gh-missing',
   'git-missing',
+  'git-too-old',
   'holder-changed',
   'id-too-short',
   'integrity',
@@ -142,6 +144,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'board-link-broken': 2,
   'board-not-a-repository': 2,
   'board-not-found': 2,
+  'board-on-branch': 3,
   'body-too-large': 1,
   busy: 5,
   'checklist-index': 4,
@@ -152,6 +155,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'forbidden-host': 1,
   'gh-missing': 1,
   'git-missing': 1,
+  'git-too-old': 1,
   'holder-changed': 4,
   'id-too-short': 1,
   integrity: 5,
@@ -346,6 +350,10 @@ export function hintStep(
  *   `git config agentboard.remote <name>` (that text appears) in the
  *   repository that holds the board's history, or name one `origin`, then
  *   step `sync`.
+ * - `git-too-old`: a board in the host repository needs git 2.32 or later
+ *   (the text `2.32` and the word `upgrade` appear); upgrade git, then
+ *   step `init` with `into-host` when the command is `init`, else step
+ *   `sync`.
  * - `streaming-command`: run the command from the agentboard executable
  *   (step `<command>` when the command is known).
  * - `no-targets`: `agents install` detected nothing to install; names the
@@ -358,9 +366,12 @@ export function hintStep(
  * `board-not-a-repository`: step `help sync`; `board-link-broken`: step
  * `init`, which repairs the board's link to the host repository.
  *
- * Exit 3: `sync-in-progress`, `detached-head`, `sync-conflict`,
- * `sync-failed`: what a human does in the board repository, then step
- * `sync`; `sync-conflict` names `git rebase --continue`.
+ * Exit 3: `sync-in-progress`, `detached-head`, `board-on-branch`,
+ * `sync-conflict`, `sync-failed`: what a human does in the board
+ * repository, then step `sync`; `sync-conflict` names
+ * `git rebase --continue`; `board-on-branch` names
+ * `git -C .board switch --detach refs/agentboard/board` (that text
+ * appears: a host-model board is synced on a detached HEAD).
  *
  * Exit 4:
  * - `unknown-ticket`, `duplicate-create`: step `list`.
@@ -619,6 +630,10 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
   'ambiguous-remote': syncHint(
     'in the repository that holds the board history, choose the remote with git config agentboard.remote <name> (or name one of them origin)',
   ),
+  'git-too-old': (h) =>
+    `a board in the host repository needs git 2.32 or later; upgrade git, then run ${
+      h.command?.name === 'init' ? h.step('init', [['into-host', true]]) : h.step('sync')
+    } again`,
   'streaming-command': streamingHint,
   'port-in-use': (h) =>
     `another process listens on that port; let the system choose a free one with ${h.step('serve', [['port', '0']])}, or pass another --port`,
@@ -654,6 +669,9 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     'a human finishes or aborts the rebase, merge or cherry-pick in progress in the board repository',
   ),
   'detached-head': syncHint('a human checks out a branch in the board repository'),
+  'board-on-branch': syncHint(
+    'a human puts the board worktree back on a detached HEAD at the board ref with git -C .board switch --detach refs/agentboard/board',
+  ),
   'sync-conflict': syncHint(
     'a human resolves the conflict in the board repository, runs git add and git rebase --continue (or --abort)',
   ),

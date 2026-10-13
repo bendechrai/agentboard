@@ -31,6 +31,7 @@ import {
   newestStaleBoard,
   repairBoardLink,
   withInitLock,
+  writeEmptyBoardCommit,
   type BoardRefSource,
   type RepairOutcome,
 } from './host-init.js';
@@ -196,18 +197,32 @@ export interface InitResult {
  *    (`adoptRepairingWorktree`).
  * 5. Catch up the cache (`openBoard` then close), so the next command sees
  *    every event; `events` counts the event files.
- * Steps 3 and 4 run under `withInitLock`, so two `init` processes on one
- * host take turns and leave one ref and one worktree.
+ * A healthy existing board is reported without taking the init lock
+ * (nothing changes a healthy board, and nothing is written, not even
+ * under the host's `.git`), and an ambiguous remote refuses before the
+ * lock too. Otherwise the whole host-model path, from the decision
+ * between a board another `init` finished meanwhile, a repair and a new
+ * or joined board through steps 3 and 4, runs under `withInitLock`
+ * (design.md decision 2), so two `init` processes on one host take turns
+ * and leave one ref and one worktree: a `.board` that another `init` is
+ * in the middle of adding (the directory exists, `events/` does not)
+ * would otherwise look like a stray directory to a second `init`, which
+ * would decide to repair a board that is healthy by the time it holds
+ * the lock; under the lock it sees the finished board and reports it as
+ * existing.
  * The result has `created` true, `model` `host`, `remote` the chosen name
  * or null, and a message naming `dir`, the model, and, by the ref's
  * source: `remote`, how many events were joined from the remote
  * (`joined <n> events from <remote>` style wording, the count and the
  * remote appear); `local`, that the board was restored from the local
  * `refs/agentboard/board` with the number of event files (the words
- * `restored` and `local` and the count appear, never `new empty board`);
- * `created`, that the board is new and that `agentboard sync` publishes
- * it (to `<remote>`, or once the repository has a remote: the words `sync`
- * and `remote` appear).
+ * `restored` and `local` and the count appear, never `new empty board`),
+ * unless the ref holds nothing but the deterministic empty-board commit
+ * (a racing `init` wrote it, or an empty board's directory was deleted),
+ * which is reported as `created` is: a board with no history of its own
+ * was never restored from anything; `created`, that the board is new and
+ * that `agentboard sync` publishes it (to `<remote>`, or once the
+ * repository has a remote: the words `sync` and `remote` appear).
  *
  * New standalone board, creating only what is missing and never
  * overwriting an existing file:
@@ -276,16 +291,46 @@ export function initBoard(options?: LocateOptions): InitResult {
     );
   }
 
-  if (boardExists(dir)) {
-    const info = detectBoardModel(dir, { env });
-    if (info.model === 'host' || info.model === 'standalone') {
-      return existingBoard(dir, info, hostModel, env);
-    }
+  // A healthy board is reported as it is, with nothing written, not even
+  // the init lock: no init changes a healthy board.
+  const healthy = healthyBoard(dir, env);
+  if (healthy !== null) {
+    return existingBoard(dir, healthy, hostModel, env);
   }
-  if (hostModel) {
-    return existsSync(dir) ? repairBoard(dir, env) : createHostBoard(dir, env);
+  if (!hostModel) {
+    return createStandaloneBoard(dir, inTree, warnings, why, env);
   }
-  return createStandaloneBoard(dir, inTree, warnings, why, env);
+  // An ambiguous remote refuses before anything is written, the lock
+  // included. Then the lock comes before the decision between an existing
+  // board, a repair and a new or joined board: a board another init is in
+  // the middle of adding must be seen finished, not repaired.
+  const hostRoot = dirname(dir);
+  const remote = hostRemote(hostRoot, env);
+  return withInitLock(hostRoot, () => hostModelBoard(dir, remote, env), { env });
+}
+
+/** The model of the board at `dir` when it exists and is healthy (`host` or `standalone`), else null. */
+function healthyBoard(dir: string, env: Env): BoardModelInfo | null {
+  if (!boardExists(dir)) {
+    return null;
+  }
+  const info = detectBoardModel(dir, { env });
+  return info.model === 'host' || info.model === 'standalone' ? info : null;
+}
+
+/**
+ * The host-model path of `initBoard` for a `dir` that was not a healthy
+ * board before the init lock was taken, run under the lock: a board
+ * another init finished meanwhile is reported, a `.board` directory that
+ * is not a healthy board is repaired, and a missing one is created or
+ * joined.
+ */
+function hostModelBoard(dir: string, remote: string | null, env: Env): InitResult {
+  const healthy = healthyBoard(dir, env);
+  if (healthy !== null) {
+    return existingBoard(dir, healthy, true, env);
+  }
+  return existsSync(dir) ? repairBoard(dir, remote, env) : createHostBoard(dir, remote, env);
 }
 
 /**
@@ -379,21 +424,13 @@ function hostRemote(hostRoot: string, env: Env): string | null {
   return choice.chosen?.name ?? null;
 }
 
-/** A new host-model board at `dir` (`initBoard`, "New host-model board"). */
-function createHostBoard(dir: string, env: Env): InitResult {
+/** A new host-model board at `dir` (`initBoard`, "New host-model board"), with `remote` already chosen; runs under the init lock. */
+function createHostBoard(dir: string, remote: string | null, env: Env): InitResult {
   const hostRoot = dirname(dir);
-  const remote = hostRemote(hostRoot, env);
   const hostGitignore = ignoreBoardInHost(hostRoot);
-  const { ref, adopted } = withInitLock(
-    hostRoot,
-    () => {
-      const outcome = ensureBoardRef(hostRoot, remote, { env });
-      const moved = adoptRepairingWorktree(hostRoot, dir, { env });
-      addBoardWorktree(hostRoot, dir, { env });
-      return { ref: outcome, adopted: moved };
-    },
-    { env },
-  );
+  const ref = ensureBoardRef(hostRoot, remote, { env });
+  const adopted = adoptRepairingWorktree(hostRoot, dir, { env });
+  addBoardWorktree(hostRoot, dir, { env });
   openBoard(dir).close();
   const events = countEvents(dir);
   const base = {
@@ -423,10 +460,14 @@ function createHostBoard(dir: string, env: Env): InitResult {
     };
   }
   const where = `created the board at ${asciiText(dir)} (host model: a worktree of the host repository at ${BOARD_REF})`;
+  // A local ref at the empty-board commit is a new board, not a restored
+  // one: a racing init wrote it, or an empty board's directory was deleted.
+  const restored =
+    ref.source === 'local' && ref.commit !== writeEmptyBoardCommit(hostRoot, { env });
   const how =
     ref.source === 'remote'
       ? `joined ${plural(events, 'event')} from ${asciiText(remote ?? '')}`
-      : ref.source === 'local'
+      : restored
         ? `restored it from the local ${BOARD_REF} with ${plural(events, 'event file')}`
         : remote === null
           ? 'a new empty board; agentboard sync publishes it once the repository has a remote'
@@ -441,14 +482,11 @@ function createHostBoard(dir: string, env: Env): InitResult {
   };
 }
 
-/** Repairs the board directory `dir` whose host link is broken or which is not a repository. */
-function repairBoard(dir: string, env: Env): InitResult {
+/** Repairs the board directory `dir` whose host link is broken or which is not a repository, with `remote` already chosen; runs under the init lock. */
+function repairBoard(dir: string, remote: string | null, env: Env): InitResult {
   const hostRoot = dirname(dir);
-  const remote = hostRemote(hostRoot, env);
   const hostGitignore = ignoreBoardInHost(hostRoot);
-  const repair = withInitLock(hostRoot, () => repairBoardLink(hostRoot, dir, remote, { env }), {
-    env,
-  });
+  const repair = repairBoardLink(hostRoot, dir, remote, { env });
   openBoard(dir).close();
   const events = countEvents(dir);
   const kept = repair.keptAt ?? '';

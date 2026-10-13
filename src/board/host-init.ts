@@ -184,7 +184,9 @@ export interface BoardRefOutcome {
  *    `git update-ref refs/agentboard/board <commit> ""` (the empty old
  *    value means create-only): source `created`. When that `update-ref`
  *    fails because another process created the ref in between, the ref is
- *    read again and used as in step 1 (source `local`).
+ *    read again and used as in step 1 (source `local`), unless it holds
+ *    the very commit this process wrote (a racing `init` made the same
+ *    empty board): the board is new, source `created`.
  *
  * Never pushes. Never creates a branch or tag. Runs no command in a
  * worktree, so it works before `.board` exists.
@@ -217,12 +219,13 @@ export function ensureBoardRef(
   try {
     git.run('update-ref', BOARD_REF, commit, '');
   } catch (error) {
-    // Another process created the ref in between: use what it made.
+    // Another process created the ref in between: use what it made. The
+    // same empty-board commit means a racing init made the same new board.
     const raced = commitOf(git, BOARD_REF);
     if (raced === null) {
       throw error;
     }
-    return { commit: raced, source: 'local', warnings };
+    return { commit: raced, source: raced === commit ? 'created' : 'local', warnings };
   }
   return { commit, source: 'created', warnings };
 }

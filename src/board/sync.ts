@@ -4,33 +4,44 @@
  * forgets `.board/` in its gitignore").
  *
  * A standalone board directory is its own git repository (`initBoard`
- * makes it one). `sync` commits new event files, pulls with rebase from the
- * board's remote, pushes, and then folds whatever arrived into the cache.
- * Event files are add-only and named by the hash of their content, so two
- * clones never produce a conflicting change to the same event path; any
- * conflict git does report is handed to a human with exit 3. The board's
- * model is decided by `detectBoardModel` (board-events "Board model
- * detection"): a host-model board whose link to the host is broken is
- * refused with exit 2 before anything is staged.
+ * makes it one outside a git host). `sync` commits new event files, pulls
+ * with rebase from the board's remote, pushes, and then folds whatever
+ * arrived into the cache. Event files are add-only and named by the hash
+ * of their content, so two clones never produce a conflicting change to
+ * the same event path; any conflict git does report is handed to a human
+ * with exit 3. The board's model is decided by `detectBoardModel`
+ * (board-events "Board model detection"): a host-model board (a worktree
+ * of the host repository at `refs/agentboard/board`) is synced by
+ * `syncHostBoard` (`src/board/host-sync.ts`) through that ref, and one
+ * whose link to the host is broken is refused with exit 2 before anything
+ * is staged. The standalone path below is unchanged by the host model; the
+ * steps both models share (the preconditions, the commit of ADR 0005, the
+ * host tracking warning) live in `src/board/sync-steps.ts`.
  */
-
-import { existsSync, readdirSync, realpathSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
 
 import type { Board } from '../store/board.js';
 import { catchUp } from '../store/cache.js';
 import { BoardError } from '../store/errors.js';
-import {
-  GIT_IDENTITY,
-  firstErrorLine,
-  gitRunner,
-  isGitFailure,
-  type GitFailure,
-  type GitRunner,
-} from './git.js';
-import { detectBoardModel } from './model.js';
+import { GIT_IDENTITY, gitRunner, isGitFailure, type GitRunner } from './git.js';
+import { syncHostBoard } from './host-sync.js';
+import { detectBoardModel, type BoardModelInfo } from './model.js';
 import { ambiguousRemoteError, chooseRemote } from './remote.js';
+import {
+  checkCommittedEventsPresent,
+  checkNothingForeignStaged,
+  checkNothingInProgress,
+  eventFileNames,
+  hostTrackedPaths,
+  hostWarning,
+  plural,
+  stageAndCommit,
+  syncCommitMessage,
+  syncFailed,
+  unmergedPaths,
+} from './sync-steps.js';
 import { asciiText, type Env } from './text.js';
+
+export { syncCommitMessage };
 
 /**
  * The fixed identity every git command run by `sync` is given (as
@@ -43,16 +54,6 @@ import { asciiText, type Env } from './text.js';
  * uses.
  */
 export const SYNC_IDENTITY: typeof GIT_IDENTITY = GIT_IDENTITY;
-
-/**
- * Subject of the commit `sync` makes: `agentboard sync: <n> event file(s)`,
- * where `<n>` is the number of `events/*.json` paths added by the commit
- * (`file` when `n` is 1, `files` otherwise, including 0 for a commit that
- * only carries `.gitignore` or `events/.gitkeep`). No body.
- */
-export function syncCommitMessage(eventFiles: number): string {
-  return `agentboard sync: ${String(eventFiles)} event ${eventFiles === 1 ? 'file' : 'files'}`;
-}
 
 /** Options for `syncBoard`. */
 export interface SyncOptions {
@@ -69,10 +70,34 @@ export interface SyncOptions {
   env?: Env | undefined;
 }
 
+/** The sharing model a `sync` ran under (`detectBoardModel`: `host` or `standalone`; the other two models are refused). */
+export type SyncModel = 'host' | 'standalone';
+
 /** Result of `syncBoard`; also the `sync --json` document. */
 export interface SyncResult {
   /** Absolute path of the board directory (`board.dir`). */
   dir: string;
+  /**
+   * The model the board was synced as: `standalone` (a repository of its
+   * own, pulled and pushed on its branch) or `host` (a worktree of the host
+   * repository, synced through `refs/agentboard/board`; see
+   * `syncHostBoard`).
+   */
+  model: SyncModel;
+  /**
+   * The ref that holds the board's history in the host repository,
+   * `refs/agentboard/board`, for a host-model board; null for a standalone
+   * board (its history is `branch`).
+   */
+  ref: string | null;
+  /**
+   * Host model: the full hex id `refs/agentboard/board` holds when sync
+   * returns, which equals the worktree's HEAD (board-events "Board ref in
+   * the host repository"), on every path that returns, including the
+   * no-remote path and a sync that committed nothing. Null for a
+   * standalone board.
+   */
+  refCommit: string | null;
   /**
    * Full hex id of the commit on the branch that contains the events sync
    * committed, as it is when sync returns: after any `pull --rebase` has
@@ -89,15 +114,25 @@ export interface SyncResult {
    * no remote (the no-remote path).
    */
   remote: string | null;
-  /** Current branch name (`main`, for example). */
-  branch: string;
-  /** True when a pull ran and completed (false on the no-remote path). */
+  /**
+   * Standalone: the current branch name (`main`, for example). Host model:
+   * null (the worktree is on a detached HEAD by design; a branch checked
+   * out there is refused with `board-on-branch`).
+   */
+  branch: string | null;
+  /**
+   * Standalone: true when a pull ran and completed. Host model: true when
+   * the fetch found `refs/agentboard/board` on the remote and its history
+   * was integrated (whether or not anything new arrived). False on the
+   * no-remote path, and when the remote has no board ref yet.
+   */
   pulled: boolean;
   /** True when a push ran and completed (false on the no-remote path). */
   pushed: boolean;
   /**
    * True when this sync set the branch's upstream (`push -u`) because none
-   * was configured.
+   * was configured. Always false for a host-model board, which never
+   * creates or moves a branch and sets no upstream.
    */
   upstreamSet: boolean;
   /**
@@ -158,14 +193,17 @@ export interface SyncResult {
  *    subdirectory of the host repository, is refused rather than synced
  *    through the host): else `BoardError(2, 'board-not-a-repository')`
  *    naming the directory and saying `agentboard init` or `git init` there
- *    makes it one. Nothing is created.
+ *    makes it one. Nothing is created. A host-model board stops here and
+ *    continues in `syncHostBoard`, whose preconditions and steps replace
+ *    the rest of this list (its result has `model` `host`).
  * 3. No rebase, merge or cherry-pick is in progress in the board
  *    repository (for example one left by an earlier conflicted sync), else
  *    `BoardError(3, 'sync-in-progress')` naming the directory and telling
  *    the human to finish it (`git rebase --continue`) or abort it
  *    (`git rebase --abort`) first. Nothing is staged or committed.
  * 4. HEAD is on a branch (possibly unborn), else
- *    `BoardError(3, 'detached-head')`.
+ *    `BoardError(3, 'detached-head')` (standalone boards only, ADR 0012: a
+ *    host-model board is detached by design).
  * 5. Every event file recorded in HEAD's tree (`events/<hash>.json`) is
  *    present in `events/` (board-concurrency scenario "Deleted event file
  *    is not synced"). Otherwise nothing is staged, committed, pulled or
@@ -260,7 +298,10 @@ export function syncBoard(board: Board, options?: SyncOptions): SyncResult {
       'agentboard sync needs git (the board is a git repository of its own), but git could not be run',
     );
   }
-  checkRepository(dir, env);
+  const info = checkRepository(dir, env);
+  if (info.model === 'host') {
+    return syncHostBoard(board, info, options);
+  }
   checkNothingInProgress(git, dir);
   const branch = currentBranch(git);
   checkCommittedEventsPresent(git, board);
@@ -275,7 +316,17 @@ export function syncBoard(board: Board, options?: SyncOptions): SyncResult {
       ? 'nothing new to commit'
       : `committed ${plural(committedEvents, 'event file')} (${id.slice(0, 12)})`;
   const lines = [committedLine(commit)];
-  const base = { dir, commit, committedEvents, branch, hostTracked, warnings };
+  const base = {
+    dir,
+    model: 'standalone' as const,
+    ref: null,
+    refCommit: null,
+    commit,
+    committedEvents,
+    branch,
+    hostTracked,
+    warnings,
+  };
 
   // 3. Remote.
   const choice = chooseRemote(dir, branch, { env });
@@ -341,28 +392,12 @@ export function syncBoard(board: Board, options?: SyncOptions): SyncResult {
   };
 }
 
-/** NUL-separated output as a list, without empty entries. */
-function zList(text: string): string[] {
-  return text.split('\0').filter((entry) => entry !== '');
-}
-
-function plural(n: number, noun: string): string {
-  return `${String(n)} ${noun}${n === 1 ? '' : 's'}`;
-}
-
-function realpathOrSelf(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
-}
-
 /**
  * Precondition 2: the board's link to the host is not broken, and the
- * board directory is the top level of a repository or worktree.
+ * board directory is the top level of a repository or worktree. Returns
+ * what `detectBoardModel` found (`host` or `standalone`).
  */
-function checkRepository(dir: string, env: Env): void {
+function checkRepository(dir: string, env: Env): BoardModelInfo {
   const info = detectBoardModel(dir, { env });
   if (info.model === 'broken-host-link') {
     throw new BoardError(
@@ -380,21 +415,7 @@ function checkRepository(dir: string, env: Env): void {
         `(or git init in ${dir}) to make it one`,
     );
   }
-}
-
-/** Precondition 3: no rebase, merge, cherry-pick or revert is stopped in the board repository. */
-function checkNothingInProgress(git: GitRunner, dir: string): void {
-  const gitDir = git.run('rev-parse', '--absolute-git-dir').trim();
-  const markers = ['rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'];
-  if (markers.some((name) => existsSync(join(gitDir, name)))) {
-    throw new BoardError(
-      3,
-      'sync-in-progress',
-      `a rebase or merge is in progress in the board repository at ${dir}; finish it ` +
-        `(resolve, git add, git rebase --continue) or abort it (git rebase --abort) ` +
-        `in ${dir}, then run agentboard sync again`,
-    );
-  }
+  return info;
 }
 
 /** Precondition 4: HEAD is on a branch, possibly unborn. */
@@ -410,100 +431,11 @@ function currentBranch(git: GitRunner): string {
   return ref.trim();
 }
 
-const EVENT_PATH = /^events\/[^/]+\.json$/;
-
-function headExists(git: GitRunner): boolean {
-  return !isGitFailure(git.attempt('rev-parse', '--quiet', '--verify', 'HEAD^{commit}'));
-}
-
-/** Precondition 5: every event file recorded in HEAD is present in `events/`. */
-function checkCommittedEventsPresent(git: GitRunner, board: Board): void {
-  if (!headExists(git)) {
-    return;
-  }
-  const committed = zList(git.run('ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', 'events'));
-  const missing = committed
-    .filter((path) => EVENT_PATH.test(path))
-    .filter((path) => !existsSync(join(board.dir, path)))
-    .sort();
-  if (missing.length > 0) {
-    const names = missing.map((p) => asciiText(p));
-    throw new BoardError(
-      5,
-      'integrity',
-      `${plural(missing.length, 'committed event file')} missing from ${board.dir}: ` +
-        `${names.join(', ')}; event files are add-only, so nothing was synced; restore them with ` +
-        names.map((p) => `git -C ${board.dir} checkout -- ${p}`).join(' and '),
-    );
-  }
-}
-
-/** Event file names (`<hash>.json`) currently in the events directory. */
-function eventFileNames(board: Board): string[] {
-  return readdirSync(board.eventsDir).filter(
-    (name) => name.endsWith('.json') && !name.startsWith('.'),
-  );
-}
-
-/** Steps 1 and 2: stage new event files and `.gitignore`, and commit them when any is staged. */
-function stageAndCommit(
-  git: GitRunner,
-  board: Board,
-): { commit: string | null; committedEvents: number } {
-  const own = ['events', ':(exclude)events/.tmp-*'];
-  if (existsSync(join(board.dir, '.gitignore'))) {
-    own.push('.gitignore');
-  }
-  git.run('add', '--ignore-removal', '--', ...own);
-  const staged = zList(git.run('diff', '--cached', '--name-only', '-z', '--', ...own));
-  if (staged.length === 0) {
-    return { commit: null, committedEvents: 0 };
-  }
-  const added = zList(
-    git.run('diff', '--cached', '--name-only', '--diff-filter=A', '-z', '--', ...own),
-  );
-  const committedEvents = added.filter((path) => EVENT_PATH.test(path)).length;
-  // The pathspec limits the commit to sync's own paths: anything else
-  // already staged stays staged and uncommitted.
-  git.run(
-    'commit',
-    '--quiet',
-    '--no-verify',
-    '-m',
-    syncCommitMessage(committedEvents),
-    '--',
-    ...own,
-  );
-  return { commit: git.run('rev-parse', 'HEAD').trim(), committedEvents };
-}
-
-/**
- * Refuses to pull while content other than sync's own is staged in the
- * board repository: `pull --rebase` cannot run over it, and sync never
- * commits it.
- */
-function checkNothingForeignStaged(git: GitRunner, dir: string): void {
-  const foreign = zList(git.run('diff', '--cached', '--name-only', '-z')).sort();
-  if (foreign.length > 0) {
-    throw new BoardError(
-      3,
-      'sync-failed',
-      `the board repository at ${dir} has staged changes that agentboard sync does not commit: ` +
-        `${foreign.map((p) => asciiText(p)).join(', ')}; commit them or unstage them ` +
-        `(git -C ${dir} restore --staged <path>) in the board repository, then run agentboard sync again`,
-    );
-  }
-}
-
 /** Whether `branch` has a configured upstream (`branch.<branch>.remote` and `.merge`, whatever the remote). */
 function hasUpstream(git: GitRunner, branch: string): boolean {
   const remote = git.attempt('config', '--get', `branch.${branch}.remote`);
   const merge = git.attempt('config', '--get', `branch.${branch}.merge`);
   return !isGitFailure(remote) && !isGitFailure(merge);
-}
-
-function syncFailed(what: string, failure: GitFailure): BoardError {
-  return new BoardError(3, 'sync-failed', `${what} failed: ${firstErrorLine(failure)}`);
 }
 
 /** Whether `branch` exists on `remote` (contacts the remote). */
@@ -521,7 +453,7 @@ function pull(git: GitRunner, dir: string, remote: string, branch: string): void
   if (!isGitFailure(out)) {
     return;
   }
-  const conflicted = zList(git.run('diff', '--name-only', '--diff-filter=U', '-z')).sort();
+  const conflicted = unmergedPaths(git);
   if (conflicted.length > 0) {
     throw new BoardError(
       3,
@@ -555,30 +487,4 @@ function push(
     return false;
   }
   throw syncFailed(`pushing to ${asciiText(remote)}`, out);
-}
-
-/**
- * Paths under the board directory tracked by the host repository (run in
- * the parent of the board directory), or none when there is no host
- * repository or git fails there.
- */
-function hostTrackedPaths(git: GitRunner, dir: string): string[] {
-  const real = realpathOrSelf(dir);
-  const parent = dirname(real);
-  try {
-    return zList(git.runIn(parent, 'ls-files', '-z', '--full-name', '--', real)).sort();
-  } catch {
-    return [];
-  }
-}
-
-function hostWarning(dir: string, tracked: readonly string[]): string {
-  const first = asciiText(tracked[0] ?? '');
-  const name = asciiText(basename(dir));
-  const others = tracked.length > 1 ? ` and ${String(tracked.length - 1)} more` : '';
-  return (
-    `warning: the host repository tracks ${plural(tracked.length, 'path')} under the board ` +
-    `(${first}${others}); untrack them with git rm -r --cached ${name} ` +
-    `(run in ${asciiText(dirname(dir))}) and keep ${name}/ in the host .gitignore`
-  );
 }

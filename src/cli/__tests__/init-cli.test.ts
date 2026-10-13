@@ -12,7 +12,7 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -28,6 +28,7 @@ import {
   refCommit,
   worktreeEntries,
   worktreeEntry,
+  withGitShimBefore,
   withKillingGitShim,
 } from '../../board/__tests__/sharing-helpers.js';
 import { bareRemote, syncEnv, type Env } from '../../board/__tests__/sync-helpers.js';
@@ -76,6 +77,37 @@ function expectComplete(root: string): void {
   expect(git(root, 'for-each-ref', '--format=%(refname)', 'refs/agentboard/')).toBe(
     `${BOARD_REF}\n`,
   );
+}
+
+/** Runs `init --json` in `cwd` as a child process and resolves with its result. */
+function initAsync(cwd: string, env: Env): Promise<Run> {
+  const childEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) {
+      childEnv[key] = value;
+    }
+  }
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [BUILT_CLI, 'init', '--json'], {
+      cwd,
+      env: childEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      resolve({ code: code ?? -1, stdout, stderr });
+    });
+  });
 }
 
 describe('agentboard init (built CLI)', () => {
@@ -168,7 +200,12 @@ describe('agentboard init (built CLI)', () => {
     const out = init(b, env);
 
     expect(out.code, out.stderr).toBe(0);
-    expect(oneJson(out)).toMatchObject({ joined: true, remote: 'origin', events: 1, model: 'host' });
+    expect(oneJson(out)).toMatchObject({
+      joined: true,
+      remote: 'origin',
+      events: 1,
+      model: 'host',
+    });
     expectComplete(b);
     expect(refCommit(b)).toBe(refCommit(a.root));
     const list = spawnCli(['list', '--json'], b, env);
@@ -178,37 +215,6 @@ describe('agentboard init (built CLI)', () => {
 });
 
 describe('two init processes racing on one host', () => {
-  /** Runs `init --json` in `cwd` as a child process and resolves with its result. */
-  function initAsync(cwd: string, env: Env): Promise<Run> {
-    const childEnv: Record<string, string> = {};
-    for (const [key, value] of Object.entries(env)) {
-      if (value !== undefined) {
-        childEnv[key] = value;
-      }
-    }
-    return new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [BUILT_CLI, 'init', '--json'], {
-        cwd,
-        env: childEnv,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.setEncoding('utf8');
-      child.stderr.setEncoding('utf8');
-      child.stdout.on('data', (chunk: string) => {
-        stdout += chunk;
-      });
-      child.stderr.on('data', (chunk: string) => {
-        stderr += chunk;
-      });
-      child.on('error', reject);
-      child.on('close', (code) => {
-        resolve({ code: code ?? -1, stdout, stderr });
-      });
-    });
-  }
-
   // A missing lock lets both `git worktree add` succeed only now and then
   // (about one run in twenty when measured), so the race is repeated.
   const RUNS = 20;
@@ -229,11 +235,58 @@ describe('two init processes racing on one host', () => {
       expectComplete(root);
       expect(git(root, 'status', '--porcelain'), label).toBe('');
       expect(readdirSync(join(root, '.board', 'events')), label).toEqual(['.gitkeep']);
-      // Both inits see the same ref; one of them created it.
-      const docs = [oneJson(first), oneJson(second)] as { created: boolean }[];
-      expect(docs.some((doc) => doc.created), label).toBe(true);
+      // Both inits see the same ref; one of them created it. Neither says
+      // it restored a board from an older ref: the board is new (the
+      // group 2 review nit on the race loser's wording).
+      const docs = [oneJson(first), oneJson(second)] as { created: boolean; message: string }[];
+      expect(
+        docs.some((doc) => doc.created),
+        label,
+      ).toBe(true);
+      for (const doc of docs) {
+        expect(doc.message, label).not.toMatch(/restored it from the local/);
+        expect(doc.message, label).not.toContain('0 event files');
+      }
       expect(existsSync(join(root, '.git', 'agentboard', 'init.lock')), label).toBe(false);
     }
+  });
+});
+
+describe('a second init while the first is inside worktree add', () => {
+  it('waits on the init lock, then reports the existing board: one ref, one worktree, no repair', async () => {
+    const env = syncEnv();
+    const root = hostRepo();
+    const dir = join(root, '.board');
+    // The first init is held inside its `git worktree add`: the shim makes
+    // the (empty) directory git is about to fill and sleeps before running
+    // the real command, which is what a second init sees mid-add.
+    const paused = withGitShimBefore(env, ['worktree', 'add'], `mkdir -p '${dir}'; sleep 4`);
+
+    const first = initAsync(root, paused);
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(dir) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(existsSync(dir)).toBe(true);
+    expect(existsSync(join(dir, 'events'))).toBe(false);
+    const second = initAsync(root, env);
+    const [one, two] = await Promise.all([first, second]);
+
+    expect(one.code, one.stderr).toBe(0);
+    expect(two.code, two.stderr).toBe(0);
+    expect(oneJson(one)).toMatchObject({ created: true, model: 'host', repair: null });
+    const doc = oneJson(two) as { created: boolean; repair: unknown; message: string };
+    expect(doc).toMatchObject({ created: false, model: 'host', repair: null });
+    expect(doc.message).toContain('already exists');
+    expect(doc.message).not.toContain('repair');
+    expect(refCommit(root)).toBe(EMPTY_BOARD_COMMIT_ID);
+    expectComplete(root);
+    expect(git(root, 'status', '--porcelain')).toBe('');
+    const kept = join(root, '.git', 'agentboard');
+    expect(existsSync(kept) ? readdirSync(kept) : []).toEqual([]);
+    const names = worktreeEntries(root).map((entry) => basename(entry.path));
+    expect(names.filter((name) => name === 'repairing')).toEqual([]);
+    expect(names.filter((name) => name === '.board')).toHaveLength(1);
   });
 });
 

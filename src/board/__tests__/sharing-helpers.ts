@@ -7,11 +7,13 @@
  * standalone boards whose `.git` is a file (a separate git directory; a
  * submodule of the host), a `git` shim on the PATH that reports another
  * version and delegates to the real one, a `git` shim that kills the
- * process that ran it at a chosen step (the crash tests of `init`), a
- * `GIT_SSH_COMMAND` shim that records every call git makes to it, and
- * read-only snapshots of refs, worktrees and directories to prove that a
- * command changed nothing. Every repository is on local disk; nothing
- * touches the network.
+ * process that ran it at a chosen step (the crash tests of `init` and
+ * `sync`), a `git` shim that records every command line it is given, a
+ * `GIT_SSH_COMMAND` shim that records every call git makes to it, a second
+ * clone joining a published board with plumbing only, failing hooks in a
+ * host repository, and read-only snapshots of refs, worktrees and
+ * directories to prove that a command changed nothing. Every repository
+ * is on local disk; nothing touches the network.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -55,12 +57,12 @@ export const EMPTY_BOARD_SCRIPT = [
   'set -e',
   "ignore=$(printf 'cache.sqlite\\ncache.sqlite-wal\\ncache.sqlite-shm\\n' | git hash-object -w --stdin)",
   "keep=$(printf '' | git hash-object -w --stdin)",
-  "events=$(printf '100644 blob %s\\t.gitkeep\\n' \"$keep\" | git mktree)",
-  "root=$(printf '100644 blob %s\\t.gitignore\\n040000 tree %s\\tevents\\n' \"$ignore\" \"$events\" | git mktree)",
+  'events=$(printf \'100644 blob %s\\t.gitkeep\\n\' "$keep" | git mktree)',
+  'root=$(printf \'100644 blob %s\\t.gitignore\\n040000 tree %s\\tevents\\n\' "$ignore" "$events" | git mktree)',
   'GIT_AUTHOR_NAME=agentboard GIT_AUTHOR_EMAIL=agentboard@localhost \\',
   'GIT_COMMITTER_NAME=agentboard GIT_COMMITTER_EMAIL=agentboard@localhost \\',
   "GIT_AUTHOR_DATE='@0 +0000' GIT_COMMITTER_DATE='@0 +0000' \\",
-  "git commit-tree \"$root\" -m 'agentboard: empty board'",
+  'git commit-tree "$root" -m \'agentboard: empty board\'',
   '',
 ].join('\n');
 
@@ -184,7 +186,17 @@ export function submoduleBoard(env: Env = syncEnv()): {
   git(source, 'add', '-A');
   git(source, 'commit', '-q', '-m', 'board');
   const host = hostRepo();
-  git(host, '-c', 'protocol.file.allow=always', 'submodule', 'add', '--force', '-q', source, '.board');
+  git(
+    host,
+    '-c',
+    'protocol.file.allow=always',
+    'submodule',
+    'add',
+    '--force',
+    '-q',
+    source,
+    '.board',
+  );
   return {
     host,
     dir: join(host, '.board'),
@@ -410,18 +422,22 @@ export type KillWhen = 'before' | 'after';
 
 /**
  * A directory holding a `git` shim that delegates every invocation to the
- * real git, except that the first invocation whose arguments contain the
- * words of `trigger` in order (for example `['update-ref',
- * 'refs/agentboard/board']` or `['worktree', 'add']`) kills the process
- * that ran it with SIGKILL, `before` running the real git (so the command
- * never happens) or `after` it has completed (so its effect is on disk and
- * nothing later happens). Prepend it to `PATH`; `withKillingGitShim` does.
- * The shim is a `#!/bin/sh` script, so `$PPID` is the process that spawned
- * git: `init` run through `spawnCli`.
+ * real git, except that the `nth` invocation (the first by default) whose
+ * arguments contain the words of `trigger` in order (for example
+ * `['update-ref', 'refs/agentboard/board']` or `['worktree', 'add']`) kills
+ * the process that ran it with SIGKILL, `before` running the real git (so
+ * the command never happens) or `after` it has completed (so its effect is
+ * on disk and nothing later happens). Earlier matching invocations run
+ * unchanged (a counter file records them). Prepend it to `PATH`;
+ * `withKillingGitShim` does. The shim is a `#!/bin/sh` script, so `$PPID`
+ * is the process that spawned git: `init` or `sync` run through
+ * `spawnCli`. The killed process's git child goes on for a few seconds in
+ * the background, which the caller never waits for.
  */
-export function killingGitShim(trigger: readonly string[], when: KillWhen): string {
+export function killingGitShim(trigger: readonly string[], when: KillWhen, nth = 1): string {
   const dir = join(tempDir(), 'killing-shim-bin');
   mkdirSync(dir);
+  const counter = join(dir, 'matches');
   // Only the fixed words are quoted: the `*` on either side must stay a glob.
   const pattern = `*${JSON.stringify(trigger.join(' '))}*`;
   const kill = 'kill -KILL "$PPID"; sleep 5; exit 1';
@@ -431,7 +447,12 @@ export function killingGitShim(trigger: readonly string[], when: KillWhen): stri
       '#!/bin/sh',
       'case " $* " in',
       `  ${pattern})`,
-      when === 'before' ? `    ${kill}` : `    '${realGit()}' "$@"; ${kill}`,
+      `    n=$(cat '${counter}' 2>/dev/null || echo 0)`,
+      '    n=$((n + 1))',
+      `    echo "$n" > '${counter}'`,
+      `    if [ "$n" -eq ${String(nth)} ]; then`,
+      when === 'before' ? `      ${kill}` : `      '${realGit()}' "$@"; ${kill}`,
+      '    fi',
       '    ;;',
       'esac',
       `exec '${realGit()}' "$@"`,
@@ -442,29 +463,36 @@ export function killingGitShim(trigger: readonly string[], when: KillWhen): stri
   return dir;
 }
 
-/** `env` with `killingGitShim(trigger, when)` first on its PATH. */
-export function withKillingGitShim(env: Env, trigger: readonly string[], when: KillWhen): Env {
+/** `env` with `killingGitShim(trigger, when, nth)` first on its PATH. */
+export function withKillingGitShim(
+  env: Env,
+  trigger: readonly string[],
+  when: KillWhen,
+  nth = 1,
+): Env {
   return {
     ...env,
-    PATH: `${killingGitShim(trigger, when)}:${env.PATH ?? process.env.PATH ?? ''}`,
+    PATH: `${killingGitShim(trigger, when, nth)}:${env.PATH ?? process.env.PATH ?? ''}`,
   };
 }
 
 /**
  * A directory holding a `git` shim that delegates every invocation to the
- * real git, except that before the first invocation whose arguments
- * contain the words of `trigger` in order it runs the shell text `before`
- * (with `GIT` set to the real git's path and the same working directory),
- * then runs the real command. Later matching invocations run unchanged
- * (a marker file records the first). Prepend it to `PATH`;
- * `withGitShimBefore` does. Used to make another process win a race, for
- * example creating `refs/agentboard/board` just before `init`'s
- * create-only `update-ref`.
+ * real git, except that before each of the first `times` invocations (one
+ * by default) whose arguments contain the words of `trigger` in order it
+ * runs the shell text `before` (with `GIT` set to the real git's path and
+ * the same working directory and environment), then runs the real
+ * command. Later matching invocations run unchanged (a counter file
+ * records them). Prepend it to `PATH`; `withGitShimBefore` does. Used to
+ * make another process win a race, for example creating
+ * `refs/agentboard/board` just before `init`'s create-only `update-ref`,
+ * moving the ref just before `sync`'s compare-and-swap, or pushing to the
+ * remote just before `sync`'s push.
  */
-export function gitShimBefore(trigger: readonly string[], before: string): string {
+export function gitShimBefore(trigger: readonly string[], before: string, times = 1): string {
   const dir = join(tempDir(), 'before-shim-bin');
   mkdirSync(dir);
-  const marker = join(dir, 'fired');
+  const counter = join(dir, 'matches');
   writeFileSync(
     join(dir, 'git'),
     [
@@ -472,8 +500,10 @@ export function gitShimBefore(trigger: readonly string[], before: string): strin
       `GIT='${realGit()}'`,
       'case " $* " in',
       `  *${JSON.stringify(trigger.join(' '))}*)`,
-      `    if [ ! -e '${marker}' ]; then`,
-      `      : > '${marker}'`,
+      `    n=$(cat '${counter}' 2>/dev/null || echo 0)`,
+      '    n=$((n + 1))',
+      `    echo "$n" > '${counter}'`,
+      `    if [ "$n" -le ${String(times)} ]; then`,
       `      ${before}`,
       '    fi',
       '    ;;',
@@ -486,10 +516,90 @@ export function gitShimBefore(trigger: readonly string[], before: string): strin
   return dir;
 }
 
-/** `env` with `gitShimBefore(trigger, before)` first on its PATH. */
-export function withGitShimBefore(env: Env, trigger: readonly string[], before: string): Env {
+/** `env` with `gitShimBefore(trigger, before, times)` first on its PATH. */
+export function withGitShimBefore(
+  env: Env,
+  trigger: readonly string[],
+  before: string,
+  times = 1,
+): Env {
   return {
     ...env,
-    PATH: `${gitShimBefore(trigger, before)}:${env.PATH ?? process.env.PATH ?? ''}`,
+    PATH: `${gitShimBefore(trigger, before, times)}:${env.PATH ?? process.env.PATH ?? ''}`,
   };
+}
+
+/**
+ * A directory holding a `git` shim that appends one line per invocation,
+ * its arguments as given (`$*`), to `log`, then delegates to the real git.
+ * `calls()` reads the lines back. Prepend it to `PATH`;
+ * `withRecordingGitShim` does. Proves which commands a `sync` ran (the
+ * fetch refspec, `--no-tags`, the compare-and-swap old values, a push
+ * without force, `core.hooksPath` on every command).
+ */
+export function recordingGitShim(): { dir: string; log: string; calls: () => string[] } {
+  const dir = join(tempDir(), 'recording-shim-bin');
+  mkdirSync(dir);
+  const log = join(dir, 'git-calls.log');
+  writeFileSync(
+    join(dir, 'git'),
+    ['#!/bin/sh', `echo "$*" >> '${log}'`, `exec '${realGit()}' "$@"`, ''].join('\n'),
+  );
+  chmodSync(join(dir, 'git'), 0o755);
+  return {
+    dir,
+    log,
+    calls: () => (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : []),
+  };
+}
+
+/** `env` with a `recordingGitShim` first on its PATH, and the shim's `calls`. */
+export function withRecordingGitShim(env: Env): { env: Env; calls: () => string[] } {
+  const shim = recordingGitShim();
+  return {
+    env: { ...env, PATH: `${shim.dir}:${env.PATH ?? process.env.PATH ?? ''}` },
+    calls: shim.calls,
+  };
+}
+
+/**
+ * A second clone of `remote` at `<temp>/<name>` joined to the board
+ * published there, with plumbing only (so tests of `sync` do not depend
+ * on `init`): `git clone`, `git fetch --no-tags origin
+ * refs/agentboard/board:refs/agentboard/board`, a locked worktree at
+ * `<clone>/.board` on a detached HEAD at the ref. The remote must hold
+ * `refs/agentboard/board`. Returns the clone's root and board directory.
+ */
+export function joinHostBoard(remote: string, name = 'clone'): { root: string; dir: string } {
+  const root = cloneHost(remote, name);
+  git(root, 'fetch', '-q', '--no-tags', 'origin', `${BOARD_REF}:${BOARD_REF}`);
+  const dir = join(root, '.board');
+  git(root, 'worktree', 'add', '-q', '--detach', dir, BOARD_REF);
+  git(root, 'worktree', 'lock', '--reason', 'agentboard board', dir);
+  return { root, dir };
+}
+
+/**
+ * A hook named `name` (`pre-commit`, `pre-push`, ...) in `<gitDir>/hooks`
+ * that records its run in a marker file and exits with `status` (1 by
+ * default, so a command that runs it fails). Returns the marker's path:
+ * it exists once the hook has run.
+ */
+export function installHook(gitDir: string, name: string, status = 1): string {
+  const marker = join(tempDir(), `${name}-ran`);
+  const hooks = join(gitDir, 'hooks');
+  mkdirSync(hooks, { recursive: true });
+  const hook = join(hooks, name);
+  writeFileSync(
+    hook,
+    [
+      '#!/bin/sh',
+      'cat >/dev/null 2>&1',
+      `echo ran > '${marker}'`,
+      `exit ${String(status)}`,
+      '',
+    ].join('\n'),
+  );
+  chmodSync(hook, 0o755);
+  return marker;
 }

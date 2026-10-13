@@ -208,7 +208,9 @@ describe('ensureBoardRef', () => {
     expect(outcome).toEqual({ commit: refCommit(a.root), source: 'remote', warnings: [] });
     expect(refCommit(b)).toBe(refCommit(a.root));
     expect(git(b, 'tag')).toBe('');
-    expect(git(b, 'for-each-ref', '--format=%(refname)', 'refs/remotes/')).not.toMatch(/agentboard/);
+    expect(git(b, 'for-each-ref', '--format=%(refname)', 'refs/remotes/')).not.toMatch(
+      /agentboard/,
+    );
   });
 
   it('uses an existing local ref and never contacts the remote', () => {
@@ -219,7 +221,9 @@ describe('ensureBoardRef', () => {
     const ssh = sshShim();
     git(root, 'remote', 'add', 'origin', SSH_URL);
 
-    const outcome = ensureBoardRef(root, 'origin', { env: { ...env, GIT_SSH_COMMAND: ssh.command } });
+    const outcome = ensureBoardRef(root, 'origin', {
+      env: { ...env, GIT_SSH_COMMAND: ssh.command },
+    });
 
     expect(outcome).toEqual({ commit: revParse(dir), source: 'local', warnings: [] });
     expect(ssh.calls()).toEqual([]);
@@ -347,9 +351,7 @@ describe('scenario: init joins the board from the remote', () => {
     expect(git(a.remote, 'for-each-ref', '--format=%(refname)')).toBe(
       `${BOARD_REF}\nrefs/heads/main\n`,
     );
-    expect(git(b, 'for-each-ref', '--format=%(refname)', 'refs/heads/')).toBe(
-      'refs/heads/main\n',
-    );
+    expect(git(b, 'for-each-ref', '--format=%(refname)', 'refs/heads/')).toBe('refs/heads/main\n');
     expect(git(b, 'status', '--porcelain')).toBe('');
   });
 
@@ -533,7 +535,12 @@ describe('scenario: init repairs a stale board copied into a fresh clone', () =>
 
   /** What must not change in clone A: its refs, its worktree list and its board files. */
   function stateOfA(a: { root: string; dir: string }): unknown[] {
-    return [refs(a.root), worktrees(a.root), snapshotDir(a.dir), git(a.root, 'status', '--porcelain')];
+    return [
+      refs(a.root),
+      worktrees(a.root),
+      snapshotDir(a.dir),
+      git(a.root, 'status', '--porcelain'),
+    ];
   }
 
   it('builds a fresh worktree at the board joined from origin, carries the unsynced file over and keeps the copy', () => {
@@ -841,6 +848,24 @@ describe('withInitLock', () => {
 });
 
 describe('the create-only update-ref race', () => {
+  it('the loser whose winner wrote the same empty-board commit reports source created (group 2 review nit)', () => {
+    // Two inits racing on one host both write the deterministic empty-board
+    // commit, so the loser finds the very commit it made under the ref: the
+    // board is new, not restored from an older local ref.
+    const base = syncEnv();
+    const root = hostRepo();
+    const env = withGitShimBefore(
+      base,
+      ['update-ref', BOARD_REF],
+      `"$GIT" update-ref ${BOARD_REF} ${EMPTY_BOARD_COMMIT_ID}`,
+    );
+
+    const outcome = ensureBoardRef(root, null, { env });
+
+    expect(outcome).toEqual({ commit: EMPTY_BOARD_COMMIT_ID, source: 'created', warnings: [] });
+    expect(refCommit(root)).toBe(EMPTY_BOARD_COMMIT_ID);
+  });
+
   it('the loser uses the ref the winner wrote and reports source local', () => {
     const base = syncEnv();
     const root = hostRepo();
@@ -1005,6 +1030,10 @@ describe('an interrupted repair', () => {
     expect(existsSync(join(cDir, 'events', 'stray.json'))).toBe(false);
     expect(eventFiles(cDir)).toEqual([`${a.hashes[0] ?? ''}.json`]);
     expect(worktreeEntry(c, repairing)).toBeNull();
-    expect(worktreeEntries(c).map((entry) => basename(entry.path)).sort()).toEqual(['.board', 'clone-c']);
+    expect(
+      worktreeEntries(c)
+        .map((entry) => basename(entry.path))
+        .sort(),
+    ).toEqual(['.board', 'clone-c']);
   });
 });
