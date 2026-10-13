@@ -16,6 +16,8 @@
  * The steps both models share are in `src/board/sync-steps.ts`.
  */
 
+import { dirname, isAbsolute, resolve } from 'node:path';
+
 import type { Board } from '../store/board.js';
 import { catchUp } from '../store/cache.js';
 import { BoardError } from '../store/errors.js';
@@ -31,15 +33,17 @@ import { BOARD_REF, type BoardModelInfo } from './model.js';
 import { ambiguousRemoteError, boardRemote } from './remote.js';
 import type { SyncOptions, SyncResult } from './sync.js';
 import {
+  EVENT_PATH,
   checkCommittedEventsPresent,
+  checkNothingForeignStaged,
   checkNothingInProgress,
-  eventFileNames,
   hostTrackedPaths,
   hostWarning,
   plural,
   stageAndCommit,
   syncFailed,
   unmergedPaths,
+  zList,
 } from './sync-steps.js';
 import { asciiText, type Env } from './text.js';
 
@@ -248,9 +252,10 @@ export function syncHostBoard(
   const hostTracked = hostTrackedPaths(git, dir);
   const warnings = hostTracked.length > 0 ? [hostWarning(dir, hostTracked)] : [];
 
-  // 1. Stage and commit.
+  // 1. Stage and commit; then nothing foreign may stay staged.
   const { commit, committedEvents } = stageAndCommit(git, board);
-  const before = new Set(eventFileNames(board));
+  checkNothingForeignStaged(git, dir);
+  const committedHead = git.run('rev-parse', 'HEAD').trim();
 
   // 2. Make the local ref equal to HEAD.
   let refCommit = integrateLocalRef(git, dir);
@@ -261,27 +266,35 @@ export function syncHostBoard(
     throw ambiguousRemoteError(choice);
   }
   const remote = choice.chosen?.name ?? null;
+  // A relative path URL would resolve from `.board`, one directory too
+  // deep: the commands get the path resolved against the host's top level.
+  const target =
+    remote === null ? null : remoteTarget(remote, choice.chosen?.url ?? null, info, dir);
 
   // 4. Fetch, 5. integrate and 6. push, retried once when the push is rejected.
   let pulled = false;
-  if (remote !== null) {
+  if (remote !== null && target !== null) {
     for (let attempt = 1; ; attempt += 1) {
-      if (remoteHasRef(git, remote)) {
-        fetchRef(git, remote);
+      if (remoteHasRef(git, remote, target)) {
+        fetchRef(git, remote, target);
         if (!isAncestor(git, 'FETCH_HEAD', 'HEAD')) {
           rebaseOnto(git, dir, 'FETCH_HEAD', `what ${asciiText(remote)} holds`);
         }
         refCommit = integrateLocalRef(git, dir);
         pulled = true;
       }
-      if (push(git, remote, attempt === 2)) {
+      if (push(git, remote, target, attempt === 2)) {
         break;
       }
     }
   }
-  const arrived = eventFileNames(board)
-    .filter((name) => !before.has(name))
-    .map((name) => name.slice(0, -'.json'.length))
+  // What the rebases of steps 2 and 5 added to HEAD's tree: never an
+  // event this process committed or a writer added meanwhile.
+  const arrived = zList(
+    git.run('diff', '--name-only', '-z', '--diff-filter=A', committedHead, 'HEAD', '--', 'events'),
+  )
+    .filter((path) => EVENT_PATH.test(path))
+    .map((path) => path.slice('events/'.length, -'.json'.length))
     .sort();
 
   // 7. Catch-up.
@@ -367,12 +380,26 @@ function isAncestor(git: GitRunner, ancestor: string, descendant: string): boole
 }
 
 /**
- * Whether the worktree's HEAD ever pointed at `commit` (its reflog lists
- * it). A worktree without a HEAD reflog never did.
+ * Whether HEAD's tree already holds every event file the ref's tree holds
+ * (`diff --name-only --diff-filter=A HEAD refs/agentboard/board -- events`
+ * prints nothing): the ref is then a stale value of this worktree whose
+ * commits were replayed into HEAD, and moving it loses no event. The
+ * criterion is the events, never the HEAD reflog, which also lists values
+ * ahead of HEAD (after a checkout or reset of an older commit) and the
+ * onto of an aborted rebase.
  */
-function headEverWas(git: GitRunner, commit: string): boolean {
-  const log = git.attempt('rev-list', '-g', 'HEAD');
-  return !isGitFailure(log) && log.split('\n').some((line) => line.trim() === commit);
+function headHoldsEventsOf(git: GitRunner, ref: string): boolean {
+  const added = git.run(
+    'diff',
+    '--name-only',
+    '-z',
+    '--diff-filter=A',
+    'HEAD',
+    ref,
+    '--',
+    'events',
+  );
+  return zList(added).filter((path) => EVENT_PATH.test(path)).length === 0;
 }
 
 /**
@@ -388,7 +415,7 @@ function integrateLocalRef(git: GitRunner, dir: string): string {
     if (old === head) {
       return head;
     }
-    if (old !== '' && !isAncestor(git, BOARD_REF, 'HEAD') && !headEverWas(git, old)) {
+    if (old !== '' && !isAncestor(git, BOARD_REF, 'HEAD') && !headHoldsEventsOf(git, BOARD_REF)) {
       rebaseOnto(git, dir, BOARD_REF, `the local ${BOARD_REF}`);
       head = git.run('rev-parse', 'HEAD').trim();
       if (old === head) {
@@ -429,9 +456,42 @@ function rebaseOnto(git: GitRunner, dir: string, onto: string, what: string): vo
   throw syncFailed(`rebasing onto ${what}`, out);
 }
 
-/** Step 4, first half: whether `remote` has `BOARD_REF` (contacts the remote). */
-function remoteHasRef(git: GitRunner, remote: string): boolean {
-  const out = git.attempt('ls-remote', remote, BOARD_REF);
+/**
+ * The remote argument of the fetch, `ls-remote` and push commands: the
+ * remote's name, or, when its URL is a relative path (one git would
+ * resolve from `.board`, a directory too deep), that path resolved
+ * against the host's top level (the parent of the host's git directory).
+ * The configuration is never rewritten.
+ */
+function remoteTarget(
+  remote: string,
+  url: string | null,
+  info: BoardModelInfo,
+  dir: string,
+): string {
+  if (url === null || url === '' || !isRelativePathUrl(url)) {
+    return remote;
+  }
+  const top = info.gitDir === null ? dirname(dir) : dirname(info.gitDir);
+  return resolve(top, url);
+}
+
+/**
+ * Whether git treats `url` as a relative local path: no `<scheme>://`, no
+ * `<host>:<path>` form (a colon before the first slash), not absolute.
+ */
+function isRelativePathUrl(url: string): boolean {
+  if (url.includes('://') || isAbsolute(url)) {
+    return false;
+  }
+  const slash = url.indexOf('/');
+  const colon = url.indexOf(':');
+  return colon === -1 || (slash !== -1 && slash < colon);
+}
+
+/** Step 4, first half: whether the remote has `BOARD_REF` (contacts the remote). */
+function remoteHasRef(git: GitRunner, remote: string, target: string): boolean {
+  const out = git.attempt('ls-remote', target, BOARD_REF);
   if (isGitFailure(out)) {
     throw syncFailed(`reaching ${asciiText(remote)}`, out);
   }
@@ -439,25 +499,56 @@ function remoteHasRef(git: GitRunner, remote: string): boolean {
 }
 
 /** Step 4, second half: `fetch --no-tags <remote> refs/agentboard/board` into the worktree's `FETCH_HEAD`. */
-function fetchRef(git: GitRunner, remote: string): void {
-  const out = git.attempt('fetch', '--no-tags', remote, BOARD_REF);
+function fetchRef(git: GitRunner, remote: string, target: string): void {
+  const out = git.attempt('fetch', '--no-tags', target, BOARD_REF);
   if (isGitFailure(out)) {
     throw syncFailed(`fetching ${BOARD_REF} from ${asciiText(remote)}`, out);
   }
 }
 
+/** A porcelain `!` line of `git push`: `!\t<from>:<to>\t<reason>`. */
+const PUSH_REFUSAL = /^!\t[^\t]*\t(.*)$/;
+
 /**
- * Step 6: push. Returns false when the push was rejected and may be
- * retried (`last` false); throws on any other failure or a last rejection.
+ * Step 6: push. Returns false when the remote moved (a `[rejected]`
+ * porcelain line) and the push may be retried (`last` false); throws on a
+ * last such rejection, on a refusal by the remote (`[remote rejected]`:
+ * a hook, a host that refuses the ref), which is never retried and whose
+ * message carries the remote's reason and `remote:` lines, and on any
+ * other failure.
  */
-function push(git: GitRunner, remote: string, last: boolean): boolean {
-  const out = git.attempt('push', '--porcelain', '--no-verify', remote, `HEAD:${BOARD_REF}`);
+function push(git: GitRunner, remote: string, target: string, last: boolean): boolean {
+  const out = git.attempt('push', '--porcelain', '--no-verify', target, `HEAD:${BOARD_REF}`);
   if (!isGitFailure(out)) {
     return true;
   }
-  const rejected = out.stdout.split('\n').some((line) => line.startsWith('!'));
-  if (rejected && !last) {
-    return false;
+  const reasons = out.stdout
+    .split('\n')
+    .map((line) => PUSH_REFUSAL.exec(line)?.[1]?.trim() ?? null)
+    .filter((reason): reason is string => reason !== null);
+  const what = `pushing ${BOARD_REF} to ${asciiText(remote)}`;
+  if (reasons.some((reason) => reason.startsWith('[rejected]'))) {
+    if (!last) {
+      return false;
+    }
+    throw syncFailed(what, out);
   }
-  throw syncFailed(`pushing ${BOARD_REF} to ${asciiText(remote)}`, out);
+  const refused = reasons.find((reason) => reason.startsWith('[remote rejected]'));
+  if (refused !== undefined) {
+    const said = out.stderr
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('remote:'))
+      .map((line) => asciiText(line.slice('remote:'.length).trim()))
+      .filter((line) => line !== '');
+    throw new BoardError(
+      3,
+      'sync-failed',
+      `${what} failed: the remote refused it (${asciiText(refused)})` +
+        `${said.length > 0 ? `: ${said.join('; ')}` : ''}; fix what the remote names ` +
+        `(a hook, or a host that does not accept refs/agentboard/*; see agentboard init --remote), ` +
+        'then run agentboard sync again',
+    );
+  }
+  throw syncFailed(what, out);
 }

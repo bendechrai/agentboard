@@ -738,8 +738,9 @@ What `sync` does when it cannot finish, and what a human does next:
   kept; fix what the message names and `sync` again. A host that refuses
   pushes to custom refs (Gerrit without a push permission on
   `refs/agentboard/*`; GitHub and GitLab accept them) fails here on the
-  first push: keep such a board in a repository of its own with
-  `init --remote <url>`.
+  first push, is not retried, and the message carries the remote's own
+  reason (a hook's text): keep such a board in a repository of its own
+  with `init --remote <url>`.
 - 2 `board-link-broken` (host model): `.board` is a worktree whose link
   to the host repository is broken (the checkout was moved, or `.board`
   was copied from another clone); `agentboard init` repairs it. 2
@@ -752,7 +753,11 @@ What `sync` does when it cannot finish, and what a human does next:
   again.
 - 5 `integrity`: event files recorded in the board's git history are
   missing from `events/`; nothing is staged (a deletion is never synced).
-  Restore them from git as the message says.
+  Restore them from git as the message says. Exit 5 without a reason is
+  an unexpected git failure; the one to expect is two `sync` processes
+  of one clone colliding on git's `index.lock` (nothing serialises them;
+  inside a rebase the second exits 3 `sync-in-progress` instead). The
+  ref equals HEAD afterwards and nothing is lost: run `sync` again.
 
 Two cautions for the host model. Never `git push --mirror` from a working
 clone: it rewinds the remote's `refs/agentboard/board` to that clone's

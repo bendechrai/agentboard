@@ -135,6 +135,25 @@ export function stageAndCommit(
   return { commit: git.run('rev-parse', 'HEAD').trim(), committedEvents };
 }
 
+/**
+ * Refuses to go on while content other than sync's own is staged in the
+ * board repository or worktree: a rebase cannot run over it, and sync
+ * never commits it. Run after sync's own commit, so what is still staged
+ * is exactly the foreign content.
+ */
+export function checkNothingForeignStaged(git: GitRunner, dir: string): void {
+  const foreign = zList(git.run('diff', '--cached', '--name-only', '-z')).sort();
+  if (foreign.length > 0) {
+    throw new BoardError(
+      3,
+      'sync-failed',
+      `the board repository at ${dir} has staged changes that agentboard sync does not commit: ` +
+        `${foreign.map((p) => asciiText(p)).join(', ')}; commit them or unstage them ` +
+        `(git -C ${dir} restore --staged <path>) in the board repository, then run agentboard sync again`,
+    );
+  }
+}
+
 /** The unmerged paths of the working tree `git` runs in, sorted. */
 export function unmergedPaths(git: GitRunner): string[] {
   return zList(git.run('diff', '--name-only', '--diff-filter=U', '-z')).sort();

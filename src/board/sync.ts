@@ -28,6 +28,7 @@ import { detectBoardModel, type BoardModelInfo } from './model.js';
 import { ambiguousRemoteError, chooseRemote } from './remote.js';
 import {
   checkCommittedEventsPresent,
+  checkNothingForeignStaged,
   checkNothingInProgress,
   eventFileNames,
   hostTrackedPaths,
@@ -37,7 +38,6 @@ import {
   syncCommitMessage,
   syncFailed,
   unmergedPaths,
-  zList,
 } from './sync-steps.js';
 import { asciiText, type Env } from './text.js';
 
@@ -429,24 +429,6 @@ function currentBranch(git: GitRunner): string {
     );
   }
   return ref.trim();
-}
-
-/**
- * Refuses to pull while content other than sync's own is staged in the
- * board repository: `pull --rebase` cannot run over it, and sync never
- * commits it.
- */
-function checkNothingForeignStaged(git: GitRunner, dir: string): void {
-  const foreign = zList(git.run('diff', '--cached', '--name-only', '-z')).sort();
-  if (foreign.length > 0) {
-    throw new BoardError(
-      3,
-      'sync-failed',
-      `the board repository at ${dir} has staged changes that agentboard sync does not commit: ` +
-        `${foreign.map((p) => asciiText(p)).join(', ')}; commit them or unstage them ` +
-        `(git -C ${dir} restore --staged <path>) in the board repository, then run agentboard sync again`,
-    );
-  }
 }
 
 /** Whether `branch` has a configured upstream (`branch.<branch>.remote` and `.merge`, whatever the remote). */
