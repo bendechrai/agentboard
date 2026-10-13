@@ -3,13 +3,14 @@
  * add-board-sharing design.md: decision 6). One function, used by `init`,
  * `sync` and `remote`, decides whether a board directory is a host-model
  * board (a linked worktree of the host repository), a standalone board (a
- * repository of its own), a host-model board whose link is broken, or no
+ * repository of its own that is not a linked worktree, whether its `.git` is
+ * a directory or a file), a host-model board whose link is broken, or no
  * repository at all. Commands that only read or write events never call it,
  * so a broken link never stops the board itself.
  */
 
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { gitRunner, isGitFailure } from './git.js';
 import { asciiText, type Env } from './text.js';
@@ -150,17 +151,10 @@ export function detectBoardModel(dir: string, options?: DetectOptions): BoardMod
         `(its git directory is ${asciiText(realCommon)}, not the one of ${asciiText(dirname(absolute))})`,
     );
   }
-  if (realGitDir.startsWith(real + sep)) {
-    return result('standalone', realGitDir);
-  }
-  if (dotGitIsFile) {
-    return result(
-      'broken-host-link',
-      null,
-      `the .git file at ${asciiText(join(absolute, '.git'))} does not name a worktree of ${asciiText(dirname(absolute))}`,
-    );
-  }
-  return result('not-a-repository');
+  // Not a linked worktree: a repository of its own, wherever its git
+  // directory lies (`dir/.git`, or the directory a `.git` file names: a
+  // separate git dir, a submodule of the host).
+  return result('standalone', realGitDir);
 }
 
 /** The detail of a `.git` file whose `gitdir:` target git could not open. */
