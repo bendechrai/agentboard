@@ -148,7 +148,7 @@ export interface InitResult {
  * no `events/` and is not a repository (an empty or stray directory) is
  * treated the same way: its content is kept aside and the board is built
  * fresh. Outside the host model (standalone fallback) such a directory is
- * completed in place as before.
+ * completed in place (see "New standalone board").
  *
  * New host-model board, in this order (design.md decision 7), so that
  * every step is idempotent and an interrupted `init` is completed by
