@@ -99,6 +99,11 @@ work. Two concurrent imports SHALL each validate against the caught-up
 state inside their own transaction, so the second finds nothing left to
 change. `import-change` also accepts
 `<source>:<ref>` so an unsupported source can be named.
+An import killed between a new ticket's `ticket.create` and the ticks
+and moves that follow it leaves that ticket in `todo` with unticked
+lines; a later import reports it `unchanged`, because unchanged lines
+keep the board's done flags. That window is accepted: the lines are
+ticked by hand or the ticket is closed.
 
 #### Scenario: Second import adds nothing
 - **WHEN** `import-change add-board-core` runs twice with an unchanged tasks file

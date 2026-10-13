@@ -37,33 +37,63 @@ group's current task lines, and SHALL write at most one
 that afterwards the title equals the current group heading and the active
 checklist holds exactly the current task lines. Lines SHALL be matched in
 two passes: first by task number (the leading `<n>.<m>` of the line), then,
-for lines still unmatched, by text with the task number removed. A matched
-line whose text is unchanged SHALL keep the ticket's done flag; a matched
-line whose text changed SHALL be written in `updated` with the new text and
-the done flag of its tasks-file checkbox; an unmatched ticket line SHALL be
-written in `removed`; an unmatched task line SHALL be written in `added`
-with the done flag of its checkbox, in tasks-file order. Active lines SHALL
-keep their existing order and added lines SHALL be appended, so that
-checklist indices never change meaning. The event SHALL record the tasks
-file path and the SHA-256 of its bytes in `source`.
+for lines still unmatched, by text with the task number removed, compared
+exactly (case-sensitive); when several lines on either side share a number
+or a text, the k-th ticket line in index order SHALL match the k-th task
+line in file order. A matched line whose text is unchanged SHALL keep the
+ticket's done flag; a matched line whose text differs only in its task
+number SHALL be written in `updated` with the new text and the ticket's
+done flag; any other matched line whose text changed SHALL be written in
+`updated` with the new text and the done flag of its tasks-file checkbox;
+an unmatched ticket line SHALL be written in `removed`; an unmatched task
+line SHALL be written in `added` with the done flag of its checkbox, in
+tasks-file order. Active lines SHALL keep their existing order and added
+lines SHALL be appended, so that checklist indices never change meaning.
+The event SHALL record the tasks file and the SHA-256 of its bytes in
+`source`, as `<root-relative path>@sha256:<64 lowercase hex>`.
+The hash is taken from a second read of the file after it is parsed, so a
+file edited between the two reads is recorded with the newer hash; the
+next import reconciles against the file as it then is.
 
-A reconcile SHALL be blocked for a ticket when it would remove or change
-the text of a line that is done on the ticket, or when it would remove or
-change the text of any line while the ticket is assigned and in `tests`,
-`implementing` or `review`. A blocked ticket SHALL get no event; the other
+An import SHALL write its events in this order: the renumbers, by
+ascending old number; then, for each group in tasks-file order, the new
+ticket's events or the paired ticket's reconcile; then the supersedes, by
+ascending item. Each event SHALL be written in its own command
+transaction that re-checks it against the caught-up state, so that a
+concurrent import of the same change makes it write nothing stale: a
+renumber whose ticket's item no longer equals `from`, a supersede of a
+ticket already superseded, a reconcile whose recomputed difference is
+empty, and the creation of a group's ticket that another import has
+created (a ticket of the change, not superseded, with the group's number
+and normalised title) SHALL be skipped as a refusal with reason
+`stale-import` inside that transaction, so its catch-up is committed, and
+SHALL not be reported as written.
+
+A reconcile SHALL be blocked for a ticket when it would remove a line
+that is done on the ticket or change its text other than in its task
+number, or when it would remove any line or change its text other than in
+its task number while the ticket is assigned and in `tests`,
+`implementing` or `review`. A line whose text changes only in its task
+number SHALL never block. A blocked ticket SHALL get no event; the other
 tickets SHALL still be reconciled; the output SHALL list each blocked
 ticket with the lines concerned; and the command SHALL exit 4 with reason
 `reconcile-blocked` after processing every group. `--force` SHALL
-reconcile blocked tickets too, with `forced` true in the event, and the
-inbox entry of a forced reconcile SHALL carry the assignee, when there is
+reconcile blocked tickets too, with `forced` true in the event (and
+`forced` false for a ticket the guard did not block), and the inbox entry of a forced reconcile SHALL carry the assignee, when there is
 one, in `affects`. Changing the title and appending lines SHALL never be
 blocked. `import-change --dry-run` SHALL compute and print the same
 per-ticket differences (title, updated, removed, added, blocked) as human
-text or, with `--json`, as one document, and SHALL write nothing and exit 0.
+text or, with `--json`, as one document, and SHALL write nothing and exit 0,
+also when the pairing is ambiguous or a reconcile would be blocked. On a
+`reconcile-blocked` or `reconcile-ambiguous` refusal, the `--json` error
+document and the MCP tool error SHALL carry the import's result as
+`result` (the same document a successful import prints: every ticket with
+its action, events written, differences and blocked lines, and the
+ambiguous candidates), so a caller need not run `--dry-run` again.
 The `reconcile-blocked` and `reconcile-ambiguous` hints SHALL name
 `import-change <name> --dry-run`, the first also `--force`, and the
 `stale-import` reason SHALL hint `import-change <name> --dry-run`. The MCP tool `board_import_change` SHALL gain optional
-`dry_run` and `force` arguments from the registry.
+`dry-run` and `force` arguments from the registry.
 
 #### Scenario: Revised tasks file reconciles
 - **WHEN** a ticket was imported with lines `1.1 Add A`, `1.2 Add B` and `1.3 Add C` (`1.1` done), and tasks.md now titles the group differently and has `1.1 Add A`, `1.2 Add B with retries` and `1.4 Add D`
@@ -93,6 +123,18 @@ The `reconcile-blocked` and `reconcile-ambiguous` hints SHALL name
 - **WHEN** `import-change add-x --dry-run --json` runs on a revised tasks file
 - **THEN** stdout is one JSON document listing each ticket's title change, updated, removed, added and blocked lines, and no event file is created
 
+#### Scenario: Renumbered done line is not blocked
+- **WHEN** `impl` holds a ticket in `implementing` whose done line `5.1 Add A` becomes `6.1 Add A` because a group was inserted before it
+- **THEN** the reconcile is written without `--force`, with `6.1 Add A` in `updated` still done
+
+#### Scenario: Refusal carries the result
+- **WHEN** `import-change add-x --json` exits 4 with reason `reconcile-blocked`
+- **THEN** the error document has `result` listing the blocked ticket with its lines and the other tickets with the events written for them
+
+#### Scenario: Concurrent import leaves nothing stale
+- **WHEN** another import of the same revision writes its events after this import has paired the tickets and before it writes
+- **THEN** this import writes no event, reports no event written, and commits the catch-up of the other import's events
+
 ### Requirement: Pair tickets to groups by identity
 Before writing anything, `import-change` SHALL pair the change's existing
 tickets that are not superseded with the current task groups. Titles
@@ -100,6 +142,8 @@ SHALL be normalised (lowercase, leading group number removed, runs of
 non-alphanumeric characters collapsed to one space, trimmed), and a task
 line SHALL be normalised the same way after removing its checkbox and
 leading task number; a ticket's lines are its active checklist lines.
+Scores SHALL be the Jaccard similarity of the two normalised line sets
+(0 when both are empty), compared exactly as fractions.
 Pairing SHALL proceed in three passes, each over the tickets and groups
 still unpaired:
 1. by title: a ticket and a group whose normalised titles are equal, when
@@ -127,7 +171,7 @@ reported, not rewritten).
 
 #### Scenario: Inserted group moves nothing
 - **WHEN** tickets exist for groups 1 to 7, `impl` holds the group 5 ticket with comments and ticks, and tasks.md inserts a new group 5 so old groups 5, 6 and 7 become 6, 7 and 8
-- **THEN** the old group 5, 6 and 7 tickets are renumbered to 6, 7 and 8 with their claims, comments and ticks unchanged, one new ticket is created for the new group 5, and no ticket's checklist is rewritten
+- **THEN** the old group 5, 6 and 7 tickets are renumbered to 6, 7 and 8 with their claims, comments and ticks unchanged, one new ticket is created for the new group 5, and no line of any ticket is removed or reworded: when the moved groups keep their task line numbers no checklist is rewritten, and when their lines are renumbered (`5.1` becoming `6.1`) each moved ticket gets one reconcile that only changes those numbers, keeping every done flag, without `--force` even for the held ticket
 
 #### Scenario: Reordered groups
 - **WHEN** groups 2 and 3 swap places in tasks.md with their titles and lines unchanged

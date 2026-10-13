@@ -17,6 +17,7 @@ import type {
   Status,
   TaskRef,
   TicketChecklistAddItem,
+  TicketReconcileBody,
   TicketCloseBody,
   TicketCreateBody,
   TicketLinkBody,
@@ -101,6 +102,26 @@ export const E = {
   },
   check(ticket: string, index: number, done: boolean, o: Opts = {}): FoldInput {
     return input({ v: 1, kind: 'ticket.checklist', ticket, ...stamp(o), body: { index, done } });
+  },
+  /** A `ticket.reconcile` marking `removed` lines removed (and nothing else unless given). */
+  reconcile(
+    ticket: string,
+    body: Partial<TicketReconcileBody> & Pick<TicketReconcileBody, 'removed'>,
+    o: Opts = {},
+  ): FoldInput {
+    return input({
+      v: 1,
+      kind: 'ticket.reconcile',
+      ticket,
+      ...stamp(o),
+      body: {
+        updated: [],
+        added: [],
+        forced: false,
+        source: `tasks.md@sha256:${'0'.repeat(64)}`,
+        ...body,
+      },
+    });
   },
   addLines(ticket: string, items: TicketChecklistAddItem[], o: Opts = {}): FoldInput {
     return input({ v: 1, kind: 'ticket.checklist.add', ticket, ...stamp(o), body: { items } });

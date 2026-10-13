@@ -7,7 +7,9 @@ assignee, lease_ttl, lease_expires_at, lease_event and lease_confirmed
 (when and by which release, forced release or lapse the ticket last
 became available, for deriving grants), version, updated_at, task_source, task_ref, task_item, adhoc,
 labels as a JSON array,
-closed, decision, checklist as a JSON array), `waiters` (ticket id,
+closed, superseded (the supersede reason, null when not superseded),
+decision, checklist as a JSON array whose lines carry `removed` when a
+reconcile removed them), `waiters` (ticket id,
 position, actor, ttl, join event hash, join ts), `comments` (ticket id, sequence,
 actor, ts, text), `links` (ticket id, kind, value), `cursors` (actor, last
 wall, last counter, last actor, last hash), `folded` (event hash, folded flag,
@@ -26,7 +28,8 @@ cache only. Adding the lease and queue state SHALL increase the cache
 schema version, so an older cache is rebuilt on first open. Adding
 `grant_watermark` SHALL increase it again, so a cache written before that
 row existed, whose missing row would read as no grant ever being due, is
-rebuilt on first open too. Query commands SHALL read ticket state only from the
+rebuilt on first open too. Adding `superseded` and the removed flag of
+checklist lines SHALL increase it once more. Query commands SHALL read ticket state only from the
 cache, inside one read transaction so that every field comes from one
 snapshot; `show` MAY additionally read the event files that `folded` marks
 as unknown kinds (to report them) and, with `--raw`, the ticket's event

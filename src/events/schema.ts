@@ -281,6 +281,73 @@ export interface TicketChecklistAddBody {
   items: TicketChecklistAddItem[];
 }
 
+/**
+ * One changed line of a `ticket.reconcile`: checklist line `index` (0-based,
+ * any safe integer here, range-checked by the fold) gets `text` (non-empty)
+ * and `done`.
+ */
+export interface TicketReconcileUpdate {
+  index: number;
+  text: string;
+  done: boolean;
+}
+
+/**
+ * `ticket.reconcile` (board-events: "Reconcile events";
+ * board-openspec-integration: "Reconcile on re-import"): the whole
+ * difference between a ticket and its task group in one event, applied by
+ * the fold in one step.
+ *
+ * - `title`: optional; the new title (non-empty), present only when the
+ *   title changes.
+ * - `updated`: lines whose text changes, each with its new text and done
+ *   flag, in ascending `index` order as the command writes them; may be
+ *   empty.
+ * - `removed`: indices of lines marked removed, ascending as written; may
+ *   be empty.
+ * - `added`: lines appended, in tasks file order; may be empty.
+ * - `forced`: true when `import-change --force` wrote a reconcile the guard
+ *   would have blocked; false otherwise.
+ * - `holder`: optional; the ticket's assignee when a forced reconcile was
+ *   written on an assigned ticket (so the inbox entry names it in
+ *   `affects`). Present only when `forced` is true.
+ * - `source`: the tasks file and the SHA-256 of its bytes, written as
+ *   `<root-relative path>@sha256:<64 lowercase hex>` (for example
+ *   `openspec/changes/add-x/tasks.md@sha256:9f86...`); the schema checks
+ *   only that it is a non-empty string.
+ *
+ * At least one of `title`, `updated`, `removed` and `added` is present and
+ * non-empty.
+ */
+export interface TicketReconcileBody {
+  title?: string;
+  updated: TicketReconcileUpdate[];
+  removed: number[];
+  added: TicketChecklistAddItem[];
+  forced: boolean;
+  holder?: string;
+  source: string;
+}
+
+/**
+ * `ticket.renumber`: the ticket's task item moves from `from` to `to`
+ * (both non-empty), with its `group:<n>` label (board-events: "Renumber and
+ * supersede events").
+ */
+export interface TicketRenumberBody {
+  from: string;
+  to: string;
+}
+
+/**
+ * `ticket.supersede`: the ticket no longer stands for any group of its
+ * change; `reason` (non-empty) says why. Nothing else about the ticket
+ * changes.
+ */
+export interface TicketSupersedeBody {
+  reason: string;
+}
+
 /** `board.meta`: `key` non-empty; `value` any JSON value, including null. */
 export interface BoardMetaBody {
   key: string;
@@ -321,6 +388,9 @@ export type TicketChecklistAddEvent = TicketEnvelope<
   'ticket.checklist.add',
   TicketChecklistAddBody
 >;
+export type TicketReconcileEvent = TicketEnvelope<'ticket.reconcile', TicketReconcileBody>;
+export type TicketRenumberEvent = TicketEnvelope<'ticket.renumber', TicketRenumberBody>;
+export type TicketSupersedeEvent = TicketEnvelope<'ticket.supersede', TicketSupersedeBody>;
 
 /** `board.meta` is the only kind without a `ticket` field. */
 export interface BoardMetaEvent {
@@ -348,7 +418,10 @@ export type TicketEvent =
   | TicketLinkEvent
   | TicketCloseEvent
   | TicketChecklistEvent
-  | TicketChecklistAddEvent;
+  | TicketChecklistAddEvent
+  | TicketReconcileEvent
+  | TicketRenumberEvent
+  | TicketSupersedeEvent;
 
 /** Discriminated union of every known event, narrowed by `kind`. */
 export type BoardEvent = TicketEvent | BoardMetaEvent;
@@ -371,6 +444,9 @@ export const KNOWN_KINDS = [
   'ticket.close',
   'ticket.checklist',
   'ticket.checklist.add',
+  'ticket.reconcile',
+  'ticket.renumber',
+  'ticket.supersede',
   'board.meta',
 ] as const;
 
@@ -512,6 +588,30 @@ export type ValidationResult =
  *   missing) and `done` a boolean (else `body.items.<i>.done`, also when
  *   missing); any other key of an element is reported as
  *   `body.items.<i>.<key>`, and any other body key as `body.<key>`.
+ * - `ticket.reconcile`: `updated`, `removed`, `added`, `forced` and
+ *   `source` required, `title` and `holder` optional.
+ *   - `title`: a non-empty string, else `body.title`.
+ *   - `updated`: an array, else `body.updated`; each element an object
+ *     (else `body.updated.<i>`) with `index` a safe integer (else
+ *     `body.updated.<i>.index`; a negative index is well-formed here and
+ *     rejected by the fold), `text` a non-empty string (else
+ *     `body.updated.<i>.text`) and `done` a boolean (else
+ *     `body.updated.<i>.done`), each also when missing; any other key is
+ *     `body.updated.<i>.<key>`.
+ *   - `removed`: an array (else `body.removed`) of safe integers (else
+ *     `body.removed.<i>`).
+ *   - `added`: an array (else `body.added`) whose elements are checked
+ *     exactly like `ticket.checklist.add` items, under `body.added.<i>`.
+ *   - `forced`: a boolean, else `body.forced`.
+ *   - `holder`: a non-empty string, else `body.holder`; also `body.holder`
+ *     when it is present and `forced` is not `true`.
+ *   - `source`: a non-empty string, else `body.source`.
+ *   - When `title` is absent and `updated`, `removed` and `added` are all
+ *     empty arrays (and each is an array), one reason `body`: the event
+ *     changes nothing.
+ *   - Any other key is `body.<key>`.
+ * - `ticket.renumber`: `from` and `to` non-empty strings, both required.
+ * - `ticket.supersede`: `reason` non-empty string, required.
  * - `board.meta`: `key` non-empty string and `value` (any JSON value,
  *   including null) both required.
  *
@@ -856,6 +956,89 @@ function checkGrantAfter(value: unknown, report: Report): void {
   reportExtraKeys(value, ['released', 'lease'], 'body.after.', report);
 }
 
+/** Checks one `updated` line of a `ticket.reconcile` at `field`. */
+function checkReconcileUpdate(item: unknown, field: string, report: Report): void {
+  if (!isObject(item)) {
+    report(field, 'must be an object with index, text and done');
+    return;
+  }
+  if (!Number.isSafeInteger(item.index)) {
+    report(`${field}.index`, 'missing or not an integer');
+  }
+  if (!isNonEmptyString(item.text)) {
+    report(`${field}.text`, 'missing or not a non-empty string');
+  }
+  if (typeof item.done !== 'boolean') {
+    report(`${field}.done`, 'missing or not a boolean');
+  }
+  reportExtraKeys(item, ['index', 'text', 'done'], `${field}.`, report);
+}
+
+/**
+ * Checks the array `body.<key>` with `element` for each item. Returns the
+ * array's length, or null when it is not an array (reported).
+ */
+function checkArray(
+  body: JsonRecord,
+  key: string,
+  element: (item: unknown, field: string, report: Report) => void,
+  report: Report,
+): number | null {
+  const value = body[key];
+  if (!Array.isArray(value)) {
+    report(`body.${key}`, 'missing or not an array');
+    return null;
+  }
+  value.forEach((item: unknown, i) => {
+    element(item, `body.${key}.${String(i)}`, report);
+  });
+  return value.length;
+}
+
+/** Checks a `ticket.reconcile` body (see `validateEvent`). */
+function checkReconcile(body: JsonRecord, report: Report): void {
+  const hasTitle = Object.hasOwn(body, 'title');
+  if (hasTitle && !isNonEmptyString(body.title)) {
+    report('body.title', 'must be a non-empty string');
+  }
+  const lengths = [
+    checkArray(body, 'updated', checkReconcileUpdate, report),
+    checkArray(
+      body,
+      'removed',
+      (item, field, r) => {
+        if (!Number.isSafeInteger(item)) {
+          r(field, 'must be an integer');
+        }
+      },
+      report,
+    ),
+    checkArray(body, 'added', checkChecklistAddItem, report),
+  ];
+  if (typeof body.forced !== 'boolean') {
+    report('body.forced', 'missing or not a boolean');
+  }
+  if (Object.hasOwn(body, 'holder')) {
+    if (!isNonEmptyString(body.holder)) {
+      report('body.holder', 'must be a non-empty string');
+    } else if (body.forced !== true) {
+      report('body.holder', 'only allowed when forced is true');
+    }
+  }
+  if (!isNonEmptyString(body.source)) {
+    report('body.source', 'missing or not a non-empty string');
+  }
+  if (!hasTitle && lengths.every((length) => length === 0)) {
+    report('body', 'a reconcile must change the title or at least one line');
+  }
+  reportExtraKeys(
+    body,
+    ['title', 'updated', 'removed', 'added', 'forced', 'holder', 'source'],
+    'body.',
+    report,
+  );
+}
+
 /** A body check; `wall` is the event's valid `ts.wall`, or null. */
 type BodyCheck = (body: JsonRecord, report: Report, wall: number | null) => void;
 
@@ -977,6 +1160,13 @@ const BODY_CHECKS: Record<KnownKind, BodyCheck> = {
       });
     }
     reportExtraKeys(body, ['items'], 'body.', report);
+  },
+  'ticket.reconcile': checkReconcile,
+  'ticket.renumber': (body, report) => {
+    checkFields(body, { from: nonEmptyString, to: nonEmptyString }, {}, report);
+  },
+  'ticket.supersede': (body, report) => {
+    checkFields(body, { reason: nonEmptyString }, {}, report);
   },
   'board.meta': (body, report) => {
     checkFields(body, { key: nonEmptyString, value: anyValue }, {}, report);

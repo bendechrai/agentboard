@@ -226,7 +226,10 @@ describe('the command registry', () => {
     });
     expect(shape('import-change')).toEqual({
       positionals: [['name', 'string', true]],
-      flags: [],
+      flags: [
+        ['dry-run', 'boolean', false, false],
+        ['force', 'boolean', false, false],
+      ],
       exclusive: [],
     });
     expect(shape('close-merged')).toEqual({ positionals: [], flags: [], exclusive: [] });

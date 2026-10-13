@@ -51,6 +51,7 @@ function entry(partial: Partial<InboxEntry>): InboxEntry {
     to: null,
     status: null,
     note: null,
+    affects: null,
     event: ev(P.claim(T1), 'impl', 1),
     ...partial,
   };

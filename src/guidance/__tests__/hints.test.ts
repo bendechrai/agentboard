@@ -77,12 +77,16 @@ const PINNED: Readonly<Record<string, number>> = {
   'port-in-use': 1,
   queued: 4,
   'read-only': 1,
+  // The re-import refusals and the stale renumber or supersede.
+  'reconcile-ambiguous': 4,
+  'reconcile-blocked': 4,
   'schema-mismatch': 5,
   'secret-like': 1,
   'streaming-command': 1,
   'sync-conflict': 3,
   'sync-failed': 3,
   'stale-grant': 4,
+  'stale-import': 4,
   'sync-in-progress': 3,
   'tasks-not-found': 1,
   'too-many-streams': 1,
@@ -710,5 +714,58 @@ describe('hintFor', () => {
     expect(hintFor(new BoardError(5, null, 'odd'), context)).toBeNull();
     expect(hintFor(new Error('disk on fire'), context)).toBeNull();
     expect(hintFor('a string', context)).toBeNull();
+  });
+});
+
+describe('re-import hints', () => {
+  const hint = (surface: HintSurface, reason: string, actor?: string): string =>
+    renderHint(reason, ctx(surface, 'import-change', actor === undefined ? {} : { actor })) ?? '';
+
+  it('reconcile-blocked names import-change --dry-run and --force', () => {
+    const text = hint('cli', 'reconcile-blocked', 'orch');
+    expect(text).toContain("'agentboard import-change <change> --dry-run --as orch'");
+    expect(text).toContain("'agentboard import-change <change> --force --as orch'");
+    expect(hint('cli', 'reconcile-blocked')).toContain(
+      "'agentboard import-change <change> --dry-run --as <actor>'",
+    );
+  });
+
+  it('reconcile-ambiguous names import-change --dry-run and editing a title in the tasks file', () => {
+    const text = hint('cli', 'reconcile-ambiguous', 'orch');
+    expect(text).toContain("'agentboard import-change <change> --dry-run --as orch'");
+    expect(text).toContain('tasks');
+    expect(text).toContain('title');
+    expect(text).not.toContain('--force');
+  });
+
+  it('stale-import names import-change --dry-run', () => {
+    const text = renderHint('stale-import', ctx('cli', null, { actor: 'orch' })) ?? '';
+    expect(text).toContain("'agentboard import-change <change> --dry-run --as orch'");
+  });
+
+  it('over MCP the steps are board_import_change calls with dry-run and force', () => {
+    const blocked = hint('mcp', 'reconcile-blocked', 'orch');
+    expect(blocked).toContain('board_import_change {"name":"<change>","dry-run":true,"as":"orch"}');
+    expect(blocked).toContain('board_import_change {"name":"<change>","force":true,"as":"orch"}');
+    const found = findTool('board_import_change');
+    expect(found).toBeDefined();
+    if (found !== undefined) {
+      expect(() =>
+        toolArguments(found.command, { name: '<change>', 'dry-run': true, as: 'orch' }),
+      ).not.toThrow();
+      expect(() =>
+        toolArguments(found.command, { name: '<change>', force: true, as: 'orch' }),
+      ).not.toThrow();
+    }
+  });
+
+  it('every re-import hint is one plain ASCII line', () => {
+    for (const surface of SURFACES) {
+      for (const reason of ['reconcile-blocked', 'reconcile-ambiguous', 'stale-import']) {
+        const text = hint(surface, reason, 'orch');
+        expect(text.length).toBeGreaterThan(0);
+        expect(text).toMatch(/^[\x20-\x7e]+$/);
+      }
+    }
   });
 });

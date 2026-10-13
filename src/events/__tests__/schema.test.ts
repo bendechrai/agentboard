@@ -66,6 +66,18 @@ const HASH_B = '0123456789abcdef'.repeat(4);
 
 const GRANT_BODY: Obj = { to: 'a', ttl: 1_800_000, window: 120_000, after: { released: HASH_A } };
 
+const SOURCE = `openspec/changes/add-x/tasks.md@sha256:${HASH_B}`;
+
+/** A well-formed `ticket.reconcile` body with every list non-empty. */
+const RECONCILE_BODY: Obj = {
+  title: 'New title',
+  updated: [{ index: 1, text: '1.2 B revised', done: false }],
+  removed: [2],
+  added: [{ text: '1.4 D', done: false }],
+  forced: false,
+  source: SOURCE,
+};
+
 function without(obj: Obj, key: string): Obj {
   return Object.fromEntries(Object.entries(obj).filter(([k]) => k !== key));
 }
@@ -102,7 +114,7 @@ describe('constants', () => {
     expect([...STATUSES]).toEqual(['todo', 'tests', 'implementing', 'review', 'merged', 'blocked']);
   });
 
-  it('lists the seventeen known kinds', () => {
+  it('lists the twenty known kinds', () => {
     expect([...KNOWN_KINDS].sort()).toEqual(
       [
         'board.meta',
@@ -119,9 +131,12 @@ describe('constants', () => {
         'ticket.move',
         'ticket.queue.join',
         'ticket.queue.leave',
+        'ticket.reconcile',
         'ticket.release',
         'ticket.release.force',
         'ticket.renew',
+        'ticket.renumber',
+        'ticket.supersede',
       ].sort(),
     );
   });
@@ -316,6 +331,9 @@ describe('validateEvent: unknown kinds', () => {
       ['ticket.queue.join', { ttl: 60_000 }],
       ['ticket.queue.leave', {}],
       ['ticket.grant', GRANT_BODY],
+      ['ticket.reconcile', RECONCILE_BODY],
+      ['ticket.renumber', { from: '5', to: '6' }],
+      ['ticket.supersede', { reason: 'group removed from tasks.md' }],
     ];
     expect(validBodies.map(([k]) => k).sort()).toEqual(
       KNOWN_KINDS.filter((k) => k !== 'board.meta').sort(),
@@ -1119,5 +1137,133 @@ describe('golden: a plain claim is unchanged by leases', () => {
     };
     expect(validateEvent(event)).toEqual({ ok: true, known: true, event });
     expect(canonicalEncode(event)).toEqual(bytes);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Re-import reconciliation (add-claim-leases task 8.1 and 8.2;
+// board-events: "Event kinds" for ticket.reconcile, ticket.renumber and
+// ticket.supersede).
+
+const reconcile = (patch: Obj, remove: string[] = []): Obj =>
+  withBody('ticket.reconcile', RECONCILE_BODY, patch, remove);
+
+describe('validateEvent: ticket.reconcile', () => {
+  it('accepts the full body', () => {
+    const result = validateEvent(reconcile({}));
+    expect(result).toMatchObject({ ok: true, known: true });
+  });
+
+  it.each([
+    ['only a title', { title: 'T', updated: [], removed: [], added: [] }],
+    ['only updated', { updated: [{ index: 0, text: 'x', done: true }], removed: [], added: [] }],
+    ['only removed', { updated: [], removed: [0, 3], added: [] }],
+    ['only added', { updated: [], removed: [], added: [{ text: 'x', done: true }] }],
+    ['a negative index (the fold rejects it)', { updated: [], removed: [-1], added: [] }],
+    ['a forced reconcile naming its holder', { forced: true, holder: 'impl' }],
+    ['a forced reconcile of an unassigned ticket', { forced: true }],
+  ])('accepts %s', (_name, patch) => {
+    const value = reconcile(patch, Object.hasOwn(patch, 'title') ? [] : ['title']);
+    expect(validateEvent(value).ok).toBe(true);
+  });
+
+  it('keeps the title when given with the lists', () => {
+    expect(validateEvent(reconcile({ title: 'Only' })).ok).toBe(true);
+  });
+
+  it.each([
+    ['missing updated', reconcile({}, ['updated']), 'body.updated'],
+    ['updated not an array', reconcile({ updated: {} }), 'body.updated'],
+    ['updated element not an object', reconcile({ updated: [3] }), 'body.updated.0'],
+    [
+      'updated element without index',
+      reconcile({ updated: [{ text: 'x', done: true }] }),
+      'body.updated.0.index',
+    ],
+    [
+      'updated index not an integer',
+      reconcile({ updated: [{ index: 1.5, text: 'x', done: true }] }),
+      'body.updated.0.index',
+    ],
+    [
+      'updated text empty',
+      reconcile({ updated: [{ index: 0, text: '', done: true }] }),
+      'body.updated.0.text',
+    ],
+    [
+      'updated done not a boolean',
+      reconcile({ updated: [{ index: 0, text: 'x', done: 1 }] }),
+      'body.updated.0.done',
+    ],
+    [
+      'updated element with an extra field',
+      reconcile({ updated: [{ index: 0, text: 'x', done: true, line: 4 }] }),
+      'body.updated.0.line',
+    ],
+    ['missing removed', reconcile({}, ['removed']), 'body.removed'],
+    ['removed not an array', reconcile({ removed: 2 }), 'body.removed'],
+    ['removed element not an integer', reconcile({ removed: [0, '1'] }), 'body.removed.1'],
+    ['missing added', reconcile({}, ['added']), 'body.added'],
+    ['added not an array', reconcile({ added: 'x' }), 'body.added'],
+    ['added element not an object', reconcile({ added: ['x'] }), 'body.added.0'],
+    ['added text missing', reconcile({ added: [{ done: false }] }), 'body.added.0.text'],
+    ['added done missing', reconcile({ added: [{ text: 'x' }] }), 'body.added.0.done'],
+    [
+      'added element with an extra field',
+      reconcile({ added: [{ text: 'x', done: false, index: 3 }] }),
+      'body.added.0.index',
+    ],
+    ['missing forced', reconcile({}, ['forced']), 'body.forced'],
+    ['forced not a boolean', reconcile({ forced: 'yes' }), 'body.forced'],
+    ['missing source', reconcile({}, ['source']), 'body.source'],
+    ['empty source', reconcile({ source: '' }), 'body.source'],
+    ['empty title', reconcile({ title: '' }), 'body.title'],
+    ['title not a string', reconcile({ title: 7 }), 'body.title'],
+    ['holder without forced', reconcile({ holder: 'impl' }), 'body.holder'],
+    ['empty holder', reconcile({ forced: true, holder: '' }), 'body.holder'],
+    ['an extra body field', reconcile({ ticketTitle: 'x' }), 'body.ticketTitle'],
+    [
+      'a body that changes nothing',
+      reconcile({ updated: [], removed: [], added: [] }, ['title']),
+      'body',
+    ],
+  ])('rejects %s', (_name, value, field) => {
+    expectOnlyField(value, field);
+  });
+});
+
+describe('validateEvent: ticket.renumber and ticket.supersede', () => {
+  it('accepts a renumber and a supersede', () => {
+    expect(validateEvent(ev('ticket.renumber', { from: '5', to: '6' }))).toMatchObject({
+      ok: true,
+      known: true,
+    });
+    expect(validateEvent(ev('ticket.supersede', { reason: 'gone' }))).toMatchObject({
+      ok: true,
+      known: true,
+    });
+  });
+
+  it.each([
+    ['renumber: missing from', ev('ticket.renumber', { to: '6' }), 'body.from'],
+    ['renumber: empty from', ev('ticket.renumber', { from: '', to: '6' }), 'body.from'],
+    ['renumber: missing to', ev('ticket.renumber', { from: '5' }), 'body.to'],
+    ['renumber: to not a string', ev('ticket.renumber', { from: '5', to: 6 }), 'body.to'],
+    ['renumber: extra field', ev('ticket.renumber', { from: '5', to: '6', x: 1 }), 'body.x'],
+    ['supersede: missing reason', ev('ticket.supersede', {}), 'body.reason'],
+    ['supersede: empty reason', ev('ticket.supersede', { reason: '' }), 'body.reason'],
+    ['supersede: extra field', ev('ticket.supersede', { reason: 'r', by: 'orch' }), 'body.by'],
+  ])('rejects %s', (_name, value, field) => {
+    expectOnlyField(value, field);
+  });
+
+  it('reserves the system actor for grants on the new kinds too', () => {
+    for (const [kind, body] of [
+      ['ticket.reconcile', RECONCILE_BODY],
+      ['ticket.renumber', { from: '1', to: '2' }],
+      ['ticket.supersede', { reason: 'r' }],
+    ] as const) {
+      expectOnlyField(asActor(ev(kind, body), 'agentboard'), 'actor');
+    }
   });
 });

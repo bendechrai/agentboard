@@ -335,8 +335,10 @@ grant watermark (see board-cache "Cache schema").
 Inbox entries (and `watch --json` lines) SHALL carry `affects`: the
 previous holder for an applied `ticket.release.force` (its `holder`), for
 an applied claim that took over a lease (its `supersedes.holder`) and for
-an applied grant after a lapse (its `after.lease.holder`), and null for
-every other event. For `ticket.grant` the entry's `to` SHALL be the
+an applied grant after a lapse (its `after.lease.holder`), the assignee
+for a forced `ticket.reconcile` (its `holder`, see
+board-openspec-integration "Reconcile on re-import"), and null for every
+other event. For `ticket.grant` the entry's `to` SHALL be the
 grantee, and for `ticket.release.force` its `note` SHALL be the reason.
 Human inbox output SHALL begin an entry's line with `GRANTED: ` when it is
 a grant to the reading actor, and with `LOST: ` when its `affects` equals
@@ -386,3 +388,44 @@ be delivered only through `board_inbox` as a `ticket.grant` entry.
 #### Scenario: MCP forced release matches the CLI
 - **WHEN** `board_release` is called with `force` true, a `reason` and `as` `orchestrator` on a ticket held by `merger-1`
 - **THEN** the written event's body is byte-identical to the one `release --force` writes for the same arguments and actor on a copy of the board
+
+### Requirement: Re-import markers in list and show
+`list` SHALL mark a superseded ticket with `[superseded] ` before its
+title, after the `[adhoc] ` and `[closed] ` markers when those apply.
+`show` SHALL print `superseded: <reason>` after the `closed:` line for a
+superseded ticket, and nothing for one that is not. `show` SHALL print a
+removed checklist line at its own index, with its done flag and text,
+followed by ` (removed)`. The `--json` documents carry the ticket as
+folded: `superseded` (the reason, or null) and `removed: true` on a
+removed line.
+
+#### Scenario: Superseded marker
+- **WHEN** the ticket of a group deleted from tasks.md is superseded and `list` runs
+- **THEN** its line ends with `[superseded] <title>`, and `show` prints `superseded: group removed from <tasks file>`
+
+### Requirement: Removed checklist lines are inactive
+A checklist line removed by a reconcile SHALL be inactive on every
+surface. It SHALL be excluded from every checklist count and progress
+figure (the board card's done and total counts, `top`'s ticket detail,
+the web app's cards and ticket detail); `show`, `top` and the web ticket
+detail SHALL show it only marked as removed, and SHALL offer no tick,
+checkbox or action for it. The `checklist tick` reminder SHALL map a
+checklist index to the tasks-file line by counting only the ticket's lines
+that are not removed, so it names the task line the ticked line stands
+for.
+
+#### Scenario: Count after a removal
+- **WHEN** a ticket with lines `1.1 A` (done), `1.2 B` and `1.3 C` is reconciled with `1.2 B` removed
+- **THEN** its card counts 1 done of 2, and `top`'s detail shows `checklist: 1/2`
+
+#### Scenario: Show marks the removed line
+- **WHEN** `show` runs for that ticket
+- **THEN** it prints `  [ ] 1 1.2 B (removed)` and the other lines at their own indices
+
+#### Scenario: No tick offered for a removed line
+- **WHEN** the web ticket detail of that ticket is open on a writable server
+- **THEN** lines `1.1 A` and `1.3 C` have a checkbox, and `1.2 B` is shown marked as removed with no checkbox
+
+#### Scenario: Reminder after a removal
+- **WHEN** a group's lines `1.1 Alpha`, `1.2 Beta` and `1.3 Gamma` are imported, `1.1 Alpha` is deleted from tasks.md and the change re-imported, and `checklist tick <id> 1` ticks `1.2 Beta`
+- **THEN** the reminder names the line of `1.2 Beta` in tasks.md (line 2 when the group heading is line 1), not the line of `1.3 Gamma`

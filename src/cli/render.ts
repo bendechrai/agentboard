@@ -6,6 +6,7 @@
 import type { Ticket } from '../events/fold.js';
 import { formatTaskRef } from '../events/schema.js';
 import { asciiText } from '../board/text.js';
+import type { ImportAction, ImportResult, ImportedTicket } from '../board/import.js';
 import type { InboxEntry } from '../board/inbox.js';
 import type { ShowResult } from '../board/tickets.js';
 import { CACHE_SCHEMA_VERSION } from '../store/cache.js';
@@ -21,23 +22,36 @@ export { asciiText };
  * The `list` line of a ticket, without a newline:
  * `<full 26-character id>  <status>  <assignee or ->  <markers><title>`,
  * fields separated by two spaces, where `<markers>` is `[adhoc] ` for a
- * ticket with an ad hoc reason and `[closed] ` for a closed ticket (in
- * that order when both apply), and assignee and title pass through
+ * ticket with an ad hoc reason, `[closed] ` for a closed ticket and
+ * `[superseded] ` for a superseded one (in that order when several
+ * apply), and assignee and title pass through
  * `asciiText`. Example:
  * `01ARYZ6S41TSV4RRFFQ69G5FAV  todo  -  [adhoc] Fix thing`. The id is never
  * shortened, so every id printed by `list` can be pasted back into any
  * command. Pure.
  */
 export function renderListLine(ticket: Ticket): string {
-  return listLine({ ...ticket, adhoc: ticket.adhoc !== null });
+  return listLine({
+    ...ticket,
+    adhoc: ticket.adhoc !== null,
+    superseded: typeof ticket.superseded === 'string',
+  });
 }
 
-/** The fields of a `list` line. */
-type ListFields = Pick<Card, 'id' | 'status' | 'assignee' | 'adhoc' | 'closed' | 'title'>;
+/**
+ * The fields of a `list` line; `superseded` is absent where the source (a
+ * health card) does not carry it, and then no marker is printed.
+ */
+type ListFields = Pick<Card, 'id' | 'status' | 'assignee' | 'adhoc' | 'closed' | 'title'> & {
+  superseded?: boolean;
+};
 
 /** The `list` line of `fields` (see `renderListLine`). */
 function listLine(fields: ListFields): string {
-  const markers = (fields.adhoc ? '[adhoc] ' : '') + (fields.closed ? '[closed] ' : '');
+  const markers =
+    (fields.adhoc ? '[adhoc] ' : '') +
+    (fields.closed ? '[closed] ' : '') +
+    (fields.superseded === true ? '[superseded] ' : '');
   return [
     fields.id,
     fields.status,
@@ -58,10 +72,12 @@ function listLine(fields: ListFields): string {
  * task: <source>:<ref>#<item>       (or `adhoc: <reason>`, or `task: -`)
  * labels: <comma+space separated, or ->
  * description: <text or ->
- * checklist:                        (then per line `  [x] <index> <text>` or `  [ ] ...`)
+ * checklist:                        (then per line `  [x] <index> <text>` or `  [ ] ...`;
+ *                                    a removed line ends with ` (removed)`)
  * links:                            (then per link `  pr <n or url>` or `  decision <path>`)
  * comments:                         (then per comment, in order, `  <actor>: <text>`)
  * closed: no                        (or `yes (decision: <path>)` or `yes (no decision)`)
+ * superseded: <reason>              (only when the ticket is superseded)
  * events: <n>
  * unknown: <kind> <hash>            (one line per unknown-kind event, when any)
  * ```
@@ -89,7 +105,9 @@ export function renderShow(show: ShowResult): string {
     `description: ${orDash(t.description)}`,
     'checklist:',
     ...t.checklist.map(
-      (item, i) => `  [${item.done ? 'x' : ' '}] ${String(i)} ${asciiText(item.text)}`,
+      (item, i) =>
+        `  [${item.done ? 'x' : ' '}] ${String(i)} ${asciiText(item.text)}` +
+        (item.removed === true ? ' (removed)' : ''),
     ),
     'links:',
     ...t.links.map((l) =>
@@ -98,10 +116,136 @@ export function renderShow(show: ShowResult): string {
     'comments:',
     ...t.comments.map((c) => `  ${asciiText(c.actor)}: ${asciiText(c.text)}`),
     `closed: ${closedText(t)}`,
+    ...(t.superseded === null ? [] : [`superseded: ${asciiText(t.superseded)}`]),
     `events: ${String(show.events)}`,
     ...show.unknown.map((u) => `unknown: ${asciiText(u.kind)} ${u.hash}`),
   );
   return `${lines.join('\n')}\n`;
+}
+
+/**
+ * Human output of `import-change` (with or without `--dry-run`), ending
+ * with a newline. User text (titles, line texts, actors, reasons) passes
+ * through `asciiText`. Pure.
+ *
+ * For each entry of `result.tickets`, in order, a head line:
+ * - `<action> <renderListLine(ticket)>` when the entry has a ticket;
+ * - `created group <item>: <title>` for a `created` entry of a dry run.
+ * Then, each starting with two spaces and only when it applies, in this
+ * order:
+ * - dry run only, when `pairing` is not null:
+ *   `  paired by <pass> (score <score with two decimals>)`;
+ * - `renumber`: `  renumbered from group <from> to <to>`;
+ * - `supersede`: `  superseded: <reason>`;
+ * - when `diff` is not null: `  title: <new title>` (when its `title` is
+ *   not null); per `updated` line `  updated [x] <index> <text>` (or
+ *   `[ ]`, the line's new done flag, and its new text); per removed index
+ *   `  removed [x] <index> <text>` (or `[ ]`, the line's current done flag
+ *   and text on the ticket); per added line `  added [x] <text>` (or
+ *   `[ ]`); then, when the entry's ticket is closed,
+ *   `  not reconciled: closed`;
+ * - per `blocked` line `  blocked <index> <text> (done)` or
+ *   `  blocked <index> <text> (held by <assignee> in <status>)`;
+ * - when `forced`: `  forced`.
+ * Then, in a dry run with candidates, one line per `ambiguous` candidate:
+ * `ambiguous <ticket id> group <item> (score <two decimals>)`, with
+ * ` same title` before the closing parenthesis when `sameTitle`
+ * (`... (score 0.00 same title)`).
+ * Then the summary line, where the blocked and superseded counts appear
+ * only when not zero:
+ * - `imported <source>:<ref>: <c> created, <u> updated, <n> unchanged[, <b> blocked][, <s> superseded], <e> events`;
+ * - dry run: `dry run <source>:<ref>: <c> created, <u> updated, <n> unchanged[, <b> blocked][, <s> superseded][, ambiguous], nothing written`,
+ *   with `, ambiguous` when `ambiguous` is not empty.
+ * Example (a dry run renumbering one ticket and creating one):
+ *
+ * ```
+ * created group 5: Leases
+ * updated 01ARYZ6S41TSV4RRFFQ69G5FAV  todo  -  Docs
+ *   paired by title (score 1.00)
+ *   renumbered from group 5 to 6
+ * dry run openspec:add-x: 1 created, 1 updated, 0 unchanged, nothing written
+ * ```
+ */
+export function renderImport(result: ImportResult): string {
+  const lines: string[] = [];
+  for (const entry of result.tickets) {
+    lines.push(...importEntryLines(entry, result.dryRun));
+  }
+  if (result.dryRun) {
+    for (const c of result.ambiguous) {
+      lines.push(
+        `ambiguous ${c.ticket} group ${asciiText(c.item)} ` +
+          `(score ${c.score.toFixed(2)}${c.sameTitle ? ' same title' : ''})`,
+      );
+    }
+  }
+  const count = (action: ImportAction): number =>
+    result.tickets.filter((t) => t.action === action).length;
+  const optional = (action: ImportAction): string =>
+    count(action) === 0 ? '' : `, ${String(count(action))} ${action}`;
+  const counts =
+    `${String(count('created'))} created, ${String(count('updated'))} updated, ` +
+    `${String(count('unchanged'))} unchanged${optional('blocked')}${optional('superseded')}`;
+  const target = `${asciiText(result.source)}:${asciiText(result.ref)}`;
+  lines.push(
+    result.dryRun
+      ? `dry run ${target}: ${counts}${result.ambiguous.length > 0 ? ', ambiguous' : ''}, nothing written`
+      : `imported ${target}: ${counts}, ${String(result.events)} events`,
+  );
+  return `${lines.join('\n')}\n`;
+}
+
+/** The lines of one `import-change` entry (see `renderImport`). */
+function importEntryLines(entry: ImportedTicket, dryRun: boolean): string[] {
+  const { ticket, diff } = entry;
+  const box = (done: boolean): string => (done ? '[x]' : '[ ]');
+  const lines = [
+    ticket === null
+      ? `${entry.action} group ${asciiText(entry.item ?? '-')}: ${asciiText(entry.title)}`
+      : `${entry.action} ${renderListLine(ticket)}`,
+  ];
+  if (dryRun && entry.pairing !== null) {
+    lines.push(`  paired by ${entry.pairing.pass} (score ${entry.pairing.score.toFixed(2)})`);
+  }
+  if (entry.renumber !== null) {
+    lines.push(
+      `  renumbered from group ${asciiText(entry.renumber.from)} to ${asciiText(entry.renumber.to)}`,
+    );
+  }
+  if (entry.supersede !== null) {
+    lines.push(`  superseded: ${asciiText(entry.supersede)}`);
+  }
+  if (diff !== null) {
+    if (diff.title !== null) {
+      lines.push(`  title: ${asciiText(diff.title)}`);
+    }
+    for (const line of diff.updated) {
+      lines.push(`  updated ${box(line.done)} ${String(line.index)} ${asciiText(line.text)}`);
+    }
+    for (const index of diff.removed) {
+      const line = ticket?.checklist[index];
+      lines.push(
+        `  removed ${box(line?.done ?? false)} ${String(index)} ${asciiText(line?.text ?? '')}`,
+      );
+    }
+    for (const line of diff.added) {
+      lines.push(`  added ${box(line.done)} ${asciiText(line.text)}`);
+    }
+    if (ticket?.closed === true) {
+      lines.push('  not reconciled: closed');
+    }
+  }
+  for (const line of entry.blocked) {
+    const why =
+      line.reason === 'done'
+        ? 'done'
+        : `held by ${ticket?.assignee === null || ticket === null ? '-' : asciiText(ticket.assignee)} in ${ticket?.status ?? '-'}`;
+    lines.push(`  blocked ${String(line.index)} ${asciiText(line.text)} (${why})`);
+  }
+  if (entry.forced) {
+    lines.push('  forced');
+  }
+  return lines;
 }
 
 function closedText(t: Ticket): string {
