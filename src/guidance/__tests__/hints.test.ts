@@ -80,6 +80,8 @@ const PINNED: Readonly<Record<string, number>> = {
   'needs-task-or-adhoc': 1,
   'no-cache': 5,
   'no-disposition': 1,
+  // init --into-host on a board not found through a git repository (add-board-sharing group 5).
+  'no-host-repository': 1,
   'no-targets': 1,
   'not-a-tty': 1,
   // The repository given to init --remote has a branch without events/ (add-board-sharing group 4).
@@ -108,6 +110,8 @@ const PINNED: Readonly<Record<string, number>> = {
   'unknown-ticket': 4,
   'unpromoted-decision': 1,
   'unsupported-source': 1,
+  // init --into-host on a standalone board with events not committed or not pushed (add-board-sharing group 5).
+  unsynced: 4,
   usage: 1,
 };
 
