@@ -45,8 +45,10 @@ services:
   # (HOST_MODEL_GIT_FLOOR in src/board/git.ts) built from source in the
   # image, for `make check-git-floor`. GIT_VERSION is a full release of
   # that line; src/__tests__/git-floor.test.ts checks that its major and
-  # minor match the constant. Its own node_modules volume, so a run beside
-  # check-floor never shares one.
+  # minor match the constant. GIT_SHA256 is the SHA-256 of that release's
+  # git-<version>.tar.xz from kernel.org's sha256sums.asc; the build fails
+  # on a download that does not match. Its own node_modules volume, so a
+  # run beside check-floor never shares one.
   dev-git-floor:
     build:
       context: .
@@ -54,6 +56,7 @@ services:
       args:
         NODE_IMAGE: node:22.16.0-bookworm-slim
         GIT_VERSION: 2.32.7
+        GIT_SHA256: 1ea175f21b766c1cbc05b8391e9aaf6a18b0bbbf7c2382449b635dc66bf1c4d0
     working_dir: /workspace
     volumes:
       - .:/workspace
