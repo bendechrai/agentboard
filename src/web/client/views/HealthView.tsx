@@ -13,28 +13,36 @@
  *   `/api/health/check` on its own: only pressing the check button does
  *   (`runHealthCheck(conn)`).
  * - The report is `healthReport({ model, now, thresholds, late, check })`
- *   where `thresholds` are `parseDuration` of `route.stale` and
- *   `route.blocked` (`DEFAULT_THRESHOLDS` for null), `late` is the loaded
- *   list (null until loaded) and `check` the latest of the loaded check
- *   and the result of the button (null when neither).
+ *   where `thresholds` are `parseDuration` of `route.stale`,
+ *   `route.blocked` and `route.unplanned` (`DEFAULT_THRESHOLDS` for null),
+ *   `late` is the loaded list (null until loaded) and `check` the latest
+ *   of the loaded check and the result of the button (null when neither).
  *
  * DOM contract (relied on by the component tests):
  * - a form labelled `Health thresholds` with a text input `#health-stale`
- *   labelled `Stale after` and a text input `#health-blocked` labelled
- *   `Blocked after`, whose initial values are `route.stale ?? '2h'` and
- *   `route.blocked ?? '24h'`, and an element with class `duration-help`
- *   naming the accepted forms `<n>m`, `<n>h` and `<n>d`. On every `input`
- *   event: when `parseDuration` accepts the input's text, the input has no
- *   `aria-invalid="true"` and `navigate` is called with the health route
- *   carrying that text (`stale` or `blocked`); otherwise the input gets
- *   `aria-invalid="true"` and class `invalid`, `navigate` is not called,
- *   and the report is unchanged (it keeps the route's thresholds);
+ *   labelled `Stale after`, a text input `#health-blocked` labelled
+ *   `Blocked after` and a text input `#health-unplanned` labelled
+ *   `Unplanned within`, whose initial values are `route.stale ?? '2h'`,
+ *   `route.blocked ?? '24h'` and `route.unplanned ?? '7d'`, and an element
+ *   with class `duration-help` naming the accepted forms `<n>m`, `<n>h`
+ *   and `<n>d`. On every `input` event: when `parseDuration` accepts the
+ *   input's text, the input has no `aria-invalid="true"` and `navigate` is
+ *   called with the health route carrying that text (`stale`, `blocked`
+ *   or `unplanned`); otherwise the input gets `aria-invalid="true"` and
+ *   class `invalid`, `navigate` is not called, and the report is unchanged
+ *   (it keeps the route's thresholds);
  * - one `section` with class `health-section` per section, in this order,
  *   with `data-section` set to `stale-claims`, `stuck-blocked`,
  *   `unpromoted-decisions`, `close-merged-ready`, `close-merged-held`,
- *   `close-merged-missing-pr`, `late` and `check`. Every section but
- *   `check` has a heading holding a `span` with class `count` whose text
- *   is the number of its entries (`late`: 0 until loaded);
+ *   `close-merged-missing-pr`, `unplanned-scope`, `late` and `check`.
+ *   Every section but `check` has a heading holding a `span` with class
+ *   `count` whose text is the number of its entries (`late`: 0 until
+ *   loaded; `unplanned-scope`: the entries within the window);
+ * - severity classes (board-insights: "Information, not a failure"): the
+ *   `stale-claims` and `stuck-blocked` sections also carry the class
+ *   `warning` (the styling of findings that need attention); the
+ *   `unplanned-scope` section carries the class `info` and never
+ *   `warning`;
  * - in each ticket section, one `li` with class `finding` and
  *   `data-ticket="<full id>"` per finding in report order, holding the
  *   ticket's title (as text, inside a link to `#/ticket/<id>`) and short
@@ -47,7 +55,17 @@
  *   - `close-merged-ready` and `close-merged-held`: `PR <value>` for each
  *     `pr` link value;
  *   - `close-merged-missing-pr`: `no PR link`;
+ *   - `unplanned-scope`: `<outcome> <relativeTime(ageMs)>` (`merged 2h
+ *     ago`), then a `span` with class `reason` holding the unplanned
+ *     reason when `reason` is not null, else a `span` with class
+ *     `no-reason` whose text is `no reason recorded` followed by the ad
+ *     hoc reason in a `span` with class `adhoc-reason`;
  *   a ticket section with no finding holds a `p` with class `empty`;
+ * - the `unplanned-scope` heading also holds a `span` with class `total`
+ *   whose text is `<total> in all` (`unplannedScope.total`), and the
+ *   section holds a `p` with class `unplanned-note` saying that unplanned
+ *   scope is information, not a failure (its text includes `not a
+ *   failure`);
  * - before the three close-merged sections, a `p` with class
  *   `close-merged-note` whose text includes `Whether a pull request is
  *   merged is known only to close-merged`;
@@ -74,6 +92,9 @@
  * No element has a `style` attribute (the Content-Security-Policy's
  * `style-src 'self'` forbids inline styles); every text from the board or
  * the server is rendered as text, never as markup.
+ *
+ * The unplanned scope section, the third input and the severity classes
+ * are not implemented yet (add-adhoc-ticket-lifecycle task 3.3).
  */
 
 import type { JSX } from 'preact';
@@ -190,6 +211,7 @@ export function HealthView(props: HealthViewProps): JSX.Element {
     blockedAfter:
       (route.blocked === null ? null : parseDuration(route.blocked)) ??
       DEFAULT_THRESHOLDS.blockedAfter,
+    unplannedWithin: DEFAULT_THRESHOLDS.unplannedWithin,
   };
   const report = healthReport({ model, now, thresholds, late, check });
   const { closeMerged } = report;

@@ -282,8 +282,30 @@ export function renderCheck(doc: CheckDocument): string {
  * <card>  pr <prs>; <k> open decision(s), no decision link
  * close-merged missing pr: <n>
  * <card>  no pr link
+ * unplanned scope: <w> in the last <U> (<t> in all)
+ * <card>  <outcome> <age>, unplanned: <reason>
+ * <card>  closed <age>, no reason recorded (ad hoc: <adhoc>)
  * cache check: <check>
  * ```
+ *
+ * The unplanned scope section (board-insights: "Health command", "Unplanned
+ * merges in text output"; add-adhoc-ticket-lifecycle design.md section 7)
+ * comes after the close-merged sections and before the cache check:
+ * - `<w>` is `unplannedScope.tickets.length` (the entries within the
+ *   window), `<U>` is `report.thresholds.unplannedWithin` written as `<S>`
+ *   and `<B>` are, and `<t>` is `unplannedScope.total`; the heading is
+ *   followed by one line per entry of `tickets`, in the report's order;
+ * - `<outcome>` is the entry's `outcome` (`merged` or `closed`), `<age>` is
+ *   `relativeTime(ageMs)`, and the line ends with `unplanned: <reason>`
+ *   (the entry's `reason` through `asciiText`) when `reason` is not null,
+ *   else `no reason recorded (ad hoc: <adhoc>)` with the entry's `adhoc`
+ *   through `asciiText` (an entry with a null `reason` always has an ad
+ *   hoc reason);
+ * - the `<card>` of an entry carries `[unplanned]` (and no `[adhoc]`) when
+ *   the card's `unplanned` is not null, as `renderListLine` does, so an
+ *   undisclosed close shows `[adhoc] [closed]`.
+ *
+ * The section is not rendered yet (add-adhoc-ticket-lifecycle task 3.2).
  *
  * where:
  * - `<S>` and `<B>` are `report.thresholds.staleAfter` and `blockedAfter`
@@ -296,8 +318,8 @@ export function renderCheck(doc: CheckDocument): string {
  *   no entry is just its heading with `0`.
  * - `<card>` is the `list` line of the finding's `ticket` card, exactly as
  *   `renderListLine` writes a ticket with the same id, status, assignee,
- *   ad hoc marker, closed marker and title:
- *   `<id>  <status>  <assignee or ->  <markers><title>`.
+ *   ad hoc marker, unplanned marker (`Card.unplanned`), closed marker and
+ *   title: `<id>  <status>  <assignee or ->  <markers><title>`.
  * - `<age>` is `relativeTime` (`src/view/time.ts`) of `idleMs` or
  *   `blockedMs`, for example `3h ago`.
  * - stale claim: `<kind>` and `<actor>` are `since.kind` and `since.actor`.

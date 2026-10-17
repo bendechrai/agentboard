@@ -146,10 +146,11 @@ const HUMAN = [
   `${HELD}  merged  -  Held  pr https://example.invalid/pr/7; 1 open decision, no decision link`,
   'close-merged missing pr: 1',
   `${ORPHAN}  merged  -  Orphan  no pr link`,
+  'unplanned scope: 0 in the last 7d (0 in all)',
 ];
 
 describe('health in the registry', () => {
-  it('is a read-only awareness command with --stale-after, --blocked-after and --check', () => {
+  it('is a read-only awareness command with --stale-after, --blocked-after, --unplanned-within and --check', () => {
     const command = findCommand('health');
     expect(command).toMatchObject({
       name: 'health',
@@ -164,6 +165,7 @@ describe('health in the registry', () => {
     expect(command?.flags.map((f) => [f.name, f.type, f.required, f.repeatable])).toEqual([
       ['stale-after', 'string', false, false],
       ['blocked-after', 'string', false, false],
+      ['unplanned-within', 'string', false, false],
       ['check', 'boolean', false, false],
     ]);
     expect(command?.exitCodes.map((e) => [e.code, e.reason ?? null])).toEqual([
@@ -176,11 +178,11 @@ describe('health in the registry', () => {
 });
 
 describe('scenario: Health has help', () => {
-  it('prints the synopsis with the three flags and examples that parse to health, with no board and no actor', () => {
+  it('prints the synopsis with the four flags and examples that parse to health, with no board and no actor', () => {
     const out = run(['help', 'health'], tempDir(), cliEnv({ AGENTBOARD_ACTOR: undefined }));
     ok(out);
     expect(out.stdout).toMatch(
-      /^Usage: agentboard health \[--stale-after <[a-z-]+>\] \[--blocked-after <[a-z-]+>\] \[--check\] \[--json\]$/m,
+      /^Usage: agentboard health \[--stale-after <[a-z-]+>\] \[--blocked-after <[a-z-]+>\] \[--unplanned-within <[a-z-]+>\] \[--check\] \[--json\]$/m,
     );
     expect(out.stdout).toMatch(/^\s+1 usage\s/m);
     expect(out.stdout).toMatch(/^\s+2 board-not-found\s/m);
@@ -191,7 +193,9 @@ describe('scenario: Health has help', () => {
       expect(parseArgs(splitCommandLine(example.command).slice(1)).command.name).toBe('health');
     }
     expect(spec?.examples.some((e) => e.command.includes('--stale-after'))).toBe(true);
+    expect(spec?.examples.some((e) => e.command.includes('--unplanned-within'))).toBe(true);
     expect(spec?.examples.some((e) => e.command.includes('--check'))).toBe(true);
+    expect(out.stdout).toMatch(/^ {2}--unplanned-within <[a-z-]+> .*7d/m);
   });
 
   it('is the same through health --help', () => {
@@ -219,7 +223,11 @@ describe('scenario: JSON report', () => {
     const doc = oneJson(
       run(['health', '--stale-after', '4h', '--blocked-after', '2d', '--json'], root),
     ) as HealthReport;
-    expect(doc.thresholds).toEqual({ staleAfter: 4 * HOUR, blockedAfter: 48 * HOUR });
+    expect(doc.thresholds).toEqual({
+      staleAfter: 4 * HOUR,
+      blockedAfter: 48 * HOUR,
+      unplannedWithin: DEFAULT_THRESHOLDS.unplannedWithin,
+    });
     expect(doc.staleClaims).toEqual([]);
     expect(doc.stuckBlocked).toEqual([]);
     expect(doc).toEqual(expectedDoc(boardDir, doc.thresholds));
@@ -229,6 +237,7 @@ describe('scenario: JSON report', () => {
     expect(minutes.thresholds).toEqual({
       staleAfter: 90 * MINUTE,
       blockedAfter: DEFAULT_THRESHOLDS.blockedAfter,
+      unplannedWithin: DEFAULT_THRESHOLDS.unplannedWithin,
     });
     expect(minutes.staleClaims.map((s) => s.ticket.id)).toEqual([T1]);
   });
@@ -244,6 +253,7 @@ describe('scenario: JSON report', () => {
       stuckBlocked: [],
       unpromotedDecisions: [],
       closeMerged: { ready: [], heldByDecision: [], missingPr: [] },
+      unplannedScope: { total: 0, tickets: [] },
       late: null,
       check: null,
     });
@@ -337,7 +347,11 @@ describe('scenario: Malformed duration', () => {
     const doc = oneJson(
       run(['health', '--stale-after', '1m', '--blocked-after', '99999d', '--json'], root),
     ) as HealthReport;
-    expect(doc.thresholds).toEqual({ staleAfter: MINUTE, blockedAfter: 99999 * 24 * HOUR });
+    expect(doc.thresholds).toEqual({
+      staleAfter: MINUTE,
+      blockedAfter: 99999 * 24 * HOUR,
+      unplannedWithin: DEFAULT_THRESHOLDS.unplannedWithin,
+    });
   });
 
   it('refuses a missing value as usage', () => {
@@ -394,6 +408,7 @@ function card(id: string, title: string, status: Card['status'], assignee: strin
     assignee,
     task: null,
     adhoc: false,
+    unplanned: null,
     labels: [],
     checklist: { done: 0, total: 0 },
     blockedFrom: null,
@@ -411,6 +426,7 @@ function emptyReport(thresholds: HealthThresholds = DEFAULT_THRESHOLDS): HealthR
     stuckBlocked: [],
     unpromotedDecisions: [],
     closeMerged: { ready: [], heldByDecision: [], missingPr: [] },
+    unplannedScope: { total: 0, tickets: [] },
     late: null,
     check: null,
   };
@@ -427,6 +443,7 @@ describe('renderHealth', () => {
         'close-merged ready: 0',
         'close-merged held by decision: 0',
         'close-merged missing pr: 0',
+        'unplanned scope: 0 in the last 7d (0 in all)',
         'cache check: not run',
         '',
       ].join('\n'),
@@ -442,8 +459,11 @@ describe('renderHealth', () => {
     [99999 * 24 * HOUR, '99999d'],
     [1500, '1500ms'],
   ])('writes the threshold %d as %s', (ms, text) => {
-    const line = renderHealth(emptyReport({ staleAfter: ms, blockedAfter: ms })).split('\n')[0];
-    expect(line).toBe(`thresholds: stale after ${text}, blocked after ${text}`);
+    const lines = renderHealth(
+      emptyReport({ staleAfter: ms, blockedAfter: ms, unplannedWithin: ms }),
+    ).split('\n');
+    expect(lines[0]).toBe(`thresholds: stale after ${text}, blocked after ${text}`);
+    expect(lines[7]).toBe(`unplanned scope: 0 in the last ${text} (0 in all)`);
   });
 
   it('writes the list line of the card, markers included', () => {
@@ -521,7 +541,10 @@ function renderListLineOf(c: Card): string {
     status: c.status,
     assignee: c.assignee,
     adhoc: c.adhoc ? 'reason' : null,
-    unplanned: null,
+    unplanned:
+      c.unplanned === null
+        ? null
+        : { reason: c.unplanned.reason, actor: 'x', ts: { wall: 0, counter: 0, actor: 'x' } },
     closed: c.closed,
   } as Parameters<typeof renderListLine>[0]);
 }

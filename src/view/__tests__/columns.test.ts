@@ -189,6 +189,7 @@ describe('boardColumns and ticketCard: card fields', () => {
         'status',
         'task',
         'title',
+        'unplanned',
       ].sort(),
     );
   });

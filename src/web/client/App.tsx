@@ -71,7 +71,7 @@ const NAV: readonly { label: string; route: Route }[] = [
   { label: 'Board', route: { view: 'board', change: null, assignee: null, closed: false } },
   { label: 'Feed', route: { view: 'feed', change: null, actor: null, kinds: null } },
   { label: 'Lanes', route: { view: 'lanes' } },
-  { label: 'Health', route: { view: 'health', stale: null, blocked: null } },
+  { label: 'Health', route: { view: 'health', stale: null, blocked: null, unplanned: null } },
   { label: 'Replay', route: { view: 'replay' } },
   { label: 'Graph', route: { view: 'graph', change: null, since: null } },
 ];

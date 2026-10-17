@@ -28,15 +28,23 @@ export interface HealthThresholds {
    * (`stuckBlocked`).
    */
   blockedAfter: number;
+  /**
+   * The window of `unplannedScope.tickets`: an unplanned scope ticket is
+   * listed when its disposition event is less than this old (`ageMs <
+   * unplannedWithin`; one exactly this old is not listed). `total` counts
+   * every unplanned scope ticket whatever its age.
+   */
+  unplannedWithin: number;
 }
 
 /**
  * Default thresholds: `staleAfter` 2 hours (7200000 ms), `blockedAfter`
- * 24 hours (86400000 ms). Frozen.
+ * 24 hours (86400000 ms), `unplannedWithin` 7 days (604800000 ms). Frozen.
  */
 export const DEFAULT_THRESHOLDS: Readonly<HealthThresholds> = Object.freeze({
   staleAfter: 2 * 60 * 60 * 1000,
   blockedAfter: 24 * 60 * 60 * 1000,
+  unplannedWithin: 7 * 24 * 60 * 60 * 1000,
 });
 
 /**
@@ -160,6 +168,56 @@ export interface CloseMergedReport {
 }
 
 /**
+ * One ticket that is unplanned scope (board-insights: "Unplanned scope in
+ * the health report"; ADR 0013). A ticket is unplanned scope when it has an
+ * unplanned disposition (`Ticket.unplanned` not null) and is in `merged`
+ * or closed, or when it is closed with an ad hoc reason (`Ticket.adhoc` not
+ * null), no task reference and no unplanned disposition (closed before the
+ * disposition existed, or by an older version). An unplanned disposition on
+ * an open ticket that is not in `merged` (left by a command that died
+ * between its two events) is not unplanned scope. A ticket with a task
+ * reference never is, whatever its ad hoc reason was: a task link clears
+ * the disposition, so a ticket linked after its disposition leaves the
+ * section and the total.
+ */
+export interface UnplannedScopeEntry {
+  /** `ticketCard(ticket, now)` of the ticket. */
+  ticket: Card;
+  /** `Ticket.adhoc`: the reason given at creation, or null. */
+  adhoc: string | null;
+  /**
+   * `Ticket.unplanned.reason`: why the work was never planned; null for a
+   * ticket closed with no disposition (the second case above).
+   */
+  reason: string | null;
+  /**
+   * `merged` when the ticket's status is `merged` (`merged` is terminal,
+   * so a closed ticket in `merged` reached it too), else `closed`.
+   */
+  outcome: 'merged' | 'closed';
+  /**
+   * The event the age is measured from: the applied `ticket.unplanned`
+   * that set the disposition (the latest one, when several were applied),
+   * else the applied `ticket.close`.
+   */
+  since: HealthEventRef;
+  /** `max(0, now - since.ts.wall)`. */
+  ageMs: number;
+}
+
+/** The `unplannedScope` section of the report. */
+export interface UnplannedScopeReport {
+  /** The number of unplanned scope tickets, open or closed, of any age. */
+  total: number;
+  /**
+   * The unplanned scope tickets whose `ageMs` is below
+   * `thresholds.unplannedWithin`, most recent first (`since.ts.wall`
+   * descending), then ticket id ascending.
+   */
+  tickets: UnplannedScopeEntry[];
+}
+
+/**
  * One event a running server's feed reported as late, or as removed in a
  * resync, since the server started (board-insights: "Health in the web
  * app"). Only a server can observe these.
@@ -189,7 +247,9 @@ export interface HealthCheck {
 export interface HealthInput {
   /**
    * The board: its tickets and its events with their outcomes, in fold
-   * order (as `BoardModel`). Events of closed tickets may be left out.
+   * order (as `BoardModel`), closed tickets and their events included:
+   * `unplannedScope` measures a ticket closed without a disposition from
+   * its `ticket.close`. Only applied events are used.
    */
   model: Pick<BoardModel, 'tickets' | 'events'>;
   /** The current time, in milliseconds since the Unix epoch. */
@@ -227,6 +287,12 @@ export interface HealthReport {
   unpromotedDecisions: UnpromotedDecision[];
   /** The open tickets in `merged`; each list ordered by ticket id ascending. */
   closeMerged: CloseMergedReport;
+  /**
+   * The unplanned scope tickets (see `UnplannedScopeEntry`): the one
+   * section that includes closed tickets. Information, never a failure:
+   * no exit code, no severity.
+   */
+  unplannedScope: UnplannedScopeReport;
   /** A copy of `input.late` in the order given, or null when not supplied. */
   late: LateArrival[] | null;
   /** A copy of `input.check`, or null when not supplied. */
@@ -236,9 +302,12 @@ export interface HealthReport {
 /**
  * Computes the health report of a board (board-insights: "Health
  * report"). Pure: reads no clock (`now` is given) and does not modify its
- * input. Closed tickets appear in no section. Only applied events count;
- * rejected and unknown-kind events are ignored. See `HealthReport` and the
- * finding types for each check's exact definition.
+ * input. Closed tickets appear in no section but `unplannedScope`. Only
+ * applied events count; rejected and unknown-kind events are ignored. See
+ * `HealthReport` and the finding types for each check's exact definition.
+ *
+ * `unplannedScope` is not implemented yet (add-adhoc-ticket-lifecycle
+ * task 3.1): the placeholder below reports no unplanned scope.
  */
 export function healthReport(input: HealthInput): HealthReport {
   const { model, now, thresholds } = input;
@@ -291,11 +360,16 @@ export function healthReport(input: HealthInput): HealthReport {
 
   return {
     now,
-    thresholds: { staleAfter: thresholds.staleAfter, blockedAfter: thresholds.blockedAfter },
+    thresholds: {
+      staleAfter: thresholds.staleAfter,
+      blockedAfter: thresholds.blockedAfter,
+      unplannedWithin: thresholds.unplannedWithin,
+    },
     staleClaims,
     stuckBlocked,
     unpromotedDecisions,
     closeMerged,
+    unplannedScope: { total: 0, tickets: [] },
     late: input.late == null ? null : input.late.map((arrival) => ({ ...arrival })),
     check: input.check == null ? null : { ...input.check },
   };
