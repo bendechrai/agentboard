@@ -27,12 +27,14 @@ SHARING_TESTS := \
 	src/board/__tests__/model.test.ts \
 	src/board/__tests__/init.test.ts \
 	src/board/__tests__/host-init.test.ts \
+	src/board/__tests__/sync.test.ts \
 	src/board/__tests__/host-sync.test.ts \
 	src/board/__tests__/standalone-sync-fixture.test.ts \
 	src/board/__tests__/init-remote.test.ts \
 	src/board/__tests__/into-host.test.ts \
 	src/board/__tests__/remote.test.ts \
 	src/cli/__tests__/init-cli.test.ts \
+	src/cli/__tests__/sync-cli.test.ts \
 	src/cli/__tests__/host-sync-cli.test.ts \
 	src/cli/__tests__/init-remote-cli.test.ts \
 	src/cli/__tests__/into-host-cli.test.ts \
