@@ -1298,12 +1298,28 @@ function lockedMove(
   const scratch = join(commonDir(host, hostRoot), AGENTBOARD_GIT_SUBDIR);
   const lock = join(scratch, INIT_LOCK_FILE);
 
-  // Leftovers of earlier moves: a stopped rebase or cherry-pick waits for
-  // a human, what holds nothing is removed, one left by a move of another
-  // board is removed, and a finished rebase of this board is adopted.
+  // Leftovers of earlier moves: the move's own replay interrupted by a
+  // kill is quit (round 5 ruling 2), a stopped rebase or a cherry-pick a
+  // human is in the middle of waits for them, what holds nothing is
+  // removed, one left by a move of another board is removed, and a
+  // finished rebase of this board is adopted.
+  const board = gitRunner(dir, { env });
+  const belongs = (path: string): boolean =>
+    belongsToBoard(host, board, path, plan, refValue(host, MIGRATING_REF));
+  for (const interrupted of findMigratingWorktrees(hostRoot, { env }).filter(
+    (w) =>
+      dead(w) &&
+      w.rebasing &&
+      stoppedOperation(host, w.path) === 'cherry-pick' &&
+      nothingStaged(host, w.path),
+  )) {
+    // HEAD and the picks already made stay; the replay runs again below,
+    // the commits already picked becoming empty and skipped.
+    host.attemptIn(interrupted.path, 'cherry-pick', '--quit');
+  }
   const stopped = findMigratingWorktrees(hostRoot, { env }).find((w) => dead(w) && w.rebasing);
   if (stopped !== undefined) {
-    throw stoppedInTemporary(host, stopped.path, dir, plan.gitDir);
+    throw stoppedInTemporary(host, stopped.path, dir, belongs(stopped.path));
   }
   const removed = removeDeadMigratingWorktrees(hostRoot, { env });
   // The source tip the adopted temporary worktree integrated (what the
@@ -1321,15 +1337,20 @@ function lockedMove(
   }
   removed.sort();
   // A temporary that integrated something is adopted only when it was
-  // made from the repository at `dir` now (round 4 ruling 3): one made
-  // from a board replaced since is removed and named.
+  // made from the repository at `dir` now (round 4 ruling 3; without a
+  // record, when the tip it integrated is in that repository's history,
+  // round 5 ruling 5): one made from a board replaced since is removed
+  // and named.
   const foreign: string[] = [];
   let adoptable: MigratingWorktree | undefined;
   for (const candidate of findMigratingWorktrees(hostRoot, { env }).filter(
     (w) => dead(w) && !w.rebasing && w.registered && w.head !== null && w.head !== oldSource,
   )) {
-    if (adoptable === undefined && sourceRecord(host, candidate.path) === (plan.gitDir ?? '')) {
+    if (adoptable === undefined && belongs(candidate.path)) {
       adoptable = candidate;
+      if (sourceRecord(host, candidate.path) === null) {
+        writeRecord(host, candidate.path, SOURCE_RECORD, plan.gitDir ?? '');
+      }
     } else {
       removeLeftoverWorktree(host, candidate.path);
       foreign.push(candidate.path);
@@ -1457,7 +1478,6 @@ function lockedMove(
 
   // 6. Keep the old repository, move the worktree into place, lock it,
   // carry over what landed in the rename window.
-  const board = gitRunner(dir, { env });
   if (
     boardGitDir(board) !== plan.gitDir ||
     !isAncestor(board, plan.head, 'HEAD') ||
@@ -1579,6 +1599,7 @@ function replayFreshCommits(
           .split('\n')
           .filter((id) => id !== '')
       : [`${base}..${MIGRATING_FETCH_REF}`];
+  removeUntrackedEventsHeldBy(worktree, temp, fresh);
   writeRecord(host, temp, REPLAY_RECORD, `${worktree.run('rev-parse', 'HEAD').trim()}\n${fresh}\n`);
   let out = worktree.attempt('cherry-pick', ...picks);
   // Each `--skip` advances the sequence by one commit, so the loop is
@@ -1604,6 +1625,32 @@ function replayFreshCommits(
     // The commit's patch is already in HEAD (one the human finished by
     // hand): never kept as an empty commit.
     out = worktree.attempt('cherry-pick', '--skip');
+  }
+}
+
+/**
+ * Before a replay (round 5 ruling 3): removes every untracked
+ * `events/*.json` of the worktree at `temp` whose content equals the blob
+ * of the same path in the tree of `fresh` (one copied in by the step 5
+ * carry-over of an earlier run that stopped before the rename, since
+ * committed by the standalone board), because git refuses a pick that
+ * would overwrite an untracked file, even with identical content, and the
+ * pick re-creates it. A file the fresh tip lacks, or holds with other
+ * content, is left for step 5.
+ */
+function removeUntrackedEventsHeldBy(worktree: GitRunner, temp: string, fresh: string): void {
+  const untracked = zList(
+    worktree.run('ls-files', '-z', '--others', '--exclude-standard', '--', 'events'),
+  ).filter((path) => EVENT_PATH.test(path));
+  for (const path of untracked) {
+    const held = worktree.attempt('rev-parse', '--verify', '--quiet', `${fresh}:${path}`);
+    if (isGitFailure(held)) {
+      continue;
+    }
+    const local = worktree.attempt('hash-object', '--', join(temp, path));
+    if (!isGitFailure(local) && local.trim() === held.trim()) {
+      rmSync(join(temp, path), { force: true });
+    }
   }
 }
 
@@ -1676,21 +1723,48 @@ function stoppedInTemporary(
   host: GitRunner,
   path: string,
   dir: string,
-  gitDir: string | null,
+  belongs: boolean,
 ): BoardError {
   const operation = stoppedOperation(host, path) ?? 'rebase';
-  const origin =
-    sourceRecord(host, path) === (gitDir ?? '')
-      ? ''
-      : ` (that worktree was left by a move of another board, not the one at ${asciiText(dir)} now, so finishing it moves nothing of this board)`;
+  const origin = belongs
+    ? ''
+    : ` (that worktree was left by a move of another board, not the one at ${asciiText(dir)} now, so finishing it moves nothing of this board)`;
+  const steps =
+    operation === 'cherry-pick'
+      ? 'git cherry-pick --continue (git cherry-pick --skip for a pick git reports as empty, or git cherry-pick --abort)'
+      : 'git rebase --continue (or git rebase --abort)';
   return new BoardError(
     3,
     'sync-in-progress',
     `an earlier ${AGAIN} stopped on a conflict, and its ${operation} is still in progress in the ` +
       `temporary worktree at ${asciiText(path)}${origin}; resolve the conflict, git add the paths ` +
-      `and git ${operation} --continue (or git ${operation} --abort) in ${asciiText(path)}, then ` +
-      `run ${AGAIN} again; the board at ${asciiText(dir)} is untouched`,
+      `and ${steps} in ${asciiText(path)}, then run ${AGAIN} again; the board at ` +
+      `${asciiText(dir)} is untouched`,
   );
+}
+
+/**
+ * Whether the temporary worktree at `path` was made from the standalone
+ * repository the move checked in step 1: its `SOURCE_RECORD` names that
+ * repository's git directory identity (round 4 ruling 3); without a
+ * record (made by older code; round 5 ruling 5), when the tip it
+ * integrated (`integrated`, the value of `MIGRATING_REF`) is an ancestor
+ * of, or equal to, the source tip of that repository (`plan.sourceTip`
+ * in `board`, what step 2 fetches), which a replaced `.board` does not
+ * have in its history.
+ */
+function belongsToBoard(
+  host: GitRunner,
+  board: GitRunner,
+  path: string,
+  plan: MovePlan,
+  integrated: string,
+): boolean {
+  const record = sourceRecord(host, path);
+  if (record !== null) {
+    return record === (plan.gitDir ?? '');
+  }
+  return integrated !== '' && isAncestor(board, integrated, plan.sourceTip);
 }
 
 /** The content of `SOURCE_RECORD` of the temporary worktree at `path`, or null when it has none. */
@@ -2005,8 +2079,10 @@ function rebaseStopped(git: GitRunner, cwd: string): boolean {
 /**
  * The operation stopped in the worktree at `cwd`: `rebase` when
  * `rebase-merge` or `rebase-apply` exists in its git directory,
- * `cherry-pick` when `CHERRY_PICK_HEAD` does (the replay of an adopted
- * worktree, round 4 ruling 2), else null.
+ * `cherry-pick` when `CHERRY_PICK_HEAD` or a `sequencer` directory does
+ * (the replay of an adopted worktree, round 4 ruling 2; a multi-commit
+ * replay killed between two picks leaves only the sequencer, round 5
+ * ruling 1), else null.
  */
 function stoppedOperation(git: GitRunner, cwd: string): StoppedOperation | null {
   const gitDir = worktreeGitDir(git, cwd);
@@ -2016,7 +2092,25 @@ function stoppedOperation(git: GitRunner, cwd: string): StoppedOperation | null 
   if (['rebase-merge', 'rebase-apply'].some((name) => existsSync(join(gitDir, name)))) {
     return 'rebase';
   }
-  return existsSync(join(gitDir, 'CHERRY_PICK_HEAD')) ? 'cherry-pick' : null;
+  return ['CHERRY_PICK_HEAD', 'sequencer'].some((name) => existsSync(join(gitDir, name)))
+    ? 'cherry-pick'
+    : null;
+}
+
+/**
+ * True when nothing in the worktree at `path` is a human's work in
+ * progress: no unmerged path and an index equal to HEAD. A cherry-pick
+ * stopped in such a worktree is the move's own replay interrupted by a
+ * kill (round 5 ruling 2), which the move quits and runs again; one with
+ * a staged resolution is left to the human.
+ */
+function nothingStaged(host: GitRunner, path: string): boolean {
+  const unmerged = host.attemptIn(path, 'diff', '--name-only', '--diff-filter=U');
+  return (
+    !isGitFailure(unmerged) &&
+    unmerged.trim() === '' &&
+    !isGitFailure(host.attemptIn(path, 'diff', '--cached', '--quiet'))
+  );
 }
 
 /** Whether a process with `pid` is running: `kill(pid, 0)` succeeds, or fails for a reason other than ESRCH. */

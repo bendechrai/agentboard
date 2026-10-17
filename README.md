@@ -964,11 +964,14 @@ integrated, and only a finished replay advances it), and never discards
 what a human resolved there. When that replay conflicts (a third clone
 changed the `.gitignore` line you resolved), the move exits 3
 `sync-conflict` naming the worktree and the steps: resolve the paths,
-`git add` them and `git cherry-pick --continue` in that worktree, then
-run `agentboard init --into-host` again, which completes the move with
-every event and applies nothing twice; `git cherry-pick --abort` instead
+`git add` them and `git cherry-pick --continue` in that worktree (`git
+cherry-pick --skip` for a pick git reports as empty), then run
+`agentboard init --into-host` again, which completes the move with every
+event and applies nothing twice; `git cherry-pick --abort` instead
 returns the worktree to your resolution, which the next run adopts again
-and replays onto once more. A worktree left by a move of a board that was
+and replays onto once more. A replay killed part way, with nothing of
+yours staged in the worktree, is quit and run again by the next run on
+its own. A worktree left by a move of a board that was
 replaced since (another standalone board at `.board`) is never adopted:
 it is removed and named. Leftovers of a dead move that hold nothing are
 removed and named

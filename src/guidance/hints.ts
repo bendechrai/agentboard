@@ -560,10 +560,10 @@ type HintTemplate = (parts: HintParts) => string;
  * a conflict in its temporary worktree), so the hint names both commands
  * to run again, `init --into-host` for the move.
  */
-function syncHint(what: string): HintTemplate {
+function syncHint(what: string, initWhat = what): HintTemplate {
   return (h) =>
     h.command?.name === 'init'
-      ? `${what}, then run ${h.step('sync')} (after init --remote) or ${h.step('init', [['into-host', true]])} again (after a move)`
+      ? `${initWhat}, then run ${h.step('sync')} (after init --remote) or ${h.step('init', [['into-host', true]])} again (after a move)`
       : `${what}, then run ${h.step('sync')}`;
 }
 
@@ -834,6 +834,7 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
   // Exit 3.
   'sync-in-progress': syncHint(
     'a human finishes (git rebase --continue) or aborts (git rebase --abort) the rebase, merge or cherry-pick in progress where the message says (the board repository, or the temporary worktree of a move)',
+    'a human finishes (git rebase --continue for a stopped rebase, git cherry-pick --continue or --skip for a stopped cherry-pick) or aborts (git rebase --abort, git cherry-pick --abort) the operation in progress where the message says (the board repository, or the temporary worktree of a move)',
   ),
   'detached-head': syncHint('a human checks out a branch in the board repository'),
   'board-on-branch': syncHint(
@@ -841,6 +842,7 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
   ),
   'sync-conflict': syncHint(
     'a human resolves the conflict where the message says (the board repository, or the temporary worktree of a move), runs git add and git rebase --continue (or --abort)',
+    'a human resolves the conflict where the message says (the board repository, or the temporary worktree of a move), runs git add and git rebase --continue for a stopped rebase or git cherry-pick --continue for a stopped cherry-pick (or the matching --abort)',
   ),
   'sync-failed': syncHint(
     'a human fixes what the message names in the board repository (content staged by hand, the remote or the network)',
