@@ -17,6 +17,7 @@ import {
   renderCommandHelp,
   renderOverview,
 } from '../../guidance/help.js';
+import { splitCommandLine } from '../../guidance/__tests__/command-line.js';
 import { tempDir } from '../../store/__tests__/helpers.js';
 import { parseArgs } from '../parse.js';
 import { COMMANDS, HELP_SOURCE, findCommand } from '../registry.js';
@@ -258,6 +259,30 @@ describe('the built CLI', { timeout: 30_000 }, () => {
     expect(out.stdout).toMatch(/^ {2}agentboard claim \S+/m);
     expect(readdirSync(dir)).toEqual([]);
   });
+
+  it.each(['move', 'close'])(
+    'scenario: help %s with no board and no actor shows the disposition flags and exit codes',
+    (name) => {
+      const dir = empty();
+      const out = spawnCli(['help', name], dir, cliEnv({ AGENTBOARD_ACTOR: undefined }));
+      expect(out.code).toBe(0);
+      expect(out.stderr).toBe('');
+      const usage = out.stdout.split('\n')[0] ?? '';
+      expect(usage.startsWith(`Usage: agentboard ${name} <id>`)).toBe(true);
+      for (const flag of ['--task <task>', '--change <change> --group <group>', '--unplanned <unplanned>']) {
+        expect(usage, flag).toContain(flag);
+      }
+      expect(out.stdout).toMatch(/^ {2}4 needs-scope-disposition {2,}\S/m);
+      expect(out.stdout).toMatch(/^ {2}4 already-linked {2,}\S/m);
+      expect(out.stdout).not.toContain('needs-task-link');
+      const example = out.stdout
+        .split('\n')
+        .find((line) => line.startsWith(`  agentboard ${name} `) && line.includes('--unplanned'));
+      expect(example).toBeDefined();
+      expect(parseArgs(splitCommandLine((example ?? '').trim()).slice(1)).command.name).toBe(name);
+      expect(readdirSync(dir)).toEqual([]);
+    },
+  );
 
   it('scenario: help handoff --json is one object with to, status and note required', () => {
     const out = spawnCli(['help', 'handoff', '--json'], empty(), cliEnv());

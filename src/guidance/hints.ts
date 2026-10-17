@@ -59,6 +59,18 @@ export interface HintContext {
    * when none is known.
    */
   readonly actor?: string;
+  /**
+   * The decision disposition `close` was given, when the command is
+   * `close` and it was parsed: `--no-decision`, or `--decision-recorded-in`
+   * with the path exactly as given. Undefined for every other command and
+   * when it is unknown. `cliHintContext` (`src/cli/main.ts`) fills it from
+   * the parsed values and `runTool` (`src/mcp/server.ts`) from the tool
+   * arguments, so the `needs-scope-disposition` and `already-linked` hints
+   * of `close` repeat the decision flag the caller gave.
+   */
+  readonly closeDecision?:
+    | { readonly flag: 'no-decision' }
+    | { readonly flag: 'decision-recorded-in'; readonly path: string };
 }
 
 /**
@@ -293,7 +305,8 @@ export function hintStep(
  * - `id-too-short`, `ambiguous-id`: give a longer unique prefix; step
  *   `list`.
  * - `secret-like`: remove the secret from the text; for a command that has
- *   the flag `--allow-secret-like` (`new`, `comment`, `handoff`), also
+ *   the flag `--allow-secret-like` (`new`, `comment`, `handoff`, and `move`
+ *   and `close` for their `--unplanned` reason), also
  *   pass it for a false positive (the text `--allow-secret-like` appears).
  *   For a known command without that flag (`import-change`, whose text
  *   comes from the tasks file) the flag is never mentioned: the secret
@@ -415,19 +428,32 @@ export function hintStep(
  * - `holder-changed`, `invalid-queue`, `stale-grant`: step `show` with I
  *   (for the current holder, queue and lease).
  * - `queued`: step `show` with I (for the queue).
- * - `needs-scope-disposition`: the scope of the work is given on the
- *   refused command itself, as a task reference (on the CLI `--task
- *   <source>:<ref>#<item>` or `--change <name> --group <n>`; over MCP the
- *   `task`, or `change` and `group`, arguments) or as an unplanned reason
- *   (`--unplanned <reason>`; the `unplanned` argument), both named
- *   literally, with "do not create an issue or task only to satisfy
- *   this". For the command `close`: keep the decision flag given, then
- *   step `help close`. Otherwise (`move`, `handoff`, unknown): step `move`
- *   with I, `status` `merged`, A, to be run with either flag (a hand-off
- *   takes no disposition flag, so it points at `move` too).
+ * - `needs-scope-disposition` (board-agent-guidance: "Error hints",
+ *   scenario "Missing disposition hint"; design.md section 9): both forms
+ *   of the refused command, each a step, and the text "do not create an
+ *   issue or task only to satisfy this" (literally). For the command
+ *   `close` (D is the decision flag of `context.closeDecision`:
+ *   `no-decision` `true`, or `decision-recorded-in` with its path; when
+ *   `closeDecision` is unknown, `no-decision` `true`): step `close` with
+ *   I, D, `task` `<source>:<ref>#<item>`, A and step `close` with I, D,
+ *   `unplanned` `<reason>`, A. Otherwise (`move`, `handoff`, which takes
+ *   no disposition flag, and unknown): step `move` with I, `status`
+ *   `merged`, `task` `<source>:<ref>#<item>`, A and step `move` with I,
+ *   `status` `merged`, `unplanned` `<reason>`, A. On the CLI the unplanned
+ *   step is written with the placeholder in double quotes, exactly
+ *   `--unplanned "<reason>"` (the spec's wording; `splitCommandLine` and a
+ *   shell both read it as the one word `<reason>`), so for
+ *   `move T1 merged --as orch` the hint contains
+ *   `'agentboard move T1 merged --task <source>:<ref>#<item> --as orch'`
+ *   and `'agentboard move T1 merged --unplanned "<reason>" --as orch'`;
+ *   over MCP `board_move {"id":"T1","status":"merged","task":"<source>:<ref>#<item>","as":"orch"}`
+ *   and `board_move {"id":"T1","status":"merged","unplanned":"<reason>","as":"orch"}`.
+ *   The CLI form also names `--change <name> --group <n>` literally.
  * - `already-linked`: the ticket already names a planned task (the
- *   message names it), so it needs no unplanned reason: run the command
- *   again without it; step `show` with I (for the link).
+ *   message names it), so it needs no unplanned reason: step the refused
+ *   command without it, that is step `move` with I, `status` `merged`, A
+ *   (for `move`, and unknown) or step `close` with I, D, A (for `close`),
+ *   and step `show` with I (for the link).
  *
  * Exit 5: `integrity`: a human must inspect the file named in the
  * message; step `rebuild --check`. `busy`: retry the command. `no-cache`,

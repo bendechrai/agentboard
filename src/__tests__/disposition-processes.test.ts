@@ -12,13 +12,13 @@
  * - two processes racing the same pair on one ticket leave exactly one
  *   applied move, and `rebuild --check` is clean, twenty times over.
  *
- * The CLI form, `move <id> merged --unplanned "<reason>"`, is group 2's
- * (board/scope-disposition). Until it lands, the writer is a small child
- * script that runs the same operation through the built library
- * (`dist/index.js`, next to `dist/cli.js`): `runCommand` with the two
- * proposed events, reading the pause hooks from the environment exactly
- * as the CLI does. The placeholders at the end name the CLI tests group 2
- * swaps in. Run `npm run build` first when running vitest directly.
+ * The first two describes drive the operation through the built library
+ * (`dist/index.js`, next to `dist/cli.js`) with a small child script:
+ * `runCommand` with the two proposed events, reading the pause hooks from
+ * the environment exactly as the CLI does. The last describe drives the
+ * CLI form itself, `move <id> merged --unplanned "<reason>"` (task 2.1),
+ * through the same two scenarios. Run `npm run build` first when running
+ * vitest directly.
  */
 
 import { spawn } from 'node:child_process';
@@ -39,6 +39,8 @@ import {
   requireBuiltCli,
   runCliAsync,
   scratchDir,
+  startCli,
+  waitForPause,
   type ProcessResult,
   type RunEnv,
 } from './harness/processes.js';
@@ -319,11 +321,128 @@ describe('two concurrent writers of the same pair', { timeout: 180_000 }, () => 
   });
 });
 
-describe('group 2 (board/scope-disposition) swaps in the CLI form', () => {
-  it.todo(
-    'move <id> merged --unplanned "<reason>" killed after the ticket.unplanned is renamed: show folds the disposition, the ticket is in review, and move <id> merged then succeeds',
-  );
-  it.todo(
-    'two concurrent move <id> merged --unplanned processes leave exactly one applied move and a clean rebuild --check, twenty times',
-  );
+describe('the CLI form: move <id> merged --unplanned "<reason>" (task 2.1)', PROCESSES, () => {
+  it('killed after the ticket.unplanned is renamed: show folds the disposition, the ticket is in review, and move <id> merged then succeeds', async () => {
+    const { root, eventsDir } = boardProject();
+    const id = await adhocInReview(root, 'Fragile CLI');
+    const namesBefore = eventNames(eventsDir);
+
+    const proc = startCli(
+      {
+        argv: ['move', id, 'merged', '--unplanned', 'hotfix', '--as', 'merger', '--json'],
+        env: cliEnv({ AGENTBOARD_TEST_PAUSE: 'after-rename' }),
+      },
+      root,
+    );
+    const path = await waitForPause(proc, 'after-rename');
+    const killed = await proc.kill();
+    expect(killed.signal).toBe('SIGKILL');
+    expect(killed.stdout).toBe('');
+
+    expect(dirname(path)).toBe(eventsDir);
+    const written = canonicalDecode(new Uint8Array(readFileSync(path))) as {
+      kind: string;
+      actor: string;
+      body: { reason: string };
+    };
+    expect(written).toMatchObject({
+      kind: 'ticket.unplanned',
+      actor: 'merger',
+      body: { reason: 'hotfix' },
+    });
+    expect(eventNames(eventsDir)).toEqual([...namesBefore, basename(path)].sort());
+    expect(foldDir(eventsDir).state.tickets[id]).toMatchObject({
+      status: 'review',
+      unplanned: { reason: 'hotfix', actor: 'merger' },
+    });
+
+    const shown = await show(root, id);
+    expect(shown.status).toBe('review');
+    expect(shown.unplanned).toMatchObject({ reason: 'hotfix', actor: 'merger' });
+    const clean = await runCliAsync(['rebuild', '--check', '--json'], root);
+    expect(clean.code, clean.stderr).toBe(0);
+
+    const merged = await runCliAsync(['move', id, 'merged', '--as', 'merger', '--json'], root);
+    expect(merged.code, merged.stderr).toBe(0);
+    expect(oneDocument(merged)).toMatchObject({
+      ticket: { status: 'merged', unplanned: { reason: 'hotfix', actor: 'merger' } },
+    });
+    expect(eventNames(eventsDir)).toHaveLength(namesBefore.length + 2);
+  });
+
+  it('a run that is not killed writes both files, lists both hashes and merges the ticket', async () => {
+    const { root, eventsDir } = boardProject();
+    const id = await adhocInReview(root, 'Whole CLI');
+    const out = await runCliAsync(
+      ['move', id, 'merged', '--unplanned', 'hotfix', '--as', 'merger', '--json'],
+      root,
+    );
+    expect(out.code, out.stderr).toBe(0);
+    const doc = oneDocument(out) as { hash: string; events: string[]; ticket: Ticket };
+    expect(doc.events).toHaveLength(2);
+    expect(doc.hash).toBe(doc.events[1]);
+    expect(doc.ticket).toMatchObject({ status: 'merged', unplanned: { reason: 'hotfix' } });
+    expect(eventNames(eventsDir)).toHaveLength(6);
+  });
+});
+
+describe('two concurrent move <id> merged --unplanned processes', { timeout: 180_000 }, () => {
+  const ROUNDS = 20;
+
+  it(`leave exactly one applied move and a clean rebuild --check, ${String(ROUNDS)} times`, async () => {
+    const { root, eventsDir } = boardProject();
+    const ids: string[] = [];
+    for (let round = 0; round < ROUNDS; round += 1) {
+      ids.push(await adhocInReview(root, `Contested CLI ${String(round)}`));
+    }
+    const filesBefore = eventNames(eventsDir).length;
+
+    for (const [round, id] of ids.entries()) {
+      const argv = (actor: string): string[] => [
+        'move',
+        id,
+        'merged',
+        '--unplanned',
+        `${actor} ${String(round)}`,
+        '--as',
+        actor,
+        '--json',
+      ];
+      const [left, right] = await Promise.all([
+        runCliAsync(argv('left'), root),
+        runCliAsync(argv('right'), root),
+      ]);
+      const results = [left, right];
+      for (const result of results) {
+        expect(result.signal, result.stderr).toBeNull();
+        expect(result.stderr).not.toMatch(/database is locked|SQLITE_BUSY|\bbusy\b/i);
+      }
+      const winners = results.filter((r) => r.code === 0);
+      const losers = results.filter((r) => r.code === 4);
+      expect(winners, `round ${String(round)}: ${left.stderr}${right.stderr}`).toHaveLength(1);
+      expect(losers).toHaveLength(1);
+      const won = oneDocument(winners[0] as ProcessResult) as {
+        events: string[];
+        ticket: { status: string };
+      };
+      expect(won.events).toHaveLength(2);
+      expect(won.ticket.status).toBe('merged');
+      // The loser's disposition folded in memory, then its move was refused
+      // by the state the winner left: nothing of its own was written.
+      expect(oneDocument(losers[0] as ProcessResult)).toMatchObject({
+        error: { exitCode: 4, reason: 'invalid-transition' },
+      });
+      const actor = winners[0] === left ? 'left' : 'right';
+      expect(foldDir(eventsDir).state.tickets[id]).toMatchObject({
+        status: 'merged',
+        unplanned: { reason: `${actor} ${String(round)}`, actor },
+      });
+    }
+
+    expect(eventNames(eventsDir)).toHaveLength(filesBefore + 2 * ROUNDS);
+    expect(foldDir(eventsDir).rejected).toEqual([]);
+    const check = await runCliAsync(['rebuild', '--check', '--json'], root);
+    expect(check.code, check.stderr).toBe(0);
+    expect(oneDocument(check)).toMatchObject({ ok: true, differences: [] });
+  });
 });

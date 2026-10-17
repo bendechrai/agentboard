@@ -178,12 +178,49 @@ const SERVE_OPEN_GROUP: ExclusiveGroup = {
   message: 'serve takes at most one of --open and --no-open',
 };
 
-/** The dispositions of `close`. */
+/** The decision dispositions of `close`. */
 const CLOSE_GROUP: ExclusiveGroup = {
   alternatives: [['decision-recorded-in'], ['no-decision']],
   required: true,
   reason: 'no-disposition',
   message: CLOSE_RULE,
+};
+
+/**
+ * `--unplanned <reason>`, the unplanned scope disposition of `move` and
+ * `close` (board-cli: "Scope disposition on the command line").
+ */
+export const UNPLANNED_FLAG: ArgSpec = flag(
+  'unplanned',
+  'string',
+  'Record the work as unplanned scope, with the reason it was never planned',
+);
+
+/**
+ * The disposition flags of `move` and `close`, in this order: `--task`,
+ * `--change`, `--group` (`TASK_FLAGS`), `--unplanned` and
+ * `--allow-secret-like` (which only affects `--unplanned`). The MCP
+ * properties `task`, `change`, `group`, `unplanned` and
+ * `allow-secret-like` of `board_move` and `board_close` come from here.
+ */
+export const DISPOSITION_FLAGS: readonly ArgSpec[] = [
+  ...TASK_FLAGS,
+  UNPLANNED_FLAG,
+  ALLOW_SECRET_FLAG,
+];
+
+/**
+ * The scope dispositions of `move` and `close`: at most one of `--task`,
+ * `--change` with `--group`, or `--unplanned` (board-cli: "Scope
+ * disposition on the command line", scenario "Both dispositions are a usage
+ * error"). Not required: a ticket that has a task reference or an
+ * unplanned disposition already needs none.
+ */
+export const DISPOSITION_GROUP: ExclusiveGroup = {
+  alternatives: [['task'], ['change', 'group'], ['unplanned']],
+  required: false,
+  reason: 'usage',
+  message: 'give at most one of --task, --change with --group, or --unplanned',
 };
 
 /** Exit code entries shared by many commands (see `ExitCodeSpec`). */
@@ -232,6 +269,24 @@ const EXIT_TRANSITION: ExitCodeSpec = {
   code: 4,
   reason: 'invalid-transition',
   meaning: 'The status machine does not permit this move from the current status',
+};
+/**
+ * A ticket with neither a task reference nor an unplanned disposition
+ * entering `merged` (`move`, `handoff`) or being closed (`close`) without
+ * `--task` or `--unplanned` (board-openspec-integration: "Scope
+ * disposition at merge and close").
+ */
+const EXIT_SCOPE_DISPOSITION: ExitCodeSpec = {
+  code: 4,
+  reason: 'needs-scope-disposition',
+  meaning:
+    'The ticket has no task reference and no unplanned disposition: give --task or --unplanned',
+};
+/** `--unplanned` on a ticket that has a task reference (`move`, `close`). */
+const EXIT_ALREADY_LINKED: ExitCodeSpec = {
+  code: 4,
+  reason: 'already-linked',
+  meaning: 'The ticket already has a task reference, so --unplanned does not apply',
 };
 const EXIT_INTEGRITY: ExitCodeSpec = {
   code: 5,
@@ -610,6 +665,19 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  * safe integer), otherwise the string; `close --decision-recorded-in` and
  * `link --decision` pass `ctx.cwd` and `ctx.env` so the path is resolved
  * and recorded by `treePath`.
+ *
+ * The scope disposition of `move` and `close` (`DISPOSITION_FLAGS`,
+ * `DISPOSITION_GROUP`; board-cli: "Scope disposition on the command
+ * line"): `run` builds it with `scopeDispositionFromArgs` from `--task`,
+ * `--change`, `--group`, `--unplanned` and `--allow-secret-like`, and for
+ * `move` refuses a disposition whose target is not `merged` (`BoardError(1,
+ * 'usage')` saying a disposition applies only to a move to `merged`, the
+ * omitted target included), both BEFORE calling `ctx.board()`: so a usage
+ * error, a malformed task reference, an empty or secret-like reason exit 1
+ * before the board is opened and even where there is no board. Then
+ * `moveTicket` or `closeTicket` is called with `disposition` and
+ * `allowSecretLike`; `close-merged` passes no disposition (a merged ticket
+ * without one is skipped and listed, see `closeMerged`).
  */
 export const COMMANDS: readonly CommandSpec[] = [
   {
@@ -906,6 +974,10 @@ export const COMMANDS: readonly CommandSpec[] = [
         command: 'agentboard move 01J9K3 --as impl',
         summary: 'Return a blocked ticket to the status it was blocked from',
       },
+      {
+        command: 'agentboard move 01J9K3 merged --unplanned "production hotfix" --as orch',
+        summary: 'Merge an ad hoc ticket, recording that its work was never planned',
+      },
     ],
     exitCodes: [
       EXIT_OK,
@@ -918,18 +990,25 @@ export const COMMANDS: readonly CommandSpec[] = [
       },
       EXIT_ID_SHORT,
       EXIT_ID_AMBIGUOUS,
+      EXIT_SECRET,
+      EXIT_TASK_REF,
       EXIT_NO_BOARD,
       EXIT_TRANSITION,
+      EXIT_SCOPE_DISPOSITION,
+      EXIT_ALREADY_LINKED,
       EXIT_UNKNOWN_TICKET,
       EXIT_INTEGRITY,
     ],
     positionals: [ID, positional('status', 'string', 'Target status', false)],
-    flags: [],
-    exclusive: [],
+    flags: [...DISPOSITION_FLAGS],
+    exclusive: [DISPOSITION_GROUP],
     writes: true,
     operation: 'moveTicket',
     run: (ctx, values) => {
       const to = str(values, 'status');
+      if (DISPOSITION_FLAGS.some((spec) => Object.hasOwn(values, spec.name))) {
+        throw new Error('not implemented: move with a scope disposition');
+      }
       return written(
         moveTicket(ctx.board(), actorOf(ctx), {
           id: req(values, 'id'),
@@ -1001,6 +1080,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       EXIT_SECRET,
       EXIT_NO_BOARD,
       EXIT_TRANSITION,
+      EXIT_SCOPE_DISPOSITION,
       EXIT_UNKNOWN_TICKET,
       EXIT_INTEGRITY,
     ],
@@ -1156,6 +1236,10 @@ export const COMMANDS: readonly CommandSpec[] = [
         command: 'agentboard close 01J9K3 --no-decision --as orch',
         summary: 'Close ticket 01J9K3, which made no decision',
       },
+      {
+        command: 'agentboard close 01J9K3 --no-decision --unplanned "abandoned: superseded" --as orch',
+        summary: 'Close a blocked ad hoc ticket, recording why its work was never planned',
+      },
     ],
     exitCodes: [
       EXIT_OK,
@@ -1183,12 +1267,16 @@ export const COMMANDS: readonly CommandSpec[] = [
       },
       EXIT_ID_SHORT,
       EXIT_ID_AMBIGUOUS,
+      EXIT_SECRET,
+      EXIT_TASK_REF,
       EXIT_NO_BOARD,
       {
         code: 4,
         reason: 'invalid-transition',
         meaning: 'The ticket is not merged or blocked, or is already closed',
       },
+      EXIT_SCOPE_DISPOSITION,
+      EXIT_ALREADY_LINKED,
       EXIT_UNKNOWN_TICKET,
       EXIT_INTEGRITY,
     ],
@@ -1196,13 +1284,17 @@ export const COMMANDS: readonly CommandSpec[] = [
     flags: [
       flag('decision-recorded-in', 'string', 'Spec delta, ADR or tasks file recording decisions'),
       flag('no-decision', 'boolean', 'The ticket made no decision that needs recording'),
+      ...DISPOSITION_FLAGS,
     ],
-    exclusive: [CLOSE_GROUP],
+    exclusive: [CLOSE_GROUP, DISPOSITION_GROUP],
     writes: true,
     operation: 'closeTicket',
     run: (ctx, values) => {
       const id = req(values, 'id');
       const path = str(values, 'decision-recorded-in');
+      if (DISPOSITION_FLAGS.some((spec) => Object.hasOwn(values, spec.name))) {
+        throw new Error('not implemented: close with a scope disposition');
+      }
       return written(
         closeTicket(
           ctx.board(),
