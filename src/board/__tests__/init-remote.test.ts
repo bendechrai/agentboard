@@ -1181,7 +1181,10 @@ describe('clone failures after ls-remote succeeded (review S3)', () => {
     const bare = bareCopy(source, 'refs/heads/main');
     deleteObject(bare, revParse(bare, 'main'));
     const url = `file://${bare}`;
-    expect(git(tempDir(), 'ls-remote', '--', url)).toContain('refs/heads/main');
+    // ls-remote succeeds (a non-empty listing with HEAD) whatever it makes
+    // of the broken ref: git 2.52 advertises refs/heads/main, git 2.32
+    // warns and lists only HEAD, so that ref's line is not pinned.
+    expect(git(tempDir(), 'ls-remote', '--', url)).toMatch(/\tHEAD$/m);
     const root = gitRepo(join(tempDir(), 'proj'));
 
     const err = expectBoardError(

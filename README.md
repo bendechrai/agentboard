@@ -950,9 +950,11 @@ When the histories being integrated conflict (both sides changed
 exits 3 `sync-conflict`, leaves the rebase in its temporary worktree for
 you with the old `.board` untouched and `refs/agentboard/board` unchanged,
 and names the worktree and the steps: resolve the paths, `git add` them
-and `git rebase --continue` in that worktree (or `git rebase --abort`),
-then run `agentboard init --into-host` again, which adopts the finished
-rebase and completes the move. While the rebase is still in progress a
+and `git rebase --continue` in that worktree, then run
+`agentboard init --into-host` again, which adopts the finished rebase and
+completes the move (`git rebase --abort` instead returns the worktree to
+where the move started, so the next run begins again and stops on the
+same conflict). While the rebase is still in progress a
 re-run exits 3 `sync-in-progress` naming the same path and removes
 nothing. A move killed at any point is resumed by running it again:
 `.board` is either still the old standalone board or becomes the
@@ -964,18 +966,31 @@ integrated, and only a finished replay advances it), and never discards
 what a human resolved there. When that replay conflicts (a third clone
 changed the `.gitignore` line you resolved), the move exits 3
 `sync-conflict` naming the worktree and the steps: resolve the paths,
-`git add` them and `git cherry-pick --continue` in that worktree (for a
-pick git then reports as empty, `git cherry-pick --skip` drops it and
-`git commit --allow-empty` keeps it), then run
-`agentboard init --into-host` again, which completes the move with every
-event and applies nothing twice; `git cherry-pick --abort` instead
-returns the worktree to your resolution, which the next run adopts again
-and replays onto once more. A replay killed part way, with nothing of
-yours staged or edited in the worktree, is quit and run again by the
-next run on its own; one you edited or reset in is left for you, and a
-pick that cannot apply over a local change of yours exits 3
-`sync-failed` naming the file, with nothing dropped and nothing
-published until you commit, stash or discard the change. A worktree left
+`git add` them and `git cherry-pick --continue` in that worktree, then
+run `agentboard init --into-host` again, which completes the move with
+every event and applies nothing twice. Resolving by keeping your own side
+leaves a pick with nothing to commit: `git cherry-pick --skip` drops it
+(`git commit --allow-empty` keeps it as an empty commit), while
+`--continue` stops on that empty pick again until it is skipped, and on a
+replay of several commits the next pick may stop in its turn.
+`git cherry-pick --abort` instead returns the worktree to your
+resolution, and what the next run does with it depends on what the
+replay carried: commits that add events are replayed onto it once more,
+for you to resolve again; a replay whose commits add no event (the other
+clone's `.gitignore` edit and nothing else) counts as done once aborted,
+so aborting it declines that edit and the move completes without it. A
+replay killed part way, with nothing of yours staged or edited in the
+worktree, is quit and run again by the next run on its own; one you
+edited or reset in is left for you, with the same steps (`git cherry-pick
+--skip` to keep your side, `--continue` after resolving). A pick that
+cannot apply over a local change of yours, or a change left in the
+worktree with no pick in progress (a `git reset` on the last pick of a
+replay), exits 3 `sync-failed` naming the file, with nothing dropped and
+nothing published until the change is out of the way: discard it
+(`git checkout -- <path>` in that worktree) or stash it, and the next
+run replays the pick again for you to resolve; committing it instead
+makes the replayed pick conflict with your commit, a second stop for the
+same conflict. A worktree left
 by a move of a board that was
 replaced since (another standalone board at `.board`) is never adopted:
 it is removed and named. Leftovers of a dead move that hold nothing are

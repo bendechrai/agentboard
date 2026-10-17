@@ -80,6 +80,15 @@ fail the `promotion source` check.
   container, and `make check-floor` runs them on the oldest supported Node.
   Run both for changes that touch the store, concurrency, process
   handling or the Node floor.
+- `make check-git-floor` runs the sharing tests (the `SHARING_TESTS` list
+  in the Makefile: the git layer, model detection, host-model `init`,
+  `sync`, `init --remote`, `init --into-host` and `remote`) on the oldest
+  supported Node with the oldest git the host model supports, git 2.32,
+  built from source in the container. Run it, with the two above, for
+  changes that touch sharing (anything under `src/board/` that runs git,
+  or the `init`, `sync` and `remote` commands). `make test-sharing` runs
+  the same tests on the host with whatever git is installed, without
+  coverage.
 - The pre-push hook runs the fast subset (`make build typecheck lint ascii
   validate-specs`). Tests are left to `make check` because they are
   slower.

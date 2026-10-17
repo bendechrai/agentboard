@@ -179,6 +179,22 @@ existing host-model board exit 1 `git-too-old`, and `remote` reports the
 old git as a problem. The version comes from `git --version`, accepting suffixes
 such as `(Apple Git-154)`.
 
+The floor is tested, not only declared: `make check-git-floor`
+(CONTRIBUTING.md, "Checks") runs the sharing tests, the explicit
+`SHARING_TESTS` list in the Makefile rather than the whole suite or a
+glob and without coverage, in the `dev-git-floor` compose service, the
+oldest supported Node with git 2.32.7 built from its kernel.org release
+tarball (hash pinned) in `Dockerfile.dev` behind `ARG GIT_VERSION`; empty,
+the argument keeps the distro git, so the `dev` and `dev-floor` images
+are unchanged. The container refuses to run the tests on a git outside
+the 2.32 line, and `src/__tests__/git-floor.test.ts` pins that
+`HOST_MODEL_GIT_FLOOR`, the Makefile's `GIT_FLOOR` and the image's
+`GIT_VERSION` agree, that every file the list names exists, and that the
+list holds every file of the test's own required set (the git layer,
+model detection, `init`, both syncs, `init --remote`, `init --into-host`
+and `remote`, in process, through the CLI and as child processes), so a
+file dropped from the list fails the test.
+
 ### 4. Host-model sync
 
 Same entry point and result shape as today, with these additions to the
