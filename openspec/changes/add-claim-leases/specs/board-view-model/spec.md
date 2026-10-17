@@ -12,7 +12,7 @@ queue`, `left the queue`, `granted to <actor> (accept within <window>)`,
 `released`,
 `force-released from <holder>: <reason>`, `assigned to <actor>`,
 `handed off to <actor> (<status>): <note>`, `linked <task|pr|decision>
-<value>`, `closed (decision <path>)` or `closed (no decision)`,
+<value>`, `recorded as unplanned: <reason>`, `closed (decision <path>)` or `closed (no decision)`,
 `checked <n>` or `unchecked <n>` (1-based line number), `added <k>
 checklist line(s)`, `reconciled with tasks (<u> updated, <r> removed, <a>
 added[, renamed][, forced])`, `renumbered from group <n> to <m>`,
@@ -29,6 +29,10 @@ be marked `late` when the consumer's model recorded it as a late arrival.
 #### Scenario: Hand-off summary
 - **WHEN** `impl` hands T1 off to `reviewer` with status `review` and note `green`
 - **THEN** its entry's summary is `handed off to reviewer (review): green`
+
+#### Scenario: Unplanned summary
+- **WHEN** `orch` runs `move T1 merged --unplanned "hotfix"`
+- **THEN** the feed has, newest first, `moved to merged` and then `recorded as unplanned: hotfix`, both by `orch`
 
 #### Scenario: Forced release summary
 - **WHEN** `orchestrator` force-releases T1 from `merger-1` with reason `stalled`

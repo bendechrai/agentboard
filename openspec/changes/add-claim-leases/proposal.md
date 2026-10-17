@@ -159,14 +159,14 @@ None.
 - `src/board/*` (claim, renew, unqueue, release, config, inbox fields,
   wait on the watch machinery), `src/cli/registry.ts`,
   `src/cli/render.ts`, `src/mcp/*`, `src/guidance/*` (recipe, hints,
-  `GUIDANCE_VERSION` 2), `src/view/*` (`describeEvent`).
+  `GUIDANCE_VERSION` 3), `src/view/*` (`describeEvent`).
 - Compatibility: plain claims are unchanged. Leased claims, the new
   kinds and the `agentboard` actor are not understood by versions without
   this change (they report the claim as malformed and the new kinds as
   unknown), so every machine sharing a board must upgrade before any
   actor uses `--ttl`, `--wait`, `--force` or `config set`. Once upgraded,
   the preserved events fold correctly with no migration.
-- README.md, a new ADR, STATUS.md, and this repository's own
-  installed guidance (reinstalled at version 2).
+- README.md, ADR 0014, STATUS.md, and this repository's own
+  installed guidance (reinstalled at version 3).
 - No new runtime dependencies; fast-check is added as a dev dependency for
   the property tests.

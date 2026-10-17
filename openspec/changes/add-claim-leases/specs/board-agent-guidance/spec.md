@@ -9,16 +9,23 @@ handing off and moving to `blocked` with a comment; the `DECISION:`
 convention and why `close` needs a decision disposition; how tickets map to
 planning tasks, including the OpenSpec flow (`import-change` after
 proposing, claim the group's ticket before applying, tick `tasks.md` in the
-implementing PR); mutex tickets (see "Mutex ticket recipe"); and using the
-MCP tools instead of the shell when they
+implementing PR) and ad hoc tickets (worked like any other ticket; the task
+link or the unplanned disposition is given by whoever merges or closes the
+ticket, with `--task` or `--unplanned` on `move <id> merged` or `close`; never
+create an issue, task file or task reference only to satisfy a move);
+mutex tickets (see "Mutex ticket recipe"); and
+using the MCP tools instead of the shell when they
 are available. `agentboard help agents --role <role>` SHALL print the guide
 followed by a checklist for that role, where role is one of
-`orchestrator`, `test-author`, `implementer` or `reviewer`. The
-test-author, implementer and reviewer checklists SHALL include the worker
-rules for mutex tickets, and the orchestrator checklist the queue-runner
-rules (see "Mutex ticket recipe"). Every line of
+`orchestrator`, `test-author`, `implementer` or `reviewer`; the
+orchestrator checklist SHALL say to give the scope disposition of an ad hoc
+ticket when merging or closing it. The test-author, implementer and
+reviewer checklists SHALL include the worker rules for mutex tickets, and
+the orchestrator checklist the queue-runner rules (see "Mutex ticket
+recipe"). Every line of
 guide output that begins with `agentboard ` SHALL parse successfully
-against the command registry.
+against the command registry. The guide SHALL NOT say that an ad hoc
+ticket cannot enter `implementing`.
 
 #### Scenario: Guide examples are valid commands
 - **WHEN** every line beginning with `agentboard ` is extracted from the output of `help agents` and of `help agents --role` for each role and parsed against the registry
@@ -27,6 +34,10 @@ against the command registry.
 #### Scenario: Unknown role
 - **WHEN** `agentboard help agents --role tester` runs
 - **THEN** it exits 1 and lists the four valid roles
+
+#### Scenario: Guide explains ad hoc tickets
+- **WHEN** `agentboard help agents` runs
+- **THEN** its tickets and planning tasks section says an ad hoc ticket is worked normally, shows a `move <id> merged` line with `--unplanned` that parses, names `--task`, says never to create an issue, task file or task reference only to move a ticket, lists `needs-scope-disposition` and `already-linked` among the exit 4 reasons, does not contain `needs-task-link`, and every output (with and without `--role`) is at most 180 lines
 
 #### Scenario: Guide contains the mutex recipe
 - **WHEN** `agentboard help agents` and `help agents --role <role>` run for each role
@@ -67,20 +78,20 @@ of the recipe (the worker rules, the claim, renew, wait and release
 commands, and the pointer to `agentboard help agents`), the MCP server
 `instructions` summary SHALL contain the worker rules in one or two
 sentences while staying within 2000 characters, and the guidance version
-SHALL be 2, so `agents check` reports version 1 installations as `stale`.
+SHALL be 3, so `agents check` reports version 2 installations as `stale`.
 
 #### Scenario: Recipe commands parse
 - **WHEN** every line beginning with `agentboard ` in the mutex section is parsed against the registry
 - **THEN** each parses, and the section includes `claim` with `--ttl`, `renew`, `claim` with `--wait` and `--timeout`, `release`, `release` with `--force` and `--reason`, and `config set`
 
 #### Scenario: Installed skill carries the recipe
-- **WHEN** `agentboard agents install --target claude` runs with guidance version 2
-- **THEN** `SKILL.md` contains a `Mutex tickets` section with the worker rules and the claim, renew, wait and release commands, and the version 2 marker
+- **WHEN** `agentboard agents install --target claude` runs with guidance version 3
+- **THEN** `SKILL.md` contains a `Mutex tickets` section with the worker rules and the claim, renew, wait and release commands, and the version 3 marker
 
 #### Scenario: MCP instructions carry the worker rule
 - **WHEN** an MCP client connects to `agentboard mcp`
 - **THEN** the server instructions say never to wait on a mutex in a loop or claim from a background process, and are at most 2000 characters
 
-#### Scenario: Version 1 installs are stale
-- **WHEN** `agents check` runs where the skill was installed with guidance version 1
+#### Scenario: Version 2 installs are stale
+- **WHEN** `agents check` runs where the skill was installed with guidance version 2
 - **THEN** it reports the `claude` target as `stale` and exits 1

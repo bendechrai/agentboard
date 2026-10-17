@@ -197,7 +197,9 @@ run without an interactive terminal (`not-a-tty`); 2 board not
 found or unreadable; 3 sync problem that needs a human (a conflict, a
 sync already in progress, a detached HEAD, or an unreachable or rejecting
 remote; see board-concurrency); 4 action rejected by board state (invalid transition,
-already assigned, not assignee, unknown ticket); 5 event log or cache
+already assigned, not assignee, unknown ticket, a ticket leaving without a
+scope disposition (`needs-scope-disposition`), or an unplanned disposition
+for a ticket that has a task reference (`already-linked`)); 5 event log or cache
 integrity problem (corrupt or malformed file encountered where the command
 needed it, an existing event file whose content does not match its name, or
 the cache still locked after the busy timeout and one retry).
@@ -214,8 +216,13 @@ the cache still locked after the busy timeout and one retry).
 - **WHEN** `agentboard top` runs with stdout redirected to a file
 - **THEN** the command exits 1 with reason `not-a-tty`
 
+#### Scenario: Missing scope disposition is a state rejection
+- **WHEN** `agentboard close T1 --no-decision --as orch` runs for an ad hoc ticket T1 in `blocked` with no task link and no unplanned disposition
+- **THEN** the command exits 4 with reason `needs-scope-disposition` and writes nothing
+
 ### Requirement: No secrets on the board
-The board is not a secret store. `new`, `comment` and `handoff` SHALL refuse
+The board is not a secret store. `new`, `comment` and `handoff`, and `move`
+and `close` when given `--unplanned`, SHALL refuse
 text that matches well-known secret patterns (private key PEM headers, AWS
 access key ids, GitHub tokens, and strings of 32 or more base64 characters
 following `token`, `secret`, `password` or `key` and a separator), exiting 1
@@ -225,6 +232,10 @@ is given.
 #### Scenario: PEM header refused
 - **WHEN** a comment contains `-----BEGIN PRIVATE KEY-----`
 - **THEN** the command exits 1 naming the `pem-private-key` pattern and writes no event
+
+#### Scenario: Secret-like unplanned reason refused
+- **WHEN** `move T1 merged --unplanned "token: <40 base64 characters>"` runs without `--allow-secret-like`
+- **THEN** the command exits 1 naming the pattern, not the text, and writes no event
 
 ### Requirement: MCP server
 `agentboard mcp` SHALL serve an MCP server over stdio exposing one tool per
@@ -589,3 +600,55 @@ the model and its problems.
 #### Scenario: Remote on a broken link
 - **WHEN** `agentboard remote` runs on a host-model board whose link is broken
 - **THEN** it reports the model `broken host link`, names `agentboard init` as the repair, and exits 0
+
+### Requirement: Scope disposition on the command line
+`move` (with target `merged` only) and `close` SHALL accept at most one scope
+disposition: `--task`, `--change` with `--group` (validated as `link` does), or
+`--unplanned <reason>` (non-empty). Before its `ticket.move` or `ticket.close`,
+in the same transaction, the command SHALL write the `ticket.link` with that
+task, or the `ticket.unplanned`, writing all of these events or none.
+`--unplanned` on a ticket with a task reference SHALL exit 4 `already-linked`.
+
+#### Scenario: Merge with a task link
+- **WHEN** ad hoc ticket T1 in `review` with no task link runs `agentboard move T1 merged --task openspec:add-login#2 --as orch`
+- **THEN** the command exits 0, two event files are written (a `ticket.link` with the task, then a `ticket.move` to `merged`), and T1 is in `merged` with the task reference `openspec:add-login#2` and no ad hoc reason
+
+#### Scenario: Merge as unplanned
+- **WHEN** ad hoc ticket T1 in `review` runs `agentboard move T1 merged --unplanned "production hotfix, no plan" --as orch`
+- **THEN** the command exits 0, a `ticket.unplanned` with that reason and then a `ticket.move` to `merged` are written, and `show T1` has the line `unplanned: production hotfix, no plan (by orch)` after its `adhoc:` line, and `show T1 --json` and `list --json` carry `unplanned` with that `reason`, the `actor` `orch` and the event's `ts`
+
+#### Scenario: Close with each disposition
+- **WHEN** ad hoc tickets A and B, both in `blocked` with no disposition, run `close A --no-decision --task openspec:add-login#3 --as orch` and `close B --no-decision --unplanned "abandoned, duplicate of A" --as orch`
+- **THEN** both exit 0, A is closed with the task reference `openspec:add-login#3`, and B is closed with the unplanned disposition `abandoned, duplicate of A`
+
+#### Scenario: Close without a disposition
+- **WHEN** ad hoc ticket T1 in `blocked` with no disposition runs `close T1 --no-decision --as orch`
+- **THEN** the command exits 4 with reason `needs-scope-disposition`, the hint names `close` with `--task` and with `--unplanned`, and no event file is created
+
+#### Scenario: Both dispositions are a usage error
+- **WHEN** `agentboard move T1 merged --task openspec:x#1 --unplanned "y" --as orch` runs
+- **THEN** the command exits 1 with reason `usage` naming both flags, before the board is opened, and writes nothing
+
+#### Scenario: Disposition on another move is a usage error
+- **WHEN** `agentboard move T1 implementing --unplanned "y" --as orch` runs
+- **THEN** the command exits 1 with reason `usage`, saying that a disposition applies only to a move to `merged`, and writes nothing
+
+#### Scenario: Invalid task reference refused as link does
+- **WHEN** `agentboard move T1 merged --task add-login-2 --as orch` runs, and separately `move T1 merged --unplanned "" --as orch`
+- **THEN** the first exits 1 showing the `<source>:<ref>#<item>` form exactly as `link T1 --task add-login-2` does, the second exits 1 with reason `usage`, and neither writes an event
+
+#### Scenario: Unplanned on a linked ticket
+- **WHEN** ticket T1 has the task reference `openspec:add-login#2` and `move T1 merged --unplanned "y" --as orch` runs from `review`
+- **THEN** the command exits 4 with reason `already-linked` naming the task reference, and writes nothing
+
+#### Scenario: Disposition with an invalid move writes nothing
+- **WHEN** ad hoc ticket T1 is in `todo` and `move T1 merged --unplanned "y" --as orch` runs
+- **THEN** the command exits 4 with reason `invalid-transition` and no `ticket.unplanned` or `ticket.move` file is created
+
+#### Scenario: Close check order
+- **WHEN** an undisposed ad hoc ticket in `blocked` has an open `DECISION:` comment and `close <id> --no-decision --as orch` runs
+- **THEN** the command exits 4 with reason `needs-scope-disposition`; after the same command is given `--unplanned "spike"`, it exits 1 with reason `unpromoted-decision`
+
+#### Scenario: Hand-off into merged needs a disposition first
+- **WHEN** an undisposed ad hoc ticket in `review` is handed off with `--status merged`
+- **THEN** the command exits 4 with reason `needs-scope-disposition` and the hint names `move <id> merged` with `--task` and with `--unplanned`
