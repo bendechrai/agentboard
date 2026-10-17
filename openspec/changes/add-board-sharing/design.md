@@ -596,7 +596,20 @@ cherry-pick --continue` and `agentboard init --into-host`, with the
 worktree, both refs and the old `.board` as they were; after the human's
 `--continue` the re-run completes the move with every event, after their
 `--abort` it adopts the worktree again, still at the resolution, and
-replays again. Nothing the human resolved is replayed; the resolution
+replays again. A replay a human finished is told from one they abandoned
+by a record the move writes in the temporary worktree's git directory
+before the cherry-pick (`agentboard-replay`: the HEAD the replay started
+from and the tip it replays up to; implementer decision, round 4): a
+re-run that finds the record with HEAD moved on and every event file of
+the replayed range in HEAD's tree counts the worktree as having
+integrated that tip and replays nothing of it again (a commit the human
+resolved by hand would conflict with the same commit replayed once more,
+and git cannot tell them apart by patch), while HEAD still at the
+recorded start (`--abort`, or every commit skipped) or an event file of
+the range missing from HEAD (`git cherry-pick --quit` half way) replays
+again from the integrated tip, the commits already applied becoming
+empty and skipped; the record goes once `refs/agentboard/migrating` has
+been advanced. Nothing the human resolved is replayed; the resolution
 stays the ancestor of the result. Then the re-run integrates the current
 local and remote board refs as step 3 does (no-ops for what is already
 integrated), then runs steps 4 to 7. Nothing a human resolved in a

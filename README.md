@@ -892,9 +892,11 @@ standalone board and refuses when a move could drop something:
 
 A refusal writes nothing: no ref, no directory under `.git/agentboard`,
 `.board` as it was. When the checks pass, the move fetches the board's
-history into the host repository under a temporary ref
-(`refs/agentboard/migrating`, which lives as long as the temporary
-worktree does), checks it out in a temporary worktree under
+history into the host repository under a scratch ref
+(`refs/agentboard/migrating-fetch`, the only ref a fetch of the move ever
+writes), records it as `refs/agentboard/migrating` (the tip the temporary
+worktree has integrated; both refs live as long as the worktree does),
+checks it out in a temporary worktree under
 `.git/agentboard/migrating/<pid>`, integrates
 any `refs/agentboard/board` the host or its remote already has (another
 clone moved first: this clone's history is rebased onto it, as `sync`
@@ -904,8 +906,8 @@ event written while the move ran is not left behind; a file whose content
 does not match its name is exit 5 `integrity`, with nothing moved), checks
 that `.board` is still the repository it examined (and that its history
 only grew), and only then moves the old repository aside and the new
-worktree into place, deletes the temporary ref and carries over anything
-that landed in between. The old repository is kept, never
+worktree into place, deletes both temporary refs and carries over
+anything that landed in between. The old repository is kept, never
 deleted, at `.git/agentboard/standalone-<UTC timestamp>`, inside the git
 directory where the host's `git status` never shows it; the output names
 it and the old remote's URL as written in its configuration. The host
@@ -955,10 +957,21 @@ re-run exits 3 `sync-in-progress` naming the same path and removes
 nothing. A move killed at any point is resumed by running it again:
 `.board` is either still the old standalone board or becomes the
 host-model board, with every event and exactly one kept repository. A
-re-run that picks up an interrupted move's worktree replays onto it
-exactly the commits that reached the old remote since (the temporary ref
-remembers where it started), and never discards what a human resolved
-there; leftovers of a dead move that hold nothing are removed and named
+re-run that picks up an interrupted move's worktree replays onto it,
+with `git cherry-pick`, exactly the commits that reached the old remote
+since (`refs/agentboard/migrating` records what the worktree has
+integrated, and only a finished replay advances it), and never discards
+what a human resolved there. When that replay conflicts (a third clone
+changed the `.gitignore` line you resolved), the move exits 3
+`sync-conflict` naming the worktree and the steps: resolve the paths,
+`git add` them and `git cherry-pick --continue` in that worktree, then
+run `agentboard init --into-host` again, which completes the move with
+every event and applies nothing twice; `git cherry-pick --abort` instead
+returns the worktree to your resolution, which the next run adopts again
+and replays onto once more. A worktree left by a move of a board that was
+replaced since (another standalone board at `.board`) is never adopted:
+it is removed and named. Leftovers of a dead move that hold nothing are
+removed and named
 (plain `agentboard init` removes them too, and reports a move whose
 `sync` has not completed without finishing it), and a move that is still
 running on the same host is never touched. When the final `sync` fails

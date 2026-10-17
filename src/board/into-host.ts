@@ -38,6 +38,7 @@ import {
   rmdirSync,
   statSync,
   utimesSync,
+  writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 
@@ -52,6 +53,7 @@ import {
   gitVersion,
   isGitFailure,
   meetsGitFloor,
+  type GitFailure,
   type GitRunner,
 } from './git.js';
 import {
@@ -120,6 +122,34 @@ const EVENT_FILE = /^[0-9a-f]{64}\.json$/;
 
 /** The command a human runs again after fixing what a refusal names. */
 const AGAIN = 'agentboard init --into-host';
+
+/**
+ * The file in a temporary worktree's git directory that records the
+ * identity of the standalone repository the worktree was made from
+ * (`boardGitDir` of step 1; round 4 ruling 3): a re-run adopts the
+ * worktree only when the record names the repository at `.board` now.
+ */
+const SOURCE_RECORD = 'agentboard-source';
+
+/**
+ * The file in a temporary worktree's git directory that records a replay
+ * in progress (round 4 ruling 2): its two lines are the worktree's HEAD
+ * when the `cherry-pick` started and the tip of `MIGRATING_FETCH_REF` it
+ * replays up to. It is written before the `cherry-pick` and removed once
+ * `MIGRATING_REF` has been advanced, so a run that stops in between (a
+ * conflict left for a human, a kill) leaves the next run able to tell a
+ * finished replay (the human's `git cherry-pick --continue`, or a kill
+ * after the `cherry-pick` completed: HEAD moved on, every event file of
+ * the range in HEAD's tree) from an abandoned one (`git cherry-pick
+ * --abort` returns HEAD to the recorded start): the finished one counts
+ * as integrated up to the recorded tip and is never replayed again (the
+ * human's resolution of a replayed commit would conflict with the same
+ * commit replayed once more), the abandoned one is replayed again.
+ */
+const REPLAY_RECORD = 'agentboard-replay';
+
+/** The operation stopped in a temporary worktree, by the marker in its git directory. */
+type StoppedOperation = 'rebase' | 'cherry-pick';
 
 /**
  * The name of the kept old repository for the moment `now`:
@@ -234,6 +264,8 @@ export function removeDeadMigratingWorktrees(hostDir: string, options?: HostInit
   const git = hostGit(hostDir, options);
   const migratingRef = refValue(git, MIGRATING_REF);
   const removed: string[] = [];
+  // The ref may be gone while worktrees remain: then every registered
+  // HEAD differs from it and is kept for the re-run to judge.
   for (const worktree of findMigratingWorktrees(hostDir, options)) {
     if (worktree.alive || worktree.rebasing) {
       continue;
@@ -246,13 +278,24 @@ export function removeDeadMigratingWorktrees(hostDir: string, options?: HostInit
     removeLeftoverWorktree(git, worktree.path);
     removed.push(worktree.path);
   }
-  // The ref is deleted only when it exists: a move runs this pass before
-  // its step 2, and an `update-ref -d` of a missing ref would be a no-op
-  // that a shim or a trace could mistake for the end of step 4.
-  if (migratingRef !== '' && findMigratingWorktrees(hostDir, options).length === 0) {
-    git.attempt('update-ref', '-d', MIGRATING_REF);
+  if (findMigratingWorktrees(hostDir, options).length === 0) {
+    deleteTemporaryRefs(git);
   }
   return removed.sort();
+}
+
+/**
+ * Deletes `MIGRATING_REF` and `MIGRATING_FETCH_REF`, each only when it
+ * exists: a move runs the leftover pass before its step 2, and an
+ * `update-ref -d` of a missing ref would be a no-op that a shim or a trace
+ * could mistake for the deletions of step 6.
+ */
+function deleteTemporaryRefs(git: GitRunner): void {
+  for (const ref of [MIGRATING_REF, MIGRATING_FETCH_REF]) {
+    if (refValue(git, ref) !== '') {
+      git.attempt('update-ref', '-d', ref);
+    }
+  }
 }
 
 /**
@@ -312,8 +355,8 @@ export function cleanDeadMigratingWorktrees(hostDir: string, options?: HostInitO
     removeLeftoverWorktree(git, worktree.path);
     removed.push(worktree.path);
   }
-  if (refValue(git, MIGRATING_REF) !== '' && findMigratingWorktrees(hostDir, options).length === 0) {
-    git.attempt('update-ref', '-d', MIGRATING_REF);
+  if (findMigratingWorktrees(hostDir, options).length === 0) {
+    deleteTemporaryRefs(git);
   }
   if (!pendingMove(hostDir, options)) {
     removeEmptyMigratingDir(hostDir, options);
@@ -672,8 +715,10 @@ export interface IntoHostResult extends InitResult {
  * `<old>` are replayed onto it (round 3 ruling 1; round 4 rulings 1 and
  * 2): nothing at all when `refs/agentboard/migrating-fetch` equals
  * `<old>` or is an ancestor of HEAD (no `cherry-pick` and no `rebase`
- * runs); otherwise `cherry-pick --no-verify
- * <base>..refs/agentboard/migrating-fetch` in the worktree (HEAD stays
+ * runs); otherwise `cherry-pick <base>..refs/agentboard/migrating-fetch`
+ * in the worktree (`cherry-pick` takes no `--no-verify`; the runner's
+ * `core.hooksPath` keeps the host's hooks out of it, as for every command
+ * of the move; HEAD stays
  * the branch the commits land on, so git's `--abort` returns to the
  * HEAD the human resolved) with `<base>` `<old>` when `<old>` is an
  * ancestor of the fresh tip (the normal case: clones of one board share
@@ -1213,22 +1258,17 @@ function lockedMove(
   const scratch = join(commonDir(host, hostRoot), AGENTBOARD_GIT_SUBDIR);
   const lock = join(scratch, INIT_LOCK_FILE);
 
-  // Leftovers of earlier moves: a stopped rebase waits for a human, what
-  // holds nothing is removed, and a finished rebase is adopted.
+  // Leftovers of earlier moves: a stopped rebase or cherry-pick waits for
+  // a human, what holds nothing is removed, one left by a move of another
+  // board is removed, and a finished rebase of this board is adopted.
   const stopped = findMigratingWorktrees(hostRoot, { env }).find((w) => dead(w) && w.rebasing);
   if (stopped !== undefined) {
-    throw new BoardError(
-      3,
-      'sync-in-progress',
-      `an earlier ${AGAIN} stopped on a conflict, and its rebase is still in progress in the ` +
-        `temporary worktree at ${asciiText(stopped.path)}; resolve the conflict, git add the paths ` +
-        `and git rebase --continue (or git rebase --abort) in ${asciiText(stopped.path)}, then ` +
-        `run ${AGAIN} again; the board at ${asciiText(dir)} is untouched`,
-    );
+    throw stoppedInTemporary(host, stopped.path, dir, plan.gitDir);
   }
   const removed = removeDeadMigratingWorktrees(hostRoot, { env });
-  // The source tip the adopted temporary was made from, before step 2
-  // replaces it: the base of the replay when the histories share no commit.
+  // The source tip the adopted temporary worktree integrated (what the
+  // ref records; the fetch of step 2 never moves it): the base of the
+  // replay of what reached the standalone board since.
   const oldSource = refValue(host, MIGRATING_REF);
   // A temporary named by this process's own pid was left by an earlier
   // call in this process; the helper leaves it alone, the move treats it
@@ -1240,12 +1280,33 @@ function lockedMove(
     removed.push(own.path);
   }
   removed.sort();
-  const adoptable = findMigratingWorktrees(hostRoot, { env }).find(
+  // A temporary that integrated something is adopted only when it was
+  // made from the repository at `dir` now (round 4 ruling 3): one made
+  // from a board replaced since is removed and named.
+  const foreign: string[] = [];
+  let adoptable: MigratingWorktree | undefined;
+  for (const candidate of findMigratingWorktrees(hostRoot, { env }).filter(
     (w) => dead(w) && !w.rebasing && w.registered && w.head !== null && w.head !== oldSource,
-  );
+  )) {
+    if (adoptable === undefined && sourceRecord(host, candidate.path) === (plan.gitDir ?? '')) {
+      adoptable = candidate;
+    } else {
+      removeLeftoverWorktree(host, candidate.path);
+      foreign.push(candidate.path);
+    }
+  }
+  if (foreign.length > 0 && findMigratingWorktrees(hostRoot, { env }).length === 0) {
+    deleteTemporaryRefs(host);
+  }
 
-  // 2. The source tip into the temporary ref; 3. the temporary worktree.
-  host.run('fetch', '--no-tags', '--no-write-fetch-head', dir, `+${plan.sourceTip}:${MIGRATING_REF}`);
+  // 2. The source tip into the scratch ref; 3. the temporary worktree.
+  host.run(
+    'fetch',
+    '--no-tags',
+    '--no-write-fetch-head',
+    dir,
+    `+${plan.sourceTip}:${MIGRATING_FETCH_REF}`,
+  );
   const adopted = adoptable !== undefined;
   let temp: string;
   if (adoptable === undefined) {
@@ -1253,13 +1314,18 @@ function lockedMove(
     const marker = dirname(temp);
     const hadMarker = existsSync(marker);
     mkdirSync(marker, { recursive: true });
-    const added = host.attempt('worktree', 'add', '--detach', temp, MIGRATING_REF);
+    const added = addTemporaryWorktree(host, temp);
     if (isGitFailure(added)) {
-      // The temporary ref is gone when another init took this move's
-      // stale lock and finished; nothing of this run stays behind.
-      rmSync(temp, { recursive: true, force: true });
+      // The scratch ref is gone when another init took this move's stale
+      // lock and finished; whatever git wrote before failing (a
+      // registration, a checkout) goes with the directory, so nothing of
+      // this run stays behind (round 4 ruling 5).
+      removeLeftoverWorktree(host, temp);
+      if (registeredAt(host, temp) !== null) {
+        host.attempt('worktree', 'prune');
+      }
       if (findMigratingWorktrees(hostRoot, { env }).length === 0) {
-        host.attempt('update-ref', '-d', MIGRATING_REF);
+        deleteTemporaryRefs(host);
       }
       if (!hadMarker && existsSync(marker) && readdirSync(marker).length === 0) {
         rmdirSync(marker);
@@ -1272,27 +1338,22 @@ function lockedMove(
           `refused the worktree; nothing of this run remains; run ${AGAIN} again`,
       );
     }
+    writeRecord(host, temp, SOURCE_RECORD, plan.gitDir ?? '');
   } else {
     temp = adoptable.path;
   }
   const worktree = gitRunner(temp, { env, disableHooks: true });
-  if (
-    adopted &&
-    refValue(host, MIGRATING_REF) !== oldSource &&
-    !isAncestor(worktree, MIGRATING_REF, 'HEAD')
-  ) {
+  if (adopted) {
     // Source commits the adopted worktree lacks (synced to the old remote
-    // since it was made) are replayed onto what it already integrated.
-    const base = replayBase(worktree, oldSource);
-    rebaseOnto(
-      host,
-      worktree,
-      dir,
-      temp,
-      adopted,
-      ['--onto', 'HEAD', base, MIGRATING_REF],
-      'the events synced to the old remote since the earlier move',
-    );
+    // since it integrated `integrated`) are replayed onto it; a replay a
+    // human finished by hand counts as integrated up to its tip.
+    const fresh = refValue(host, MIGRATING_FETCH_REF);
+    const integrated = finishedReplay(host, worktree, temp, oldSource) ?? oldSource;
+    if (fresh !== integrated && !isAncestor(worktree, MIGRATING_FETCH_REF, 'HEAD')) {
+      replayFreshCommits(host, worktree, dir, temp, integrated, fresh);
+    }
+    host.run('update-ref', MIGRATING_REF, fresh);
+    removeRecord(host, temp, REPLAY_RECORD);
   }
   const old = refValue(host, BOARD_REF);
   if (old !== '' && !isAncestor(worktree, BOARD_REF, 'HEAD')) {
@@ -1375,6 +1436,7 @@ function lockedMove(
   host.run('worktree', 'move', temp, dir);
   addBoardWorktree(hostRoot, dir, { env });
   host.run('update-ref', '-d', MIGRATING_REF);
+  host.run('update-ref', '-d', MIGRATING_FETCH_REF);
   const late = carryOverEventFiles(join(keptAt, 'events'), join(dir, 'events'));
   if (late.mismatched.length > 0) {
     throw mismatchedEvents(late.mismatched, join(keptAt, 'events'), dir, true);
@@ -1388,6 +1450,12 @@ function lockedMove(
   ];
   if (removed.length > 0) {
     lines.push(`removed ${removed.map((p) => asciiText(p)).join(', ')}, left by an interrupted move`);
+  }
+  if (foreign.length > 0) {
+    lines.push(
+      `removed ${foreign.map((p) => asciiText(p)).join(', ')}, left by a move of another board ` +
+        `(not the one at ${asciiText(dir)}), so nothing of it was adopted`,
+    );
   }
   const sync = syncOrFail(dir, hostRoot, [...lines, ...warnings], keptAt, plan.oldRemoteUrl, env);
   lines.push(...sync.message.split('\n'));
@@ -1421,15 +1489,202 @@ function lockedMove(
  * `oldSource` (nothing to replay). The replay itself is a `cherry-pick`
  * of `<base>..MIGRATING_FETCH_REF`, never a `rebase --onto`.
  */
-function replayBase(worktree: GitRunner, oldSource: string): string {
-  if (oldSource !== '' && isAncestor(worktree, oldSource, MIGRATING_REF)) {
+function replayBase(worktree: GitRunner, oldSource: string): string | null {
+  if (oldSource !== '' && isAncestor(worktree, oldSource, MIGRATING_FETCH_REF)) {
     return oldSource;
   }
-  const base = worktree.attempt('merge-base', 'HEAD', MIGRATING_REF);
+  const base = worktree.attempt('merge-base', 'HEAD', MIGRATING_FETCH_REF);
   if (!isGitFailure(base) && base.trim() !== '') {
     return base.trim();
   }
-  return '--root';
+  // The `--root` case of the design: no shared commit, every commit of
+  // the fresh tip is replayed (`cherry-pick` has no `--root`, so the
+  // commits are listed).
+  return null;
+}
+
+/**
+ * The replay of an adopted temporary worktree (round 4 rulings 1 and 2):
+ * `cherry-pick <base>..refs/agentboard/migrating-fetch` in the worktree
+ * (every commit of the fresh tip, oldest first, when `replayBase` finds
+ * no base), with `REPLAY_RECORD` written first (the HEAD it starts from
+ * and `fresh`, the tip it replays up to). A commit whose patch HEAD
+ * already holds makes git stop with an empty result and no unmerged path:
+ * it is skipped (`cherry-pick --skip`) and the sequence goes on. A
+ * conflict is left in place for a human: `BoardError(3,
+ * 'sync-conflict')` naming the unmerged paths, the worktree and the human
+ * steps with `git cherry-pick --continue` (or `--abort`, which returns
+ * the worktree to the HEAD it started from); the worktree, the record,
+ * `MIGRATING_REF` (still the integrated tip) and `MIGRATING_FETCH_REF`
+ * stay. Any other failure is `BoardError(3, 'sync-failed')` with git's
+ * first error line, the adopted worktree kept (it may hold a human's
+ * work). The caller advances `MIGRATING_REF` and removes the record once
+ * the replay succeeded.
+ */
+function replayFreshCommits(
+  host: GitRunner,
+  worktree: GitRunner,
+  dir: string,
+  temp: string,
+  integrated: string,
+  fresh: string,
+): void {
+  const base = replayBase(worktree, integrated);
+  const picks =
+    base === null
+      ? worktree
+          .run('rev-list', '--reverse', '--topo-order', MIGRATING_FETCH_REF)
+          .split('\n')
+          .filter((id) => id !== '')
+      : [`${base}..${MIGRATING_FETCH_REF}`];
+  writeRecord(host, temp, REPLAY_RECORD, `${worktree.run('rev-parse', 'HEAD').trim()}\n${fresh}\n`);
+  let out = worktree.attempt('cherry-pick', ...picks);
+  // Each `--skip` advances the sequence by one commit, so the loop is
+  // bounded by the number of commits replayed.
+  const limit = worktree.run('rev-list', '--count', ...picks).trim();
+  for (let skipped = 0; isGitFailure(out); skipped += 1) {
+    const conflicted = unmergedPaths(worktree);
+    if (conflicted.length > 0) {
+      throw new BoardError(
+        3,
+        'sync-conflict',
+        'replaying the events synced to the old remote since the earlier move stopped on a ' +
+          `conflict in the temporary worktree at ${asciiText(temp)}: ` +
+          `${conflicted.map((p) => asciiText(p)).join(', ')}; resolve them, git add them and ` +
+          `git cherry-pick --continue in ${asciiText(temp)} (or git cherry-pick --abort, which ` +
+          `returns that worktree to where the replay started), then run ${AGAIN} again; the ` +
+          `board at ${asciiText(dir)} is untouched`,
+      );
+    }
+    if (stoppedOperation(worktree, temp) !== 'cherry-pick' || skipped >= Number(limit)) {
+      throw syncFailed('replaying the events synced to the old remote since the earlier move', out);
+    }
+    // The commit's patch is already in HEAD (one the human finished by
+    // hand): never kept as an empty commit.
+    out = worktree.attempt('cherry-pick', '--skip');
+  }
+}
+
+/**
+ * The tip a replay recorded in `REPLAY_RECORD` of the adopted worktree at
+ * `temp` reached, when that replay finished without the move advancing
+ * `MIGRATING_REF` (the human's `git cherry-pick --continue`, or a kill
+ * after the `cherry-pick` completed): HEAD left the recorded start and
+ * every event file the range `<oldSource>..<tip>` adds is in HEAD's tree.
+ * Null, and the record removed, when there is no record, when HEAD is
+ * still the recorded start (`git cherry-pick --abort`, or every commit
+ * skipped), or when an event file of the range is missing from HEAD (the
+ * sequence was quit half way): the replay then runs again from
+ * `oldSource`, the commits already applied becoming empty and skipped.
+ */
+function finishedReplay(
+  host: GitRunner,
+  worktree: GitRunner,
+  temp: string,
+  oldSource: string,
+): string | null {
+  const record = readRecord(host, temp, REPLAY_RECORD);
+  if (record === null) {
+    return null;
+  }
+  removeRecord(host, temp, REPLAY_RECORD);
+  const [start, tip] = record.split('\n');
+  if (start === undefined || tip === undefined || tip === '' || refValue(worktree, tip) === '') {
+    return null;
+  }
+  if (worktree.run('rev-parse', 'HEAD').trim() === start) {
+    return null;
+  }
+  const inHead = new Set(zList(worktree.run('ls-tree', '-r', '--name-only', '-z', 'HEAD', '--', 'events')));
+  const added = zList(
+    oldSource === '' || !isAncestor(worktree, oldSource, tip)
+      ? worktree.run('ls-tree', '-r', '--name-only', '-z', tip, '--', 'events')
+      : worktree.run('diff', '--name-only', '--diff-filter=A', '-z', oldSource, tip, '--', 'events'),
+  ).filter((path) => EVENT_PATH.test(path));
+  return added.every((path) => inHead.has(path)) ? tip : null;
+}
+
+/**
+ * Step 3 for a fresh temporary worktree: `update-ref refs/agentboard/migrating
+ * <value of refs/agentboard/migrating-fetch>` (what the worktree is about
+ * to integrate), then `worktree add --detach <temp> refs/agentboard/migrating`.
+ * A missing scratch ref (another init finished meanwhile) is reported as
+ * a failure like git's own.
+ */
+function addTemporaryWorktree(host: GitRunner, temp: string): string | GitFailure {
+  const fetched = refValue(host, MIGRATING_FETCH_REF);
+  if (fetched === '') {
+    return { status: 128, stdout: '', stderr: `fatal: ${MIGRATING_FETCH_REF} does not exist\n` };
+  }
+  const set = host.attempt('update-ref', MIGRATING_REF, fetched);
+  if (isGitFailure(set)) {
+    return set;
+  }
+  return host.attempt('worktree', 'add', '--detach', temp, MIGRATING_REF);
+}
+
+/**
+ * The `sync-in-progress` refusal for a temporary worktree at `path` with a
+ * rebase or cherry-pick stopped in it: names the path and the human steps
+ * of the matching operation; says when the worktree was left by a move of
+ * another board (its `SOURCE_RECORD` missing or not `gitDir`), which the
+ * re-run will not adopt either way.
+ */
+function stoppedInTemporary(
+  host: GitRunner,
+  path: string,
+  dir: string,
+  gitDir: string | null,
+): BoardError {
+  const operation = stoppedOperation(host, path) ?? 'rebase';
+  const origin =
+    sourceRecord(host, path) === (gitDir ?? '')
+      ? ''
+      : ` (that worktree was left by a move of another board, not the one at ${asciiText(dir)} now, so finishing it moves nothing of this board)`;
+  return new BoardError(
+    3,
+    'sync-in-progress',
+    `an earlier ${AGAIN} stopped on a conflict, and its ${operation} is still in progress in the ` +
+      `temporary worktree at ${asciiText(path)}${origin}; resolve the conflict, git add the paths ` +
+      `and git ${operation} --continue (or git ${operation} --abort) in ${asciiText(path)}, then ` +
+      `run ${AGAIN} again; the board at ${asciiText(dir)} is untouched`,
+  );
+}
+
+/** The content of `SOURCE_RECORD` of the temporary worktree at `path`, or null when it has none. */
+function sourceRecord(host: GitRunner, path: string): string | null {
+  return readRecord(host, path, SOURCE_RECORD);
+}
+
+/** The git directory of the worktree at `path` (`<common dir>/worktrees/<name>`), or null when it is not one. */
+function worktreeGitDir(host: GitRunner, path: string): string | null {
+  const out = host.attemptIn(path, 'rev-parse', '--absolute-git-dir');
+  return isGitFailure(out) ? null : out.trim();
+}
+
+/** Writes `content` to the file `name` in the git directory of the worktree at `path`. */
+function writeRecord(host: GitRunner, path: string, name: string, content: string): void {
+  const gitDir = worktreeGitDir(host, path);
+  if (gitDir !== null) {
+    writeFileSync(join(gitDir, name), content);
+  }
+}
+
+/** The content of the file `name` in the git directory of the worktree at `path`, trimmed of a trailing newline; null when missing. */
+function readRecord(host: GitRunner, path: string, name: string): string | null {
+  const gitDir = worktreeGitDir(host, path);
+  if (gitDir === null || !existsSync(join(gitDir, name))) {
+    return null;
+  }
+  return readFileSync(join(gitDir, name), 'utf8').replace(/\n$/, '');
+}
+
+/** Removes the file `name` from the git directory of the worktree at `path`, when present. */
+function removeRecord(host: GitRunner, path: string, name: string): void {
+  const gitDir = worktreeGitDir(host, path);
+  if (gitDir !== null) {
+    rmSync(join(gitDir, name), { force: true });
+  }
 }
 
 /** The `integrity` refusal of a carry-over that found files it cannot copy (step 5, or the rename window with `done`). */
@@ -1468,8 +1723,8 @@ function resumedMove(
   const scratch = join(commonDir(gitRunner(hostRoot, { env }), hostRoot), AGENTBOARD_GIT_SUBDIR);
   const keptAt = newestKept(scratch);
   const oldRemoteUrl = keptAt === null ? null : keptRemoteUrl(keptAt, env);
-  // A kill before the deletion of step 6 leaves the temporary ref behind.
-  hostGit(hostRoot, { env }).attempt('update-ref', '-d', MIGRATING_REF);
+  // A kill before the deletions of step 6 leaves the temporary refs behind.
+  deleteTemporaryRefs(hostGit(hostRoot, { env }));
   if (keptAt !== null) {
     const late = carryOverEventFiles(join(keptAt, 'events'), join(dir, 'events'));
     if (late.mismatched.length > 0) {
@@ -1620,10 +1875,12 @@ function refreshLock(lock: string): void {
 }
 
 /**
- * Rebases the temporary worktree's HEAD with `args` (an upstream, or
- * `--onto HEAD <base> <ref>`). A conflict is left in place for a human
- * (the worktree and `MIGRATING_REF` stay); any other failure removes the
- * worktree unless it was adopted (it may hold a human's work).
+ * Rebases the temporary worktree's HEAD onto the upstream in `args` (the
+ * step 3 integration of the local and the remote board refs; the replay
+ * of an adopted worktree is `replayFreshCommits`, a cherry-pick). A
+ * conflict is left in place for a human (the worktree and `MIGRATING_REF`
+ * stay); any other failure removes the worktree unless it was adopted (it
+ * may hold a human's work).
  */
 function rebaseOnto(
   host: GitRunner,
@@ -1655,10 +1912,10 @@ function rebaseOnto(
   throw syncFailed(`integrating ${what}`, out);
 }
 
-/** Removes the temporary worktree at `temp`, the temporary ref and an empty `migrating` directory after a refusal in step 3. */
+/** Removes the temporary worktree at `temp`, the temporary refs and an empty `migrating` directory after a refusal in step 3. */
 function discardTemporary(host: GitRunner, temp: string): void {
   removeLeftoverWorktree(host, temp);
-  host.attempt('update-ref', '-d', MIGRATING_REF);
+  deleteTemporaryRefs(host);
   const base = dirname(temp);
   if (existsSync(base) && readdirSync(base).length === 0) {
     rmdirSync(base);
@@ -1698,13 +1955,26 @@ function isAncestor(git: GitRunner, ancestor: string, descendant: string): boole
   return !isGitFailure(git.attempt('merge-base', '--is-ancestor', ancestor, descendant));
 }
 
-/** Whether a rebase is stopped in the worktree at `cwd` (`rebase-merge` or `rebase-apply` in its git directory). */
+/** Whether a rebase or a cherry-pick is stopped in the worktree at `cwd` (see `stoppedOperation`). */
 function rebaseStopped(git: GitRunner, cwd: string): boolean {
-  const gitDir = git.attemptIn(cwd, 'rev-parse', '--absolute-git-dir');
-  if (isGitFailure(gitDir)) {
-    return false;
+  return stoppedOperation(git, cwd) !== null;
+}
+
+/**
+ * The operation stopped in the worktree at `cwd`: `rebase` when
+ * `rebase-merge` or `rebase-apply` exists in its git directory,
+ * `cherry-pick` when `CHERRY_PICK_HEAD` does (the replay of an adopted
+ * worktree, round 4 ruling 2), else null.
+ */
+function stoppedOperation(git: GitRunner, cwd: string): StoppedOperation | null {
+  const gitDir = worktreeGitDir(git, cwd);
+  if (gitDir === null) {
+    return null;
   }
-  return ['rebase-merge', 'rebase-apply'].some((name) => existsSync(join(gitDir.trim(), name)));
+  if (['rebase-merge', 'rebase-apply'].some((name) => existsSync(join(gitDir, name)))) {
+    return 'rebase';
+  }
+  return existsSync(join(gitDir, 'CHERRY_PICK_HEAD')) ? 'cherry-pick' : null;
 }
 
 /** Whether a process with `pid` is running: `kill(pid, 0)` succeeds, or fails for a reason other than ESRCH. */
