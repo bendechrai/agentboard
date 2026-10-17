@@ -184,4 +184,12 @@ describe('the rules it carries', () => {
       expect(text, role).toMatch(new RegExp(`\\b${role}\\b`));
     }
   });
+
+  it('does not name the removed needs-task-link gate (add-adhoc-ticket-lifecycle task 5.1)', () => {
+    const text = summary();
+    expect(text).not.toContain('needs-task-link');
+    expect(text).not.toMatch(/cannot enter implementing/i);
+    expect(text).not.toMatch(/until (?:it is )?linked/i);
+    expect(text.length).toBeLessThanOrEqual(GUIDE_SUMMARY_MAX_CHARS);
+  });
 });

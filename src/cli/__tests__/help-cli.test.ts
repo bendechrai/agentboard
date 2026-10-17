@@ -275,6 +275,10 @@ describe('the built CLI', { timeout: 30_000 }, () => {
       expect(out.stdout).toMatch(/^ {2}4 needs-scope-disposition {2,}\S/m);
       expect(out.stdout).toMatch(/^ {2}4 already-linked {2,}\S/m);
       expect(out.stdout).not.toContain('needs-task-link');
+      // The description names the scope disposition of an ad hoc ticket
+      // (add-adhoc-ticket-lifecycle task 5.1).
+      expect(out.stdout).toMatch(/ad hoc/i);
+      expect(out.stdout).toMatch(/scope disposition/i);
       const example = out.stdout
         .split('\n')
         .find((line) => line.startsWith(`  agentboard ${name} `) && line.includes('--unplanned'));

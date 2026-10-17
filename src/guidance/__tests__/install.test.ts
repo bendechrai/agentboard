@@ -38,6 +38,7 @@ import {
   type TargetOutcome,
 } from '../install.js';
 import {
+  GUIDANCE_RULES,
   GUIDANCE_VERSION,
   MCP_ENTRY,
   OPENSPEC_GUIDANCE,
@@ -286,6 +287,12 @@ describe('target claude', () => {
     expect(skill.startsWith('---\nname: agentboard\n')).toBe(true);
     expect(skill).toContain('agentboard help agents');
     expect(skill).toContain(`<!-- agentboard-guidance: v${String(V)} -->`);
+    // The six rules (add-adhoc-ticket-lifecycle task 5.2), numbered.
+    expect(GUIDANCE_RULES).toHaveLength(6);
+    const lines = skill.split('\n');
+    GUIDANCE_RULES.forEach((rule, index) => {
+      expect(lines).toContain(`${String(index + 1)}. ${rule}`);
+    });
   });
 
   it('scenario: reinstall changes no byte and reports up to date', () => {
@@ -333,6 +340,68 @@ describe('target claude', () => {
     const out = only(root, 'claude', { force: true });
     expect(out).toMatchObject({ action: 'updated', refusal: null });
     expect(readRel(root, SKILL)).toBe(renderSkill());
+  });
+});
+
+describe('installed guidance covers ad hoc tickets (add-adhoc-ticket-lifecycle task 5.2)', () => {
+  it('scenario: the skill and the AGENTS.md block state the ad hoc rule at a version one higher', () => {
+    const root = plainProject();
+    const result = install(root, { targets: ['claude', 'agents-md'] });
+    expect(result.refused).toBe(0);
+    expect(result.version).toBe(V);
+    // One higher than before this change, which shipped version 1.
+    expect(V).toBe(2);
+    const skill = readRel(root, SKILL);
+    const agents = readRel(root, AGENTS);
+    for (const [name, text] of [
+      ['SKILL.md', skill],
+      ['AGENTS.md', agents],
+    ]) {
+      expect(text, name).toMatch(/ad hoc/);
+      expect(text, name).toContain('--task');
+      expect(text, name).toContain('--unplanned');
+      expect(text, name).toMatch(/never create an issue, task file or task reference/i);
+      expect(text, name).not.toContain('needs-task-link');
+      expect(text, name).not.toMatch(/cannot enter/i);
+      expect(text, name).not.toMatch(/until (?:it is )?linked/i);
+    }
+    expect(skill).toContain(`<!-- agentboard-guidance: v${String(V)} -->`);
+    expect(agents).toContain(blockStart(V));
+    expect(checkGuidance({ cwd: root, env: ENV }).map((e) => [e.target, e.state])).toEqual([
+      ['claude', 'current'],
+      ['agents-md', 'current'],
+    ]);
+  });
+
+  it('scenario: agents check reports installations of the earlier version as stale', () => {
+    const root = plainProject();
+    install(root, { targets: ['claude', 'agents-md'], version: V - 1 });
+    expect(readRel(root, SKILL)).toContain(`<!-- agentboard-guidance: v${String(V - 1)} -->`);
+    expect(checkGuidance({ cwd: root, env: ENV })).toEqual([
+      {
+        target: 'claude',
+        path: SKILL,
+        state: 'stale',
+        installedVersion: V - 1,
+        currentVersion: V,
+      },
+      {
+        target: 'agents-md',
+        path: AGENTS,
+        state: 'stale',
+        installedVersion: V - 1,
+        currentVersion: V,
+      },
+    ]);
+    // Reinstalling with the running version brings both up to date.
+    const again = install(root, { targets: ['claude', 'agents-md'] });
+    expect(again.targets.map((t) => t.action)).toEqual(['updated', 'updated']);
+    expect(readRel(root, SKILL)).toBe(renderSkill());
+    expect(readRel(root, AGENTS)).toBe(`${renderAgentsBlock()}\n`);
+    expect(checkGuidance({ cwd: root, env: ENV }).map((e) => e.state)).toEqual([
+      'current',
+      'current',
+    ]);
   });
 });
 

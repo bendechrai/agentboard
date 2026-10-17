@@ -292,6 +292,10 @@ unplanned scope: 2 in the last 7d (5 in all)
   `already-linked`. The orchestrator checklist gains one line. The
   orchestrator output is 149 lines today, so the limit in "Agent guide"
   becomes 180, the same value `add-claim-leases` sets.
+- Guide, "What the board is and is not": the "not a source of scope" line
+  says every ticket names the planned task it delivers, or discloses that
+  its work was unplanned before it is merged or closed (ADR 0013's
+  amendment of ADR 0004), so it no longer contradicts the ad hoc text.
 - Hints: `needs-scope-disposition` renders both forms of the refused
   command (`move <id> merged ...` or `close <id> <decision flag> ...`)
   and "do not create an issue or task only to satisfy this";
@@ -304,7 +308,15 @@ unplanned scope: 2 in the last 7d (5 in all)
 - Installed text: a sixth rule; `GUIDANCE_VERSION` goes up by one from
   whatever it is when the guidance group lands (2 if `add-claim-leases`
   has not landed its guidance, 3 if it has). The MCP instructions summary
-  must not mention the old gate and stays within 2000 characters.
+  must not mention the old gate and stays within 2000 characters. It
+  need not state the ad hoc rule: the guide and the installed text carry
+  it, and the `needs-scope-disposition` hint names both flags when a tool
+  call is refused. Its text is unchanged by this change.
+- Out of scope: the browser-facing secret-like message and hint (a
+  follow-up from the group 4 review, ADR 0009) still say to pass
+  `--allow-secret-like`. Telling the browser to shorten or redact the
+  text instead needs a web hint surface and a board-web-actions delta, so
+  it is left to a follow-up change.
 
 ### 10. Mutex tickets
 

@@ -569,6 +569,61 @@ describe('renderCommandHelp', () => {
     },
   );
 
+  it('scenario: the help of new says an ad hoc ticket is worked normally and names the disposition (task 5.1)', () => {
+    const c = command('new');
+    const adhoc = c.flags.find((f) => f.name === 'adhoc');
+    expect(adhoc).toBeDefined();
+    // The --adhoc flag: the ticket is worked like any other.
+    expect(adhoc?.summary ?? '').toMatch(/\b(?:worked|work)\b[^.]*\b(?:normally|like any other)\b/i);
+    // The description: the disposition is given when it is merged or closed.
+    expect(c.description).toMatch(/ad hoc/i);
+    expect(c.description).toContain('--unplanned');
+    expect(c.description).toMatch(/merged or closed|merge or close|merging or closing/i);
+    for (const text of [c.description, adhoc?.summary ?? '', help(c)]) {
+      expect(text).not.toContain('needs-task-link');
+      expect(text).not.toMatch(/cannot enter/i);
+      expect(text).not.toMatch(/until (?:it is )?linked/i);
+    }
+    // An --adhoc example that parses with a non-empty reason.
+    const examples = c.examples.filter((e) => e.command.includes('--adhoc'));
+    expect(examples.length).toBeGreaterThan(0);
+    for (const example of examples) {
+      const parsed = parseArgs(splitCommandLine(example.command).slice(1));
+      expect(parsed.command.name).toBe('new');
+      expect(typeof parsed.values.adhoc).toBe('string');
+      expect(parsed.values.adhoc).not.toBe('');
+    }
+  });
+
+  it.each(['move', 'close'])(
+    'scenario: the description of %s names the scope disposition of an ad hoc ticket (task 5.1)',
+    (name) => {
+      const c = command(name);
+      expect(c.description).toMatch(/ad hoc/i);
+      expect(c.description).toMatch(/scope disposition/i);
+      expect(c.description).toContain('--task');
+      expect(c.description).toContain('--unplanned');
+      expect(c.description).toMatch(/needs-scope-disposition/);
+      for (const text of [c.description, help(c), ...c.examples.map((e) => e.summary)]) {
+        expect(text).not.toContain('needs-task-link');
+        expect(text).not.toMatch(/cannot enter/i);
+      }
+      // One example per disposition flag, each parsing to the command with
+      // a non-empty value (the --unplanned one is pinned above too).
+      for (const flag of ['task', 'unplanned']) {
+        const examples = c.examples.filter((e) => e.command.includes(`--${flag} `));
+        expect(examples.length, `${name} example with --${flag}`).toBeGreaterThan(0);
+        for (const example of examples) {
+          const parsed = parseArgs(splitCommandLine(example.command).slice(1));
+          expect(parsed.command.name).toBe(name);
+          expect(typeof parsed.values[flag]).toBe('string');
+          expect(parsed.values[flag]).not.toBe('');
+          expect(example.summary).toMatch(/^[\x20-\x7e]+$/);
+        }
+      }
+    },
+  );
+
   it('handoff takes no disposition flag, so it lists needs-scope-disposition but not already-linked', () => {
     // DECISION (test author, group 2): a command lists every exit code it
     // can produce (`ExitCodeSpec`); a hand-off cannot write a
