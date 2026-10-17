@@ -41,7 +41,30 @@ services:
       - /tmp:exec,mode=1777
     command: sleep infinity
 
+  # The floor Node again, with the oldest git the host model supports
+  # (HOST_MODEL_GIT_FLOOR in src/board/git.ts) built from source in the
+  # image, for `make check-git-floor`. GIT_VERSION is a full release of
+  # that line; src/__tests__/git-floor.test.ts checks that its major and
+  # minor match the constant. Its own node_modules volume, so a run beside
+  # check-floor never shares one.
+  dev-git-floor:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        NODE_IMAGE: node:22.16.0-bookworm-slim
+        GIT_VERSION: 2.32.7
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - node-modules-git-floor-cache:/workspace/node_modules
+      - npm-cache:/home/dev/.npm
+    tmpfs:
+      - /tmp:exec,mode=1777
+    command: sleep infinity
+
 volumes:
   node-modules-cache:
   node-modules-floor-cache:
+  node-modules-git-floor-cache:
   npm-cache:

@@ -17,6 +17,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# GIT_VERSION, when set, is a git release built from source and installed
+# under /usr/local, ahead of the distro git on the PATH, so that `git` in
+# the container is exactly that release; the dev-git-floor service in
+# docker-compose.yml sets it to the oldest git the host model supports
+# (HOST_MODEL_GIT_FLOOR in src/board/git.ts), for `make check-git-floor`.
+# Empty (the default, used by dev and dev-floor) keeps the distro git.
+ARG GIT_VERSION=""
+
+# TODO(implementer-6): build git ${GIT_VERSION} from source when it is set.
+# The contract: with GIT_VERSION empty this step changes nothing; with it
+# set, `git --version` in the finished image prints
+# `git version ${GIT_VERSION}` from /usr/local/bin/git, which the PATH of
+# the node image already puts before /usr/bin. The release tarballs are at
+# https://mirrors.edge.kernel.org/pub/software/scm/git/git-<version>.tar.xz
+# (also https://www.kernel.org/pub/software/scm/git/). The build needs
+# gcc, libc6-dev, zlib1g-dev, libcurl4-openssl-dev (fetch and push over
+# http, which the tests do not use but `git clone --filter` and
+# `ls-remote` link against curl's symbols), libssl-dev, libexpat1-dev,
+# xz-utils and curl, with `make prefix=/usr/local NO_TCLTK=1 NO_GETTEXT=1
+# install`; remove the build dependencies and the source afterwards and
+# keep /var/lib/apt/lists clean, as the step above does. git 2.32.7 was the
+# release used for the lifecycle verification of design.md decision 3.
+RUN if [ -n "${GIT_VERSION}" ]; then \
+        echo "Dockerfile.dev: building git ${GIT_VERSION} from source is not implemented" >&2; \
+        exit 1; \
+    fi
+
 # The node base image already has a `node` user and group at uid/gid 1000.
 # Rename whichever user holds ${UID} to `dev` instead of creating a second
 # one, which would fail on the duplicate id.
