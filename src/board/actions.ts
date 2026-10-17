@@ -25,7 +25,7 @@ import { dirname } from 'node:path';
 
 import { openDecisions } from '../events/decisions.js';
 import type { Ticket } from '../events/fold.js';
-import type { TaskRef, Status } from '../events/schema.js';
+import { formatTaskRef, type TaskRef, type Status } from '../events/schema.js';
 import { asciiText } from './text.js';
 import type { Board } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
@@ -560,25 +560,29 @@ export type CloseInput = (
  *   refused with `refuseSecretLike` unless `allowSecretLike`, both before
  *   the ticket is read; otherwise `[ticket.unplanned {reason},
  *   ticket.close]`. A `ticket.unplanned` on a ticket with a task reference
- *   is the fold's `already-linked` (exit 4, the message naming the
- *   reference), refused by `runCommand` before the close is looked at;
- *   nothing is written. On success `WriteOutcome.events` lists the
- *   disposition's hash then the close's, and `hash` is the close's.
+ *   is `BoardError(4, 'already-linked')` with the message `runCommand`
+ *   gives the fold's rejection (naming the reference), thrown before the
+ *   decision guard; nothing is written. On success `WriteOutcome.events`
+ *   lists the disposition's hash then the close's, and `hash` is the
+ *   close's.
  *
- * Check order (design.md section 5): usage errors (neither or both
+ * Check order (design.md sections 5 and 6): usage errors (neither or both
  * decision dispositions and both scope dispositions, at the parser; a
  * malformed task reference, an empty or secret-like unplanned reason,
  * before the board is opened) first; then the path checks
  * (`path-outside-tree`, then `decision-path-missing`); then closability
  * (exit 4 `invalid-transition` for a ticket not in `merged` or `blocked`,
- * or already closed); then the scope disposition (exit 4
+ * or already closed: only the `ticket.close` is proposed, so this holds
+ * whatever disposition was given); then the scope disposition (exit 4
  * `needs-scope-disposition`, or `already-linked` for an unplanned reason on
  * a linked ticket); only then, for a closable and disposed ticket, the
  * decision guard (exit 1 `unpromoted-decision`). So `--no-decision` on a
  * `todo` ticket with an open `DECISION:` comment is exit 4
  * `invalid-transition`, and on an undisposed `blocked` ticket with an open
  * `DECISION:` comment it is exit 4 `needs-scope-disposition`, becoming
- * exit 1 `unpromoted-decision` once `--unplanned` is given.
+ * exit 1 `unpromoted-decision` once `--unplanned` is given; on a linked
+ * `blocked` ticket with an open `DECISION:` comment, `--unplanned` is exit
+ * 4 `already-linked`.
  */
 export function closeTicket(
   board: Board,
@@ -613,7 +617,13 @@ export function closeTicket(
       // disposition and the decision guard.
       const closable =
         !ticket.closed && (ticket.status === 'merged' || ticket.status === 'blocked');
-      if (closable && disposition === undefined && !disposed(ticket)) {
+      const close: ProposedEvent = { kind: 'ticket.close', ticket: ticket.id, body };
+      if (!closable) {
+        // Only the close is proposed, so the refusal is invalid-transition
+        // whatever disposition was given (design.md section 6).
+        return [close];
+      }
+      if (disposition === undefined && !disposed(ticket)) {
         throw new BoardError(
           4,
           'needs-scope-disposition',
@@ -621,7 +631,17 @@ export function closeTicket(
             'task reference nor an unplanned disposition; give --task or --unplanned)',
         );
       }
-      const open = closable && 'noDecision' in body ? openDecisions(ticket.comments) : [];
+      if (disposition !== undefined && 'unplanned' in disposition && ticket.task !== null) {
+        // The fold's own refusal of the ticket.unplanned, raised here so it
+        // comes before the decision guard, with the message runCommand
+        // gives that rejection.
+        throw new BoardError(
+          4,
+          'already-linked',
+          `ticket.unplanned on ticket ${ticket.id} refused: already-linked (it is linked to ${formatTaskRef(ticket.task)})`,
+        );
+      }
+      const open = 'noDecision' in body ? openDecisions(ticket.comments) : [];
       if (open.length > 0) {
         const quoted = open.map((c) => `  ${asciiText(c.actor)}: "${asciiText(c.text)}"`);
         throw new BoardError(
@@ -636,7 +656,6 @@ export function closeTicket(
           ].join('\n'),
         );
       }
-      const close: ProposedEvent = { kind: 'ticket.close', ticket: ticket.id, body };
       return disposition === undefined ? [close] : [dispositionEvent(ticket, disposition), close];
     },
     options,
