@@ -75,7 +75,9 @@ export const GUIDE_MAX_LINES = 180;
  *    It is not a secret store (text that looks like a secret is refused;
  *    `--allow-secret-like` only for false positives), not the record of
  *    completion (`tasks.md` checkboxes, ticked in the implementing PR,
- *    are), not where decisions live, and not a source of scope.
+ *    are), not where decisions live, and not a source of scope (a ticket
+ *    names its planned task, or discloses that its work was unplanned
+ *    before it is merged or closed; ADR 0013).
  * 2. `The actor rule`: every writing command, and `inbox` and `watch`,
  *    needs an actor, `--as <actor>` or else `AGENTBOARD_ACTOR`; the actor
  *    is never inferred from the OS user (those two words appear); every
@@ -368,7 +370,8 @@ const GUIDE_BODY: readonly string[] = [
   '- not the record of completion: the checkboxes in tasks.md, ticked in the',
   '  pull request that does the work, are;',
   '- not where decisions live: they belong in a spec delta or an ADR;',
-  '- not a source of scope: every ticket names the planned task it delivers.',
+  '- not a source of scope: every ticket names the planned task it delivers,',
+  '  or discloses that its work was unplanned before it is merged or closed.',
   '',
   'The actor rule',
   'Every command that writes, and inbox and watch (which keep a cursor per',
@@ -435,8 +438,14 @@ const GUIDE_BODY: readonly string[] = [
   'for openspec:<name>#<n>. Work that is not planned says why with --adhoc:',
   '  agentboard new "<title>" --change <change> --group <n> --as <actor>',
   '  agentboard new "<title>" --adhoc "<reason>" --as <actor>',
-  'An ad hoc ticket cannot enter implementing (exit 4, needs-task-link) until',
-  'it is linked to a task:',
+  'An ad hoc ticket is worked like any other: tests, implementing, review,',
+  'blocking and hand-offs all apply. Whoever merges or closes it gives its',
+  'scope on that command: the task it delivers (--task, or --change with',
+  '--group) or why it was never planned (--unplanned); close takes the same',
+  'flags. Without one the command exits 4 with needs-scope-disposition:',
+  '  agentboard move <id> merged --unplanned "<reason>" --as <actor>',
+  'Never create an issue, task file or task reference only to move a ticket.',
+  'A ticket linked earlier needs nothing more at merge or close:',
   '  agentboard link <id> --task <source>:<ref>#<item> --as <actor>',
   'The OpenSpec flow: after a change is proposed, import it, which creates one',
   'ticket per task group; run it again whenever its tasks.md gains lines (no',
@@ -532,8 +541,11 @@ const CHECKLISTS: Readonly<Record<Role, readonly string[]>> = {
     '  agentboard health',
     '6. After a pull request merges, move its ticket to merged. Promote every',
     '   DECISION: comment to a spec delta or ADR first, then close the ticket,',
-    '   with close-merged (for tickets with a pr link) or by hand:',
+    '   with close-merged (for tickets with a pr link) or by hand.',
+    '   An ad hoc ticket takes --task <source>:<ref>#<item> or --unplanned',
+    '   "<reason>" on that move or close; never invent a reference for it:',
     '  agentboard move <id> merged --as <actor>',
+    '  agentboard move <id> merged --unplanned "<reason>" --as <actor>',
     '  agentboard close-merged --as <actor>',
     '  agentboard close <id> --decision-recorded-in <path> --as <actor>',
   ],

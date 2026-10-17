@@ -50,6 +50,7 @@ export const GUIDANCE_RULES: readonly string[] = [
   'Before you stop, hand the ticket off or block it with a comment: `agentboard handoff <id> --to <next> --status <status> --note "<what is done>" --as <you>`, or `agentboard comment <id> "<why>" --as <you>` and then `agentboard move <id> blocked --as <you>`.',
   'Never mark completion on the board instead of in the tasks file: tick the task in `tasks.md` (or your planning source) in the implementing pull request. The board is not the record of completion.',
   'Promote every `DECISION:` comment to a spec delta or ADR before the ticket is closed, and close it with `--decision-recorded-in <path>`.',
+  'Never create an issue, task file or task reference only to move a ticket. Work an ad hoc ticket normally and give its scope when you merge or close it: `agentboard move <id> merged --unplanned "<reason>" --as <you>` records that its work was never planned, or `agentboard move <id> merged --task <source>:<ref>#<item> --as <you>` links the task it delivered; `close` takes the same flags.',
 ];
 
 /** Paragraph shared by the skill and the AGENTS.md block: what the board is and when to use it. */

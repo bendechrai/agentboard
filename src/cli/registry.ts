@@ -853,7 +853,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'new',
     summary: 'Create a ticket',
     description:
-      'Creates a ticket in todo, unassigned. Every ticket names the planning task it implements (--task, or --change with --group for an OpenSpec task group) or says why it has none (--adhoc). Checklist lines become the ticket checklist. Text that looks like a secret is refused unless --allow-secret-like is given.',
+      'Creates a ticket in todo, unassigned. Every ticket names the planning task it implements (--task, or --change with --group for an OpenSpec task group) or says why it has none (--adhoc). An ad hoc ticket is worked normally; its task link or unplanned disposition (--task or --unplanned on move or close) is given when it is merged or closed. Checklist lines become the ticket checklist. Text that looks like a secret is refused unless --allow-secret-like is given.',
     group: 'lifecycle',
     examples: [
       {
@@ -862,7 +862,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       },
       {
         command: 'agentboard new "Fix flaky test" --adhoc "found in CI" --label ci --as orch',
-        summary: 'Create a ticket that implements no planning task',
+        summary: 'Create an ad hoc ticket, worked like any other until it is merged or closed',
       },
     ],
     exitCodes: [
@@ -884,7 +884,11 @@ export const COMMANDS: readonly CommandSpec[] = [
       flag('description', 'string', 'Longer description'),
       flag('label', 'string', 'Label (repeatable)', { repeatable: true }),
       ...TASK_FLAGS,
-      flag('adhoc', 'string', 'Reason the ticket has no task reference'),
+      flag(
+        'adhoc',
+        'string',
+        'Reason the ticket has no task reference; it is worked like any other ticket',
+      ),
       flag('checklist', 'string', 'Checklist line (repeatable)', { repeatable: true }),
       ALLOW_SECRET_FLAG,
     ],
@@ -1041,7 +1045,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'move',
     summary: 'Move a ticket to another status (a blocked ticket returns to its origin)',
     description:
-      'Moves a ticket to another status: todo, tests, implementing, review, merged or blocked. Permitted moves: todo to tests, tests to implementing, implementing to review, review back to implementing or tests, review to merged, any open status to blocked. A blocked ticket moved with no status returns to the status it was blocked from. merged is terminal.',
+      'Moves a ticket to another status: todo, tests, implementing, review, merged or blocked. Permitted moves: todo to tests, tests to implementing, implementing to review, review back to implementing or tests, review to merged, any open status to blocked. A blocked ticket moved with no status returns to the status it was blocked from. merged is terminal. An ad hoc ticket moves like any other, but a move to merged needs its scope disposition on the same command when it has none yet: --task (or --change with --group) links the task it delivered, --unplanned records that the work was never planned; without one the move exits 4 with needs-scope-disposition. Never create an issue, task file or task reference only to satisfy it.',
     group: 'lifecycle',
     examples: [
       { command: 'agentboard move 01J9K3 blocked --as impl', summary: 'Block ticket 01J9K3' },
@@ -1052,6 +1056,10 @@ export const COMMANDS: readonly CommandSpec[] = [
       {
         command: 'agentboard move 01J9K3 merged --unplanned "production hotfix" --as orch',
         summary: 'Merge an ad hoc ticket, recording that its work was never planned',
+      },
+      {
+        command: 'agentboard move 01J9K3 merged --task openspec:add-parser#2 --as orch',
+        summary: 'Merge an ad hoc ticket, linking the planned task it turned out to deliver',
       },
     ],
     exitCodes: [
@@ -1310,7 +1318,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'close',
     summary: 'Close a merged or blocked ticket with a decision disposition',
     description:
-      'Closes a merged or blocked ticket. A decision made in a ticket must be recorded in a spec delta or ADR: name that file with --decision-recorded-in (it must exist inside the working tree), or declare that the ticket made no decision with --no-decision, which is refused while the ticket has an unretracted DECISION: comment.',
+      'Closes a merged or blocked ticket. A decision made in a ticket must be recorded in a spec delta or ADR: name that file with --decision-recorded-in (it must exist inside the working tree), or declare that the ticket made no decision with --no-decision, which is refused while the ticket has an unretracted DECISION: comment. An ad hoc ticket that has no task link also needs its scope disposition on the same command: --task (or --change with --group) links the task it delivered, --unplanned records that the work was never planned; without one the close exits 4 with needs-scope-disposition. Never create an issue, task file or task reference only to satisfy it.',
     group: 'lifecycle',
     examples: [
       {
@@ -1324,6 +1332,10 @@ export const COMMANDS: readonly CommandSpec[] = [
       {
         command: 'agentboard close 01J9K3 --no-decision --unplanned "abandoned: superseded" --as orch',
         summary: 'Close a blocked ad hoc ticket, recording why its work was never planned',
+      },
+      {
+        command: 'agentboard close 01J9K3 --no-decision --task openspec:add-parser#2 --as orch',
+        summary: 'Close a blocked ad hoc ticket, linking the planned task it belongs to',
       },
     ],
     exitCodes: [

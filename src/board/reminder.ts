@@ -71,7 +71,10 @@ export function taskReminder(hostRoot: string, ticket: Ticket, index: number): T
       source: null,
       path: null,
       line: null,
-      message: 'this ticket has no task reference (ad hoc), so there is no tasks file to update',
+      message:
+        'this ticket has no task reference (ad hoc), so there is no tasks file to update; ' +
+        'its task link or unplanned disposition (--task or --unplanned) is given when it is ' +
+        'merged or closed',
     };
   }
   const adapter = sourceAdapter(task.source);

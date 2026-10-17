@@ -50,9 +50,10 @@ export interface FoldInput {
 }
 
 /**
- * Why an otherwise well-formed event was not applied. `needs-task-link` is
- * not a reason: no rule depends on a task reference for a move into any
- * status but `merged` (board-events: "Fold semantics"; ADR 0013).
+ * Why an otherwise well-formed event was not applied. No reason depends on
+ * a task reference for a move into any status but `merged`: an ad hoc
+ * ticket moves freely until it leaves the flow (board-events: "Fold
+ * semantics"; ADR 0013).
  */
 export type RejectionReason =
   | 'unknown-ticket'
