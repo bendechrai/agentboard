@@ -727,6 +727,34 @@ input.invalid {
   margin: 8px 0;
 }
 
+/* Severity: findings to act on against a section that only informs. */
+.health-section.warning {
+  border-left: 4px solid var(--problem-border);
+}
+
+.health-section.info {
+  border-left: 4px solid var(--border);
+}
+
+.health-section h2 .total {
+  font-size: 0.85rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.unplanned-note {
+  margin: 0 0 8px;
+  color: var(--muted);
+}
+
+.finding-detail .reason {
+  color: var(--fg);
+}
+
+.finding-detail .no-reason {
+  font-style: italic;
+}
+
 button {
   font: inherit;
   padding: 3px 10px;

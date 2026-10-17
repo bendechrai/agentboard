@@ -92,9 +92,6 @@
  * No element has a `style` attribute (the Content-Security-Policy's
  * `style-src 'self'` forbids inline styles); every text from the board or
  * the server is rendered as text, never as markup.
- *
- * The unplanned scope section, the third input and the severity classes
- * are not implemented yet (add-adhoc-ticket-lifecycle task 3.3).
  */
 
 import type { JSX } from 'preact';
@@ -129,6 +126,7 @@ export interface HealthViewProps {
 /** The default texts of the threshold inputs. */
 const DEFAULT_STALE = '2h';
 const DEFAULT_BLOCKED = '24h';
+const DEFAULT_UNPLANNED = '7d';
 
 /** The message of a rejected request. */
 function messageOf(error: unknown): string {
@@ -211,10 +209,12 @@ export function HealthView(props: HealthViewProps): JSX.Element {
     blockedAfter:
       (route.blocked === null ? null : parseDuration(route.blocked)) ??
       DEFAULT_THRESHOLDS.blockedAfter,
-    unplannedWithin: DEFAULT_THRESHOLDS.unplannedWithin,
+    unplannedWithin:
+      (route.unplanned === null ? null : parseDuration(route.unplanned)) ??
+      DEFAULT_THRESHOLDS.unplannedWithin,
   };
   const report = healthReport({ model, now, thresholds, late, check });
-  const { closeMerged } = report;
+  const { closeMerged, unplannedScope } = report;
 
   return (
     <div class="health-view">
@@ -235,6 +235,14 @@ export function HealthView(props: HealthViewProps): JSX.Element {
             navigate({ ...route, blocked });
           }}
         />
+        <DurationInput
+          id="health-unplanned"
+          label="Unplanned within"
+          initial={route.unplanned ?? DEFAULT_UNPLANNED}
+          onValid={(unplanned) => {
+            navigate({ ...route, unplanned });
+          }}
+        />
         <p id="health-duration-help" class="duration-help">
           Durations are written as &lt;n&gt;m, &lt;n&gt;h or &lt;n&gt;d (minutes, hours or days),
           with n from 1 to 99999.
@@ -244,6 +252,7 @@ export function HealthView(props: HealthViewProps): JSX.Element {
       <TicketSection
         name="stale-claims"
         title="Stale claims"
+        severity="warning"
         items={report.staleClaims.map((s) => ({
           card: s.ticket,
           detail: (
@@ -257,6 +266,7 @@ export function HealthView(props: HealthViewProps): JSX.Element {
       <TicketSection
         name="stuck-blocked"
         title="Stuck in blocked"
+        severity="warning"
         items={report.stuckBlocked.map((s) => ({
           card: s.ticket,
           detail: (
@@ -309,6 +319,35 @@ export function HealthView(props: HealthViewProps): JSX.Element {
         items={closeMerged.missingPr.map((c) => ({
           card: c.ticket,
           detail: <p class="finding-detail">no PR link</p>,
+        }))}
+      />
+      <TicketSection
+        name="unplanned-scope"
+        title="Unplanned scope"
+        severity="info"
+        heading={<span class="total">{`${String(unplannedScope.total)} in all`}</span>}
+        note={
+          <p class="unplanned-note">
+            Tickets merged or closed as unplanned scope, with their reasons. This is information,
+            not a failure: it is disclosed here so that it stays visible.
+          </p>
+        }
+        items={unplannedScope.tickets.map((u) => ({
+          card: u.ticket,
+          detail: (
+            <p class="finding-detail">
+              {`${u.outcome} ${relativeTime(u.ageMs)}`}{' '}
+              {u.reason !== null ? (
+                <span class="reason">{u.reason}</span>
+              ) : (
+                <span class="no-reason">
+                  {'no reason recorded (ad hoc: '}
+                  <span class="adhoc-reason">{u.adhoc ?? ''}</span>
+                  {')'}
+                </span>
+              )}
+            </p>
+          ),
         }))}
       />
 
@@ -430,18 +469,31 @@ interface TicketItem {
 interface TicketSectionProps {
   name: string;
   title: string;
+  /**
+   * The severity class: `warning` for findings to act on, `info` for a
+   * section that is information only, none for the rest.
+   */
+  severity?: 'warning' | 'info';
+  /** More heading content after the count (the unplanned scope total). */
+  heading?: JSX.Element;
+  /** A note between the heading and the findings. */
+  note?: JSX.Element;
   items: TicketItem[];
 }
 
 /** One ticket section of the report. */
 function TicketSection(props: TicketSectionProps): JSX.Element {
   const headingId = `health-${props.name}`;
+  const classes =
+    props.severity === undefined ? 'health-section' : `health-section ${props.severity}`;
   return (
-    <section class="health-section" data-section={props.name} aria-labelledby={headingId}>
+    <section class={classes} data-section={props.name} aria-labelledby={headingId}>
       <h2 id={headingId}>
         {props.title}
         <span class="count">{String(props.items.length)}</span>
+        {props.heading}
       </h2>
+      {props.note}
       {props.items.length === 0 ? (
         <p class="empty">Nothing here.</p>
       ) : (

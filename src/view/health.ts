@@ -305,21 +305,25 @@ export interface HealthReport {
  * input. Closed tickets appear in no section but `unplannedScope`. Only
  * applied events count; rejected and unknown-kind events are ignored. See
  * `HealthReport` and the finding types for each check's exact definition.
- *
- * `unplannedScope` is not implemented yet (add-adhoc-ticket-lifecycle
- * task 3.1): the placeholder below reports no unplanned scope.
  */
 export function healthReport(input: HealthInput): HealthReport {
   const { model, now, thresholds } = input;
   const applied = appliedByTicket(model.events);
-  const open = Object.values(model.tickets)
-    .filter((ticket) => !ticket.closed)
-    .sort((a, b) => compareStrings(a.id, b.id));
+  const all = Object.values(model.tickets).sort((a, b) => compareStrings(a.id, b.id));
+  const open = all.filter((ticket) => !ticket.closed);
 
   const staleClaims: StaleClaim[] = [];
   const stuckBlocked: StuckBlocked[] = [];
   const unpromotedDecisions: UnpromotedDecision[] = [];
   const closeMerged: CloseMergedReport = { ready: [], heldByDecision: [], missingPr: [] };
+  const unplanned: UnplannedScopeEntry[] = [];
+
+  for (const ticket of all) {
+    const scope = unplannedScopeEntry(ticket, applied.get(ticket.id) ?? [], now);
+    if (scope !== null) {
+      unplanned.push(scope);
+    }
+  }
 
   for (const ticket of open) {
     const events = applied.get(ticket.id) ?? [];
@@ -357,6 +361,15 @@ export function healthReport(input: HealthInput): HealthReport {
   // stay in ascending id order.
   staleClaims.sort((a, b) => b.idleMs - a.idleMs);
   stuckBlocked.sort((a, b) => b.blockedMs - a.blockedMs);
+  // `all` is in ascending id order too, so equal walls stay in id order.
+  // The window is exclusive: an entry exactly `unplannedWithin` old is
+  // counted but not listed.
+  const unplannedScope: UnplannedScopeReport = {
+    total: unplanned.length,
+    tickets: unplanned
+      .filter((scope) => scope.ageMs < thresholds.unplannedWithin)
+      .sort((a, b) => b.since.ts.wall - a.since.ts.wall),
+  };
 
   return {
     now,
@@ -369,7 +382,7 @@ export function healthReport(input: HealthInput): HealthReport {
     stuckBlocked,
     unpromotedDecisions,
     closeMerged,
-    unplannedScope: { total: 0, tickets: [] },
+    unplannedScope,
     late: input.late == null ? null : input.late.map((arrival) => ({ ...arrival })),
     check: input.check == null ? null : { ...input.check },
   };
@@ -470,6 +483,55 @@ function stuckInBlocked(
         ? null
         : { actor: latest.actor, ts: { ...latest.ts }, text: latest.text, hash: latest.hash },
   };
+}
+
+/**
+ * The unplanned scope entry of a ticket, open or closed, whatever its age;
+ * null when it is not unplanned scope (see `UnplannedScopeEntry`), or when
+ * the event it would be measured from is not among `events` (the ticket's
+ * applied events in fold order). A ticket with a task reference never has
+ * a disposition (the fold clears it), so `task` needs no check of its own.
+ */
+function unplannedScopeEntry(
+  ticket: Ticket,
+  events: readonly EventView[],
+  now: number,
+): UnplannedScopeEntry | null {
+  const outcome = ticket.status === 'merged' ? 'merged' : 'closed';
+  const done = ticket.status === 'merged' || ticket.closed;
+  let since: EventView | null = null;
+  if (ticket.unplanned !== null && done) {
+    since = latestOfKind(events, 'ticket.unplanned');
+  } else if (
+    ticket.closed &&
+    ticket.adhoc !== null &&
+    ticket.task === null &&
+    ticket.unplanned === null
+  ) {
+    since = latestOfKind(events, 'ticket.close');
+  }
+  if (since === null) {
+    return null;
+  }
+  return {
+    ticket: ticketCard(ticket, now),
+    adhoc: ticket.adhoc,
+    reason: ticket.unplanned === null ? null : ticket.unplanned.reason,
+    outcome,
+    since: eventRef(since),
+    ageMs: age(now, since.ts),
+  };
+}
+
+/** The last event of `kind` in `events`, or null. */
+function latestOfKind(events: readonly EventView[], kind: string): EventView | null {
+  let found: EventView | null = null;
+  for (const view of events) {
+    if (view.kind === kind) {
+      found = view;
+    }
+  }
+  return found;
 }
 
 function eventRef(view: EventView): HealthEventRef {

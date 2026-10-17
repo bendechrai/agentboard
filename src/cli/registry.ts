@@ -504,9 +504,6 @@ function noCacheOutput(cachePath: string): CommandOutput {
  * warnings, whatever the report contains (a cache that differs and
  * unplanned scope included): findings are data. Needs no actor (`--as` is
  * accepted and ignored).
- *
- * `--unplanned-within` is declared in the registry but not read yet
- * (add-adhoc-ticket-lifecycle task 3.2).
  */
 function runHealth(ctx: RunContext, values: ArgValues): CommandOutput {
   const thresholds: Partial<HealthThresholds> = {};
@@ -517,6 +514,10 @@ function runHealth(ctx: RunContext, values: ArgValues): CommandOutput {
   const blockedAfter = durationFlag(values, 'blocked-after');
   if (blockedAfter !== undefined) {
     thresholds.blockedAfter = blockedAfter;
+  }
+  const unplannedWithin = durationFlag(values, 'unplanned-within');
+  if (unplannedWithin !== undefined) {
+    thresholds.unplannedWithin = unplannedWithin;
   }
   const report = boardHealth(ctx.board(), { thresholds, check: bool(values, 'check') });
   return { json: report, text: renderHealth(report) };

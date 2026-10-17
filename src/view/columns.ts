@@ -133,9 +133,7 @@ export function ticketCard(ticket: Ticket, now: number): Card {
     assignee: ticket.assignee,
     task: ticket.task === null ? null : formatTaskRef(ticket.task),
     adhoc: ticket.adhoc !== null,
-    // Not implemented yet (add-adhoc-ticket-lifecycle task 3.1): the
-    // marker is `{ reason: ticket.unplanned.reason }` when set.
-    unplanned: null,
+    unplanned: ticket.unplanned === null ? null : { reason: ticket.unplanned.reason },
     labels: [...ticket.labels],
     checklist: {
       done: ticket.checklist.filter((item) => item.done).length,

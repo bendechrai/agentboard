@@ -165,9 +165,12 @@ export function parseHash(hash: string): Route {
     return value !== null && parseDuration(value) !== null ? value : null;
   };
   if (path === 'health') {
-    // `unplanned` is not read yet (add-adhoc-ticket-lifecycle task 3.3):
-    // it is `duration('unplanned')`.
-    return { view: 'health', stale: duration('stale'), blocked: duration('blocked'), unplanned: null };
+    return {
+      view: 'health',
+      stale: duration('stale'),
+      blocked: duration('blocked'),
+      unplanned: duration('unplanned'),
+    };
   }
   if (path === 'replay') {
     return { view: 'replay' };
@@ -238,6 +241,9 @@ export function formatHash(route: Route): string {
       }
       if (route.blocked !== null) {
         query.append('blocked', route.blocked);
+      }
+      if (route.unplanned !== null) {
+        query.append('unplanned', route.unplanned);
       }
       break;
     case 'replay':

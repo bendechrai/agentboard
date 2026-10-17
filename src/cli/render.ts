@@ -34,7 +34,11 @@ export { asciiText };
  * back into any command. Pure.
  */
 export function renderListLine(ticket: Ticket): string {
-  return listLine({ ...ticket, adhoc: ticket.adhoc !== null, unplanned: ticket.unplanned !== null });
+  return listLine({
+    ...ticket,
+    adhoc: ticket.adhoc !== null,
+    unplanned: ticket.unplanned !== null,
+  });
 }
 
 /** The fields of a `list` line. */
@@ -305,8 +309,6 @@ export function renderCheck(doc: CheckDocument): string {
  *   the card's `unplanned` is not null, as `renderListLine` does, so an
  *   undisclosed close shows `[adhoc] [closed]`.
  *
- * The section is not rendered yet (add-adhoc-ticket-lifecycle task 3.2).
- *
  * where:
  * - `<S>` and `<B>` are `report.thresholds.staleAfter` and `blockedAfter`
  *   written with the largest unit that divides them exactly: `<n>d` for a
@@ -350,21 +352,36 @@ export function renderCheck(doc: CheckDocument): string {
  * ```
  */
 export function renderHealth(report: HealthReport): string {
-  const { thresholds, staleClaims, stuckBlocked, unpromotedDecisions, closeMerged } = report;
+  const {
+    thresholds,
+    staleClaims,
+    stuckBlocked,
+    unpromotedDecisions,
+    closeMerged,
+    unplannedScope,
+  } = report;
   const lines = [
     `thresholds: stale after ${durationText(thresholds.staleAfter)}, blocked after ${durationText(thresholds.blockedAfter)}`,
   ];
+  // A heading line, then one list line per entry with its finding.
+  const listed = <T extends { ticket: Card }>(
+    heading: string,
+    entries: readonly T[],
+    finding: (entry: T) => string,
+  ): void => {
+    lines.push(heading);
+    for (const entry of entries) {
+      const card = entry.ticket;
+      lines.push(`${listLine({ ...card, unplanned: card.unplanned !== null })}  ${finding(entry)}`);
+    }
+  };
+  // A section headed with its count.
   const section = <T extends { ticket: Card }>(
     heading: string,
     entries: readonly T[],
     finding: (entry: T) => string,
   ): void => {
-    lines.push(`${heading}: ${String(entries.length)}`);
-    for (const entry of entries) {
-      // The view-model card gains its unplanned marker in task 4.1 of
-      // add-adhoc-ticket-lifecycle; until then a health line shows none.
-      lines.push(`${listLine({ ...entry.ticket, unplanned: false })}  ${finding(entry)}`);
-    }
+    listed(`${heading}: ${String(entries.length)}`, entries, finding);
   };
   section(
     'stale claims',
@@ -387,6 +404,16 @@ export function renderHealth(report: HealthReport): string {
     (c) => `${prsText(c.prs)}; ${decisionsText(c.decisions.length)}`,
   );
   section('close-merged missing pr', closeMerged.missingPr, () => 'no pr link');
+  listed(
+    `unplanned scope: ${String(unplannedScope.tickets.length)} in the last ${durationText(thresholds.unplannedWithin)} (${String(unplannedScope.total)} in all)`,
+    unplannedScope.tickets,
+    (u) =>
+      `${u.outcome} ${relativeTime(u.ageMs)}, ${
+        u.reason === null
+          ? `no reason recorded (ad hoc: ${asciiText(u.adhoc ?? '')})`
+          : `unplanned: ${asciiText(u.reason)}`
+      }`,
+  );
   const check = report.check;
   lines.push(
     `cache check: ${
