@@ -161,6 +161,24 @@ describe('stale', () => {
     });
   });
 
+  it('scenario: guidance installed at version 1, before the ad hoc rule, is stale for this CLI (task 5.2)', () => {
+    // No version override: the running GUIDANCE_VERSION is compared.
+    expect(V).toBeGreaterThan(1);
+    const root = installedProject(1);
+    expect(check(root).map((e) => [e.target, e.state, e.installedVersion, e.currentVersion])).toEqual([
+      ['claude', 'stale', 1, V],
+      ['agents-md', 'stale', 1, V],
+      ['openspec', 'stale', 1, V],
+      ['mcp-json', 'current', null, V],
+    ]);
+    const out = checkCommand(root, ENV);
+    expect(out.exitCode).toBe(1);
+    expect(out.text).toContain(`stale claude ${SKILL} (installed v1, current v${String(V)})`);
+    expect(out.warnings?.at(-1)).toBe(
+      '3 of 4 guidance target(s) are not current; run agentboard agents install to rewrite them',
+    );
+  });
+
   it('reports an older version stale even when its text was also edited', () => {
     const root = installedProject(1);
     edit(root, AGENTS, 'Rules you must never break', 'Rules');

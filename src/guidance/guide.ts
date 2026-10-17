@@ -31,9 +31,13 @@
  *   even when registry commands start with `agents` (`agents install`,
  *   `agents check`), whose help stays reachable as
  *   `help agents install` (see `helpOutput`).
- * - The 150-line cap applies to every output: `help agents` and
- *   `help agents --role <role>` for each role (guide plus checklist), so
- *   the guide itself must leave room for the longest checklist.
+ * - The `GUIDE_MAX_LINES` cap (180 lines) applies to every output: `help
+ *   agents` and `help agents --role <role>` for each role (guide plus
+ *   checklist), so the guide itself must leave room for the longest
+ *   checklist.
+ * - No output names the task-link refusal ADR 0013 removed (the tests
+ *   search `src/` for its reason name) or says that an ad hoc ticket
+ *   cannot enter `implementing`.
  * - `help agents --json` prints `AgentsHelpDocument`.
  *
  * All output is plain ASCII (printable characters and newlines only, no
@@ -52,8 +56,11 @@ export const ROLES = ['orchestrator', 'test-author', 'implementer', 'reviewer'] 
 /** One of `ROLES`. */
 export type Role = (typeof ROLES)[number];
 
-/** The most lines any guide output may have (`help agents`, with or without `--role`). */
-export const GUIDE_MAX_LINES = 150;
+/**
+ * The most lines any guide output may have (`help agents`, with or without
+ * `--role`): board-agent-guidance "Agent guide" says at most 180.
+ */
+export const GUIDE_MAX_LINES = 180;
 
 /**
  * The section headings of the guide, in order. Each appears in the guide
@@ -99,13 +106,24 @@ export const GUIDE_MAX_LINES = 150;
  *    `spec delta` and `ADR` appear.
  * 7. `Tickets and planning tasks`: every ticket names its task
  *    (`--task <source>:<ref>#<item>`, or `--change <name> --group <n>` for
- *    OpenSpec, or `--adhoc <reason>`); an ad hoc ticket cannot enter
- *    `implementing` until linked (`needs-task-link`); the OpenSpec flow:
- *    `import-change` after proposing a change (and again when its
- *    `tasks.md` grows), claim the group's ticket before applying, tick
- *    `tasks.md` in the implementing PR (`checklist tick` only reminds),
- *    `close-merged` after merge. Command lines: `new` with `--change` and
- *    `--group`, `link` with `--task`, `import-change` and `claim`.
+ *    OpenSpec, or `--adhoc <reason>`); an ad hoc ticket is worked like any
+ *    other ticket (the words `ad hoc` and `like any other` or `normally`
+ *    appear in one sentence); whoever merges or closes it gives its scope,
+ *    the task it delivers or why it was never planned, with `--task` or
+ *    `--unplanned` on `move <id> merged` or `close` (a command line
+ *    `agentboard move <id> merged --unplanned "<reason>" --as <actor>`; the
+ *    text `--task` appears; `close` takes the same flags); the sentence
+ *    `never create an issue, task file or task reference` only to move a
+ *    ticket appears (ADR 0013; design.md section 9 of
+ *    add-adhoc-ticket-lifecycle). It never says an ad hoc ticket cannot
+ *    enter `implementing` and never names the removed refusal. Then the
+ *    OpenSpec flow: `import-change` after proposing a change (and again
+ *    when its `tasks.md` grows), claim the group's ticket before applying,
+ *    tick `tasks.md` in the implementing PR (`checklist tick` only
+ *    reminds), `close-merged` after merge. Command lines: `new` with
+ *    `--change` and `--group`, `new` with `--adhoc`, `move <id> merged`
+ *    with `--unplanned`, `link` with `--task` (a ticket linked earlier
+ *    needs nothing more at merge), `import-change` and `claim`.
  * 8. `Using the MCP tools`: when the board's MCP server is connected, use
  *    its tools instead of the shell: one tool per command named `board_`
  *    plus the command with spaces and hyphens as underscores (for example
@@ -186,7 +204,10 @@ export function renderGuide(version: string): string {
  *   what to dispatch and before archiving a change; `agentboard
  *   close-merged` and
  *   `agentboard close` with a decision disposition after merge, promoting
- *   `DECISION:` comments first (the text `DECISION:` appears).
+ *   `DECISION:` comments first (the text `DECISION:` appears); one line
+ *   saying to give the scope disposition of an ad hoc ticket when merging
+ *   or closing it (the words `ad hoc`, `--task` and `--unplanned` appear;
+ *   board-agent-guidance "Agent guide").
  * - `test-author`: claim, move to `tests`, write failing tests and stubs,
  *   hand off to the implementer with `--status implementing`.
  * - `implementer`: claim (or accept the handoff), make the tests pass
@@ -305,6 +326,11 @@ export const GUIDE_SUMMARY_MAX_CHARS = 2000;
  *   `hint`, and the hint names what to do next.
  * - Role checklists: the text `agentboard://guide/<role>` names the
  *   checklist resources, with the four roles.
+ * - It never names the task-link refusal ADR 0013 removed and never says
+ *   an ad hoc ticket cannot enter `implementing`. It need not
+ *   state the ad hoc rule: the guide and the installed text do, and the
+ *   `needs-scope-disposition` hint names both flags when a call is
+ *   refused.
  *
  * Pure.
  */
