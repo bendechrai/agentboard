@@ -923,6 +923,11 @@ describe('integrating board refs that already exist', () => {
     const resolvedHead = revParse(String(temporary));
     const integrated = String(refCommit(bRoot, MIGRATING_REF));
     const { fromD } = thirdCloneRewritesIgnore(fx, env);
+    // Step 1 of the move fetches the old remote's branch into the board's
+    // remote-tracking ref (D's push); the snapshot is taken after that same
+    // fetch, so it pins that the working tree, HEAD and the board's own refs
+    // are untouched by the refusal.
+    git(bDir, 'fetch', '--no-tags', '--no-write-fetch-head', 'origin', '+refs/heads/main:refs/remotes/origin/main');
     const before = untouched(bRoot, bDir);
 
     const err = expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');

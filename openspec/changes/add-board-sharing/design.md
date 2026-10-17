@@ -609,7 +609,11 @@ recorded start (`--abort`, or every commit skipped) or an event file of
 the range missing from HEAD (`git cherry-pick --quit` half way) replays
 again from the integrated tip, the commits already applied becoming
 empty and skipped; the record goes once `refs/agentboard/migrating` has
-been advanced. Nothing the human resolved is replayed; the resolution
+been advanced. The cherry-pick runs without `--no-verify` (git takes no
+such option on `cherry-pick` and exits 129 on it; implementer decision,
+round 4): the host's hooks are kept out of it by the runner's
+`core.hooksPath`, as every other git command of the move. Nothing the
+human resolved is replayed; the resolution
 stays the ancestor of the result. Then the re-run integrates the current
 local and remote board refs as step 3 does (no-ops for what is already
 integrated), then runs steps 4 to 7. Nothing a human resolved in a
