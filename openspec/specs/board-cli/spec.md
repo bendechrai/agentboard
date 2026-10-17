@@ -8,20 +8,21 @@ that exposes the same operations as MCP tools.
 ## Requirements
 
 ### Requirement: Command surface
-The CLI SHALL provide: `init`; `new <title> [--description] [--label]...
+The CLI SHALL provide: `init [--remote <url> | --into-host]`; `new <title> [--description] [--label]...
 (--task <source>:<ref>#<item> | --change <name> --group <n> | --adhoc <reason>)
 [--checklist <line>]...`; `show <id>`;
 `list [--status] [--assignee] [--task <source>:<ref>[#<item>]] [--change <name>] [--label] [--closed]`;
 `claim <id> --as <actor>`; `release <id> --as <actor>`;
-`move <id> <status> --as <actor>`; `comment <id> --as <actor> <text>`;
+`move <id> <status> --as <actor> [--task <source>:<ref>#<item> | --change <name> --group <n> | --unplanned <reason>]`;
+`comment <id> --as <actor> <text>`;
 `handoff <id> --as <actor> --to <actor> --status <status> --note <text>`;
 `link <id> --as <actor> (--task <source>:<ref>#<item> | --change <name> --group <n> | --pr <ref> | --decision <path>)`;
 `checklist tick <id> <index> --as <actor>` and `checklist untick`;
-`close <id> --as <actor> (--decision-recorded-in <path> | --no-decision)`;
+`close <id> --as <actor> (--decision-recorded-in <path> | --no-decision) [--task <source>:<ref>#<item> | --change <name> --group <n> | --unplanned <reason>]`;
 `inbox --as <actor> [--since <cursor>] [--peek]`; `watch --as <actor>`;
-`rebuild [--check]`; `sync`; `import-change <name>`; `close-merged`;
+`rebuild [--check]`; `sync`; `remote`; `import-change <name>`; `close-merged`;
 `serve [--port <port>] [--open | --no-open] [--as <actor>]`; `top`;
-`health [--stale-after <duration>] [--blocked-after <duration>] [--check]`;
+`health [--stale-after <duration>] [--blocked-after <duration>] [--unplanned-within <duration>] [--check]`;
 `mcp`; and `version`. Every command SHALL
 accept `--json`. An argument beginning with `--` is
 always parsed as a flag; `--` on its own ends the flags, so free text that
@@ -33,7 +34,9 @@ arguments and flags SHALL be defined once, in a single command registry that
 drives argument parsing and the MCP tool definitions, so the two surfaces
 cannot drift. `serve` and `top` are streaming commands like `watch`:
 `serve` runs until SIGINT or SIGTERM (see board-web), and `top` until the
-user quits it or it receives SIGINT or SIGTERM (see board-tui).
+user quits it or it receives SIGINT or SIGTERM (see board-tui). `init`,
+`sync` and `remote` are the commands that run git on the board; they need
+no actor (see "Initialising and joining a shared board").
 
 #### Scenario: OpenSpec shorthand is the same task reference
 - **WHEN** one ticket is created with `--change add-board-core --group 3` and another with `--task openspec:add-board-core#3`
@@ -61,7 +64,19 @@ user quits it or it receives SIGINT or SIGTERM (see board-tui).
 
 #### Scenario: Health has help
 - **WHEN** `agentboard help health` runs with no board and no actor
-- **THEN** it prints the synopsis with `--stale-after`, `--blocked-after` and `--check`, and an example that parses to `health`, and exits 0
+- **THEN** it prints the synopsis with `--stale-after`, `--blocked-after`, `--unplanned-within` and `--check`, and an example that parses to `health`, and exits 0
+
+#### Scenario: Move and close have help for the disposition
+- **WHEN** `agentboard help move` and `agentboard help close` run with no board and no actor
+- **THEN** each prints the synopsis with `--task`, `--change`, `--group` and `--unplanned`, the exit codes including 4 `needs-scope-disposition` and 4 `already-linked`, and an example with `--unplanned` that parses, and neither mentions `needs-task-link`
+
+#### Scenario: Init has help for sharing
+- **WHEN** `agentboard help init` runs with no board and no actor
+- **THEN** it prints `--remote` and `--into-host`, says they are mutually exclusive, lists the exit codes including 1 `ambiguous-remote`, 3 `remote-unreachable` and 4 `unsynced`, and has an example for each flag that parses, and exits 0
+
+#### Scenario: Remote has help
+- **WHEN** `agentboard help remote` runs with no board and no actor
+- **THEN** it prints the synopsis, says the command never contacts the network, lists exit code 2, has an example that parses to `remote`, and exits 0
 
 ### Requirement: Actor is explicit
 Every writing command SHALL require `--as <actor>` or the `AGENTBOARD_ACTOR`
@@ -214,7 +229,7 @@ is given.
 ### Requirement: MCP server
 `agentboard mcp` SHALL serve an MCP server over stdio exposing one tool per
 command in the registry except `init`, `watch`, `serve`, `top`, `rebuild`,
-`sync`, `mcp` and `version`, which are setup, streaming or maintenance commands run
+`sync`, `remote`, `mcp` and `version`, which are setup, streaming or maintenance commands run
 by a human or an orchestrator in a shell. Tool names SHALL be the command name with
 spaces and hyphens replaced by underscores and prefixed `board_` (for
 example `board_claim`, `board_checklist_tick`, `board_import_change`). Each
@@ -239,7 +254,7 @@ path as the CLI, so concurrent CLI and MCP writers obey the same guarantees.
 
 #### Scenario: Tools are listed from the registry
 - **WHEN** an MCP client connects and lists tools
-- **THEN** the list contains `board_new`, `board_show`, `board_list`, `board_claim`, `board_release`, `board_move`, `board_comment`, `board_handoff`, `board_link`, `board_checklist_tick`, `board_checklist_untick`, `board_close`, `board_inbox`, `board_import_change`, `board_close_merged` and `board_health`, and no tool for `init`, `watch`, `serve`, `top`, `rebuild`, `sync`, `mcp` or `version`
+- **THEN** the list contains `board_new`, `board_show`, `board_list`, `board_claim`, `board_release`, `board_move`, `board_comment`, `board_handoff`, `board_link`, `board_checklist_tick`, `board_checklist_untick`, `board_close`, `board_inbox`, `board_import_change`, `board_close_merged` and `board_health`, and no tool for `init`, `watch`, `serve`, `top`, `rebuild`, `sync`, `remote`, `mcp` or `version`
 
 #### Scenario: Rejection maps to a tool error
 - **WHEN** `board_claim` is called on a ticket assigned to `impl` with `as` set to `reviewer`
@@ -261,6 +276,316 @@ path as the CLI, so concurrent CLI and MCP writers obey the same guarantees.
 - **WHEN** an MCP client calls the tool `board_top`
 - **THEN** the call returns a tool error with `exitCode` 1 and `reason` `usage`
 
+#### Scenario: Excluded remote tool
+- **WHEN** an MCP client calls the tool `board_remote`
+- **THEN** the call returns a tool error with `exitCode` 1 and `reason` `usage`
+
 #### Scenario: Health is a tool
 - **WHEN** an MCP client lists tools
-- **THEN** `board_health` is listed with the optional properties `stale-after`, `blocked-after` and `check`
+- **THEN** `board_health` is listed with the optional properties `stale-after`, `blocked-after`, `unplanned-within` and `check`
+
+#### Scenario: Disposition over MCP
+- **WHEN** an MCP client lists tools, then calls `board_move` with `{"id": "<T1>", "status": "merged"}` for an undisposed ad hoc ticket T1 in `review`, then with `{"id": "<T1>", "status": "merged", "unplanned": "hotfix"}`
+- **THEN** `board_move` and `board_close` list the optional properties `task`, `change`, `group` and `unplanned`; the first call returns a tool error with `exitCode` 4, `reason` `needs-scope-disposition` and a hint naming both `task` and `unplanned`; the second succeeds with T1 in `merged`, and its events are byte-identical in body to those the CLI writes for the same arguments and actor on a copy of the board
+
+### Requirement: Initialising and joining a shared board
+`agentboard init` without flags SHALL need no actor and SHALL behave as
+follows (board-events "Board directory per project" says which model it
+creates):
+
+- When a healthy board exists, it SHALL change nothing and report the
+  model, where the history lives (`refs/agentboard/board` or the branch of
+  the board repository) and the remote `sync` would use, with one
+  exception: a host-model worktree that is not locked (an `init`
+  interrupted after `git worktree add`) is locked again, and the message
+  says so. For a standalone board inside a git repository with git 2.32
+  or later it SHALL also suggest `agentboard init --into-host`.
+- When a host-model board's link is broken (board-events "Board model
+  detection"), or `.board` exists inside a host with an in-tree git
+  directory but is not a repository (it holds event files without a
+  `.git`, or is a stray directory), it SHALL repair it: first by asking git to repair the
+  worktree link, only when the board's `.git` file names a git directory
+  that is missing (which fixes a moved host; a copied board whose named
+  directory still exists in another clone is never repaired that way,
+  because git would relink that clone's worktree to the copy); when that
+  is not enough, by
+  creating a fresh worktree from the best history available (the local
+  `refs/agentboard/board`, else the remote's, else a new empty board),
+  copying into its `events/` every event file of the old directory that it
+  lacks, keeping the old directory at
+  `<host git common dir>/agentboard/stale-board-<UTC timestamp>`, and moving
+  the fresh worktree into place. Copied event files are committed by the
+  next `sync`. The repair step applies only to a broken link; a
+  non-repository `.board` goes straight to the fresh worktree. A re-run
+  after a repair interrupted between keeping the old directory and moving
+  the fresh worktree into place SHALL move it into place, report the kept
+  `stale-board-<UTC timestamp>` copy and set `repair` in its `--json`.
+- When no board exists and a host-model board is to be created, it SHALL
+  choose the remote with the rules of board-concurrency "Sync converges"
+  (several remotes and none chosen: exit 1 with reason `ambiguous-remote`,
+  creating nothing), then create the worktree from the first of: the local
+  `refs/agentboard/board`; the remote's `refs/agentboard/board`, fetched
+  into the local ref (joining the shared board); a new empty board. When
+  the remote cannot be reached it SHALL warn, naming the remote and that
+  the next `sync` joins any board there, and create a new empty board.
+  After joining it SHALL fold the board's events into the cache and report
+  how many there are. A board re-created from the local
+  `refs/agentboard/board` (the directory was deleted) SHALL say that it was
+  restored from the local ref, with the number of event files, never that
+  it is a new empty board.
+- `init` without flags SHALL never push; the first `sync` publishes a new
+  board.
+- An interrupted `init` SHALL be completed by running `init` again.
+
+With `--json`, `init` SHALL print one object with at least `dir`,
+`created`, `model` (`host` or `standalone`), `joined` (true when the board
+came from the remote), `remote` (the chosen remote's name, or null),
+`events` (the number of event files in the board), `hostGitignore`,
+`warnings`, `repair` (what a repair did, or null) and `message`.
+
+#### Scenario: Init in a git host with no remote
+- **WHEN** `agentboard init` runs in a git repository with no remote and no board
+- **THEN** it creates a host-model board, exits 0, reports `model` `host`, `joined` false and `remote` null, and says that `sync` publishes the board once the repository has a remote
+
+#### Scenario: Init joins the board from the remote
+- **WHEN** clone A has synced a host-model board with five events to `origin`, and `agentboard init` runs in a fresh clone B of the project
+- **THEN** B's `refs/agentboard/board` equals A's, `.board` is a worktree at it, `agentboard list` in B shows A's tickets without running `sync`, and the output reports `joined` true, `remote` `origin` and five events
+
+#### Scenario: Init where the remote has no board
+- **WHEN** `agentboard init` runs in a clone whose `origin` has no `refs/agentboard/board`
+- **THEN** it creates a new empty host-model board, pushes nothing, and reports `joined` false and `remote` `origin`
+
+#### Scenario: Init with an unreachable remote
+- **WHEN** `agentboard init` runs in a clone whose `origin` cannot be reached
+- **THEN** it creates a new empty host-model board, exits 0 with a warning naming `origin`, and a later `sync` with `origin` reachable joins the board there with no conflict
+
+#### Scenario: Init with several remotes and no choice
+- **WHEN** `agentboard init` runs in a repository with the remotes `fork` and `upstream`, no `origin`, no upstream on the main checkout's branch and no `agentboard.remote`
+- **THEN** it exits 1 with reason `ambiguous-remote` and creates nothing, not even the host `.gitignore` entry
+
+#### Scenario: Init after the board directory was deleted
+- **WHEN** a host-model `.board` was deleted with `rm -rf` and `agentboard init` runs
+- **THEN** the board is re-created from the local `refs/agentboard/board` with every committed event, and the worktree is registered and locked again
+
+#### Scenario: Init repairs a moved host
+- **WHEN** the host checkout with its host-model board is moved to another directory and `agentboard init` runs there
+- **THEN** `.board` is linked to the moved repository again, nothing is copied or kept aside, and `sync` works
+
+#### Scenario: Init repairs a stale board copied into a fresh clone
+- **WHEN** a host-model `.board` holding an event file that was never synced is copied from clone A into a fresh clone C and `agentboard init` runs in C
+- **THEN** `.board` in C is a worktree of C at the board joined from `origin`, its `events/` also holds the unsynced file, the copied directory is kept under C's `<git common dir>/agentboard/`, and clone A is unchanged
+
+### Requirement: Board in a separate repository
+`agentboard init --remote <url>` SHALL set up a standalone board shared
+through the repository at `<url>`, need no actor, and leave the host
+repository's refs untouched:
+
+- When `.board` does not exist: if `<url>` is a local path (an absolute or
+  relative path, or a `file://` URL) that does not exist, it SHALL first
+  create a bare repository there. If the repository at `<url>` cannot be
+  read, it SHALL exit 3 with reason `remote-unreachable`, quoting git's
+  error and telling the user to create an empty repository at `<url>` (for
+  example on their git host) and check their access, and SHALL create
+  nothing. If the repository has a branch, it SHALL clone it into `.board`
+  (its default branch) and fold the events; when that branch has no
+  `events/` directory it SHALL exit 1 with reason `not-a-board` and leave
+  no `.board` behind. If the repository has no refs, it SHALL create a
+  standalone board, add `<url>` as `origin`, and `sync` (which pushes and
+  sets the upstream).
+- When `.board` is a standalone board with no remote, it SHALL add `<url>`
+  as `origin` and `sync`.
+- When `.board` is a standalone board whose chosen remote already has the
+  URL `<url>`, it SHALL change nothing and exit 0. When the remote has
+  another URL, it SHALL exit 1 with reason `remote-mismatch`, naming both
+  URLs and `git -C .board remote set-url`.
+- When `.board` is a host-model board, it SHALL exit 1 with reason
+  `board-in-host` and change nothing.
+- When `.board` is a standalone board with several remotes and none chosen
+  by the rules of board-concurrency "Sync converges", it SHALL exit 1 with
+  reason `ambiguous-remote` and change nothing.
+- When `.board` exists and is not a board (a directory holding any entry
+  but no `events/`, a regular file, or a symbolic link that does not
+  resolve to a board directory), it SHALL exit 2 with reason
+  `board-not-a-repository` before any write (no bare repository, no
+  temporary directory, no host `.gitignore` entry), telling the user to
+  move it aside; whatever it holds is left byte for byte. An empty
+  directory counts as absent.
+
+`<url>` SHALL be checked before anything runs: an empty value, a value
+that starts with `-`, or a `file://` URL whose host part is neither empty
+nor `localhost` SHALL exit 1 with reason `usage`, and no git command SHALL
+be given the value (in particular the host repository's own remote is
+never contacted). Every git command that takes `<url>` SHALL pass it
+after `--`. A relative local path SHALL be resolved against the host
+repository's top level when the board was found through a git repository
+(the same directory from every linked worktree), else against the current
+directory, and the `origin` URL stored SHALL be the absolute path;
+`file://localhost/x` and `file:///x` both name the path `/x`; a `file://`
+URL and a non-local URL SHALL be stored as given. The matching-URL
+comparison SHALL use the raw `remote.<name>.url` as well as the URL
+`git remote get-url` prints, so a URL rewritten by `url.<base>.insteadOf`
+is not reported as `remote-mismatch`; a matching URL SHALL run no `sync`.
+The `remote-mismatch` message SHALL name `git -C .board remote set-url`
+only when the remote exists; when `agentboard.remote` names a remote the
+board repository does not have, it SHALL name `agentboard.remote` instead.
+
+A board is cloned into a temporary sibling of `.board` named
+`.board-clone-<random>`, renamed to `.board` only once its working tree
+holds `events/`. A clone that fails after `ls-remote` succeeded (a remote
+whose objects are missing) SHALL exit 3 with reason `remote-unreachable`
+and leave nothing behind. When the remote's HEAD names a branch the remote
+does not have and the remote has exactly one branch, that branch SHALL be
+checked out first; when that checkout fails, `init` SHALL exit 1 with
+reason `not-a-board` and leave nothing behind. A `.board-clone-*` left by
+an interrupted run SHALL be removed by the next `init --remote`, which
+names it in its message.
+
+When the `sync` that `init --remote` runs fails, `init` SHALL exit with that
+failure's code and reason, keeping the board and the remote it set.
+
+#### Scenario: Init with a remote that has a board
+- **WHEN** a standalone board with three events has been pushed to `<url>` and `agentboard init --remote <url>` runs in another clone with no `.board`
+- **THEN** `.board` is a clone of `<url>`, `agentboard list` shows the three events' tickets, and `sync` exits 0
+
+#### Scenario: Init with an empty remote
+- **WHEN** `agentboard init --remote <url>` runs with no `.board`, and `<url>` is an empty repository
+- **THEN** `.board` is a standalone board with `origin` set to `<url>`, and `<url>` has a branch holding `.gitignore` and `events/.gitkeep`
+
+#### Scenario: Init with a local path that does not exist
+- **WHEN** `agentboard init --remote ../boards/project.git` runs and `../boards/project.git` does not exist
+- **THEN** `../boards/project.git` is created as a bare repository, the board is pushed to it, and the command exits 0
+
+#### Scenario: Init with a non-local URL that does not exist
+- **WHEN** `agentboard init --remote https://git.example.com/me/missing.git` runs and the repository cannot be read
+- **THEN** the command exits 3 with reason `remote-unreachable`, the message tells the user to create the empty repository, and no `.board` directory or host `.gitignore` entry was created
+
+#### Scenario: Init with a remote on an existing board without one
+- **WHEN** a standalone board with unsynced events and no remote exists and `agentboard init --remote <empty url>` runs
+- **THEN** `origin` is set to the URL, the events are committed and pushed, and the command exits 0
+
+#### Scenario: Init with a remote on a host-model board
+- **WHEN** `.board` is a host-model board and `agentboard init --remote <url>` runs
+- **THEN** it exits 1 with reason `board-in-host` and nothing changes
+
+#### Scenario: Remote flags are exclusive
+- **WHEN** `agentboard init --remote <url> --into-host` runs
+- **THEN** it exits 1 with reason `usage` and nothing changes
+
+#### Scenario: Remote URL that is an option
+- **WHEN** `agentboard init --remote '--upload-pack=touch PWNED;:x'` runs in a clone whose host repository has an `origin`
+- **THEN** it exits 1 with reason `usage`, no git command received the value, `origin` was not contacted, no file was created and nothing changes
+
+#### Scenario: Existing directory that is not a board
+- **WHEN** `.board` is a directory holding `notes.txt` and no `events/`, and `agentboard init --remote <url>` runs, whether `<url>` holds a board or is empty
+- **THEN** it exits 2 with reason `board-not-a-repository` telling the user to move the directory aside, `notes.txt` is unchanged, and no bare repository, temporary directory or host `.gitignore` entry was created
+
+#### Scenario: Init with a remote on a board with several remotes
+- **WHEN** `.board` is a standalone board with the remotes `fork` and `upstream`, no `origin`, no upstream and no `agentboard.remote`, and `agentboard init --remote <url>` runs
+- **THEN** it exits 1 with reason `ambiguous-remote` naming both remotes and `agentboard init`, and nothing changes
+
+#### Scenario: Matching URL rewritten by insteadOf
+- **WHEN** a standalone board's `origin` is `https://host/d.git`, the board repository has `url.<path>.insteadOf=https://host/`, and `agentboard init --remote https://host/d.git` runs
+- **THEN** it exits 0 reporting that nothing changed, and runs no `sync`
+
+#### Scenario: Clone fails after ls-remote
+- **WHEN** `agentboard init --remote file://<path>` runs against a repository whose tip commit object is missing
+- **THEN** it exits 3 with reason `remote-unreachable` quoting git, and no `.board` or temporary directory is left behind
+
+#### Scenario: Leftover clone directory
+- **WHEN** `.board-clone-abc123` was left by an interrupted run and `agentboard init --remote <url>` runs
+- **THEN** the leftover is removed, the message names it, and the command otherwise completes as it would have
+
+### Requirement: Moving a standalone board into the host repository
+`agentboard init --into-host` SHALL move a standalone board into the host
+model, keeping its whole history, as board-concurrency "Moving a board into
+the host repository loses no event" requires. It SHALL need no actor and
+git 2.32 or later (else exit 1 with reason `git-too-old`). It SHALL exit 1
+with reason `no-host-repository` when the board was not found through a
+git repository (outside a git repository, or with `AGENTBOARD_DIR` set),
+and exit 2 when there is no board. On a host-model board it SHALL change
+nothing and exit 0 (repairing a broken link as `init` does). After the
+move it SHALL run `sync`, so the board is published on the host's remote;
+when that `sync` fails, the move stays done and `init` exits with the
+failure's code and reason, and its output SHALL still name the kept
+repository and the old remote, with `keptAt` and `oldRemoteUrl` in the
+`--json` error document. Its output SHALL name the kept old repository,
+the old remote's URL as written in the board's configuration, and say that
+every other clone runs `agentboard init --into-host` too and that the old
+remote can be retired once they have. With `--json` it SHALL print the
+`init` document plus `action` (`moved`; `resumed` after an interrupted
+move, including one killed after the new worktree was in place but before
+its `sync` completed, which the re-run syncs; `unchanged` on a board
+already in the host; `repaired` for a broken link), `keptAt` (the kept
+repository's path, else null), `oldRemoteUrl` (else null) and `sync` (the
+result of the `sync` it ran, else null). `init` without flags on a
+host-model board SHALL remove the temporary worktrees of dead moves that
+hold no rebase state, as `init --into-host` on such a board does; and
+while a kept old repository exists it SHALL leave the marker of a move
+whose `sync` has not completed, change nothing else, and say that
+`agentboard init --into-host` finishes the move, so that command then
+reports `resumed` and carries over and publishes what the move had not.
+A move that lost its init lock to another init that finished meanwhile
+SHALL exit 3 with reason `sync-failed` naming `agentboard init
+--into-host`, never with an untyped error. It
+SHALL exit 1 with reason `no-host-repository` also when the host's git
+directory is not inside its working tree, exit 3 as `sync` does
+(`sync-in-progress`, `detached-head`, `sync-failed`, `sync-conflict`) and
+exit 4 `unsynced` as board-concurrency "Moving a board into the host
+repository loses no event" says, and every such refusal SHALL print the
+hint of its reason.
+
+#### Scenario: Move reports what it kept
+- **WHEN** `agentboard init --into-host` moves a standalone board whose remote is `git@example.com:me/board.git`
+- **THEN** the output names the kept repository's path, `git@example.com:me/board.git`, and `agentboard init --into-host` for other clones
+
+#### Scenario: Move outside a git repository
+- **WHEN** `agentboard init --into-host` runs in a directory that is not inside a git repository
+- **THEN** it exits 1 with reason `no-host-repository` and nothing changes
+
+### Requirement: Showing how a board is shared
+`agentboard remote` SHALL print how the board is shared, need no actor,
+never contact the network and never change anything. It SHALL report: the
+board directory; the model (`host`, `standalone`, `broken host link` or
+`not a repository`); where the history lives (the host repository's git
+directory and `refs/agentboard/board` with its commit, or the board
+repository and its branch); the remote `sync` would use with its URL and
+the rule that chose it (`agentboard.remote`, upstream, `origin` or only
+remote), or that there is none, or that the choice is ambiguous and how to
+set `agentboard.remote`; and every remote of that repository with its URL.
+For a broken link or an ambiguous choice it SHALL say how to fix it. It
+SHALL exit 0 whenever a board exists, and 2 when there is none. With
+`--json` it SHALL print one object with at least `dir`, `model`, `gitDir`,
+`ref` (host model, else null), `refCommit` (host model: the commit
+`refs/agentboard/board` points to, null when the ref is missing; null for
+every other model), `branch` (standalone model, else null), `head`,
+`remote` (`{name, url, rule}` or null), `remotes` and `problems`. The
+`rule` SHALL be one of the literal tokens `agentboard.remote`, `upstream`,
+`origin` or `only`. `remote` SHALL never open the board, so it creates no
+cache file and its only exit codes are 0, 1 (usage) and 2 (no board). When
+`agentboard.remote` names a remote the repository does not have, `remote`
+SHALL still report it as the chosen remote (`url` null) and list a problem
+naming it and the remotes that exist. When git cannot be run at all,
+`remote` SHALL still exit 0, reporting the model as `not a repository`,
+every git-derived field null or empty, and one problem that names git. For
+a broken link or a non-repository it SHALL print only the board directory,
+the model and its problems.
+
+#### Scenario: Remote on a host-model board
+- **WHEN** `agentboard remote` runs on a host-model board whose host repository's main checkout tracks `origin/main`
+- **THEN** it prints the model `host`, `refs/agentboard/board` with its commit, `origin` with its URL chosen as the upstream, and exits 0 without contacting `origin`; with `--json`, `refCommit` is that commit and `remote.rule` is `upstream`
+
+#### Scenario: Remote with agentboard.remote naming a missing remote
+- **WHEN** `agentboard remote --json` runs on a board whose repository has only `origin` and `agentboard.remote` set to `nope`
+- **THEN** `remote` is `{"name": "nope", "url": null, "rule": "agentboard.remote"}`, `problems` holds one line naming `nope` and `origin`, and the command exits 0
+
+#### Scenario: Remote when git cannot be run
+- **WHEN** `agentboard remote` runs on an existing board with no `git` on the PATH
+- **THEN** it exits 0, reports the model `not a repository`, no history, remote or remotes, and one problem that names git
+
+#### Scenario: Remote on a standalone board without a remote
+- **WHEN** `agentboard remote --json` runs on a standalone board with no remote
+- **THEN** stdout is one JSON object with `model` `standalone`, the branch, `remote` null and `remotes` empty
+
+#### Scenario: Remote on a broken link
+- **WHEN** `agentboard remote` runs on a host-model board whose link is broken
+- **THEN** it reports the model `broken host link`, names `agentboard init` as the repair, and exits 0

@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Command surface
-The CLI SHALL provide: `init`; `new <title> [--description] [--label]...
+The CLI SHALL provide: `init [--remote <url> | --into-host]`; `new <title> [--description] [--label]...
 (--task <source>:<ref>#<item> | --change <name> --group <n> | --adhoc <reason>)
 [--checklist <line>]...`; `show <id>`;
 `list [--status] [--assignee] [--task <source>:<ref>[#<item>]] [--change <name>] [--label] [--closed]`;
@@ -13,7 +13,7 @@ The CLI SHALL provide: `init`; `new <title> [--description] [--label]...
 `checklist tick <id> <index> --as <actor>` and `checklist untick`;
 `close <id> --as <actor> (--decision-recorded-in <path> | --no-decision) [--task <source>:<ref>#<item> | --change <name> --group <n> | --unplanned <reason>]`;
 `inbox --as <actor> [--since <cursor>] [--peek]`; `watch --as <actor>`;
-`rebuild [--check]`; `sync`; `import-change <name>`; `close-merged`;
+`rebuild [--check]`; `sync`; `remote`; `import-change <name>`; `close-merged`;
 `serve [--port <port>] [--open | --no-open] [--as <actor>]`; `top`;
 `health [--stale-after <duration>] [--blocked-after <duration>] [--unplanned-within <duration>] [--check]`;
 `mcp`; and `version`. Every command SHALL
@@ -27,7 +27,9 @@ arguments and flags SHALL be defined once, in a single command registry that
 drives argument parsing and the MCP tool definitions, so the two surfaces
 cannot drift. `serve` and `top` are streaming commands like `watch`:
 `serve` runs until SIGINT or SIGTERM (see board-web), and `top` until the
-user quits it or it receives SIGINT or SIGTERM (see board-tui).
+user quits it or it receives SIGINT or SIGTERM (see board-tui). `init`,
+`sync` and `remote` are the commands that run git on the board; they need
+no actor (see "Initialising and joining a shared board").
 
 #### Scenario: OpenSpec shorthand is the same task reference
 - **WHEN** one ticket is created with `--change add-board-core --group 3` and another with `--task openspec:add-board-core#3`
@@ -60,6 +62,14 @@ user quits it or it receives SIGINT or SIGTERM (see board-tui).
 #### Scenario: Move and close have help for the disposition
 - **WHEN** `agentboard help move` and `agentboard help close` run with no board and no actor
 - **THEN** each prints the synopsis with `--task`, `--change`, `--group` and `--unplanned`, the exit codes including 4 `needs-scope-disposition` and 4 `already-linked`, and an example with `--unplanned` that parses, and neither mentions `needs-task-link`
+
+#### Scenario: Init has help for sharing
+- **WHEN** `agentboard help init` runs with no board and no actor
+- **THEN** it prints `--remote` and `--into-host`, says they are mutually exclusive, lists the exit codes including 1 `ambiguous-remote`, 3 `remote-unreachable` and 4 `unsynced`, and has an example for each flag that parses, and exits 0
+
+#### Scenario: Remote has help
+- **WHEN** `agentboard help remote` runs with no board and no actor
+- **THEN** it prints the synopsis, says the command never contacts the network, lists exit code 2, has an example that parses to `remote`, and exits 0
 
 ### Requirement: Exit codes
 Exit codes SHALL be: 0 success; 1 usage error, missing actor,
@@ -113,7 +123,7 @@ is given.
 ### Requirement: MCP server
 `agentboard mcp` SHALL serve an MCP server over stdio exposing one tool per
 command in the registry except `init`, `watch`, `serve`, `top`, `rebuild`,
-`sync`, `mcp` and `version`, which are setup, streaming or maintenance commands run
+`sync`, `remote`, `mcp` and `version`, which are setup, streaming or maintenance commands run
 by a human or an orchestrator in a shell. Tool names SHALL be the command name with
 spaces and hyphens replaced by underscores and prefixed `board_` (for
 example `board_claim`, `board_checklist_tick`, `board_import_change`). Each
@@ -138,7 +148,7 @@ path as the CLI, so concurrent CLI and MCP writers obey the same guarantees.
 
 #### Scenario: Tools are listed from the registry
 - **WHEN** an MCP client connects and lists tools
-- **THEN** the list contains `board_new`, `board_show`, `board_list`, `board_claim`, `board_release`, `board_move`, `board_comment`, `board_handoff`, `board_link`, `board_checklist_tick`, `board_checklist_untick`, `board_close`, `board_inbox`, `board_import_change`, `board_close_merged` and `board_health`, and no tool for `init`, `watch`, `serve`, `top`, `rebuild`, `sync`, `mcp` or `version`
+- **THEN** the list contains `board_new`, `board_show`, `board_list`, `board_claim`, `board_release`, `board_move`, `board_comment`, `board_handoff`, `board_link`, `board_checklist_tick`, `board_checklist_untick`, `board_close`, `board_inbox`, `board_import_change`, `board_close_merged` and `board_health`, and no tool for `init`, `watch`, `serve`, `top`, `rebuild`, `sync`, `remote`, `mcp` or `version`
 
 #### Scenario: Rejection maps to a tool error
 - **WHEN** `board_claim` is called on a ticket assigned to `impl` with `as` set to `reviewer`
@@ -158,6 +168,10 @@ path as the CLI, so concurrent CLI and MCP writers obey the same guarantees.
 
 #### Scenario: Excluded top tool
 - **WHEN** an MCP client calls the tool `board_top`
+- **THEN** the call returns a tool error with `exitCode` 1 and `reason` `usage`
+
+#### Scenario: Excluded remote tool
+- **WHEN** an MCP client calls the tool `board_remote`
 - **THEN** the call returns a tool error with `exitCode` 1 and `reason` `usage`
 
 #### Scenario: Health is a tool
