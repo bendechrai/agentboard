@@ -33,14 +33,34 @@ tested and documented in README.md.
 - **Insights** (`board-insights`): `agentboard health`, the
   `board_health` MCP tool, and the Health, Replay and Graph views of the
   web app.
-- **Board sharing** (`board-events`, `board-concurrency`, `board-cli`): in
-  a git project the board's history lives in the host repository under the
-  hidden ref `refs/agentboard/board`, with `.board/` as a locked worktree,
-  so a second clone joins with `agentboard init` alone and `sync` fetches,
-  rebases and pushes that ref; `init --remote <url>` keeps a board in a
-  separate repository; `init --into-host` moves a standalone board in with
-  its history; `agentboard remote` shows how a board is shared; `make
-  check-git-floor` runs the sharing tests on git 2.32. ADR 0012.
+- **Board sharing** (`board-cli`, `board-concurrency`): in a git project
+  the board's history lives in the host repository under the hidden ref
+  `refs/agentboard/board`, with `.board/` as a locked worktree, so a
+  second clone joins with `agentboard init` alone; `sync` fetches, rebases
+  and pushes that ref; `init --remote <url>` keeps a board in a separate
+  repository; `init --into-host` moves an existing standalone board in
+  with its history, refusing whenever an event could be lost and resuming
+  after an interruption; `agentboard remote` shows how a board is shared.
+  The host model needs git 2.32 or later, checked by `make
+  check-git-floor`, and the walkthrough
+  `src/__tests__/walkthroughs/board-sharing.sh` runs the README examples
+  end to end. ADR 0012. Archived as
+  `openspec/changes/archive/2026-10-17-add-board-sharing`.
+- **Ad hoc ticket lifecycle** (`board-openspec-integration`,
+  `board-events`, `board-cache`, `board-cli`, `board-insights`,
+  `board-view-model`, `board-web-actions`, `board-agent-guidance`): an
+  ad hoc ticket moves
+  through every status like any other; moving it to `merged` or closing
+  it needs a scope disposition on the same command (`--task <ref>`, or
+  `--unplanned <reason>`, recorded as a `ticket.unplanned` event before
+  the move or close in one transaction), refused otherwise with
+  `needs-scope-disposition` (and `--unplanned` on a linked ticket with
+  `already-linked`). `health`, `board_health` and the web Health view
+  list unplanned scope as information (`--unplanned-within`, default 7
+  days); `list`, `show` and the web cards mark it `[unplanned]`. The
+  walkthrough `src/__tests__/walkthroughs/adhoc-lifecycle.sh` runs the
+  README example end to end. ADR 0013 (amends ADR 0004). Every task
+  group is merged; the same workflow follow-up remains.
 
 Released as `@bendechrai/agentboard` 0.1.0 on npm (tag `v0.1.0`), with the
 landing site in `docs/` served at https://bendechrai.github.io/agentboard/.
@@ -63,16 +83,22 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
    reconciling tickets when `import-change` is re-run. Groups 1 to 5 are
    concurrency-critical, so they get a second reviewer (see
    CONTRIBUTING.md, "Three roles per task group").
-3. `add-adhoc-ticket-lifecycle` (proposed, in `openspec/changes/`): ad hoc
-   tickets move through every status like any other; the
-   `needs-task-link` gate at `implementing` is removed, and moving an ad
-   hoc ticket to `merged` or closing it needs a scope disposition on the
-   same command (`--task <ref>`, or `--unplanned <reason>`, recorded as a
-   new `ticket.unplanned` event), refused otherwise with
-   `needs-scope-disposition`. `health` and the web Health view list
-   unplanned scope as information. ADR 0013 (amends ADR 0004). Group 1
-   (fold and events) gets a second reviewer.
 
 ## Known gaps
 
-None open.
+- `add-claim-leases` overlaps board sharing and the ad hoc ticket
+  lifecycle under "What exists" (its tasks.md names
+  the shared requirements). When it lands its guidance group it takes
+  `GUIDANCE_VERSION` 3 (the ad hoc lifecycle took 2), and before it is
+  archived it re-syncs the 180-line "Agent guide" text of
+  `board-agent-guidance` and the "Fold semantics" text of `board-events`
+  with the main specs, dropping the removed refusal reason of the old
+  gate at `implementing` from its fold text (design.md of
+  `add-adhoc-ticket-lifecycle`, "Overlap with in-flight changes").
+- `src/board/__tests__/into-host.test.ts` ("Migration refused with
+  unpushed commits") flaked once on the Node 26 CI job of PR #83: the
+  `.board` snapshot held 42 entries against 41 expected, most likely a
+  transient file (lock, journal or temp) caught by the snapshot helper;
+  it passed on rerun and on the other Node lines. Ticket
+  01M54J9C8VWG6V6E751JHHVW66 on this repository's board tracks making
+  the helper ignore transients or settling before the snapshot.
