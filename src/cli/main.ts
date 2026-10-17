@@ -10,7 +10,7 @@ import { BoardError, type ExitCode } from '../store/errors.js';
 import type { WriteHooks } from '../store/eventfile.js';
 import { pauseHooks } from '../store/transaction.js';
 import { findBoard } from '../store/locate.js';
-import { hintFor, type HintContext } from '../guidance/hints.js';
+import { closeDecisionOf, hintFor, type HintContext } from '../guidance/hints.js';
 import { ACTOR_ENV, parseArgs, resolveActor, type ParsedCommand } from './parse.js';
 import { COMMANDS } from './registry.js';
 import type { TerminalIo } from '../tui/terminal.js';
@@ -290,11 +290,14 @@ function cliHintContext(io: CliIo, parsed: ParsedCommand | null): HintContext {
   if (parsed !== null) {
     const id = nonEmpty(parsed.values.id);
     const actor = nonEmpty(parsed.values.as) ?? fromEnv;
+    const closeDecision =
+      parsed.command.name === 'close' ? closeDecisionOf(parsed.values) : undefined;
     return {
       surface: 'cli',
       command: parsed.command.name,
       ...(id === undefined ? {} : { id }),
       ...(actor === undefined ? {} : { actor }),
+      ...(closeDecision === undefined ? {} : { closeDecision }),
     };
   }
   const actor = argvActor(io.argv) ?? fromEnv;

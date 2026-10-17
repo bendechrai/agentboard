@@ -74,6 +74,22 @@ export interface HintContext {
 }
 
 /**
+ * The `closeDecision` of a `HintContext` from the parsed values of `close`
+ * (the CLI) or the arguments of `board_close` (MCP): `no-decision` when
+ * that is true, `decision-recorded-in` with its path when that is a
+ * non-empty string, else undefined. Pure.
+ */
+export function closeDecisionOf(
+  values: Readonly<Record<string, unknown>>,
+): HintContext['closeDecision'] | undefined {
+  const path = values['decision-recorded-in'];
+  if (typeof path === 'string' && path !== '') {
+    return { flag: 'decision-recorded-in', path };
+  }
+  return values['no-decision'] === true ? { flag: 'no-decision' } : undefined;
+}
+
+/**
  * Every reason token that has a hint, sorted. This is exactly the set of
  * reasons the board can put in a `BoardError`: every literal
  * `new BoardError(<code>, '<reason>', ...)` under `src/`, every
@@ -612,35 +628,62 @@ const usageHint: HintTemplate = (h) => {
 };
 
 /**
- * The two scope dispositions as the surface names them: flags on the
- * CLI, arguments over MCP (board-openspec-integration: "Scope disposition
- * at merge and close").
+ * The arguments of the refused `move <id> merged` or `close <id> <decision
+ * flag>` before its disposition (board-openspec-integration: "Scope
+ * disposition at merge and close"): for `close`, the decision flag of
+ * `context.closeDecision`, or `--no-decision` when it is unknown; for any
+ * other command (`move`, `handoff`, unknown), `move` to `merged`.
  */
-function dispositionForms(surface: HintSurface): string {
-  return surface === 'mcp'
-    ? 'the task argument (<source>:<ref>#<item>, or change and group) naming the planned task it delivered, or the unplanned argument saying why it was never planned'
-    : '--task <source>:<ref>#<item> (or --change <name> --group <n>) naming the planned task it delivered, or --unplanned <reason> saying why it was never planned';
+function refusedExit(h: HintParts): {
+  command: 'move' | 'close';
+  args: (readonly [string, string | true])[];
+} {
+  if (h.command?.name !== 'close') {
+    return {
+      command: 'move',
+      args: [
+        ['id', h.id],
+        ['status', 'merged'],
+      ],
+    };
+  }
+  const decision = h.context.closeDecision;
+  return {
+    command: 'close',
+    args: [
+      ['id', h.id],
+      decision?.flag === 'decision-recorded-in'
+        ? ['decision-recorded-in', decision.path]
+        : ['no-decision', true],
+    ],
+  };
 }
 
 /** The template of `needs-scope-disposition`. */
 const needsScopeDispositionHint: HintTemplate = (h) => {
-  const forms = dispositionForms(h.context.surface);
-  const warning = 'do not create an issue or task only to satisfy this';
-  if (h.command?.name === 'close') {
-    return `closing needs the scope of the work: run close again with the same decision flag and with ${forms}; ${warning}; see ${h.help()}`;
-  }
-  return `merging needs the scope of the work: run ${h.step('move', [
-    ['id', h.id],
-    ['status', 'merged'],
+  const mcp = h.context.surface === 'mcp';
+  const { command, args } = refusedExit(h);
+  const task = h.step(command, [...args, ['task', '<source>:<ref>#<item>'], ['as', h.actor]]);
+  // On the CLI the placeholder is written in double quotes, as the spec
+  // words it; the shell and the parser both read it as the one word
+  // <reason>.
+  const unplanned = h.step(command, [
+    ...args,
+    ['unplanned', mcp ? '<reason>' : '"<reason>"'],
     ['as', h.actor],
-  ])} with ${forms}; ${warning}`;
+  ]);
+  const shorthand = mcp ? ' (or change and group)' : ' (or --change <name> --group <n>)';
+  const exit = command === 'close' ? 'closing' : 'merging';
+  return `${exit} needs the scope of the work: run ${task}${shorthand} naming the planned task it delivered, or ${unplanned} saying why it was never planned; do not create an issue or task only to satisfy this`;
 };
 
 /** The template of `already-linked`. */
-const alreadyLinkedHint: HintTemplate = (h) =>
-  `the ticket already names a planned task, so it needs no unplanned reason: run the command again without ${
-    h.context.surface === 'mcp' ? 'the unplanned argument' : '--unplanned'
-  }; see the link with ${h.step('show', [['id', h.id]])}`;
+const alreadyLinkedHint: HintTemplate = (h) => {
+  const { command, args } = refusedExit(h);
+  const again = h.step(command, [...args, ['as', h.actor]]);
+  const flag = h.context.surface === 'mcp' ? 'the unplanned argument' : '--unplanned';
+  return `the ticket already names a planned task, so it needs no unplanned reason: run ${again} (without ${flag}); see the link with ${h.step('show', [['id', h.id]])}`;
+};
 
 /** Every reason's template (the contract is on `renderHint`). */
 const TEMPLATES: Readonly<Record<string, HintTemplate>> = {

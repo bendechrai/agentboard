@@ -116,9 +116,11 @@ export function toolName(commandName: string): string {
 }
 
 /**
- * The description of a command's tool: `command.summary`, then, for each
- * exclusive group in order, one sentence, each preceded by `. ` (a period
- * and a space):
+ * The description of a command's tool: `command.summary` alone when the
+ * command has no exclusive group; otherwise the summary ending in a period,
+ * then, for each exclusive group in order, one sentence, the sentences
+ * separated by one space (so a command with two groups has a single period
+ * between them):
  * - a required group: `Give exactly one of: <alternatives>.`
  * - an optional group: `Give at most one of: <alternatives>.`
  * where `<alternatives>` lists each alternative's property names joined
@@ -134,7 +136,7 @@ export function toolDescription(command: CommandSpec): string {
         .map((alt) => alt.join(' with '))
         .join(' | ')}.`,
   );
-  return [command.summary, ...sentences].join('. ');
+  return sentences.length === 0 ? command.summary : [`${command.summary}.`, ...sentences].join(' ');
 }
 
 /** The input schema of a command's tool (see `ToolInputSchema`). Pure. */

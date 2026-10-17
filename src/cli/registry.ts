@@ -15,7 +15,9 @@ import {
   linkTicket,
   moveTicket,
   releaseTicket,
+  scopeDispositionFromArgs,
   setChecklistItem,
+  type DispositionArgs,
   type LinkTarget,
 } from '../board/actions.js';
 import { importChange, parseImportTarget } from '../board/import.js';
@@ -370,6 +372,20 @@ function linkTarget(values: ArgValues): LinkTarget {
     throw new BoardError(1, 'usage', LINK_GROUP.message);
   }
   return { task };
+}
+
+/**
+ * The scope disposition flags of `move` and `close` (`DISPOSITION_FLAGS`),
+ * as `scopeDispositionFromArgs` takes them.
+ */
+function dispositionArgs(values: ArgValues): DispositionArgs {
+  return {
+    task: str(values, 'task'),
+    change: str(values, 'change'),
+    group: str(values, 'group'),
+    unplanned: str(values, 'unplanned'),
+    allowSecretLike: bool(values, 'allow-secret-like'),
+  };
 }
 
 /** The task filter of `list` (`--task`, or `--change` as `openspec:<name>`). */
@@ -1005,14 +1021,24 @@ export const COMMANDS: readonly CommandSpec[] = [
     writes: true,
     operation: 'moveTicket',
     run: (ctx, values) => {
-      const to = str(values, 'status');
-      if (DISPOSITION_FLAGS.some((spec) => Object.hasOwn(values, spec.name))) {
-        throw new Error('not implemented: move with a scope disposition');
+      const given = str(values, 'status');
+      const to = given === undefined ? undefined : status(given);
+      // The disposition and its target are checked before the board is
+      // opened, so a usage error exits 1 even where there is no board.
+      const disposition = scopeDispositionFromArgs(dispositionArgs(values));
+      if (disposition !== undefined && to !== 'merged') {
+        throw new BoardError(
+          1,
+          'usage',
+          'a scope disposition (--task, --change with --group, or --unplanned) applies only to a move to merged',
+        );
       }
       return written(
         moveTicket(ctx.board(), actorOf(ctx), {
           id: req(values, 'id'),
-          to: to === undefined ? undefined : status(to),
+          to,
+          disposition,
+          allowSecretLike: bool(values, 'allow-secret-like'),
         }),
       );
     },
@@ -1292,16 +1318,18 @@ export const COMMANDS: readonly CommandSpec[] = [
     run: (ctx, values) => {
       const id = req(values, 'id');
       const path = str(values, 'decision-recorded-in');
-      if (DISPOSITION_FLAGS.some((spec) => Object.hasOwn(values, spec.name))) {
-        throw new Error('not implemented: close with a scope disposition');
-      }
+      // Checked before the board is opened (see the note above COMMANDS).
+      const scope = {
+        disposition: scopeDispositionFromArgs(dispositionArgs(values)),
+        allowSecretLike: bool(values, 'allow-secret-like'),
+      };
       return written(
         closeTicket(
           ctx.board(),
           actorOf(ctx),
           path === undefined
-            ? { id, noDecision: true }
-            : { id, decisionRecordedIn: path, cwd: ctx.cwd, env: ctx.env },
+            ? { id, noDecision: true, ...scope }
+            : { id, decisionRecordedIn: path, cwd: ctx.cwd, env: ctx.env, ...scope },
         ),
       );
     },

@@ -29,11 +29,11 @@ import type { TaskRef, Status } from '../events/schema.js';
 import { asciiText } from './text.js';
 import type { Board } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
-import { runCommand, type ProposedEvent } from '../store/transaction.js';
+import { runCommand, type ProposedEvent, type ProposedEvents } from '../store/transaction.js';
 import { requireActor, resolveTicket, ticketOf } from './lookup.js';
 import { treePath, type TreePathOptions } from './paths.js';
 import { taskReminder, type TaskReminder } from './reminder.js';
-import type { TaskArgs } from './resolve.js';
+import { taskRefFromArgs, type TaskArgs } from './resolve.js';
 import { refuseSecretLike } from './secrets.js';
 import type { WriteOptions, WriteOutcome } from './types.js';
 
@@ -54,11 +54,27 @@ function writeTicketEvent(
   build: (ticket: Ticket) => ProposedEvent,
   options: WriteOptions | undefined,
 ): WriteOutcome {
+  return writeTicketEvents(board, actor, id, (ticket) => [build(ticket)], options);
+}
+
+/**
+ * As `writeTicketEvent`, for a command that writes one or two events in
+ * one transaction (a scope disposition and then its move or close):
+ * `runCommand` folds them in memory in order, so a refusal of either
+ * writes nothing.
+ */
+function writeTicketEvents(
+  board: Board,
+  actor: string,
+  id: string,
+  build: (ticket: Ticket) => ProposedEvents,
+  options: WriteOptions | undefined,
+): WriteOutcome {
   requireActor(actor);
   const result = runCommand(
     board,
     actor,
-    () => ({ ok: true, event: build(resolveTicket(board.db, id)) }),
+    () => ({ ok: true, events: build(resolveTicket(board.db, id)) }),
     options,
   );
   return {
@@ -184,7 +200,67 @@ export interface DispositionArgs extends TaskArgs {
  * Pure apart from the thrown refusals.
  */
 export function scopeDispositionFromArgs(args: DispositionArgs): ScopeDisposition | undefined {
-  throw new Error(`not implemented: scopeDispositionFromArgs(${JSON.stringify(args)})`);
+  const { unplanned } = args;
+  const taskGiven = args.task !== undefined || args.change !== undefined || args.group !== undefined;
+  if (unplanned !== undefined && taskGiven) {
+    throw new BoardError(
+      1,
+      'usage',
+      'give at most one scope disposition: --task (or --change with --group), or --unplanned',
+    );
+  }
+  const task = taskRefFromArgs(args);
+  if (task !== undefined) {
+    return { task };
+  }
+  if (unplanned === undefined) {
+    return undefined;
+  }
+  checkUnplannedReason(unplanned, args.allowSecretLike);
+  return { unplanned };
+}
+
+/**
+ * The checks on an unplanned reason that need no board: empty is
+ * `BoardError(1, 'usage')`, and a reason matching a secret pattern is
+ * refused by `refuseSecretLike` (exit 1 `secret-like`) unless
+ * `allowSecretLike`.
+ */
+function checkUnplannedReason(reason: string, allowSecretLike: boolean | undefined): void {
+  if (reason === '') {
+    throw new BoardError(1, 'usage', 'the unplanned reason must not be empty');
+  }
+  refuseSecretLike([reason], allowSecretLike === true);
+}
+
+/**
+ * The checks on a disposition that need no board (see `moveTicket` and
+ * `closeTicket`): a task reference needs none; an unplanned reason goes
+ * through `checkUnplannedReason`.
+ */
+function checkDisposition(
+  disposition: ScopeDisposition,
+  allowSecretLike: boolean | undefined,
+): void {
+  if ('unplanned' in disposition) {
+    checkUnplannedReason(disposition.unplanned, allowSecretLike);
+  }
+}
+
+/**
+ * The event a disposition writes before its move or close: the
+ * `ticket.link` exactly as `linkTicket` writes it, or the
+ * `ticket.unplanned` with the reason.
+ */
+function dispositionEvent(ticket: Ticket, disposition: ScopeDisposition): ProposedEvent {
+  return 'task' in disposition
+    ? { kind: 'ticket.link', ticket: ticket.id, body: { task: { ...disposition.task } } }
+    : { kind: 'ticket.unplanned', ticket: ticket.id, body: { reason: disposition.unplanned } };
+}
+
+/** Whether `ticket` has a scope disposition: a task reference or an unplanned disposition. */
+function disposed(ticket: Ticket): boolean {
+  return ticket.task !== null || ticket.unplanned !== null;
 }
 
 /** Input of `moveTicket`. */
@@ -251,10 +327,19 @@ export function moveTicket(
   input: MoveInput,
   options?: WriteOptions,
 ): WriteOutcome {
-  if (input.disposition !== undefined) {
-    throw new Error('not implemented: moveTicket with a scope disposition');
+  requireActor(actor);
+  const { disposition } = input;
+  if (disposition !== undefined) {
+    if (input.to !== 'merged') {
+      throw new BoardError(
+        1,
+        'usage',
+        'a scope disposition (--task, --change with --group, or --unplanned) applies only to a move to merged',
+      );
+    }
+    checkDisposition(disposition, input.allowSecretLike);
   }
-  return writeTicketEvent(
+  return writeTicketEvents(
     board,
     actor,
     input.id,
@@ -267,7 +352,8 @@ export function moveTicket(
           `a target status is required: ticket ${ticket.id} is ${ticket.status}, not blocked`,
         );
       }
-      return { kind: 'ticket.move', ticket: ticket.id, body: { to } };
+      const move: ProposedEvent = { kind: 'ticket.move', ticket: ticket.id, body: { to } };
+      return disposition === undefined ? [move] : [dispositionEvent(ticket, disposition), move];
     },
     options,
   );
@@ -500,10 +586,11 @@ export function closeTicket(
   input: CloseInput,
   options?: WriteOptions,
 ): WriteOutcome {
-  if (input.disposition !== undefined) {
-    throw new Error('not implemented: closeTicket with a scope disposition');
-  }
   requireActor(actor);
+  const { disposition } = input;
+  if (disposition !== undefined) {
+    checkDisposition(disposition, input.allowSecretLike);
+  }
   let body: { decision: string } | { noDecision: true } = { noDecision: true };
   if ('decisionRecordedIn' in input) {
     const path = treePath(input.decisionRecordedIn, input);
@@ -516,15 +603,24 @@ export function closeTicket(
     }
     body = { decision: path.recorded };
   }
-  return writeTicketEvent(
+  return writeTicketEvents(
     board,
     actor,
     input.id,
     (ticket) => {
       // A ticket that cannot be closed is left to the fold's own
-      // invalid-transition refusal, which comes before the decision guard.
+      // invalid-transition refusal, which comes before the scope
+      // disposition and the decision guard.
       const closable =
         !ticket.closed && (ticket.status === 'merged' || ticket.status === 'blocked');
+      if (closable && disposition === undefined && !disposed(ticket)) {
+        throw new BoardError(
+          4,
+          'needs-scope-disposition',
+          `ticket ${ticket.id} cannot be closed: needs-scope-disposition (it has neither a ` +
+            'task reference nor an unplanned disposition; give --task or --unplanned)',
+        );
+      }
       const open = closable && 'noDecision' in body ? openDecisions(ticket.comments) : [];
       if (open.length > 0) {
         const quoted = open.map((c) => `  ${asciiText(c.actor)}: "${asciiText(c.text)}"`);
@@ -540,7 +636,8 @@ export function closeTicket(
           ].join('\n'),
         );
       }
-      return { kind: 'ticket.close', ticket: ticket.id, body };
+      const close: ProposedEvent = { kind: 'ticket.close', ticket: ticket.id, body };
+      return disposition === undefined ? [close] : [dispositionEvent(ticket, disposition), close];
     },
     options,
   );
