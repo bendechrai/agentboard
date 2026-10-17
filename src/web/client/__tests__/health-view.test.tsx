@@ -351,11 +351,14 @@ describe('unplanned scope (board-insights: "Unplanned scope in the Health view")
       E.move(T2, 'blocked', { wall: W0 + 11 }),
       E.unplanned(T2, 'abandoned', { wall: NOW - 5 * MIN, actor: 'orch' }),
       E.close(T2, { noDecision: true }, { wall: NOW - 5 * MIN + 1, actor: 'orch' }),
-      E.create(T6, { title: 'Old', adhoc: 'y' }, { wall: W0 + 20 }),
-      E.move(T6, 'blocked', { wall: W0 + 21 }),
+      // Created and blocked before its disposition 10 days ago, so every
+      // event of T6 applies and it counts in the total outside the window.
+      E.create(T6, { title: 'Old', adhoc: 'y' }, { wall: NOW - 11 * 24 * HOUR }),
+      E.move(T6, 'blocked', { wall: NOW - 11 * 24 * HOUR + 1 }),
       E.unplanned(T6, 'long ago', { wall: NOW - 10 * 24 * HOUR, actor: 'orch' }),
       E.close(T6, { noDecision: true }, { wall: NOW - 10 * 24 * HOUR + 1, actor: 'orch' }),
     ]);
+    expect(m.events.filter((e) => e.outcome !== 'applied')).toEqual([]);
     await openHealth('#/health', m);
     expect(findings('unplanned-scope')).toEqual([T2, T1]);
     expect(count('unplanned-scope')).toBe('2');
