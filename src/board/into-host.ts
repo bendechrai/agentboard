@@ -713,7 +713,18 @@ export interface IntoHostResult extends InitResult {
  * as empty, and `git cherry-pick --abort`; round 5 ruling 2, round 6
  * ruling 1), with nothing changed: the old `.board` untouched, the
  * worktree, its rebase or cherry-pick state, `MIGRATING_REF` and
- * `MIGRATING_FETCH_REF` as they were, and nothing published. A dead-pid
+ * `MIGRATING_FETCH_REF` as they were, and nothing published. An
+ * unstaged change to a tracked file of the adopted worktree (`git diff
+ * --name-only` not empty: conflict markers a `git reset` left in place,
+ * or an edit by hand), whether or not cherry-pick state remains (git
+ * drops `CHERRY_PICK_HEAD` and the sequencer with a reset on the last
+ * pick of a sequence, and keeps the sequencer on an earlier pick;
+ * implementer decision, round 6) is `BoardError(3, 'sync-failed')`
+ * before anything is quit, replayed or carried over: the message names
+ * the worktree, the files and the steps (commit, stash or discard them,
+ * `git -C <temp> checkout -- <path>`, then `agentboard init --into-host`
+ * again), the worktree stays adoptable with its state and HEAD as they
+ * were, and the refs, `.board` and the remote are untouched. A dead-pid
  * temporary with cherry-pick state that no human is in the middle of
  * (nothing unmerged, the index equal to HEAD and the working tree equal
  * to the index, `git diff --quiet` and `git diff --cached --quiet` both

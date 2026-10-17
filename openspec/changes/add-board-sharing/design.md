@@ -627,12 +627,15 @@ well as `git diff --cached --quiet`; round 6 ruling 2), the re-run runs
 made stay), then adopts it and replays again from the integrated tip,
 the picks already made becoming empty and skipped, so a kill anywhere in
 a replay is completed by the re-run with every event, each once. A
-stopped cherry-pick with an unmerged path, with a resolution staged and
-not continued, or with unstaged changes (a `git reset` that left the
-conflict markers in the file), is a human's and stays, never quit, the
-refusal naming `git cherry-pick --continue`, `git cherry-pick --abort`
-and, for a pick git reports as empty, `git cherry-pick --skip` and `git
-commit --allow-empty` (round 6 ruling 1); the hints of `sync-conflict`
+stopped cherry-pick with an unmerged path, or with a resolution staged
+and not continued, is a human's and stays, never quit, the refusal
+naming `git cherry-pick --continue`, `git cherry-pick --abort` and, for
+a pick git reports as empty, `git cherry-pick --skip` and `git commit
+--allow-empty` (round 6 ruling 1); one with unstaged changes (a `git
+reset` that left the conflict markers in the file) is never quit either,
+and is refused as the dirty worktree described below, whether git kept
+the sequencer (a reset on an earlier pick) or dropped it (a reset on the
+last pick); the hints of `sync-conflict`
 and `sync-in-progress` from `init` name `git cherry-pick --continue`
 beside `git rebase --continue` (round 5 ruling 4). The move itself skips
 a pick only on git's own empty stop (`CHERRY_PICK_HEAD` present, nothing
@@ -641,10 +644,11 @@ refused over a local change of a tracked file) is exit 3 `sync-failed`
 with the sequencer quit, the replay record removed and the temporary
 kept adoptable, so no commit of the range is ever dropped and the `sync`
 of step 7 never commits or publishes a conflict marker. For the same
-reason an adopted worktree with an unstaged change to a tracked file and
-nothing in progress (a `git reset` on the last pick of a sequence also
-removes git's cherry-pick state, leaving the markers in a worktree with
-no `CHERRY_PICK_HEAD` and no `sequencer`; an edit by hand) is exit 3
+reason an adopted worktree with an unstaged change to a tracked file (a
+`git reset` on the last pick of a sequence also removes git's cherry-pick
+state, leaving the markers in a worktree with no `CHERRY_PICK_HEAD` and
+no `sequencer`, while a reset on an earlier pick keeps the sequencer; an
+edit by hand), whatever state remains, is exit 3
 `sync-failed` naming the files and the steps (commit, stash or discard
 them, then `agentboard init --into-host` again) before anything is quit,
 replayed or carried over, the worktree kept adoptable, HEAD, the refs

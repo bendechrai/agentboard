@@ -463,6 +463,28 @@ export function thirdCloneRewritesIgnoreOnly(
   return { dDir: d.dir, ignore };
 }
 
+/**
+ * As `thirdCloneRewritesIgnore`, with D's two commits in the other order:
+ * the `.gitignore` rewrite first, then one event of its own, so the replay
+ * conflicts on its first pick with a second pick still to do (git keeps
+ * its sequencer across a `git reset` there). Returns D's board directory,
+ * the event hash and D's `.gitignore` content.
+ */
+export function thirdCloneRewritesIgnoreThenEvent(
+  fx: ConflictingClones,
+  env: Env,
+): { dDir: string; fromD: string; ignore: string } {
+  const d = cloneWithStandalone(fx.remote, fx.boardRemote, 'd');
+  const ignore = [...BOARD_GITIGNORE_LINES, 'baz', 'bar'].map((line) => `${line}\n`).join('');
+  writeFileSync(join(d.dir, '.gitignore'), ignore);
+  git(d.dir, 'add', '--', '.gitignore');
+  git(d.dir, 'commit', '-q', '--no-verify', '-m', 'ignore baz');
+  syncStandalone(d.dir, env);
+  const [fromD] = writeEvents(d.dir, 1, 'd', 600);
+  syncStandalone(d.dir, env);
+  return { dDir: d.dir, fromD: String(fromD), ignore };
+}
+
 /** Whether git's cherry-pick sequencer directory exists for the worktree at `dir`. */
 export function sequencerInProgress(dir: string): boolean {
   return existsSync(join(git(dir, 'rev-parse', '--absolute-git-dir').trim(), 'sequencer'));

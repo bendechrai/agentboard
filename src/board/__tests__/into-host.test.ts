@@ -82,9 +82,11 @@ import {
   syncedStandalone,
   thirdCloneRewritesIgnore,
   thirdCloneRewritesIgnoreOnly,
+  thirdCloneRewritesIgnoreThenEvent,
   untouched,
   withShellGitShim,
   writeEvents,
+  type ConflictingClones,
 } from './into-host-helpers.js';
 import {
   BOARD_REF,
@@ -1046,49 +1048,104 @@ describe('integrating board refs that already exist', () => {
     expectCheckClean(bRoot, env);
   });
 
-  it('git reset after a replay conflict (markers left in .gitignore, index equal to HEAD): the re-run refuses naming the human steps, quits nothing, loses nothing and publishes nothing (round 6 ruling 2)', () => {
+  /**
+   * The assertions a dirty adopted worktree's refusal must satisfy: exit 3
+   * sync-failed naming the worktree, the file and the steps; nothing quit,
+   * replayed, dropped or published; the same refusal on the next run.
+   */
+  function expectDirtyWorktreeRefused(
+    fx: ConflictingClones,
+    temporary: string,
+    state: { halfway: string; resolvedHead: string; integrated: string; published: string; fromD?: string },
+    sequencerStays: boolean,
+  ): void {
+    const { remote, bRoot, bDir } = fx;
+    const env = syncEnv();
+    const before = untouched(bRoot, bDir);
+
+    const err = expectBoardError(() => move(bRoot, env), 3, 'sync-failed');
+
+    expect(err.message).toContain(temporary);
+    expect(err.message).toContain('.gitignore');
+    expect(err.message).toContain('checkout -- ');
+    expect(err.message).toContain('agentboard init --into-host');
+    expect(registeredMigrating(bRoot)).toEqual([temporary]);
+    expect(sequencerInProgress(temporary)).toBe(sequencerStays);
+    expect(revParse(temporary)).toBe(state.halfway);
+    expect(isAncestor(temporary, state.resolvedHead, 'HEAD')).toBe(true);
+    expect(readFileSync(join(temporary, '.gitignore'), 'utf8')).toContain('<<<<<<<');
+    expect(refCommit(bRoot, MIGRATING_REF)).toBe(state.integrated);
+    expect(refCommit(bRoot)).toBeNull();
+    expect(git(remote, 'rev-parse', BOARD_REF).trim()).toBe(state.published);
+    expect(untouched(bRoot, bDir)).toEqual(before);
+    expect(keptRepositories(bRoot)).toEqual([]);
+    if (state.fromD !== undefined) {
+      expect(eventFiles(bDir)).not.toContain(`${state.fromD}.json`);
+    }
+    // The re-run refuses the same way until the human acts.
+    expectBoardError(() => move(bRoot, env), 3, 'sync-failed');
+    expect(revParse(temporary)).toBe(state.halfway);
+    expect(sequencerInProgress(temporary)).toBe(sequencerStays);
+    expect(readFileSync(join(temporary, '.gitignore'), 'utf8')).toContain('<<<<<<<');
+    expect(git(remote, 'rev-parse', BOARD_REF).trim()).toBe(state.published);
+  }
+
+  it('git reset after a conflict on the last pick (git drops its cherry-pick state, the markers stay in .gitignore): the re-run refuses the dirty worktree as sync-failed before any replay, quits nothing, loses nothing and publishes nothing (round 6 ruling 2)', () => {
     const env = syncEnv();
     const fx = conflictingClones(env);
-    const { remote, bRoot, bDir } = fx;
+    const { remote, bRoot } = fx;
     expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
     const [temporary] = registeredMigrating(bRoot);
     resolveIgnoreConflicts(String(temporary));
     const resolvedHead = revParse(String(temporary));
     const integrated = String(refCommit(bRoot, MIGRATING_REF));
+    // D's event commit is picked, D's .gitignore rewrite (the last pick) conflicts.
     const { fromD } = thirdCloneRewritesIgnore(fx, env);
     const published = git(remote, 'rev-parse', BOARD_REF).trim();
     expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
     const halfway = revParse(String(temporary));
+    expect(halfway).not.toBe(resolvedHead);
     // The human clears the index without resolving: the conflict markers
-    // stay in the working tree and nothing is unmerged any more.
+    // stay in the working tree, nothing is unmerged, and git 2.52's reset
+    // on the last pick of a sequence drops CHERRY_PICK_HEAD and the
+    // sequencer with it, so nothing is in progress any more.
     git(String(temporary), 'reset', '-q');
     expect(unmerged(String(temporary))).toEqual([]);
     expect(git(String(temporary), 'diff', '--cached', '--name-only')).toBe('');
+    expect(git(String(temporary), 'diff', '--name-only')).toBe('.gitignore\n');
     expect(readFileSync(join(String(temporary), '.gitignore'), 'utf8')).toContain('<<<<<<<');
-    const before = untouched(bRoot, bDir);
+    expect(cherryPickInProgress(String(temporary))).toBe(false);
+    expect(sequencerInProgress(String(temporary))).toBe(false);
 
-    const err = expectBoardError(() => move(bRoot, env), 3, 'sync-in-progress');
+    expectDirtyWorktreeRefused(fx, String(temporary), { halfway, resolvedHead, integrated, published, fromD }, false);
+  });
 
-    expect(err.message).toContain(String(temporary));
-    expect(err.message).toContain('git cherry-pick --continue');
-    expect(err.message).toContain('git cherry-pick --skip');
-    expect(err.message).toContain('git cherry-pick --abort');
-    expect(err.message).toContain('agentboard init --into-host');
-    // Nothing was quit, replayed, dropped or published.
-    expect(registeredMigrating(bRoot)).toEqual([temporary]);
-    expect(cherryPickInProgress(String(temporary))).toBe(true);
-    expect(revParse(String(temporary))).toBe(halfway);
+  it('git reset after a conflict on a non-last pick (the sequencer stays, the markers stay in .gitignore): the re-run refuses the dirty worktree as sync-failed, quits nothing, loses nothing and publishes nothing (round 6 ruling 2)', () => {
+    const env = syncEnv();
+    const fx = conflictingClones(env);
+    const { remote, bRoot } = fx;
+    expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+    const [temporary] = registeredMigrating(bRoot);
+    resolveIgnoreConflicts(String(temporary));
+    const resolvedHead = revParse(String(temporary));
+    const integrated = String(refCommit(bRoot, MIGRATING_REF));
+    // D's .gitignore rewrite is the first of two picks and conflicts; D's
+    // event commit is still to do.
+    const { fromD } = thirdCloneRewritesIgnoreThenEvent(fx, env);
+    const published = git(remote, 'rev-parse', BOARD_REF).trim();
+    expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+    const halfway = revParse(String(temporary));
+    expect(halfway).toBe(resolvedHead);
+    expect(sequencerInProgress(String(temporary))).toBe(true);
+    git(String(temporary), 'reset', '-q');
+    expect(unmerged(String(temporary))).toEqual([]);
+    expect(git(String(temporary), 'diff', '--cached', '--name-only')).toBe('');
+    expect(git(String(temporary), 'diff', '--name-only')).toBe('.gitignore\n');
     expect(readFileSync(join(String(temporary), '.gitignore'), 'utf8')).toContain('<<<<<<<');
-    expect(refCommit(bRoot, MIGRATING_REF)).toBe(integrated);
-    expect(refCommit(bRoot)).toBeNull();
-    expect(git(remote, 'rev-parse', BOARD_REF).trim()).toBe(published);
-    expect(untouched(bRoot, bDir)).toEqual(before);
-    expect(keptRepositories(bRoot)).toEqual([]);
-    expect(eventFiles(bDir)).not.toContain(`${fromD}.json`);
-    // The re-run refuses the same way until the human acts.
-    expectBoardError(() => move(bRoot, env), 3, 'sync-in-progress');
-    expect(revParse(String(temporary))).toBe(halfway);
-    expect(isAncestor(String(temporary), resolvedHead, 'HEAD')).toBe(true);
+    // The reset on a non-last pick leaves the sequence in progress.
+    expect(sequencerInProgress(String(temporary))).toBe(true);
+
+    expectDirtyWorktreeRefused(fx, String(temporary), { halfway, resolvedHead, integrated, published, fromD }, true);
   });
 
   it('a dirty tracked file in an adopted temporary makes the replay stop for another reason: exit 3 sync-failed, the sequencer quit, the temporary kept and no pick dropped; cleaned up, the re-run conflicts as normal (round 6 ruling 2)', () => {
