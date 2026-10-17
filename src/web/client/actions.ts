@@ -54,13 +54,30 @@ export const ACTION_NAMES = [
 export type ActionName = (typeof ACTION_NAMES)[number];
 
 /**
+ * The scope disposition of a move to `merged` or of a close
+ * (board-web-actions: "Action controls in the web app"; ADR 0013): exactly
+ * one of a task reference (`<source>:<ref>#<item>`, the `task` property
+ * of `board_move` and `board_close`) or an unplanned reason (`unplanned`).
+ * The page sends one only for a ticket with neither a task reference nor
+ * an unplanned disposition. The server refuses a missing one with 409
+ * `needs-scope-disposition`, `unplanned` on a linked ticket with 409
+ * `already-linked`, and a secret-like reason with 400 `secret-like`; the
+ * browser has no `allow-secret-like` override.
+ */
+export type ScopeDisposition = { task: string } | { unplanned: string };
+
+/** The decision disposition of a close: exactly one. */
+type CloseDecision = { id: string; 'decision-recorded-in': string } | { id: string; 'no-decision': true };
+
+/**
  * The body of each action: the command's MCP tool arguments, named as in
  * its input schema. `id` is always the ticket's full id.
  */
 export interface ActionBodies {
   claim: { id: string };
   release: { id: string };
-  move: { id: string; status: Status };
+  /** A scope disposition goes only with the target `merged` (the server refuses it otherwise). */
+  move: { id: string; status: Status } | ({ id: string; status: 'merged' } & ScopeDisposition);
   comment: { id: string; text: string };
   handoff: { id: string; to: string; status: Status; note: string };
   /** Exactly one of a task reference (`<source>:<ref>#<item>`), a pull request or a decision path. */
@@ -69,8 +86,8 @@ export interface ActionBodies {
   /** `index` counted from 0, as `agentboard checklist tick`. */
   'checklist-tick': { id: string; index: number };
   'checklist-untick': { id: string; index: number };
-  /** Exactly one disposition. */
-  close: { id: string; 'decision-recorded-in': string } | { id: string; 'no-decision': true };
+  /** Exactly one decision disposition, plus a scope disposition for an undisposed ticket. */
+  close: CloseDecision | (CloseDecision & ScopeDisposition);
 }
 
 /** The tasks-file reminder of a checklist tick (`TaskReminder` of the CLI's `--json`). */

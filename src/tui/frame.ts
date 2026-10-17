@@ -291,7 +291,10 @@ function detailRows(model: BoardModel, ticketId: string, columns: number): Detai
  *    when `t.blockedFrom` is not null
  * 4. `assignee: <t.assignee>`, or `assignee: -` when null
  * 5. `task: <formatTaskRef(t.task)>`; when `t.task` is null, `task:
- *    adhoc: <t.adhoc>` when `t.adhoc` is not null, else `task: -`
+ *    adhoc: <t.adhoc>` when `t.adhoc` is not null, else `task: -`;
+ *    then, only when `t.unplanned` is not null, `unplanned:
+ *    <t.unplanned.reason> (by <t.unplanned.actor>)` (the line
+ *    `agentboard show` prints; ADR 0013)
  * 6. `labels: <labels joined with ", ">`, or `labels: -` when none
  * 7. `description: <t.description>`, or `description: -` when null
  * 8. `checklist: -` when the checklist is empty; otherwise

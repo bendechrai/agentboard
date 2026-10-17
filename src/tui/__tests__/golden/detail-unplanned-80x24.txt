@@ -1,0 +1,24 @@
+agentboard top  todo:1 tests:0 implementing:0 review:0 blocked:0 merged:1  last~
+ticket 01BX5ZZKBKACTAV9WEVGEMMVRZ                                               
+title: Fix the login redirect                                                   
+status: merged                                                                  
+assignee: impl                                                                  
+task: adhoc: found in prod                                                      
+unplanned: hotfix (by orch)                                                     
+labels: -                                                                       
+description: -                                                                  
+checklist: -                                                                    
+links: -                                                                        
+disposition: open                                                               
+                                                                                
+conversation:                                                                   
+  orch created Fix the login redirect                                           
+  impl claimed                                                                  
+  impl moved to tests                                                           
+  impl moved to implementing                                                    
+  impl moved to review                                                          
+rev: looks right                                                                
+  orch recorded as unplanned: hotfix                                            
+  orch moved to merged                                                          
+                                                                                
+esc close  jk scroll  pgup/pgdn  1/2/3 view  ? help  q quit                     

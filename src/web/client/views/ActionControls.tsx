@@ -47,7 +47,21 @@
  *   `#action-move-status` labelled `Move to` whose options (value and text
  *   the status) are exactly `moveTargets(ticket)`, in that order, the
  *   first selected, and a submit `button` with text `Move`, `disabled`
- *   when there is no target. Posts `move` with `{ id, status }`;
+ *   when there is no target. Posts `move` with `{ id, status }`. While the
+ *   chosen target is `merged` and `needsScopeDisposition(ticket)` holds,
+ *   the form also holds the scope fields (board-web-actions: "Action
+ *   controls in the web app"; ADR 0013): a `select` `#action-move-scope`
+ *   labelled `Scope` with the options, in order, `unplanned` (text
+ *   `unplanned reason`) and `task` (text `task reference`), `unplanned`
+ *   selected initially, and an `input` (type `text`)
+ *   `#action-move-scope-value` labelled `Value`. It then posts `{ id,
+ *   status: 'merged', unplanned: <value> }` or `{ id, status: 'merged',
+ *   task: <value> }`, the one property the selected scope names, with the
+ *   value as entered (an empty one included: the server decides). With
+ *   any other target, or for a ticket that has a task reference or an
+ *   unplanned disposition, neither scope element exists and the body is
+ *   `{ id, status }`. The scope and its value are kept on a refusal and
+ *   when the ticket changes, like every other input;
  * - claim: a `div` with `data-action="claim"` holding a `button` (type
  *   `button`) with text `Claim`. Posts `claim` with `{ id }`;
  * - release: a `div` with `data-action="release"` holding a `button`
@@ -75,6 +89,16 @@
  *   `close` with exactly one disposition: `{ id, 'decision-recorded-in':
  *   <path> }` when the decision radio is checked, `{ id, 'no-decision':
  *   true }` when the other is (the path, even if typed, is not sent).
+ *   While `needsScopeDisposition(ticket)` holds, the form also holds the
+ *   scope fields, shaped as the move control's: a `select`
+ *   `#action-close-scope` labelled `Scope` with the options `unplanned`
+ *   (text `unplanned reason`) and `task` (text `task reference`) in that
+ *   order, `unplanned` selected initially, and an `input` (type `text`)
+ *   `#action-close-scope-value` labelled `Value`; the body then also
+ *   carries `unplanned: <value>` or `task: <value>`, the one property the
+ *   selected scope names. For a ticket with a task reference or an
+ *   unplanned disposition neither scope element exists and nothing is
+ *   added to the body.
  * Every submit is the form's `submit` event (default prevented).
  *
  * DOM contract of `ChecklistControl`: a `div` with
@@ -131,6 +155,18 @@ export function moveTargets(ticket: Ticket): Status[] {
  */
 export function handoffStatuses(ticket: Ticket): Status[] {
   return [ticket.status, ...moveTargets(ticket).filter((s) => s !== ticket.status)];
+}
+
+/**
+ * True exactly when `ticket` has neither a task reference (`task` null)
+ * nor an unplanned disposition (`unplanned` null): the tickets whose move
+ * to `merged` and whose close need a scope disposition (ADR 0013; the
+ * fold's `needs-scope-disposition`). Whether the ticket is ad hoc, closed
+ * or in any status does not matter: the page offers the fields and the
+ * server decides. Pure.
+ */
+export function needsScopeDisposition(ticket: Ticket): boolean {
+  throw new Error(`not implemented: needsScopeDisposition(${ticket.id})`);
 }
 
 /** What every control needs. */

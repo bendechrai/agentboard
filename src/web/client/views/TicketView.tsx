@@ -13,8 +13,10 @@
  *   heading holding the title, and a `dl` with class `fields` of `dt` and
  *   `dd` pairs, as text: `Id`, `Status`, `Assignee` (`none` when null),
  *   `Blocked from` (only while blocked), `Task` (`<source>:<ref>#<item>`,
- *   or `ad hoc: <reason>`), `Labels` (comma separated), `Created by`,
- *   `Description` (only when not null);
+ *   or `ad hoc: <reason>`, or `none`), `Unplanned` (only when
+ *   `ticket.unplanned` is not null: `<reason> (by <actor>)`, the line
+ *   `agentboard show` prints, ADR 0013), `Labels` (comma separated),
+ *   `Created by`, `Description` (only when not null);
  * - a `ul` with class `checklist`: one `li` per line, in order, holding
  *   its text, with class `done` when done;
  * - a `ul` with class `links`: one `li` per link, in order, with the text
