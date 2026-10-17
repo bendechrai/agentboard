@@ -653,7 +653,9 @@ and the hint repeats the decision flag you gave; `--unplanned` on a ticket
 that names a planned task exits 4, `already-linked`. The checks run in
 this order: the arguments (both or neither decision flag, two
 dispositions, a malformed reference, an empty or secret-like reason, all
-exit 1 before the board is opened), then whether the ticket can be closed
+exit 1 before the board is opened), then the decision record path
+(`path-outside-tree`, `decision-path-missing`, exit 1), then whether the
+ticket can be closed
 (`invalid-transition`), then the scope disposition, then the decision
 rule (`unpromoted-decision`). The disposition event and the close are
 written in one transaction, both or neither.
@@ -742,8 +744,8 @@ that shares it before an ad hoc ticket is moved past `tests`. The 0.1.0
 release still refuses an ad hoc ticket's move into `implementing`, so on
 a machine running it the board folds differently (the ticket falls back
 to `tests` there) until it is upgraded; it keeps the `ticket.unplanned`
-event as an unknown kind and folds the merge or close around it, so
-nothing is lost, and the board needs no migration.
+event as an unknown kind, so nothing is lost, and once it is upgraded
+the board folds as it does everywhere else, with no migration.
 
 `agentboard sync` stages only new event files and `.board/.gitignore`,
 commits them as the fixed identity `agentboard <agentboard@localhost>`
@@ -1827,7 +1829,7 @@ unplanned scope: 2 in the last 7d (2 in all)
 
 An ad hoc ticket closed before the disposition existed ends `closed 3d
 ago, no reason recorded (ad hoc: <reason>)`. `--unplanned-within 30d`
-widens the list; the count in brackets is always all of it.
+widens the list; the count in parentheses is always all of it.
 
 `--check` adds the cache check. `--json` prints the report as one JSON
 document with the keys `now`, `thresholds` (in milliseconds:

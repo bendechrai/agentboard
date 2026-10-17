@@ -47,7 +47,9 @@ tested and documented in README.md.
   end to end. ADR 0012. Archived as
   `openspec/changes/archive/2026-10-17-add-board-sharing`.
 - **Ad hoc ticket lifecycle** (`board-openspec-integration`,
-  `board-events`, `board-cli`, `board-insights`): an ad hoc ticket moves
+  `board-events`, `board-cache`, `board-cli`, `board-insights`,
+  `board-view-model`, `board-web-actions`, `board-agent-guidance`): an
+  ad hoc ticket moves
   through every status like any other; moving it to `merged` or closing
   it needs a scope disposition on the same command (`--task <ref>`, or
   `--unplanned <reason>`, recorded as a `ticket.unplanned` event before
@@ -84,7 +86,8 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
 
 ## Known gaps
 
-- `add-claim-leases` overlaps the two changes above (its tasks.md names
+- `add-claim-leases` overlaps board sharing and the ad hoc ticket
+  lifecycle under "What exists" (its tasks.md names
   the shared requirements). When it lands its guidance group it takes
   `GUIDANCE_VERSION` 3 (the ad hoc lifecycle took 2), and before it is
   archived it re-syncs the 180-line "Agent guide" text of
