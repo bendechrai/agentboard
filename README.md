@@ -126,7 +126,7 @@ A two-word command is suggested when its first word is close enough
 
 ## The agent guide
 
-`agentboard help agents` prints a plain ASCII guide of at most 150 lines,
+`agentboard help agents` prints a plain ASCII guide of at most 180 lines,
 stamped with the version, written for a coding agent that has never seen
 the board: what the board is and is not, the actor rule, finding work
 (`inbox`, `list`), claiming before starting, handing off and blocking with
@@ -211,10 +211,13 @@ found, commands exit 2 naming the path they looked at.
 `agentboard agents install` writes short guidance into the project so
 that the coding agents working in it know the board exists and follow
 its rules. The installed text is a pointer, not a copy of the guide: it
-says when to use the board, states the five rules an agent must never
+says when to use the board, states the six rules an agent must never
 break (always pass an actor; claim before working; hand off or block with
 a comment before stopping; never mark completion on the board instead of
-in the tasks file; promote `DECISION:` comments before closing) and sends
+in the tasks file; promote `DECISION:` comments before closing; never
+create an issue, task file or task reference only to move a ticket, and
+give an ad hoc ticket its scope with `--unplanned` or `--task` when it is
+merged or closed) and sends
 the agent to `agentboard help agents` for everything else, so it does not
 go stale when the CLI changes.
 
@@ -281,7 +284,7 @@ selected claude: .claude/ exists
 selected mcp-json: requested with --mcp-command
 created claude .claude/skills/agentboard/SKILL.md
 created mcp-json .mcp.json
-agents install: 2 created, 0 updated, 0 unchanged, 0 refused (guidance v1) in /path/to/project
+agents install: 2 created, 0 updated, 0 unchanged, 0 refused (guidance v2) in /path/to/project
 ```
 
 An existing `mcpServers.agentboard` entry is managed when it is exactly
@@ -312,7 +315,7 @@ selected claude: .claude/ exists
 selected openspec: openspec/config.yaml exists
 created claude .claude/skills/agentboard/SKILL.md
 updated openspec openspec/config.yaml
-agents install: 1 created, 1 updated, 0 unchanged, 0 refused (guidance v1) in /path/to/project
+agents install: 1 created, 1 updated, 0 unchanged, 0 refused (guidance v2) in /path/to/project
 ```
 
 Each target reports `created`, `updated`, `unchanged` or `refused`.
@@ -438,9 +441,36 @@ $ agentboard new "Photo albums" --as orchestrator --task speckit:001-photo-album
 (for example `--task add-login-3`) exits 1 and shows the expected form.
 Sources other than `openspec` are accepted and fully usable; only
 `import-change` needs a source adapter, and only the `openspec` one ships.
-An ad hoc ticket cannot move into `implementing` (exit 4,
-`needs-task-link`) until it is linked to a task with `link <id> --task ...`
-or `link <id> --change ... --group ...`: the board never introduces scope.
+
+An ad hoc ticket is worked like any other: it is claimed, moved through
+`tests`, `implementing` and `review`, blocked and handed off with the same
+commands. What it needs is a **scope disposition** when it leaves the
+flow: whoever moves it to `merged`, or closes it, says on that command
+either which planned task the work turned out to deliver (`--task
+<source>:<ref>#<item>`, or `--change <name> --group <n>`, validated as
+`link` validates them) or why it was never planned (`--unplanned
+<reason>`). Without one the move is refused with exit 4 and
+`needs-scope-disposition`, and the hint names both flags:
+
+```
+$ agentboard move 01M38YRHC32109EYJ1TPDZPQ2N merged --as reviewer-1
+agentboard: ticket.move on ticket 01M38YRHC32109EYJ1TPDZPQ2N refused: needs-scope-disposition
+hint: merging needs the scope of the work: run 'agentboard move 01M38YRHC32109EYJ1TPDZPQ2N merged --task <source>:<ref>#<item> --as reviewer-1' (or --change <name> --group <n>) naming the planned task it delivered, or 'agentboard move 01M38YRHC32109EYJ1TPDZPQ2N merged --unplanned "<reason>" --as reviewer-1' saying why it was never planned; do not create an issue or task only to satisfy this
+
+$ agentboard move 01M38YRHC32109EYJ1TPDZPQ2N merged --unplanned "production hotfix" --as reviewer-1
+01M38YRHC32109EYJ1TPDZPQ2N  merged  impl-1  [unplanned] Fix typo in footer
+```
+
+`--unplanned` writes a `ticket.unplanned` event with the reason, and then
+the move, in one transaction (both or neither); `--task` writes the same
+`ticket.link` that `link` would. A ticket linked earlier with `link`, or
+one that already has an unplanned disposition, needs nothing more, and
+`--unplanned` on a ticket that names a planned task is refused with exit
+4, `already-linked`. `close` takes the same flags (see "Decisions and
+closing tickets"). Never create an issue, task file or task reference
+only to move a ticket: the disposition is the honest answer to "was this
+planned, and if so, where?", and unplanned scope is shown in `list`,
+`show`, the web app and `health` rather than blocked (ADR 0013).
 
 Reading the board:
 
@@ -458,8 +488,12 @@ agentboard show 01M38YRHC3 --raw             # the ticket's raw event files
 
 Ticket ids are ULIDs; any unique prefix of at least 6 characters works, and
 an ambiguous prefix exits 1 listing the matches. `list` prints
-`<id>  <status>  <assignee or ->  <title>`, with `[adhoc]` and `[closed]`
-markers.
+`<id>  <status>  <assignee or ->  <title>`, with `[adhoc]`, `[unplanned]`
+(in place of `[adhoc]` once the unplanned disposition is recorded) and
+`[closed]` markers; a ticket with a task reference shows neither of the
+first two. `show` prints the `adhoc: <reason>` line and, after it,
+`unplanned: <reason> (by <actor>)`; `--json` carries the `unplanned`
+object (`reason`, `actor`, `ts`) or null.
 
 Every command accepts `--json` and then prints exactly one JSON document on
 stdout: an object for single-ticket commands, an array for `list`, and for
@@ -520,6 +554,16 @@ agentboard release 01M38YRHC3 --as impl-1
   not permitted, nothing is written and it exits 4.
 - `move <id> <status>` and `move <id>` (leave `blocked`) change status only.
   Blocking is a `move` to `blocked` plus a `comment` saying why.
+  `move <id> merged` also takes `--task <source>:<ref>#<item>` (or
+  `--change <name> --group <n>`) or `--unplanned <reason>`, at most one
+  of them, as the scope disposition of a ticket that has no task
+  reference yet, and `--allow-secret-like` for a reason that looks like
+  a secret.
+  Without one, a ticket that has neither a task reference nor an unplanned
+  disposition is refused with exit 4, `needs-scope-disposition`; a
+  disposition flag with any target but `merged` exits 1 (`usage`) before
+  the board is read. `handoff --status merged` is refused the same way and
+  its hint points at `move`.
 - `comment <id> <text>` appends to the ticket's thread. Text that starts
   with `--` would be read as a flag, so it goes after a lone `--`:
   `comment <id> --as a -- "--force was needed"`.
@@ -591,6 +635,28 @@ agentboard close 01M38YRHC3 --as orchestrator --no-decision
   later comment beginning `RETRACTED:`.
 - Only tickets in `merged` or `blocked` can be closed. Closed tickets drop
   out of `list` unless `--closed` is given.
+
+`close` also takes the scope disposition of "Tickets and task references"
+when the ticket has neither a task reference nor an unplanned disposition,
+which in practice means an ad hoc ticket closed from `blocked` (a ticket
+in `merged` already has one): `--task <source>:<ref>#<item>` (or
+`--change <name> --group <n>`) or `--unplanned <reason>`, beside the
+decision flag:
+
+```
+agentboard close 01M38YRHC3 --as orchestrator --no-decision --unplanned "abandoned: superseded"
+agentboard close 01M38YRHC3 --as orchestrator --no-decision --task openspec:add-login#2
+```
+
+Without one the close is refused with exit 4, `needs-scope-disposition`,
+and the hint repeats the decision flag you gave; `--unplanned` on a ticket
+that names a planned task exits 4, `already-linked`. The checks run in
+this order: the arguments (both or neither decision flag, two
+dispositions, a malformed reference, an empty or secret-like reason, all
+exit 1 before the board is opened), then whether the ticket can be closed
+(`invalid-transition`), then the scope disposition, then the decision
+rule (`unpromoted-decision`). The disposition event and the close are
+written in one transaction, both or neither.
 
 ## OpenSpec integration
 
@@ -670,6 +736,14 @@ repository of its own, set up on every machine with
 `agentboard init --remote <url>` ("Keeping the board in a separate
 repository", below). Boards made before the host model existed are
 standalone and keep working as they are.
+
+Whichever model a shared board uses, upgrade agentboard on every machine
+that shares it before an ad hoc ticket is moved past `tests`. The 0.1.0
+release still refuses an ad hoc ticket's move into `implementing`, so on
+a machine running it the board folds differently (the ticket falls back
+to `tests` there) until it is upgraded; it keeps the `ticket.unplanned`
+event as an unknown kind and folds the merge or close around it, so
+nothing is lost, and the board needs no migration.
 
 `agentboard sync` stages only new event files and `.board/.gitignore`,
 commits them as the fixed identity `agentboard <agentboard@localhost>`
@@ -1038,7 +1112,8 @@ up to date as agents write, including events that arrive late through
 
 - **Board**: one column per status, one card per ticket (title, short id
   with the full id as its tooltip, assignee, task reference or an "ad hoc"
-  badge, labels, checklist progress, open decisions, a "from <status>"
+  badge (an "unplanned" badge with the reason once the unplanned
+  disposition is recorded), labels, checklist progress, open decisions, a "from <status>"
   badge on a blocked ticket and a "closed" badge on a closed one), cards
   that just changed highlighted.
   Filter by change and by assignee; closed tickets are hidden unless you
@@ -1046,8 +1121,10 @@ up to date as agents write, including events that arrive late through
 - **Feed**: every applied event on the board as a one-line summary,
   newest first, filterable by change, actor and event kind. Events that arrived late
   through `sync` are marked.
-- **Ticket detail** (click a card or a feed entry): the ticket's fields,
-  checklist, links and close disposition, its conversation (comments and
+- **Ticket detail** (click a card or a feed entry): the ticket's fields
+  (an `Unplanned` field, `<reason> (by <actor>)`, right after `Task` when
+  the ticket has an unplanned disposition), checklist, links and close
+  disposition, its conversation (comments and
   hand-off notes, with `DECISION:` comments highlighted and retracted ones
   flagged), and every event on it with its outcome, including rejected
   ones with their reason (for example a claim that lost a race,
@@ -1259,14 +1336,18 @@ The header shows `acting as <actor>`, and the ticket detail
 - a **Comment** box;
 - **Move to**, listing only the statuses the state machine permits from
   the current one (a blocked ticket offers only the status it was blocked
-  from; a merged ticket offers nothing);
+  from; a merged ticket offers nothing); for a ticket with neither a task
+  reference nor an unplanned disposition, choosing `merged` adds a
+  **Scope** select (`unplanned reason`, then `task reference`) and a
+  **Value** input, sent as the `unplanned` or `task` property;
 - **Claim** and **Release** buttons;
 - a **hand-off** form: To, Status (the current status first, which makes
   the hand-off a reassignment, then the permitted moves) and Note;
 - **Link to**: a task reference (`openspec:add-login#1`), a pull request
   (a URL or number) or a decision path, one per submission;
 - **Close**, with exactly one disposition: "Decision recorded in" with a
-  decision path, or "No decision";
+  decision path, or "No decision", plus the same Scope and Value fields
+  for a ticket with neither a task reference nor an unplanned disposition;
 - a checkbox per checklist line: checking it ticks the line, unchecking it
   unticks it. A tick on a ticket with a task reference shows the reminder
   to tick the line in `tasks.md` too.
@@ -1303,7 +1384,8 @@ path must exist on the machine running `serve` and lie inside the tree,
 and "No decision" is refused with `unpromoted-decision`, quoting the
 comments, while the ticket has an open `DECISION:` comment.
 
-**No secret-like override.** Comments and hand-off notes are checked
+**No secret-like override.** Comments, hand-off notes and unplanned
+reasons are checked
 against the same secret patterns as the CLI and refused with 400
 `secret-like` and the pattern name, never echoing the text. The page has
 no equivalent of `--allow-secret-like`, and a body that contains the
@@ -1321,14 +1403,14 @@ without `as`:
 | Action | Body |
 | ------ | ---- |
 | `comment` | `{"id", "text"}` |
-| `move` | `{"id", "status"}`; without `status`, a blocked ticket returns to the status it was blocked from |
+| `move` | `{"id", "status"}`; without `status`, a blocked ticket returns to the status it was blocked from; with `"status": "merged"`, at most one of `"task"`, `"change"` with `"group"` or `"unplanned"` as the scope disposition |
 | `claim` | `{"id"}` |
 | `release` | `{"id"}` |
 | `handoff` | `{"id", "to", "status", "note"}` |
 | `checklist-tick` | `{"id", "index"}`, `index` an integer counted from 0 |
 | `checklist-untick` | `{"id", "index"}` |
 | `link` | `{"id"}` and exactly one of `"task"`, `"change"` with `"group"`, `"pr"` or `"decision"` |
-| `close` | `{"id"}` and exactly one of `"decision-recorded-in": "<path>"` or `"no-decision": true` |
+| `close` | `{"id"}` and exactly one of `"decision-recorded-in": "<path>"` or `"no-decision": true`, plus at most one of `"task"`, `"change"` with `"group"` or `"unplanned"` as the scope disposition |
 
 `id` is a full ticket id or a unique prefix of at least 6 characters, as
 on the CLI. The properties `as`, `json` and `allow-secret-like` are
@@ -1345,7 +1427,7 @@ checklist tick or untick. A refusal writes nothing and is an
 | Status | When |
 | ------ | ---- |
 | 400 | a refusal with exit code 1: `usage`, `secret-like`, `unpromoted-decision`, `decision-path-missing`, `path-outside-tree`, `id-too-short`, `ambiguous-id`, ... |
-| 409 | a refusal by board state (exit code 4): `already-assigned`, `not-assignee`, `invalid-transition`, `needs-task-link`, `checklist-index`, `unknown-ticket`, ... |
+| 409 | a refusal by board state (exit code 4): `already-assigned`, `not-assignee`, `invalid-transition`, `needs-scope-disposition`, `already-linked`, `checklist-index`, `unknown-ticket`, ... |
 | 503 | `busy`: the cache stayed locked; try again |
 | 500 | anything else |
 | 405 | `read-only` (a server without `--as`), or `method-not-allowed` for another method on an action path (`Allow: POST`) |
@@ -1625,7 +1707,7 @@ never disagree. It writes nothing.
 Every age is the time now minus the wall clock of the event it is
 measured from, and 0 when that event's clock is ahead of yours. Only
 applied events count (a claim that lost a race changes nothing), and a
-closed ticket appears in no section.
+closed ticket appears in no section but the unplanned scope.
 
 | Section | What it lists | Default threshold |
 | ------- | ------------- | ----------------- |
@@ -1635,6 +1717,7 @@ closed ticket appears in no section.
 | close-merged: ready | Open tickets in `merged` with a `pr` link, and either no open decision or a `decision` link | none |
 | close-merged: held by a decision | Open tickets in `merged` with a `pr` link, an open decision and no `decision` link | none |
 | close-merged: missing a PR link | Open tickets in `merged` with no `pr` link | none |
+| Unplanned scope | Tickets in `merged` or closed with an unplanned disposition, and ad hoc tickets closed with no disposition at all, with their reasons: those disposed of less than the window ago are listed, all of them are counted | 7 days (`--unplanned-within`) |
 | Late arrivals | Events a running `serve` saw arrive late or be removed (web only) | none |
 | Cache check | Whether the cache matches the event log, run only on request | none |
 
@@ -1659,6 +1742,18 @@ closed ticket appears in no section.
   reports their PR merged; `held by a decision` tickets would be skipped
   by the decision rule; `missing a PR link` tickets are never considered
   by `close-merged` and need `link <id> --pr <ref>` or a manual `close`.
+- **Unplanned scope** is the one section that includes closed tickets,
+  because closed is where unplanned work ends up, and the one section
+  that is information, not a finding to fix: it is what "Tickets and task
+  references" disclosed instead of blocking. A ticket is unplanned scope
+  when it has an unplanned disposition and is in `merged` or closed, or
+  when it is closed with an ad hoc reason and neither a task reference
+  nor an unplanned disposition (closed before the disposition existed).
+  Its age is measured from the applied `ticket.unplanned`, or from the
+  `ticket.close` for an undisclosed close, which is reported with no
+  reason. A ticket later linked to a task leaves the section. `total`
+  counts every such ticket whatever its age; the list holds those less
+  than the window old, most recent first.
 - **Late arrivals** are what a running server observed since it started:
   events that `sync` delivered with a position before events already
   shown, and events removed from the fold in a resync (for example a
@@ -1673,13 +1768,14 @@ closed ticket appears in no section.
   `health --check` or the Health view's button runs it. A cache that
   differs is a finding, not a failure; fix it with `agentboard rebuild`.
 
-Stale claims and stuck tickets are listed longest first; every other
-ticket section is in ticket id order.
+Stale claims and stuck tickets are listed longest first and unplanned
+scope most recent first (then by id); every other ticket section is in
+ticket id order.
 
 ### The `health` command
 
 ```
-agentboard health [--stale-after <duration>] [--blocked-after <duration>] [--check] [--json]
+agentboard health [--stale-after <duration>] [--blocked-after <duration>] [--unplanned-within <duration>] [--check] [--json]
 ```
 
 A duration is `<n>m`, `<n>h` or `<n>d` (minutes, hours or days) with `<n>`
@@ -1713,24 +1809,48 @@ close-merged ready: 1
 close-merged held by decision: 0
 close-merged missing pr: 1
 01M3CCGMNHZ78NN5F74QME13B1  merged  reviewer-1  Index documents  no pr link
+unplanned scope: 0 in the last 7d (0 in all)
 cache check: not run
 ```
 
-`--check` adds the cache check. `--json` prints the report as one JSON
-document with the keys `now`, `thresholds` (in milliseconds),
-`staleClaims`, `stuckBlocked`, `unpromotedDecisions`, `closeMerged`
-(`ready`, `heldByDecision`, `missingPr`), `late` and `check`. Each finding
-carries the ticket's card (as the web page shows it) and, for stale and
-blocked tickets, the event its age was measured from (`since`, with its
-hash, kind, actor and clock) and the age in milliseconds (`idleMs`,
-`blockedMs`). An excerpt of the same board's report:
+The unplanned scope section comes after the close-merged ones, with the
+window in its heading. On a board where the ad hoc ticket of "Tickets and
+task references" was merged as unplanned two hours earlier, and another
+ad hoc ticket was closed from `blocked` with `--unplanned` three days
+earlier, it reads:
 
 ```
-$ agentboard health --stale-after 1m --blocked-after 1m --check --json | jq '{thresholds, staleClaims: [.staleClaims[] | {ticket: .ticket.shortId, assignee, idleMs}], stuckBlocked: [.stuckBlocked[] | {ticket: .ticket.shortId, blockedFrom, blockedMs}], missingPr: [.closeMerged.missingPr[].ticket.shortId], late, check}'
+unplanned scope: 2 in the last 7d (2 in all)
+01M38YRHC32109EYJ1TPDZPQ2N  merged  impl-1  [unplanned] Fix typo in footer  merged 2h ago, unplanned: production hotfix
+01M38YRHDJDH9E02WN42FFWFMT  blocked  -  [unplanned] [closed] Try a new parser  closed 3d ago, unplanned: abandoned: superseded
+```
+
+An ad hoc ticket closed before the disposition existed ends `closed 3d
+ago, no reason recorded (ad hoc: <reason>)`. `--unplanned-within 30d`
+widens the list; the count in brackets is always all of it.
+
+`--check` adds the cache check. `--json` prints the report as one JSON
+document with the keys `now`, `thresholds` (in milliseconds:
+`staleAfter`, `blockedAfter`, `unplannedWithin`),
+`staleClaims`, `stuckBlocked`, `unpromotedDecisions`, `closeMerged`
+(`ready`, `heldByDecision`, `missingPr`), `unplannedScope` (`total`, and
+`tickets` within the window, each with the ticket's card, `adhoc` (the
+creation reason), `reason` (the unplanned reason, null for an undisclosed
+close), `outcome` (`merged` or `closed`), `since` and `ageMs`), `late`
+and `check`. Each finding
+carries the ticket's card (as the web page shows it) and, for stale,
+blocked and unplanned tickets, the event its age was measured from
+(`since`, with its hash, kind, actor and clock) and the age in
+milliseconds (`idleMs`, `blockedMs`, `ageMs`). An excerpt of the same
+board's report:
+
+```
+$ agentboard health --stale-after 1m --blocked-after 1m --check --json | jq '{thresholds, staleClaims: [.staleClaims[] | {ticket: .ticket.shortId, assignee, idleMs}], stuckBlocked: [.stuckBlocked[] | {ticket: .ticket.shortId, blockedFrom, blockedMs}], missingPr: [.closeMerged.missingPr[].ticket.shortId], unplannedScope: {total: .unplannedScope.total, tickets: [.unplannedScope.tickets[] | {ticket: .ticket.shortId, reason, outcome, ageMs}]}, late, check}'
 {
   "thresholds": {
     "staleAfter": 60000,
-    "blockedAfter": 60000
+    "blockedAfter": 60000,
+    "unplannedWithin": 604800000
   },
   "staleClaims": [
     {
@@ -1754,6 +1874,10 @@ $ agentboard health --stale-after 1m --blocked-after 1m --check --json | jq '{th
   "missingPr": [
     "01M3CCGMNH"
   ],
+  "unplannedScope": {
+    "total": 0,
+    "tickets": []
+  },
   "late": null,
   "check": {
     "ranAt": 1790343471569,
@@ -1763,10 +1887,10 @@ $ agentboard health --stale-after 1m --blocked-after 1m --check --json | jq '{th
 }
 ```
 
-`health` exits 0 whatever the report contains, a differing cache
-included: findings are data, so read the report (or `jq` the JSON) rather
-than the exit code. It exits 1 (`usage`) for an unknown flag or a
-malformed duration, 2 when there is no board, and 5 for an integrity
+`health` exits 0 whatever the report contains, a differing cache and
+unplanned scope included: findings are data, so read the report (or `jq`
+the JSON) rather than the exit code. It exits 1 (`usage`) for an unknown
+flag or a malformed duration, 2 when there is no board, and 5 for an integrity
 problem in the event log or cache, or when `--check` cannot take the
 write lock within the busy timeout. It needs no actor (`--as` is
 accepted and ignored). It reads ticket state from the cache and the file
@@ -1781,11 +1905,13 @@ orchestrator checklist of the agent guide says so too.
 ### Over MCP: `board_health`
 
 The MCP tool `board_health` is the same command. Its optional arguments
-are `stale-after` and `blocked-after` (duration strings) and `check` (a
-boolean), and it returns the document `health --json` prints: a call with
-`{"stale-after": "30m"}` returns what `agentboard health --stale-after 30m
---json` prints. A malformed duration is a tool error with `exitCode` 1 and
-`reason` `usage`.
+are `stale-after`, `blocked-after` and `unplanned-within` (duration
+strings) and `check` (a boolean), and it returns the document `health
+--json` prints: a call with `{"stale-after": "30m"}` returns what
+`agentboard health --stale-after 30m --json` prints, and one with
+`{"unplanned-within": "30d"}` lists the unplanned scope of the last 30
+days under `unplannedScope`. A malformed duration is a tool error with
+`exitCode` 1 and `reason` `usage`.
 
 ### In the browser
 
@@ -1794,10 +1920,12 @@ sections, computed in the browser from the board the page already holds,
 re-evaluated on every change and every 10 seconds, plus two things only
 the server knows:
 
-- **Thresholds.** Two inputs, `Stale after` and `Blocked after`, take the
-  same durations as the command and are kept in the URL
-  (`#/health?stale=30m&blocked=2d`). An invalid value is flagged and the
-  report keeps the last valid one.
+- **Thresholds.** Three inputs, `Stale after`, `Blocked after` and
+  `Unplanned within`, take the same durations as the command and are kept
+  in the URL (`#/health?stale=30m&blocked=2d&unplanned=30d`). An invalid
+  value is flagged and the report keeps the last valid one. The unplanned
+  scope section is styled as information, like the cache check when it
+  matches, not as a warning like stale claims and stuck tickets.
 - **Late arrivals**, from `GET /api/health`, with when each was observed.
 - **Run cache check**, a button that calls `GET /api/health/check`. The
   server runs one check at a time: a request that arrives while one runs
@@ -1882,8 +2010,14 @@ hint: another actor holds this ticket, so do not work on it: see who with 'agent
 ```
 
 A missing actor hints both `--as` and `AGENTBOARD_ACTOR`;
-`needs-task-link` hints `agentboard link <id> --task
-<source>:<ref>#<item> --as <actor>`; a close refused by the decision rule
+`needs-scope-disposition` hints both forms of the refused command,
+`agentboard move <id> merged --task <source>:<ref>#<item> --as <actor>`
+(or `--change <name> --group <n>`) and `agentboard move <id> merged
+--unplanned "<reason>" --as <actor>` (for `close`, with the decision flag
+you gave), ending with
+"do not create an issue or task only to satisfy this";
+`already-linked` names the task the ticket is linked to and the same
+command without `--unplanned`; a close refused by the decision rule
 hints `--decision-recorded-in <path>`. Every rejection reason has a hint,
 including those of exit codes 2, 3 and 5 (`board-not-found`, for example,
 hints `agentboard init`); only an unexpected failure has none.
@@ -2034,8 +2168,10 @@ as `entry-differs` unless `--force` is given, which replaces it.
   holds the work and its state in flight.
 - **Not where decisions live.** A `DECISION:` in a thread must be promoted
   to a spec delta or ADR before the ticket closes.
-- **Not a source of scope.** Tickets reference planned tasks; ad hoc
-  tickets must be linked to one before implementation starts.
+- **Not a source of scope.** Every ticket names the planned task it
+  delivers, or discloses that its work was unplanned before it is merged
+  or closed; unplanned scope is shown, with its reason, never blocked
+  (ADR 0013).
 - **Not a multi-user server.** It is local and offline; `sync` moves it
   between machines that take turns.
 
