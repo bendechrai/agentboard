@@ -41,6 +41,8 @@ many processes opening a board with no cache at once all succeed.
 ### Requirement: Cache schema
 The cache SHALL contain tables `tickets` (id, title, description, status,
 assignee, version, updated_at, task_source, task_ref, task_item, adhoc,
+unplanned (the unplanned disposition as a JSON object with reason, actor
+and ts, or null),
 labels as a JSON array,
 closed, decision, checklist as a JSON array), `comments` (ticket id, sequence,
 actor, ts, text), `links` (ticket id, kind, value), `cursors` (actor, last
@@ -55,6 +57,14 @@ files.
 #### Scenario: List reads the cache
 - **WHEN** `agentboard list --status implementing --json` runs on a board with a current cache
 - **THEN** it returns the matching tickets without reading any event file
+
+#### Scenario: Unplanned disposition survives a rebuild
+- **WHEN** a ticket was merged with `--unplanned "hotfix"` and `agentboard rebuild` runs twice
+- **THEN** the ticket's `unplanned` is identical after each rebuild, the canonical dumps are byte-identical, and `rebuild --check` detects a hand-edited `unplanned` value
+
+#### Scenario: Cache from an earlier schema is rebuilt
+- **WHEN** a command opens a cache whose schema version predates the `unplanned` column
+- **THEN** the cache is rebuilt from the event files before the command reads it
 
 ### Requirement: Cache connection settings
 Every connection to the cache SHALL enable WAL journal mode, set a busy
@@ -77,6 +87,13 @@ name); apply the event to the cache rows; record it in `folded`; commit. If
 validation fails the command SHALL write nothing and exit with the documented
 code. If the process dies after the event file is written but before commit,
 the event file remains and the next command's catch-up SHALL fold it.
+A `move` or `close` that gives a scope disposition SHALL propose two events
+in order, the disposition and then the move or close: each SHALL be
+validated against the state the earlier one leaves, each SHALL have a
+hybrid timestamp later than the one before, and if either fails validation
+neither SHALL be written. Their files SHALL be written in that order, so a
+crash can leave the disposition without its move or close, never the
+reverse.
 
 #### Scenario: Validation failure writes nothing
 - **WHEN** `agentboard move T1 merged` runs while T1 is in status `todo`
@@ -85,6 +102,14 @@ the event file remains and the next command's catch-up SHALL fold it.
 #### Scenario: Crash between file and commit
 - **WHEN** a command is killed after its event file is renamed into place but before the transaction commits
 - **THEN** the next command folds that event and the cache reflects it exactly as if the first command had completed
+
+#### Scenario: Crash between the disposition and the move
+- **WHEN** `move T1 merged --unplanned "hotfix"` is killed after the `ticket.unplanned` file is renamed into place but before the `ticket.move` file is written
+- **THEN** the next command folds the disposition, T1 is still in `review` with the unplanned disposition, and `move T1 merged` without a disposition then succeeds
+
+#### Scenario: Second event refused
+- **WHEN** `close T1 --no-decision --task openspec:x#1` runs for a ticket in `implementing`
+- **THEN** the command exits 4 with reason `invalid-transition` and neither the `ticket.link` nor the `ticket.close` file is created
 
 ### Requirement: Rebuild
 `agentboard rebuild` SHALL delete the cache contents and refold every event

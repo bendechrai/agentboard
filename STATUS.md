@@ -59,8 +59,8 @@ tested and documented in README.md.
   list unplanned scope as information (`--unplanned-within`, default 7
   days); `list`, `show` and the web cards mark it `[unplanned]`. The
   walkthrough `src/__tests__/walkthroughs/adhoc-lifecycle.sh` runs the
-  README example end to end. ADR 0013 (amends ADR 0004). Every task
-  group is merged; the same workflow follow-up remains.
+  README example end to end. ADR 0013 (amends ADR 0004). Archived as
+  `openspec/changes/archive/2026-10-17-add-adhoc-ticket-lifecycle`.
 
 Released as `@bendechrai/agentboard` 0.1.0 on npm (tag `v0.1.0`), with the
 landing site in `docs/` served at https://bendechrai.github.io/agentboard/.
@@ -86,15 +86,20 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
 
 ## Known gaps
 
-- `add-claim-leases` overlaps board sharing and the ad hoc ticket
-  lifecycle under "What exists" (its tasks.md names
-  the shared requirements). When it lands its guidance group it takes
-  `GUIDANCE_VERSION` 3 (the ad hoc lifecycle took 2), and before it is
-  archived it re-syncs the 180-line "Agent guide" text of
-  `board-agent-guidance` and the "Fold semantics" text of `board-events`
-  with the main specs, dropping the removed refusal reason of the old
-  gate at `implementing` from its fold text (design.md of
-  `add-adhoc-ticket-lifecycle`, "Overlap with in-flight changes").
+- `add-claim-leases` was re-synced with the main specs when the ad hoc
+  ticket lifecycle was archived (its tasks.md says which requirements):
+  its guidance group takes `GUIDANCE_VERSION` 3 and its ADR is 0014. Its
+  "Agent guide" keeps the 180-line limit the lifecycle set, which the
+  mutex recipe must now fit beside the ad hoc text (the orchestrator
+  output is 159 lines today).
+- The draft branch `openspec/add-harness-integration` (not merged)
+  predates both archives: before it is proposed it re-syncs board-cli
+  "Command surface", "Exit codes" and "MCP server" and board-agent-guidance
+  "Installing guidance into a host project" (six rules, guidance version
+  2) and "Checking installed guidance" with the main specs, keeping
+  `remote`, `init --remote | --into-host` and the scope disposition
+  flags, and takes the next free `GUIDANCE_VERSION` and ADR number after
+  `add-claim-leases`.
 - `src/board/__tests__/into-host.test.ts` ("Migration refused with
   unpushed commits") flaked once on the Node 26 CI job of PR #83: the
   `.board` snapshot held 42 entries against 41 expected, most likely a

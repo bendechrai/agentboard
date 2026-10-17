@@ -6,6 +6,8 @@ assignee, lease_ttl, lease_expires_at, lease_event and lease_confirmed
 (all null when the ticket has no lease), available_at and available_event
 (when and by which release, forced release or lapse the ticket last
 became available, for deriving grants), version, updated_at, task_source, task_ref, task_item, adhoc,
+unplanned (the unplanned disposition as a JSON object with reason, actor
+and ts, or null),
 labels as a JSON array,
 closed, decision, checklist as a JSON array), `waiters` (ticket id,
 position, actor, ttl, join event hash, join ts), `comments` (ticket id, sequence,
@@ -36,6 +38,14 @@ of the ticket to display them.
 #### Scenario: List reads the cache
 - **WHEN** `agentboard list --status implementing --json` runs on a board with a current cache and no grant due at the local clock
 - **THEN** it returns the matching tickets without reading any event file
+
+#### Scenario: Unplanned disposition survives a rebuild
+- **WHEN** a ticket was merged with `--unplanned "hotfix"` and `agentboard rebuild` runs twice
+- **THEN** the ticket's `unplanned` is identical after each rebuild, the canonical dumps are byte-identical, and `rebuild --check` detects a hand-edited `unplanned` value
+
+#### Scenario: Cache from an earlier schema is rebuilt
+- **WHEN** a command opens a cache whose schema version predates the `unplanned` column
+- **THEN** the cache is rebuilt from the event files before the command reads it
 
 #### Scenario: A due grant is the only reason to read the log
 - **WHEN** a board has a current cache and a ticket held under a lease with one waiter, whose lapse grant has a slot time in the future, and `agentboard list` runs first at a clock before that slot and then at a clock at or after it
@@ -70,6 +80,13 @@ documented code, while the work of its catch-up (event files folded and due
 grants written and folded) SHALL be committed. If the process dies after the
 event file is written but before commit, the event file remains and the next
 command's catch-up SHALL fold it.
+A `move` or `close` that gives a scope disposition SHALL propose two events
+in order, the disposition and then the move or close: each SHALL be
+validated against the state the earlier one leaves, each SHALL have a
+hybrid timestamp later than the one before, and if either fails validation
+neither SHALL be written. Their files SHALL be written in that order, so a
+crash can leave the disposition without its move or close, never the
+reverse.
 
 #### Scenario: Validation failure writes nothing
 - **WHEN** `agentboard move T1 merged` runs, with nothing to catch up, while T1 is in status `todo`
@@ -78,6 +95,14 @@ command's catch-up SHALL fold it.
 #### Scenario: Crash between file and commit
 - **WHEN** a command is killed after its event file is renamed into place but before the transaction commits
 - **THEN** the next command folds that event and the cache reflects it exactly as if the first command had completed
+
+#### Scenario: Crash between the disposition and the move
+- **WHEN** `move T1 merged --unplanned "hotfix"` is killed after the `ticket.unplanned` file is renamed into place but before the `ticket.move` file is written
+- **THEN** the next command folds the disposition, T1 is still in `review` with the unplanned disposition, and `move T1 merged` without a disposition then succeeds
+
+#### Scenario: Second event refused
+- **WHEN** `close T1 --no-decision --task openspec:x#1` runs for a ticket in `implementing`
+- **THEN** the command exits 4 with reason `invalid-transition` and neither the `ticket.link` nor the `ticket.close` file is created
 
 #### Scenario: Refused command keeps its catch-up
 - **WHEN** a grant is due on T1 and not yet written, and a command on T1 is refused by validation

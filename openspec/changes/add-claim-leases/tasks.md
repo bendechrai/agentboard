@@ -22,6 +22,21 @@ its archive folded `remote`, `init [--remote <url> | --into-host]` and the
 main "Command surface" and "MCP server"; this change's text of both
 requirements is re-synced with that main text, keeping those additions and
 adding its own, so its archive applies cleanly.
+`add-adhoc-ticket-lifecycle` was archived on 2026-10-17 (ADR 0013,
+`GUIDANCE_VERSION` 2). Its archive changed the main text of
+`board-agent-guidance` "Agent guide", `board-cache` "Cache schema" and
+"One command, one transaction", `board-events` "Event kinds" and "Fold
+semantics", and `board-view-model` "Activity feed entries"; this change's
+MODIFIED text of each was re-synced with that main text, keeping the ad
+hoc text and scenarios (the unplanned disposition, the `unplanned` cache
+column, the two-event transaction, `ticket.unplanned`, the
+`needs-scope-disposition` and `already-linked` fold rules in place of the
+removed task-link gate at `implementing`, and the `recorded as unplanned`
+summary) and adding its own. "Command surface" and "MCP server" already
+carried the lifecycle's flags and needed no change. Both changes set the
+guide limit to 180 lines, so the mutex recipe fits within it beside the
+ad hoc text. This change's guidance group sets `GUIDANCE_VERSION` to 3
+and its ADR is 0014.
 
 Every group is delivered by a test author, an implementer and a reviewer
 in turn (see CONTRIBUTING.md), on one branch per group named
@@ -66,12 +81,12 @@ environment variable.
 
 ## 6. Guidance and feed summaries (`guidance/mutex-recipe`)
 
-- [ ] 6.1 Add the `Mutex tickets` section to `help agents`, the worker lines to the test-author, implementer and reviewer checklists and the queue-runner lines to the orchestrator checklist, the short recipe to the installed `claude` and `agents-md` text, and the worker rule to the MCP instructions summary; set `GUIDANCE_VERSION` to 2. Verify: the guide tests (every `agentboard ` line parses, at most 180 lines with each role checklist, ASCII), the four "Mutex ticket recipe" scenarios, the modified "Agent guide" scenarios, the instructions at most 2000 characters, and `agentboard://guide` still equal to `help agents`
+- [ ] 6.1 Add the `Mutex tickets` section to `help agents`, the worker lines to the test-author, implementer and reviewer checklists and the queue-runner lines to the orchestrator checklist, the short recipe to the installed `claude` and `agents-md` text, and the worker rule to the MCP instructions summary; set `GUIDANCE_VERSION` to 3. Verify: the guide tests (every `agentboard ` line parses, at most 180 lines with each role checklist, ASCII), the four "Mutex ticket recipe" scenarios, the modified "Agent guide" scenarios, the instructions at most 2000 characters, and `agentboard://guide` still equal to `help agents`
 - [ ] 6.2 Extend `describeEvent` with the lease, queue and grant summaries and the ttl formatting rule. Verify: tests for each new summary, including `claimed (lease 90s)`, `renewed lease (2h)`, `joined the queue`, and the "Forced release summary", "Takeover summary" and "Grant summary" scenarios, and a rejected or stale event producing no feed entry
 
 ## 7. Documentation (`docs/claim-leases`)
 
-- [ ] 7.1 Document leases, renew, the queue, `--wait`, grants, forced release and `config` in README.md (command reference; the mutex ticket recipe with a merge-lock example for CLI workers and for an orchestrator running the queue over MCP; grace and liveness; clock skew and multi-machine limits; the upgrade requirement for boards shared between machines), record the decisions in a new ADR (grace leases and liveness instead of a declared intent flag; takeover and grants decided from event timestamps with a fixed 60 second tolerance; derived, backdated grant events with the reserved actor; forced release as a distinct kind without an allowlist), run `agentboard agents install` in this repository to move its own guidance to version 2, and update STATUS.md. Verify: `make ascii`, `make validate-specs`, `agentboard agents check` reporting every target current, and running the README recipe on a temporary board (claim with `--ttl`, let the grace lapse, wait with `--wait --timeout` in a second terminal and see the grant, renew, force-release another ticket and read the previous holder's inbox)
+- [ ] 7.1 Document leases, renew, the queue, `--wait`, grants, forced release and `config` in README.md (command reference; the mutex ticket recipe with a merge-lock example for CLI workers and for an orchestrator running the queue over MCP; grace and liveness; clock skew and multi-machine limits; the upgrade requirement for boards shared between machines), record the decisions in ADR 0014 (grace leases and liveness instead of a declared intent flag; takeover and grants decided from event timestamps with a fixed 60 second tolerance; derived, backdated grant events with the reserved actor; forced release as a distinct kind without an allowlist), run `agentboard agents install` in this repository to move its own guidance to version 3, and update STATUS.md. Verify: `make ascii`, `make validate-specs`, `agentboard agents check` reporting every target current, and running the README recipe on a temporary board (claim with `--ttl`, let the grace lapse, wait with `--wait --timeout` in a second terminal and see the grant, renew, force-release another ticket and read the previous holder's inbox)
 
 ## 8. Re-import reconciliation (`openspec/reconcile-import`)
 

@@ -11,7 +11,8 @@ and the web app's Health, Replay and hand-off Graph views.
 ### Requirement: Health report
 `healthReport` SHALL be a pure view-model function (see board-view-model)
 of the board's tickets and events, `now`, the thresholds `staleAfter`
-(default 2 hours) and `blockedAfter` (default 24 hours), and, when
+(default 2 hours), `blockedAfter` (default 24 hours) and `unplannedWithin`
+(default 7 days), and, when
 supplied by a server, the observed late arrivals and the last cache check.
 Every age SHALL be `now` minus an event wall, and 0 when that is negative.
 The report SHALL contain:
@@ -32,6 +33,10 @@ The report SHALL contain:
   least one `pr` link, and no open decision or a `decision` link),
   `heldByDecision` (at least one `pr` link, open decisions and no
   `decision` link) and `missingPr` (no `pr` link);
+- `unplannedScope`: `total`, the number of tickets, open or closed, that
+  are unplanned scope (see "Unplanned scope in the health report"), and
+  `tickets`, those whose disposition event is less than `unplannedWithin`
+  old, most recent first;
 - `late`: the server's observed late arrivals, or null when not supplied;
 - `check`: the last cache check result, or null when not supplied.
 
@@ -67,7 +72,8 @@ SHALL be shown as invalid, without changing the report, in the web panel.
 
 ### Requirement: Health command
 `agentboard health [--stale-after <duration>] [--blocked-after <duration>]
-[--check]` SHALL print the health report of the board, with `late` null,
+[--unplanned-within <duration>] [--check]` SHALL print the health report of
+the board, with `late` null,
 and with `check` null unless `--check` is given, in which case it SHALL
 run the same comparison as `rebuild --check` and include its result
 (whether the cache matches and the number of differing rows). It SHALL
@@ -77,8 +83,10 @@ applied events, reading each file at most once, within one read snapshot
 of closed tickets cannot be skipped without reading them), SHALL
 write nothing, SHALL need no actor, and SHALL exit 0 whatever the report
 contains. Human output SHALL list each section with its count and one
-line per ticket in the `list` format followed by the finding; `--json`
-SHALL print the report as one JSON document.
+line per ticket in the `list` format followed by the finding; the
+unplanned scope section SHALL be headed with the count within the window
+and the total, and each line SHALL end with the outcome, the age and the
+reason; `--json` SHALL print the report as one JSON document.
 
 #### Scenario: JSON report
 - **WHEN** `agentboard health --json` runs on a board with one stale claim
@@ -92,10 +100,19 @@ SHALL print the report as one JSON document.
 - **WHEN** an MCP client calls `board_health` with `{"stale-after": "30m"}`
 - **THEN** the result is the same document `agentboard health --stale-after 30m --json` prints
 
+#### Scenario: Unplanned merges in text output
+- **WHEN** ad hoc ticket T1 was moved to `merged` with `--unplanned "production hotfix"` 2 hours before `now`, and `agentboard health` runs with the default thresholds
+- **THEN** the output has the line `unplanned scope: 1 in the last 7d (1 in all)` followed by T1's `list` line ending `merged 2h ago, unplanned: production hotfix`, and the exit code is 0
+
+#### Scenario: Unplanned scope over MCP and JSON
+- **WHEN** an MCP client calls `board_health` with `{"unplanned-within": "30d"}` on the same board
+- **THEN** the result equals what `agentboard health --unplanned-within 30d --json` prints, its `thresholds.unplannedWithin` is 2592000000, and `unplannedScope.tickets` has one entry for T1 with `reason` `production hotfix` and `outcome` `merged`
+
 ### Requirement: Health in the web app
 The web app SHALL offer a health view computed with `healthReport` in the
 browser, re-evaluated on every model change and at least every 10
-seconds, with inputs for both thresholds. The server SHALL answer
+seconds, with inputs for all three thresholds and an unplanned scope
+section styled as information, not as a warning. The server SHALL answer
 `GET /api/health` with `{late, check}`, where `late` lists, newest first,
 at most the last 100 events its feed reported as late or removed in a
 resync since the server started, each with its hash, kind, ticket, whether
@@ -114,6 +131,10 @@ is merged is known only to `close-merged`.
 #### Scenario: Check is single-flight and cached
 - **WHEN** two requests for `/api/health/check` arrive together and a third arrives 10 seconds later
 - **THEN** the comparison runs once and all three responses carry the same result
+
+#### Scenario: Unplanned scope in the Health view
+- **WHEN** the Health view is open and an ad hoc ticket is merged with `--unplanned "hotfix"` from the CLI
+- **THEN** within 10 seconds the view's unplanned scope section lists the ticket with the reason `hotfix`, and changing the window input to `1m` after a minute removes it from the list while the total stays 1
 
 ### Requirement: Replay
 `replayState(events, index)` SHALL return the board state obtained by
@@ -162,3 +183,31 @@ when a hand-off on it arrives from the stream.
 #### Scenario: Filter by change
 - **WHEN** the graph is filtered to `openspec:add-login`
 - **THEN** only hand-offs on tickets whose task reference is `openspec:add-login#<item>` are counted
+
+### Requirement: Unplanned scope in the health report
+A ticket SHALL be unplanned scope when it has an unplanned disposition and
+is in `merged` or closed, or when it is closed with an ad hoc reason, no
+task reference and no unplanned disposition (a close written before scope dispositions existed). Each
+entry SHALL carry the ticket's card, `adhoc` (the ad hoc reason), `reason` (the
+unplanned reason, null in the second case), `outcome` (`merged` if it reached
+`merged`, else `closed`), the event it was measured from and the age.
+
+#### Scenario: Window and total
+- **WHEN** three tickets were merged with `--unplanned`, 1 day, 6 days and 10 days before `now`, with the default thresholds
+- **THEN** `unplannedScope.total` is 3 and `unplannedScope.tickets` lists the 1 day and 6 day tickets, most recent first
+
+#### Scenario: Closed tickets are included
+- **WHEN** an ad hoc ticket was closed from `blocked` with `--unplanned "abandoned"` an hour before `now`
+- **THEN** it is in `unplannedScope.tickets` with `outcome` `closed` and `reason` `abandoned`, although closed tickets appear in no other section
+
+#### Scenario: Ticket closed without a disposition event
+- **WHEN** an older board has an ad hoc ticket closed from `blocked` with no task link and no `ticket.unplanned`
+- **THEN** it counts in `unplannedScope.total` with `reason` null, measured from its `ticket.close`, and no command or the report fails because of it
+
+#### Scenario: Linked and in-flight tickets are not unplanned scope
+- **WHEN** one ad hoc ticket is in `review` with no disposition and another was merged with `--task openspec:add-login#2`
+- **THEN** neither is counted in `unplannedScope`
+
+#### Scenario: Information, not a failure
+- **WHEN** the report has unplanned scope and no other finding
+- **THEN** `health` exits 0, and the web Health view shows the section without the warning styling used for stale claims and stuck tickets
