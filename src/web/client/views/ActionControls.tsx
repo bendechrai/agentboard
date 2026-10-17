@@ -47,7 +47,21 @@
  *   `#action-move-status` labelled `Move to` whose options (value and text
  *   the status) are exactly `moveTargets(ticket)`, in that order, the
  *   first selected, and a submit `button` with text `Move`, `disabled`
- *   when there is no target. Posts `move` with `{ id, status }`;
+ *   when there is no target. Posts `move` with `{ id, status }`. While the
+ *   chosen target is `merged` and `needsScopeDisposition(ticket)` holds,
+ *   the form also holds the scope fields (board-web-actions: "Action
+ *   controls in the web app"; ADR 0013): a `select` `#action-move-scope`
+ *   labelled `Scope` with the options, in order, `unplanned` (text
+ *   `unplanned reason`) and `task` (text `task reference`), `unplanned`
+ *   selected initially, and an `input` (type `text`)
+ *   `#action-move-scope-value` labelled `Value`. It then posts `{ id,
+ *   status: 'merged', unplanned: <value> }` or `{ id, status: 'merged',
+ *   task: <value> }`, the one property the selected scope names, with the
+ *   value as entered (an empty one included: the server decides). With
+ *   any other target, or for a ticket that has a task reference or an
+ *   unplanned disposition, neither scope element exists and the body is
+ *   `{ id, status }`. The scope and its value are kept on a refusal and
+ *   when the ticket changes, like every other input;
  * - claim: a `div` with `data-action="claim"` holding a `button` (type
  *   `button`) with text `Claim`. Posts `claim` with `{ id }`;
  * - release: a `div` with `data-action="release"` holding a `button`
@@ -75,6 +89,16 @@
  *   `close` with exactly one disposition: `{ id, 'decision-recorded-in':
  *   <path> }` when the decision radio is checked, `{ id, 'no-decision':
  *   true }` when the other is (the path, even if typed, is not sent).
+ *   While `needsScopeDisposition(ticket)` holds, the form also holds the
+ *   scope fields, shaped as the move control's: a `select`
+ *   `#action-close-scope` labelled `Scope` with the options `unplanned`
+ *   (text `unplanned reason`) and `task` (text `task reference`) in that
+ *   order, `unplanned` selected initially, and an `input` (type `text`)
+ *   `#action-close-scope-value` labelled `Value`; the body then also
+ *   carries `unplanned: <value>` or `task: <value>`, the one property the
+ *   selected scope names. For a ticket with a task reference or an
+ *   unplanned disposition neither scope element exists and nothing is
+ *   added to the body.
  * Every submit is the form's `submit` event (default prevented).
  *
  * DOM contract of `ChecklistControl`: a `div` with
@@ -110,6 +134,7 @@ import {
   type ActionName,
   type ActionResult,
   type ActionSuccess,
+  type ScopeDisposition,
 } from '../actions.js';
 import type { Connection, ErrorDocument } from '../api.js';
 
@@ -131,6 +156,18 @@ export function moveTargets(ticket: Ticket): Status[] {
  */
 export function handoffStatuses(ticket: Ticket): Status[] {
   return [ticket.status, ...moveTargets(ticket).filter((s) => s !== ticket.status)];
+}
+
+/**
+ * True exactly when `ticket` has neither a task reference (`task` null)
+ * nor an unplanned disposition (`unplanned` null): the tickets whose move
+ * to `merged` and whose close need a scope disposition (ADR 0013; the
+ * fold's `needs-scope-disposition`). Whether the ticket is ad hoc, closed
+ * or in any status does not matter: the page offers the fields and the
+ * server decides. Pure.
+ */
+export function needsScopeDisposition(ticket: Ticket): boolean {
+  return ticket.task === null && ticket.unplanned === null;
 }
 
 /** What every control needs. */
@@ -291,21 +328,114 @@ function CommentControl(props: ActionControlProps): JSX.Element {
   );
 }
 
+/** The scope a disposition names: the `task` or `unplanned` property of the body. */
+type ScopeKind = 'unplanned' | 'task';
+
+/** The options of the scope select, in order; `unplanned` is the initial one. */
+const SCOPE_KINDS: readonly { kind: ScopeKind; text: string }[] = [
+  { kind: 'unplanned', text: 'unplanned reason' },
+  { kind: 'task', text: 'task reference' },
+];
+
+/** The one property the scope names, with the value as entered. */
+function scopeDisposition(kind: ScopeKind, value: string): ScopeDisposition {
+  return kind === 'task' ? { task: value } : { unplanned: value };
+}
+
+/** The entries of the scope fields of one control, kept like every other input. */
+interface ScopeEntry {
+  kind: ScopeKind;
+  value: string;
+}
+
+/** The scope entries of a control and their setters. */
+function useScope(): {
+  scope: ScopeEntry;
+  setKind: (kind: string) => void;
+  setValue: (value: string) => void;
+} {
+  const [scope, setScope] = useState<ScopeEntry>({ kind: 'unplanned', value: '' });
+  return {
+    scope,
+    setKind: (kind) => {
+      const next = SCOPE_KINDS.find((k) => k.kind === kind);
+      if (next !== undefined) {
+        setScope((current) => ({ ...current, kind: next.kind }));
+      }
+    },
+    setValue: (value) => {
+      setScope((current) => ({ ...current, value }));
+    },
+  };
+}
+
+/**
+ * The scope fields of the move control and the close form (module
+ * comment): the `select` `#action-<control>-scope` labelled `Scope` and
+ * the text `input` `#action-<control>-scope-value` labelled `Value`.
+ */
+function ScopeFields(props: {
+  control: 'move' | 'close';
+  scope: ScopeEntry;
+  onKind: (kind: string) => void;
+  onValue: (value: string) => void;
+}): JSX.Element {
+  const selectId = `action-${props.control}-scope`;
+  const valueId = `${selectId}-value`;
+  return (
+    <>
+      <label for={selectId}>Scope</label>
+      <select
+        id={selectId}
+        value={props.scope.kind}
+        onChange={(e) => {
+          props.onKind(e.currentTarget.value);
+        }}
+      >
+        {SCOPE_KINDS.map((k) => (
+          <option key={k.kind} value={k.kind}>
+            {k.text}
+          </option>
+        ))}
+      </select>
+      <label for={valueId}>Value</label>
+      <input
+        type="text"
+        id={valueId}
+        value={props.scope.value}
+        onInput={(e) => {
+          props.onValue(e.currentTarget.value);
+        }}
+      />
+    </>
+  );
+}
+
 function MoveControl(props: ActionControlProps): JSX.Element {
   const state = useAction(props);
   const targets = moveTargets(props.ticket);
   const [picked, setPicked] = useState('');
   const status = chosen(picked, targets);
+  const { scope, setKind, setValue } = useScope();
+  // The scope fields exist only while `merged` is chosen for an undisposed ticket.
+  const asksScope = status === 'merged' && needsScopeDisposition(props.ticket);
   return (
     <form
       class="action action-inline"
       data-action="move"
       onSubmit={(e) => {
         e.preventDefault();
+        const id = props.ticket.id;
         const target = targets.find((t) => t === status);
-        if (target !== undefined) {
-          state.send('move', { id: props.ticket.id, status: target });
+        if (target === undefined) {
+          return;
         }
+        state.send(
+          'move',
+          target === 'merged' && asksScope
+            ? { id, status: target, ...scopeDisposition(scope.kind, scope.value) }
+            : { id, status: target },
+        );
       }}
     >
       <label for="action-move-status">Move to</label>
@@ -322,6 +452,9 @@ function MoveControl(props: ActionControlProps): JSX.Element {
           </option>
         ))}
       </select>
+      {asksScope ? (
+        <ScopeFields control="move" scope={scope} onKind={setKind} onValue={setValue} />
+      ) : null}
       <button type="submit" disabled={state.inFlight || targets.length === 0}>
         Move
       </button>
@@ -486,6 +619,9 @@ function CloseControl(props: ActionControlProps): JSX.Element {
   const state = useAction(props);
   const [decision, setDecision] = useState(true);
   const [path, setPath] = useState('');
+  const { scope, setKind, setValue } = useScope();
+  // The scope fields exist only for an undisposed ticket.
+  const asksScope = needsScopeDisposition(props.ticket);
   return (
     <form
       class="action"
@@ -493,9 +629,12 @@ function CloseControl(props: ActionControlProps): JSX.Element {
       onSubmit={(e) => {
         e.preventDefault();
         const id = props.ticket.id;
+        const decided: ActionBodies['close'] = decision
+          ? { id, 'decision-recorded-in': path }
+          : { id, 'no-decision': true };
         state.send(
           'close',
-          decision ? { id, 'decision-recorded-in': path } : { id, 'no-decision': true },
+          asksScope ? { ...decided, ...scopeDisposition(scope.kind, scope.value) } : decided,
         );
       }}
     >
@@ -527,6 +666,11 @@ function CloseControl(props: ActionControlProps): JSX.Element {
           <label for="action-close-none">No decision</label>
         </span>
       </div>
+      {asksScope ? (
+        <div class="action-row">
+          <ScopeFields control="close" scope={scope} onKind={setKind} onValue={setValue} />
+        </div>
+      ) : null}
       <div class="action-row">
         <label for="action-close-path">Decision path</label>
         <input

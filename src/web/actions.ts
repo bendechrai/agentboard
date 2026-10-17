@@ -108,7 +108,14 @@ export const ACTION_BODY_LIMIT = 65536;
 /**
  * Body properties refused with 400 `usage` even though the command's MCP
  * tool accepts them: the actor is the server's, `--json` is implied, and
- * the browser has no secret-like override.
+ * the browser has no secret-like override. The scope disposition of
+ * `move` and `close` (`task`, `change` with `group`, or `unplanned`) is
+ * accepted like every other registry argument, so an undisposed ticket is
+ * merged or closed from the page with the CLI's refusals
+ * (`needs-scope-disposition`, `already-linked`, `secret-like` on the
+ * reason, each 409 or 400 as `actionStatus` says); `allow-secret-like`
+ * stays refused there too (board-web-actions: "Secret-like text is
+ * refused", scenario "Secret-like unplanned reason from the browser").
  */
 export const REFUSED_PROPERTIES: readonly string[] = ['as', 'json', 'allow-secret-like'];
 

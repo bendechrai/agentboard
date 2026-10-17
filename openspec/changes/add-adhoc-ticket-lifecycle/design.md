@@ -259,6 +259,26 @@ unplanned scope: 2 in the last 7d (5 in all)
 - View-model card: `unplanned: {reason} | null` beside `adhoc`; the web
   card shows "unplanned" in place of "ad hoc"; the web and TUI ticket
   detail show the reason.
+- Web card: when the ticket has no task reference and `unplanned` is set,
+  the marker `unplanned` (`span.task.unplanned`) followed by the reason
+  (`span.unplanned-reason`), never `ad hoc`, because `Card.adhoc` carries
+  no reason and the proposal says the web card shows one.
+- Web ticket detail: an `Unplanned` field, `<reason> (by <actor>)`,
+  right after `Task`; TUI ticket detail: the line `unplanned: <reason>
+  (by <actor>)` right after `task:`. Both are the line `show` prints.
+- Web move control and close form: for a ticket with neither a task
+  reference nor an unplanned disposition, the move control (only while
+  the chosen target is `merged`) and the close form add a `Scope` select
+  (`unplanned reason`, then `task reference`) and a `Value` text input,
+  and send the value as the `unplanned` or `task` property. `unplanned`
+  is selected initially, because an undisposed ad hoc ticket at merge
+  usually has no plan to link; the task option is one click away. The
+  entries are kept while another target is chosen (that body carries
+  only the status), on a refusal and across a detail reload.
+- Secret-like reasons from the browser: the unplanned reason goes through
+  the same check as comments and hand-off notes, and `allow-secret-like`
+  stays refused with 400 `usage` on `move` and `close` as on every action
+  (ADR 0009); a false positive is written with the CLI.
 
 ### 9. Guidance
 

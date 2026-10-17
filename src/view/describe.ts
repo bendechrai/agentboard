@@ -46,6 +46,9 @@ function describeClose(body: TicketCloseBody): string {
  *   in text form, as `formatTaskRef`), `linked pr <pr>` (a PR number in
  *   decimal, or the string as given) or `linked decision <path>`
  * - `ticket.close`: `closed (decision <path>)` or `closed (no decision)`
+ * - `ticket.unplanned`: `recorded as unplanned: <reason>` (ADR 0013;
+ *   board-view-model: "Activity feed entries", scenario "Unplanned
+ *   summary"), the reason on one line like every other text
  * - `ticket.checklist`: `checked <n>` when `done` is true, `unchecked <n>`
  *   otherwise, where `<n>` is the 1-based line number (`index + 1`)
  * - `ticket.checklist.add`: `added <k> checklist line(s)`, with `<k>` the
@@ -88,16 +91,16 @@ export function describeEvent(event: BoardEvent | UnknownKindEvent): string {
       return `added ${String(event.body.items.length)} checklist line(s)`;
     case 'board.meta':
       return `set ${oneLine(event.body.key)}`;
+    case 'ticket.unplanned':
+      return `recorded as unplanned: ${oneLine(event.body.reason)}`;
     case 'ticket.renew':
     case 'ticket.release.force':
     case 'ticket.queue.join':
     case 'ticket.queue.leave':
     case 'ticket.grant':
-    case 'ticket.unplanned':
       // Provisional: the kind itself, until the lease, queue and grant
-      // summaries of board-view-model are written (add-claim-leases 6.2)
-      // and `recorded as unplanned: <reason>` (add-adhoc-ticket-lifecycle
-      // 4.1). It must not throw: this module is bundled into the web client.
+      // summaries of board-view-model are written (add-claim-leases 6.2).
+      // It must not throw: this module is bundled into the web client.
       return event.kind;
   }
 }

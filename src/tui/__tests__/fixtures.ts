@@ -113,6 +113,39 @@ export function fixtureInputs(): FoldInput[] {
   ];
 }
 
+/**
+ * The unplanned fixture board (ADR 0013): T1 planned, in todo; T3 an ad hoc
+ * ticket (`found in prod`) claimed by impl, moved to review, commented on
+ * by rev, then merged by orch with `move T3 merged --unplanned hotfix`
+ * (the disposition 31 minutes before NOW, the move 30 minutes before).
+ */
+export function unplannedFixtureInputs(): FoldInput[] {
+  return [
+    E.create(
+      T1,
+      { title: 'Decode raw key bytes', task: TASK },
+      { actor: 'orch', ...ago(26 * HOUR) },
+    ),
+    E.create(
+      T3,
+      { title: 'Fix the login redirect', adhoc: 'found in prod' },
+      { actor: 'orch', ...ago(3 * HOUR) },
+    ),
+    E.claim(T3, { actor: 'impl', ...ago(2 * HOUR) }),
+    E.move(T3, 'tests', { actor: 'impl', ...ago(119 * MIN) }),
+    E.move(T3, 'implementing', { actor: 'impl', ...ago(118 * MIN) }),
+    E.move(T3, 'review', { actor: 'impl', ...ago(60 * MIN) }),
+    E.comment(T3, 'looks right', { actor: 'rev', ...ago(40 * MIN) }),
+    E.unplanned(T3, 'hotfix', { actor: 'orch', ...ago(31 * MIN) }),
+    E.move(T3, 'merged', { actor: 'orch', ...ago(30 * MIN) }),
+  ];
+}
+
+/** The unplanned fixture model, nothing late. */
+export function unplannedFixtureModel(): BoardModel {
+  return model(unplannedFixtureInputs());
+}
+
 /** The main fixture model, with T5's comment (`frames look right`) marked late. */
 export function fixtureModel(): BoardModel {
   const inputs = fixtureInputs();

@@ -35,7 +35,18 @@ import {
 } from '../frame.js';
 import type { UiState } from '../state.js';
 import { DEFAULT, all, expectCanonical, style, styleAt, stylesOf } from './frame-helpers.js';
-import { NOW, T1, T3, T4, T5, T6, T7, fixtureModel, START_UI } from './fixtures.js';
+import {
+  NOW,
+  T1,
+  T3,
+  T4,
+  T5,
+  T6,
+  T7,
+  fixtureModel,
+  START_UI,
+  unplannedFixtureModel,
+} from './fixtures.js';
 
 const GOLDEN = join(dirname(fileURLToPath(import.meta.url)), 'golden');
 
@@ -83,10 +94,18 @@ describe('golden frames', () => {
     );
   });
 
+  it('the detail of a ticket merged as unplanned at 80x24 matches detail-unplanned-80x24.txt (ADR 0013)', () => {
+    const ui: UiState = { ...START, detail: { ticket: T3, scroll: 0 } };
+    expect(renderFrame(unplannedFixtureModel(), ui, SMALL, NOW).lines).toEqual(
+      golden('detail-unplanned-80x24.txt'),
+    );
+  });
+
   it('every golden file is exactly rows lines of exactly columns characters', () => {
     for (const [file, columns, rows] of [
       ['board-80x24.txt', 80, 24],
       ['board-140x40.txt', 140, 40],
+      ['detail-unplanned-80x24.txt', 80, 24],
       ['too-small-50x10.txt', 50, 10],
     ] as const) {
       const lines = golden(file);
@@ -303,6 +322,70 @@ describe('detailLines', () => {
 
   it('escapes the title of T4 once', () => {
     expect(detailLines(M, T4, 140)).toContain('title: Caf\\u00E9 \\u00FCber keys');
+  });
+
+  describe('the unplanned disposition (ADR 0013)', () => {
+    const U = unplannedFixtureModel();
+
+    it('the fixture folds with every event applied and T3 merged as unplanned', () => {
+      expect(U.events.every((e) => e.outcome === 'applied')).toBe(true);
+      expect(U.tickets[T3]).toMatchObject({
+        status: 'merged',
+        unplanned: { reason: 'hotfix', actor: 'orch' },
+      });
+    });
+
+    it('shows the reason and the actor on the line after the task line, as show prints it', () => {
+      const lines = detailLines(U, T3, 140);
+      const task = lines.indexOf('task: adhoc: found in prod');
+      expect(task).toBeGreaterThan(0);
+      expect(lines[task + 1]).toBe('unplanned: hotfix (by orch)');
+      expect(lines[task + 2]).toBe('labels: -');
+    });
+
+    it('lists the disposition and the move as system lines of the conversation, in order', () => {
+      const lines = detailLines(U, T3, 140);
+      const recorded = lines.indexOf('  orch recorded as unplanned: hotfix');
+      expect(recorded).toBeGreaterThan(0);
+      expect(lines[recorded - 1]).toBe('rev: looks right');
+      expect(lines[recorded + 1]).toBe('  orch moved to merged');
+      expect(lines.at(-1)).toBe('  orch moved to merged');
+    });
+
+    it('shows no unplanned line for a planned ticket or an undisposed ad hoc one', () => {
+      for (const lines of [detailLines(U, T1, 140), detailLines(M, T3, 140)]) {
+        expect(lines.some((line) => line.startsWith('unplanned:'))).toBe(false);
+      }
+    });
+
+    it('escapes and wraps the reason like every other line, and never truncates it', () => {
+      const reason = `hot\u00e9fix ${'x'.repeat(100)}`;
+      const m = model([
+        E.create(T1, { title: 't', adhoc: 'spike' }, { actor: 'orch', wall: 100 }),
+        E.move(T1, 'blocked', { actor: 'orch', wall: 200 }),
+        E.unplanned(T1, reason, { actor: 'orch', wall: 300 }),
+      ]);
+      const full = `unplanned: hot\\u00E9fix ${'x'.repeat(100)} (by orch)`;
+      const lines = detailLines(m, T1, 60);
+      const at = lines.indexOf(full.slice(0, 60));
+      expect(at).toBeGreaterThan(0);
+      expect(lines.slice(at, at + 3)).toEqual([
+        full.slice(0, 60),
+        full.slice(60, 120),
+        full.slice(120),
+      ]);
+    });
+
+    it('styles the disposition and the move dim as system lines, after the plain comment', () => {
+      const ui: UiState = { ...START, detail: { ticket: T3, scroll: 0 } };
+      const frame = renderFrame(U, ui, SMALL, NOW);
+      const recorded = frame.lines.findIndex((l) => l.startsWith('  orch recorded as unplanned'));
+      expect(recorded).toBeGreaterThan(0);
+      expect(stylesOf(frame, recorded - 1, 0, 80)).toEqual(all(80, DEFAULT));
+      expect(stylesOf(frame, recorded, 0, 80)).toEqual(all(80, style({ dim: true })));
+      expect(stylesOf(frame, recorded + 1, 0, 80)).toEqual(all(80, style({ dim: true })));
+      expectCanonical(frame, 80);
+    });
   });
 
   it('wraps long lines at the width without truncating', () => {

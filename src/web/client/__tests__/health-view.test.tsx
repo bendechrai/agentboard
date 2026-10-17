@@ -445,6 +445,36 @@ describe('unplanned scope (board-insights: "Unplanned scope in the Health view")
     },
   );
 
+  it('keeps a merge outside the window out of the list on invalid input, rather than falling back to 7d', async () => {
+    // Merged 3 hours ago: outside a 2h window, inside the 7d default. A
+    // silent fallback to the default on bad input would list it.
+    await openHealth(
+      '#/health?unplanned=2h',
+      model([...adhocInReview(), ...mergeUnplanned(NOW - 3 * HOUR)]),
+    );
+    expect(findings('unplanned-scope')).toEqual([]);
+    expect(count('unplanned-scope')).toBe('0');
+    expect(total()).toBe('1 in all');
+    const before = window.location.hash;
+    for (const text of ['7days', '', '1.5d']) {
+      fireEvent.input(field('health-unplanned'), { target: { value: text } });
+      await waitFor(() => {
+        expect(field('health-unplanned').getAttribute('aria-invalid')).toBe('true');
+      });
+      expect(findings('unplanned-scope')).toEqual([]);
+      expect(count('unplanned-scope')).toBe('0');
+      expect(total()).toBe('1 in all');
+      expect(window.location.hash).toBe(before);
+    }
+    // Valid again, and wide enough: listed.
+    fireEvent.input(field('health-unplanned'), { target: { value: '4h' } });
+    await waitFor(() => {
+      expect(findings('unplanned-scope')).toEqual([T1]);
+    });
+    expect(field('health-unplanned').getAttribute('aria-invalid')).not.toBe('true');
+    expect(parseHash(window.location.hash)).toMatchObject({ unplanned: '4h' });
+  });
+
   it('renders the reasons as text, never as markup', async () => {
     const REASON = '<b>hot</b><img src=x onerror=alert(3)>';
     const ADHOC = '<i>spike</i>';

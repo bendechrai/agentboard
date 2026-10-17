@@ -10,7 +10,7 @@ import { DEFAULT_THRESHOLDS, healthReport, parseDuration } from '../health.js';
 import { agentLanes } from '../lanes.js';
 import { replayCheckpoints, replayState } from '../replay.js';
 import { relativeTime } from '../time.js';
-import { E, OTHER, T1, T2, T3, TASK, model, ticketOf } from './helpers.js';
+import { E, OTHER, T1, T2, T3, T4, T5, TASK, model, ticketOf } from './helpers.js';
 
 // board-view-model: "Pure view-model layer", scenario "Deterministic output".
 const inputs = [
@@ -26,9 +26,36 @@ const inputs = [
   E.meta('project', 'agentboard'),
   E.unknown(T2),
   E.assign(T3, 'nobody-yet'),
+  // T4: an ad hoc ticket merged as unplanned (ADR 0013), with a rejected
+  // second disposition after a task link.
+  E.create(T4, { title: 'four', adhoc: 'found in prod' }),
+  E.move(T4, 'tests', { actor: 'impl' }),
+  E.move(T4, 'implementing', { actor: 'impl' }),
+  E.move(T4, 'review', { actor: 'impl' }),
+  E.unplanned(T4, 'hotfix'),
+  E.move(T4, 'merged'),
+  E.create(T5, { title: 'five', adhoc: 'spike' }),
+  E.move(T5, 'blocked'),
+  E.unplanned(T5, 'abandoned: superseded'),
+  E.close(T5, { noDecision: true }),
+  E.link(T4, { task: OTHER }),
+  E.unplanned(T4, 'again'),
 ];
 const m = model(inputs, [inputs[6]?.hash ?? '']);
 const NOW = 1_000_500;
+
+describe('the fixture', () => {
+  it('holds a merged unplanned ticket, a closed unplanned ticket and a rejected disposition', () => {
+    expect(ticketOf(m, T5)).toMatchObject({
+      closed: true,
+      unplanned: { reason: 'abandoned: superseded' },
+    });
+    // The link cleared T4's disposition, and the second one is rejected.
+    expect(ticketOf(m, T4)).toMatchObject({ status: 'merged', unplanned: null, task: OTHER });
+    expect(m.events.at(-1)).toMatchObject({ outcome: 'rejected', reason: 'already-linked' });
+    expect(m.events.filter((e) => e.kind === 'ticket.unplanned' && e.outcome === 'applied')).toHaveLength(2);
+  });
+});
 
 /** Calls `f` on two deep-equal copies of `args` and checks the results match and the inputs are untouched. */
 function twice<A extends unknown[], R>(f: (...args: A) => R, ...args: A): R {

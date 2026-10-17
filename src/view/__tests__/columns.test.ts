@@ -224,6 +224,94 @@ describe('boardColumns and ticketCard: card fields', () => {
     });
   });
 
+  describe('the unplanned marker (ADR 0013)', () => {
+    /** `agentboard move T1 merged --unplanned hotfix` on an ad hoc ticket in review. */
+    const merged = (): FoldInput[] => [
+      E.create(T1, { title: 'Fix the redirect', adhoc: 'found in prod' }),
+      ...path(T1, 'review'),
+      E.unplanned(T1, 'hotfix'),
+      E.move(T1, 'merged'),
+    ];
+
+    it('scenario Unplanned card: the merged card keeps the ad hoc marker, is marked unplanned with its reason and has no task', () => {
+      const m = model(merged());
+      expect(m.events.every((e) => e.outcome === 'applied')).toBe(true);
+      const columns = boardColumns(m.tickets, 0);
+      expect(ids(col(columns, 'merged'))).toEqual([T1]);
+      const [card] = col(columns, 'merged')?.cards ?? [];
+      expect(card).toMatchObject({
+        id: T1,
+        status: 'merged',
+        adhoc: true,
+        unplanned: { reason: 'hotfix' },
+        task: null,
+      });
+      expect(Object.keys(card?.unplanned ?? {})).toEqual(['reason']);
+    });
+
+    it('an ad hoc ticket with no disposition is not marked unplanned', () => {
+      const m = model([E.create(T1, { title: 'x', adhoc: 'hotfix' }), ...path(T1, 'review')]);
+      expect(ticketCard(ticketOf(m, T1), 0)).toMatchObject({
+        adhoc: true,
+        unplanned: null,
+        task: null,
+      });
+    });
+
+    it('a second disposition replaces the reason on the card', () => {
+      const m = model([...merged(), E.unplanned(T1, 'hotfix, no planned task')]);
+      expect(ticketCard(ticketOf(m, T1), 0).unplanned).toEqual({
+        reason: 'hotfix, no planned task',
+      });
+    });
+
+    it('a task link after the disposition clears the unplanned marker and the ad hoc one', () => {
+      const m = model([...merged(), E.link(T1, { task: OTHER })]);
+      expect(ticketCard(ticketOf(m, T1), 0)).toMatchObject({
+        task: 'openspec:add-board-tui#1',
+        adhoc: false,
+        unplanned: null,
+      });
+    });
+
+    it('a rejected disposition on a linked ticket leaves the card unmarked', () => {
+      const m = model([create(T1), ...path(T1, 'review'), E.unplanned(T1, 'hotfix')]);
+      expect(m.events.at(-1)?.outcome).toBe('rejected');
+      expect(ticketCard(ticketOf(m, T1), 0)).toMatchObject({
+        task: 'openspec:add-board-web#1',
+        adhoc: false,
+        unplanned: null,
+      });
+    });
+
+    it('a closed unplanned ticket keeps its marker when closed tickets are included', () => {
+      const m = model([
+        E.create(T1, { title: 'Spike', adhoc: 'try it' }),
+        E.move(T1, 'blocked'),
+        E.unplanned(T1, 'abandoned: superseded'),
+        E.close(T1, { noDecision: true }),
+      ]);
+      expect(ids(col(boardColumns(m.tickets, 0), 'blocked'))).toEqual([]);
+      const [card] = col(boardColumns(m.tickets, 0, { includeClosed: true }), 'blocked')?.cards ?? [];
+      expect(card).toMatchObject({
+        closed: true,
+        adhoc: true,
+        unplanned: { reason: 'abandoned: superseded' },
+      });
+    });
+
+    it('copies the reason, so changing the card leaves the ticket alone', () => {
+      const m = model(merged());
+      const ticket = ticketOf(m, T1);
+      const card = ticketCard(ticket, 0);
+      expect(card.unplanned).not.toBe(ticket.unplanned);
+      if (card.unplanned !== null) {
+        card.unplanned.reason = 'changed';
+      }
+      expect(ticket.unplanned?.reason).toBe('hotfix');
+    });
+  });
+
   it('counts open DECISION: comments as openDecisions defines them, hand-off notes included', () => {
     const m = model([
       create(T1),
