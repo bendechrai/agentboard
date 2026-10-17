@@ -20,24 +20,33 @@ export { asciiText };
 /**
  * The `list` line of a ticket, without a newline:
  * `<full 26-character id>  <status>  <assignee or ->  <markers><title>`,
- * fields separated by two spaces, where `<markers>` is `[adhoc] ` for a
- * ticket with an ad hoc reason and `[closed] ` for a closed ticket (in
- * that order when both apply), and assignee and title pass through
- * `asciiText`. Example:
- * `01ARYZ6S41TSV4RRFFQ69G5FAV  todo  -  [adhoc] Fix thing`. The id is never
- * shortened, so every id printed by `list` can be pasted back into any
- * command. Pure.
+ * fields separated by two spaces, where `<markers>` is `[unplanned] ` for
+ * a ticket with an unplanned disposition (`unplanned` not null), else
+ * `[adhoc] ` for a ticket with an ad hoc reason and no unplanned
+ * disposition, then `[closed] ` for a closed ticket (in that order when
+ * both apply; a ticket with a task reference shows neither of the first
+ * two: board-openspec-integration "Ad hoc markers in list"), and assignee
+ * and title pass through `asciiText`. Examples:
+ * `01ARYZ6S41TSV4RRFFQ69G5FAV  todo  -  [adhoc] Fix thing`,
+ * `01ARYZ6S41TSV4RRFFQ69G5FAV  merged  -  [unplanned] Fix thing`,
+ * `01ARYZ6S41TSV4RRFFQ69G5FAV  blocked  -  [unplanned] [closed] Fix thing`.
+ * The id is never shortened, so every id printed by `list` can be pasted
+ * back into any command. Pure.
  */
 export function renderListLine(ticket: Ticket): string {
-  return listLine({ ...ticket, adhoc: ticket.adhoc !== null });
+  return listLine({ ...ticket, adhoc: ticket.adhoc !== null, unplanned: ticket.unplanned !== null });
 }
 
 /** The fields of a `list` line. */
-type ListFields = Pick<Card, 'id' | 'status' | 'assignee' | 'adhoc' | 'closed' | 'title'>;
+type ListFields = Pick<Card, 'id' | 'status' | 'assignee' | 'adhoc' | 'closed' | 'title'> & {
+  /** The unplanned marker: true when the ticket has an unplanned disposition. */
+  unplanned: boolean;
+};
 
 /** The `list` line of `fields` (see `renderListLine`). */
 function listLine(fields: ListFields): string {
-  const markers = (fields.adhoc ? '[adhoc] ' : '') + (fields.closed ? '[closed] ' : '');
+  const scope = fields.unplanned ? '[unplanned] ' : fields.adhoc ? '[adhoc] ' : '';
+  const markers = scope + (fields.closed ? '[closed] ' : '');
   return [
     fields.id,
     fields.status,
@@ -56,6 +65,9 @@ function listLine(fields: ListFields): string {
  * status: <status>                  (blocked: `blocked (from <origin>)`)
  * assignee: <assignee or ->
  * task: <source>:<ref>#<item>       (or `adhoc: <reason>`, or `task: -`)
+ * unplanned: <reason> (by <actor>)  (only when the ticket has an unplanned
+ *                                    disposition: its reason and actor,
+ *                                    right after the task or adhoc line)
  * labels: <comma+space separated, or ->
  * description: <text or ->
  * checklist:                        (then per line `  [x] <index> <text>` or `  [ ] ...`)
@@ -83,6 +95,9 @@ export function renderShow(show: ShowResult): string {
     lines.push(`adhoc: ${asciiText(t.adhoc)}`);
   } else {
     lines.push('task: -');
+  }
+  if (t.unplanned !== null) {
+    lines.push(`unplanned: ${asciiText(t.unplanned.reason)} (by ${asciiText(t.unplanned.actor)})`);
   }
   lines.push(
     `labels: ${t.labels.length === 0 ? '-' : t.labels.map(asciiText).join(', ')}`,
@@ -324,7 +339,9 @@ export function renderHealth(report: HealthReport): string {
   ): void => {
     lines.push(`${heading}: ${String(entries.length)}`);
     for (const entry of entries) {
-      lines.push(`${listLine(entry.ticket)}  ${finding(entry)}`);
+      // The view-model card gains its unplanned marker in task 4.1 of
+      // add-adhoc-ticket-lifecycle; until then a health line shows none.
+      lines.push(`${listLine({ ...entry.ticket, unplanned: false })}  ${finding(entry)}`);
     }
   };
   section(

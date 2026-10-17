@@ -190,6 +190,72 @@ describe('input schemas', () => {
     });
   });
 
+  it('scenario: board_move and board_close list task, change, group, unplanned and allow-secret-like (task 2.4)', () => {
+    for (const name of ['board_move', 'board_close']) {
+      const schema = tool(name).inputSchema;
+      for (const property of ['task', 'change', 'group', 'unplanned', 'allow-secret-like']) {
+        expect(schema.properties, `${name}.${property}`).toHaveProperty(property);
+        expect(schema.required, `${name}.${property}`).not.toContain(property);
+      }
+      expect(schema.properties.task).toEqual({
+        type: 'string',
+        description: 'Task reference <source>:<ref>#<item>',
+      });
+      expect(schema.properties.unplanned).toMatchObject({ type: 'string' });
+      expect(schema.properties['allow-secret-like']).toMatchObject({ type: 'boolean' });
+      expect(tool(name).description).toContain(
+        'Give at most one of: task | change with group | unplanned.',
+      );
+    }
+    expect(Object.keys(tool('board_move').inputSchema.properties)).toEqual([
+      'id',
+      'status',
+      'task',
+      'change',
+      'group',
+      'unplanned',
+      'allow-secret-like',
+      'as',
+    ]);
+    expect(Object.keys(tool('board_close').inputSchema.properties)).toEqual([
+      'id',
+      'decision-recorded-in',
+      'no-decision',
+      'task',
+      'change',
+      'group',
+      'unplanned',
+      'allow-secret-like',
+      'as',
+    ]);
+    expect(tool('board_close').description).toBe(
+      'Close a merged or blocked ticket with a decision disposition. Give exactly one of: decision-recorded-in | no-decision. Give at most one of: task | change with group | unplanned.',
+    );
+    expect(tool('board_handoff').inputSchema.properties).not.toHaveProperty('unplanned');
+  });
+
+  it('refuses two scope dispositions and a partial shorthand on board_move and board_close', () => {
+    for (const c of [command('move'), command('close')]) {
+      const base = c.name === 'close' ? { id: '01J9K3', 'no-decision': true } : { id: '01J9K3', status: 'merged' };
+      expectBoardError(
+        () => toolArguments(c, { ...base, task: 'openspec:x#1', unplanned: 'y', as: 'a' }),
+        1,
+        'usage',
+      );
+      expectBoardError(() => toolArguments(c, { ...base, change: 'x', as: 'a' }), 1, 'usage');
+      expect(toolArguments(c, { ...base, unplanned: 'y', as: 'a' })).toMatchObject({
+        unplanned: 'y',
+      });
+      expect(toolArguments(c, { ...base, change: 'x', group: '1', as: 'a' })).toMatchObject({
+        change: 'x',
+        group: '1',
+      });
+      expect(toolArguments(c, { ...base, unplanned: 'y', 'allow-secret-like': true })).toMatchObject({
+        'allow-secret-like': true,
+      });
+    }
+  });
+
   it('uses no combinators: exclusive groups are described, not encoded', () => {
     for (const t of toolDefinitions()) {
       const schema = t.inputSchema as unknown as Record<string, unknown>;
@@ -216,10 +282,19 @@ describe('descriptions and annotations', () => {
       'Link a ticket to a task, a PR or a decision record. ' +
         'Give exactly one of: task | change with group | pr | decision.',
     );
+    // Two groups: one sentence each, a single period between them.
     expect(tool('board_close').description).toBe(
       'Close a merged or blocked ticket with a decision disposition. ' +
-        'Give exactly one of: decision-recorded-in | no-decision.',
+        'Give exactly one of: decision-recorded-in | no-decision. ' +
+        'Give at most one of: task | change with group | unplanned.',
     );
+    expect(tool('board_move').description).toBe(
+      'Move a ticket to another status (a blocked ticket returns to its origin). ' +
+        'Give at most one of: task | change with group | unplanned.',
+    );
+    for (const t of toolDefinitions()) {
+      expect(t.description, t.name).not.toContain('..');
+    }
     expect(tool('board_list').description).toBe(
       'List open tickets, optionally filtered. Give at most one of: task | change.',
     );

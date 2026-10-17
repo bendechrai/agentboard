@@ -26,7 +26,6 @@ import { canonicalDecode, canonicalEncode, sha256Hex } from '../../events/canoni
 import type { BoardEvent, TicketCreateBody } from '../../events/schema.js';
 import {
   claimTicket,
-  closeTicket,
   commentTicket,
   handoffTicket,
   linkTicket,
@@ -114,7 +113,9 @@ export function writePreDispositionBoard(dir: string): void {
     moveTicket(board, 'agent-c', { id: ADHOC.blocked, to: 'tests' }, opts);
     moveTicket(board, 'agent-c', { id: ADHOC.blocked, to: 'blocked' }, opts);
     moveTicket(board, 'orch', { id: ADHOC.closed, to: 'blocked' }, opts);
-    closeTicket(board, 'orch', { id: ADHOC.closed, noDecision: true }, opts);
+    // The release this fixture simulates closed an undisposed ad hoc ticket
+    // freely; today's closeTicket refuses it, so the raw event is proposed.
+    propose('orch', { kind: 'ticket.close', ticket: ADHOC.closed, body: { noDecision: true } });
 
     linkTicket(
       board,

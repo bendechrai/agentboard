@@ -534,7 +534,7 @@ describe('hint contracts (CLI)', () => {
   });
 
   it('secret-like suggests --allow-secret-like only to a command that has it', () => {
-    for (const command of ['new', 'comment', 'handoff']) {
+    for (const command of ['new', 'comment', 'handoff', 'move', 'close']) {
       expect(cli('secret-like', command, { id: '01J9K3' }), command).toContain(
         '--allow-secret-like',
       );
@@ -768,5 +768,171 @@ describe('the hints of the board sharing reasons (add-board-sharing group 1)', (
         expect(cliSteps(hint).map((step) => parseStep(step).command)).toContain('sync');
       }
     }
+  });
+});
+
+describe('the hints of the scope disposition (add-adhoc-ticket-lifecycle task 2.2)', () => {
+  const WARNING = 'do not create an issue or task only to satisfy this';
+  const MOVE_TASK = "'agentboard move 01J9K3 merged --task <source>:<ref>#<item> --as orch'";
+  const MOVE_UNPLANNED = '\'agentboard move 01J9K3 merged --unplanned "<reason>" --as orch\'';
+  const cli = (
+    reason: string,
+    command: string | null,
+    extra: Omit<HintContext, 'surface' | 'command'> = {},
+  ): string => renderHint(reason, { surface: 'cli', command, ...extra }) ?? '';
+  const mcp = (
+    reason: string,
+    command: string | null,
+    extra: Omit<HintContext, 'surface' | 'command'> = {},
+  ): string => renderHint(reason, { surface: 'mcp', command, ...extra }) ?? '';
+  const known = { id: '01J9K3', actor: 'orch' };
+
+  it('scenario: missing disposition hint from move names both forms, each parsing to move', () => {
+    const hint = cli('needs-scope-disposition', 'move', known);
+    expect(hint).toContain(MOVE_TASK);
+    expect(hint).toContain(MOVE_UNPLANNED);
+    expect(hint).toContain(WARNING);
+    expect(hint).toContain('--change <name> --group <n>');
+    expect(parseStep(MOVE_TASK.slice(1, -1))).toEqual({
+      command: 'move',
+      values: { id: '01J9K3', status: 'merged', task: '<source>:<ref>#<item>', as: 'orch' },
+    });
+    expect(parseStep(MOVE_UNPLANNED.slice(1, -1))).toEqual({
+      command: 'move',
+      values: { id: '01J9K3', status: 'merged', unplanned: '<reason>', as: 'orch' },
+    });
+    expect(cliSteps(hint).map((step) => parseStep(step).command)).toEqual(['move', 'move']);
+  });
+
+  it('a hand-off into merged points at move with both forms', () => {
+    const hint = cli('needs-scope-disposition', 'handoff', known);
+    expect(hint).toContain(MOVE_TASK);
+    expect(hint).toContain(MOVE_UNPLANNED);
+    expect(hint).toContain(WARNING);
+  });
+
+  it('with no known command, id or actor, the placeholders are used', () => {
+    const hint = cli('needs-scope-disposition', null);
+    expect(hint).toContain("'agentboard move <id> merged --task <source>:<ref>#<item> --as <actor>'");
+    expect(hint).toContain('\'agentboard move <id> merged --unplanned "<reason>" --as <actor>\'');
+  });
+
+  it('from close, repeats the decision flag the caller gave with each disposition', () => {
+    const noDecision = cli('needs-scope-disposition', 'close', {
+      ...known,
+      closeDecision: { flag: 'no-decision' },
+    });
+    const taskStep = 'agentboard close 01J9K3 --no-decision --task <source>:<ref>#<item> --as orch';
+    const unplannedStep = 'agentboard close 01J9K3 --no-decision --unplanned "<reason>" --as orch';
+    expect(noDecision).toContain(`'${taskStep}'`);
+    expect(noDecision).toContain(`'${unplannedStep}'`);
+    expect(noDecision).toContain(WARNING);
+    expect(parseStep(taskStep)).toEqual({
+      command: 'close',
+      values: { id: '01J9K3', 'no-decision': true, task: '<source>:<ref>#<item>', as: 'orch' },
+    });
+    expect(parseStep(unplannedStep)).toEqual({
+      command: 'close',
+      values: { id: '01J9K3', 'no-decision': true, unplanned: '<reason>', as: 'orch' },
+    });
+    expect(noDecision).not.toContain("'agentboard move");
+
+    const recorded = cli('needs-scope-disposition', 'close', {
+      ...known,
+      closeDecision: { flag: 'decision-recorded-in', path: 'docs/adr/0013.md' },
+    });
+    expect(recorded).toContain(
+      "'agentboard close 01J9K3 --decision-recorded-in docs/adr/0013.md --task <source>:<ref>#<item> --as orch'",
+    );
+    expect(recorded).toContain(
+      '\'agentboard close 01J9K3 --decision-recorded-in docs/adr/0013.md --unplanned "<reason>" --as orch\'',
+    );
+    for (const step of cliSteps(recorded)) {
+      expect(parseStep(step).values['decision-recorded-in']).toBe('docs/adr/0013.md');
+    }
+
+    // Unknown decision flag: the no-decision form, still parsing.
+    const unknown = cli('needs-scope-disposition', 'close', known);
+    expect(unknown).toContain(`'${taskStep}'`);
+    expect(unknown).toContain(`'${unplannedStep}'`);
+  });
+
+  it('over MCP, the forms are tool calls with the task and unplanned arguments', () => {
+    const move = mcp('needs-scope-disposition', 'move', known);
+    expect(move).toContain(
+      'board_move {"id":"01J9K3","status":"merged","task":"<source>:<ref>#<item>","as":"orch"}',
+    );
+    expect(move).toContain('board_move {"id":"01J9K3","status":"merged","unplanned":"<reason>","as":"orch"}');
+    expect(move).toContain(WARNING);
+    expect(cliSteps(move)).toEqual([]);
+    for (const { tool, args } of toolSteps(move)) {
+      const found = findTool(tool);
+      expect(found).toBeDefined();
+      if (found !== undefined) {
+        expect(() => toolArguments(found.command, args)).not.toThrow();
+      }
+    }
+    expect(mcp('needs-scope-disposition', 'handoff', known)).toContain('board_move {');
+    const close = mcp('needs-scope-disposition', 'close', {
+      ...known,
+      closeDecision: { flag: 'no-decision' },
+    });
+    expect(close).toContain(
+      'board_close {"id":"01J9K3","no-decision":true,"task":"<source>:<ref>#<item>","as":"orch"}',
+    );
+    expect(close).toContain(
+      'board_close {"id":"01J9K3","no-decision":true,"unplanned":"<reason>","as":"orch"}',
+    );
+    const recorded = mcp('needs-scope-disposition', 'close', {
+      ...known,
+      closeDecision: { flag: 'decision-recorded-in', path: 'docs/adr/0013.md' },
+    });
+    expect(recorded).toContain(
+      'board_close {"id":"01J9K3","decision-recorded-in":"docs/adr/0013.md","task":"<source>:<ref>#<item>","as":"orch"}',
+    );
+  });
+
+  it('already-linked hints the command without --unplanned, and show <id>', () => {
+    const move = cli('already-linked', 'move', known);
+    expect(move).toContain("'agentboard move 01J9K3 merged --as orch'");
+    expect(move).toContain("'agentboard show 01J9K3'");
+    expect(move).not.toContain('--unplanned "<reason>"');
+    expect(move).toContain('--unplanned');
+    const close = cli('already-linked', 'close', { ...known, closeDecision: { flag: 'no-decision' } });
+    expect(close).toContain("'agentboard close 01J9K3 --no-decision --as orch'");
+    expect(close).toContain("'agentboard show 01J9K3'");
+    const recorded = cli('already-linked', 'close', {
+      ...known,
+      closeDecision: { flag: 'decision-recorded-in', path: 'docs/adr/0013.md' },
+    });
+    expect(recorded).toContain(
+      "'agentboard close 01J9K3 --decision-recorded-in docs/adr/0013.md --as orch'",
+    );
+    expect(cli('already-linked', null)).toContain("'agentboard move <id> merged --as <actor>'");
+    for (const hint of [move, close, recorded]) {
+      for (const step of cliSteps(hint)) {
+        expect(() => parseStep(step), step).not.toThrow();
+      }
+    }
+  });
+
+  it('already-linked over MCP names the tool call without the unplanned argument', () => {
+    const move = mcp('already-linked', 'move', known);
+    expect(move).toContain('board_move {"id":"01J9K3","status":"merged","as":"orch"}');
+    expect(move).toContain('board_show {"id":"01J9K3"}');
+    expect(move).toContain('unplanned argument');
+    expect(
+      mcp('already-linked', 'close', { ...known, closeDecision: { flag: 'no-decision' } }),
+    ).toContain('board_close {"id":"01J9K3","no-decision":true,"as":"orch"}');
+  });
+
+  it('scenario: no reason without a hint (the two reasons are in the set, needs-task-link is not)', () => {
+    expect(HINT_REASONS).toContain('needs-scope-disposition');
+    expect(HINT_REASONS).toContain('already-linked');
+    expect(HINT_REASONS).not.toContain('needs-task-link');
+    expect(Object.keys(PINNED)).not.toContain('needs-task-link');
+    expect(scan().reasons.has('needs-task-link')).toBe(false);
+    expect(HINT_EXIT_CODES['needs-scope-disposition']).toBe(4);
+    expect(HINT_EXIT_CODES['already-linked']).toBe(4);
   });
 });

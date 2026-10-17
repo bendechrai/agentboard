@@ -1739,7 +1739,7 @@ argument and `agentboard mcp --as <actor>`.
 | 1 | usage error (including an unknown command or flag), missing actor, refused text or close disposition, `rebuild --check` found a difference, an `agents install` target was refused or nothing was detected, `agents check` found guidance that is not current, `serve` could not use its port (`port-in-use`) or was given an empty `--as` or both `--open` and `--no-open`, or `top` was not run in an interactive terminal (`not-a-tty`) |
 | 2 | board not found or unreadable |
 | 3 | sync problem that needs a human |
-| 4 | action rejected by board state: `invalid-transition`, `already-assigned`, `not-assignee`, `unknown-ticket`, `duplicate-create`, `needs-task-link`, `checklist-index` |
+| 4 | action rejected by board state: `invalid-transition`, `already-assigned`, `not-assignee`, `unknown-ticket`, `duplicate-create`, `needs-scope-disposition`, `already-linked`, `checklist-index` |
 | 5 | event log or cache integrity problem, or the cache still locked after the busy timeout and one retry |
 
 ## MCP server

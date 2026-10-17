@@ -9,6 +9,7 @@
  * and its two events are written here by hand in the order it writes them.
  */
 
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -312,5 +313,70 @@ describe('the disposition in the row encodings', () => {
     expect(row.updated_at).toBe(encodeHlc({ wall: 5000, counter: 1, actor: 'merger' }));
     const parsed = JSON.parse(String(row.unplanned)) as { ts: { wall: number } };
     expect(parsed.ts.wall).toBe(5000);
+  });
+});
+
+describe('a malformed ticket.unplanned on disk is not folded (scenario: Unplanned body is checked)', () => {
+  function board(): { dir: string; events: string; ticketWall: number } {
+    const dir = tempBoard();
+    const events = join(dir, 'events');
+    putEvent(
+      events,
+      ev({ kind: 'ticket.create', ticket: T1, body: { title: 'Adhoc', adhoc: 'hotfix' } }, 'orch', 1000),
+    );
+    for (const [n, to] of (['tests', 'implementing', 'review'] as const).entries()) {
+      putEvent(events, ev(P.move(T1, to), 'impl', 1100 + n * 100));
+    }
+    return { dir, events, ticketWall: 1300 };
+  }
+
+  it.each([
+    ['an empty reason', { reason: '' }, 'body.reason'],
+    ['a missing reason', {}, 'body.reason'],
+    ['an extra field', { reason: 'hotfix', note: 'x' }, 'body.note'],
+  ])('%s: catch-up records the file as malformed naming the field and leaves unplanned null', (_name, body, field) => {
+    const { dir, events } = board();
+    const malformed = putEvent(events, {
+      v: 1,
+      kind: 'ticket.unplanned',
+      ticket: T1,
+      actor: 'orch',
+      ts: { wall: 2000, counter: 0, actor: 'orch' },
+      body,
+    });
+    const b = openB(dir);
+    expect(b.opened?.malformed.map((m) => m.hash)).toEqual([malformed]);
+    expect(b.opened?.malformed[0]?.reasons.map((r) => r.field)).toContain(field);
+    expect(b.opened?.applied).toHaveLength(4);
+    expect(readTicket(b.db, T1)).toMatchObject({ status: 'review', unplanned: null, version: 4 });
+    const row = b.db.prepare('SELECT folded, reason FROM folded WHERE hash = ?').get(malformed);
+    expect(row).toEqual({ folded: 0, reason: 'malformed' });
+    expect(foldDir(events).state.tickets[T1]?.unplanned).toBeNull();
+    // The malformed file is left where it is and reported once.
+    expect(existsSync(join(events, `${malformed}.json`))).toBe(true);
+    b.close();
+    const again = openB(dir);
+    expect(again.opened?.malformed).toEqual([]);
+    expect(readTicket(again.db, T1)?.unplanned).toBeNull();
+  });
+
+  it('a later well-formed ticket.unplanned is applied as usual', () => {
+    const { dir, events } = board();
+    putEvent(events, {
+      v: 1,
+      kind: 'ticket.unplanned',
+      ticket: T1,
+      actor: 'orch',
+      ts: { wall: 2000, counter: 0, actor: 'orch' },
+      body: { reason: '' },
+    });
+    const good = putEvent(events, ev(P.unplanned(T1, 'hotfix'), 'orch', 2100));
+    const b = openB(dir);
+    expect(b.opened?.applied).toContain(good);
+    expect(readTicket(b.db, T1)?.unplanned).toEqual({
+      reason: 'hotfix',
+      actor: 'orch',
+      ts: { wall: 2100, counter: 0, actor: 'orch' },
+    });
   });
 });

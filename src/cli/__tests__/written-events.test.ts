@@ -1,15 +1,18 @@
 /**
  * The `events` key of a writing command's `--json` document
- * (add-adhoc-ticket-lifecycle task 1.3; board-cli: "Output conventions";
- * board-cache: "One command, one transaction"): every hash the command
- * wrote, in write order, with `hash` the last. Single-event commands carry
- * one entry; a retried claim that writes nothing carries none. The
- * two-event commands (`move merged --unplanned`, `close --task`) are
- * group 2's and have a placeholder below.
+ * (add-adhoc-ticket-lifecycle tasks 1.3 and 2.1; board-cli: "Output
+ * conventions"; board-cache: "One command, one transaction"): every hash
+ * the command wrote, in write order, with `hash` the last. Single-event
+ * commands carry one entry; a retried claim that writes nothing carries
+ * none; the two-event commands (`move merged --unplanned`, `close --task`)
+ * carry the disposition's hash then the move's or close's.
  */
+
+import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
+import { canonicalDecode } from '../../events/canonical.js';
 import { eventNames } from '../../store/__tests__/helpers.js';
 import { oneJson, project, run } from './cli-helpers.js';
 
@@ -71,11 +74,50 @@ describe('writing commands list the events they wrote', () => {
     expect(out.events).toEqual([out.hash]);
   });
 
-  it.todo(
-    'group 2 (board/scope-disposition): move <id> merged --unplanned "<reason>" --json carries two hashes, the ticket.unplanned then the ticket.move, with hash the second',
-  );
+  it('move <id> merged --unplanned "<reason>" --json carries two hashes, the ticket.unplanned then the ticket.move, with hash the second', () => {
+    const { root, boardDir } = project();
+    const id = doc(run(['new', 'Hotfix', '--adhoc', 'seen in production', '--as', 'orch', '--json'], root))
+      .ticket.id;
+    for (const to of ['tests', 'implementing', 'review']) {
+      doc(run(['move', id, to, '--as', 'impl', '--json'], root));
+    }
+    const before = eventNames(`${boardDir}/events`);
+    const out = doc(
+      run(['move', id, 'merged', '--unplanned', 'production hotfix', '--as', 'orch', '--json'], root),
+    );
+    expect(out.events).toHaveLength(2);
+    expect(out.events.every((h) => /^[0-9a-f]{64}$/.test(h))).toBe(true);
+    expect(out.hash).toBe(out.events[1]);
+    expect(out.ticket.status).toBe('merged');
+    expect(kinds(boardDir, out.events)).toEqual(['ticket.unplanned', 'ticket.move']);
+    expect(eventNames(`${boardDir}/events`)).toEqual(
+      [...before, ...out.events.map((h) => `${h}.json`)].sort(),
+    );
+  });
 
-  it.todo(
-    'group 2 (board/scope-disposition): close <id> --no-decision --task <ref> --json carries the ticket.link then the ticket.close',
-  );
+  it('close <id> --no-decision --task <ref> --json carries the ticket.link then the ticket.close', () => {
+    const { root, boardDir } = project();
+    const id = doc(run(['new', 'Spike', '--adhoc', 'spike', '--as', 'orch', '--json'], root)).ticket.id;
+    for (const to of ['tests', 'blocked']) {
+      doc(run(['move', id, to, '--as', 'impl', '--json'], root));
+    }
+    const out = doc(
+      run(['close', id, '--no-decision', ...TASK, '--as', 'orch', '--json'], root),
+    );
+    expect(out.events).toHaveLength(2);
+    expect(out.hash).toBe(out.events[1]);
+    expect(kinds(boardDir, out.events)).toEqual(['ticket.link', 'ticket.close']);
+  });
 });
+
+/** The `kind` of each event file named by `hashes`, in that order. */
+function kinds(boardDir: string, hashes: readonly string[]): string[] {
+  return hashes.map(
+    (hash) =>
+      (
+        canonicalDecode(new Uint8Array(readFileSync(`${boardDir}/events/${hash}.json`))) as {
+          kind: string;
+        }
+      ).kind,
+  );
+}
