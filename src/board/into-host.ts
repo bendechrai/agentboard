@@ -143,13 +143,18 @@ const SOURCE_RECORD = 'agentboard-source';
  * replays up to. It is written before the `cherry-pick` and removed once
  * `MIGRATING_REF` has been advanced, so a run that stops in between (a
  * conflict left for a human, a kill) leaves the next run able to tell a
- * finished replay (the human's `git cherry-pick --continue`, or a kill
- * after the `cherry-pick` completed: HEAD moved on, every event file of
- * the range in HEAD's tree) from an abandoned one (`git cherry-pick
- * --abort` returns HEAD to the recorded start): the finished one counts
- * as integrated up to the recorded tip and is never replayed again (the
+ * finished replay (the human's `git cherry-pick --continue` or `--skip`
+ * of a pick they resolved by keeping our side, or a kill after the
+ * `cherry-pick` completed: every event file of the range in HEAD's tree,
+ * whether or not HEAD moved, round 6 ruling 1) from an abandoned one
+ * (`git cherry-pick --abort` returns HEAD to the recorded start, so an
+ * event file of the range is missing): the finished one counts as
+ * integrated up to the recorded tip and is never replayed again (the
  * human's resolution of a replayed commit would conflict with the same
- * commit replayed once more), the abandoned one is replayed again.
+ * commit replayed once more), the abandoned one is replayed again. The
+ * record is also removed when a replay stops for a reason the move
+ * cannot skip (round 6 ruling 2), so the next run replays the whole
+ * range again.
  */
 const REPLAY_RECORD = 'agentboard-replay';
 
@@ -1414,6 +1419,24 @@ function lockedMove(
     // since it integrated `integrated`) are replayed onto it; a replay a
     // human finished by hand counts as integrated up to its tip.
     const fresh = refValue(host, MIGRATING_FETCH_REF);
+    // An unstaged change to a tracked file (a conflict a human reset
+    // without resolving, which on the last pick of a sequence also makes
+    // git drop its cherry-pick state, leaving the markers in a worktree
+    // with nothing in progress; an edit by hand) is never carried into
+    // the move, replayed over or published by the sync of step 7 (round 6
+    // ruling 2): the human settles it first, the worktree stays adoptable.
+    const dirty = zList(worktree.run('diff', '--name-only', '-z')).sort();
+    if (dirty.length > 0) {
+      throw new BoardError(
+        3,
+        'sync-failed',
+        `the temporary worktree at ${asciiText(temp)} has local changes to ` +
+          `${dirty.map((p) => asciiText(p)).join(', ')} (a conflict left unresolved, or an edit ` +
+          'by hand), which the move cannot carry over or replay onto; commit, stash or discard ' +
+          `them there (git -C ${asciiText(temp)} checkout -- <path>), then run ${AGAIN} again; ` +
+          `the board at ${asciiText(dir)} is untouched`,
+      );
+    }
     const integrated = finishedReplay(host, worktree, temp, oldSource) ?? oldSource;
     if (fresh !== integrated && !isAncestor(worktree, MIGRATING_FETCH_REF, 'HEAD')) {
       replayFreshCommits(host, worktree, dir, temp, integrated, fresh);
@@ -1633,13 +1656,52 @@ function replayFreshCommits(
           `board at ${asciiText(dir)} is untouched`,
       );
     }
-    if (stoppedOperation(worktree, temp) !== 'cherry-pick' || skipped >= Number(limit)) {
-      throw syncFailed('replaying the events synced to the old remote since the earlier move', out);
+    if (!emptyStop(worktree, temp) || skipped >= Number(limit)) {
+      // Any other stop (a pick refused over a local change of a tracked
+      // file, whose sequencer git leaves behind; anything else): never
+      // skipped. The sequence is quit (HEAD, the picks already made and
+      // the local change stay), the record goes so the next run replays
+      // the whole range again, and the worktree stays adoptable (round
+      // 6 ruling 2), so no pick is ever dropped and no conflict marker
+      // reaches the sync of step 7.
+      worktree.attempt('cherry-pick', '--quit');
+      removeRecord(host, temp, REPLAY_RECORD);
+      const dirty = zList(worktree.run('diff', '--name-only', '-z')).sort();
+      const local =
+        dirty.length === 0
+          ? ''
+          : `; the temporary worktree at ${asciiText(temp)} has local changes to ` +
+            `${dirty.map((p) => asciiText(p)).join(', ')}, which the replay cannot apply over: ` +
+            `commit, stash or discard them there (git -C ${asciiText(temp)} checkout -- <path>), ` +
+            `then run ${AGAIN} again`;
+      throw new BoardError(
+        3,
+        'sync-failed',
+        `replaying the events synced to the old remote since the earlier move failed: ` +
+          `${firstErrorLine(out)}${local}`,
+      );
     }
-    // The commit's patch is already in HEAD (one the human finished by
-    // hand): never kept as an empty commit.
+    // Git's own empty stop: the commit's patch is already in HEAD (one
+    // the human finished by hand); never kept as an empty commit.
     out = worktree.attempt('cherry-pick', '--skip');
   }
+}
+
+/**
+ * True when git stopped the cherry-pick in the worktree at `temp` on a
+ * pick it reports as empty: `CHERRY_PICK_HEAD` present, no unmerged path
+ * and the index equal to HEAD (round 6 ruling 2). Only that stop is
+ * skipped by the move; a sequencer left without `CHERRY_PICK_HEAD` (a
+ * pick refused over a local change) is not.
+ */
+function emptyStop(worktree: GitRunner, temp: string): boolean {
+  const gitDir = worktreeGitDir(worktree, temp);
+  return (
+    gitDir !== null &&
+    existsSync(join(gitDir, 'CHERRY_PICK_HEAD')) &&
+    unmergedPaths(worktree).length === 0 &&
+    !isGitFailure(worktree.attempt('diff', '--cached', '--quiet'))
+  );
 }
 
 /**
@@ -1696,13 +1758,14 @@ function finishedReplay(
     return null;
   }
   removeRecord(host, temp, REPLAY_RECORD);
-  const [start, tip] = record.split('\n');
-  if (start === undefined || tip === undefined || tip === '' || refValue(worktree, tip) === '') {
+  const tip = record.split('\n')[1];
+  if (tip === undefined || tip === '' || refValue(worktree, tip) === '') {
     return null;
   }
-  if (worktree.run('rev-parse', 'HEAD').trim() === start) {
-    return null;
-  }
+  // Whether HEAD left `start` does not decide: a range whose only pick
+  // the human resolved by keeping our side (then skipped) adds no event
+  // and moves HEAD nowhere, and is integrated all the same (round 6
+  // ruling 1); an abort shows as an event file of the range missing.
   const inHead = new Set(zList(worktree.run('ls-tree', '-r', '--name-only', '-z', 'HEAD', '--', 'events')));
   const added = zList(
     oldSource === '' || !isAncestor(worktree, oldSource, tip)
@@ -1750,7 +1813,7 @@ function stoppedInTemporary(
     : ` (that worktree was left by a move of another board, not the one at ${asciiText(dir)} now, so finishing it moves nothing of this board)`;
   const steps =
     operation === 'cherry-pick'
-      ? 'git cherry-pick --continue (git cherry-pick --skip for a pick git reports as empty, or git cherry-pick --abort)'
+      ? 'git cherry-pick --continue (for a pick git reports as empty, git cherry-pick --skip drops it or git commit --allow-empty keeps it; git cherry-pick --abort returns to where the replay started)'
       : 'git rebase --continue (or git rebase --abort)';
   return new BoardError(
     3,
@@ -2118,17 +2181,22 @@ function stoppedOperation(git: GitRunner, cwd: string): StoppedOperation | null 
 
 /**
  * True when nothing in the worktree at `path` is a human's work in
- * progress: no unmerged path and an index equal to HEAD. A cherry-pick
- * stopped in such a worktree is the move's own replay interrupted by a
- * kill (round 5 ruling 2), which the move quits and runs again; one with
- * a staged resolution is left to the human.
+ * progress: no unmerged path, an index equal to HEAD and a working tree
+ * equal to the index (`git diff --cached --quiet` and `git diff --quiet`
+ * both clean). A cherry-pick stopped in such a worktree is the move's own
+ * replay interrupted by a kill (round 5 ruling 2), which the move quits
+ * and runs again; one with a staged resolution, or with unstaged changes
+ * (round 6 ruling 2), is left to the human.
  */
 function nothingStaged(host: GitRunner, path: string): boolean {
   const unmerged = host.attemptIn(path, 'diff', '--name-only', '--diff-filter=U');
   return (
     !isGitFailure(unmerged) &&
     unmerged.trim() === '' &&
-    !isGitFailure(host.attemptIn(path, 'diff', '--cached', '--quiet'))
+    !isGitFailure(host.attemptIn(path, 'diff', '--cached', '--quiet')) &&
+    // A `git reset` after a conflict leaves the markers in the working
+    // tree with a clean index: a human's work, never quit (round 6 ruling 2).
+    !isGitFailure(host.attemptIn(path, 'diff', '--quiet'))
   );
 }
 

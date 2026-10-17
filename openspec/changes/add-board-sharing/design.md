@@ -640,7 +640,15 @@ unmerged, the index equal to HEAD); any other stop of its replay (a pick
 refused over a local change of a tracked file) is exit 3 `sync-failed`
 with the sequencer quit, the replay record removed and the temporary
 kept adoptable, so no commit of the range is ever dropped and the `sync`
-of step 7 never commits or publishes a conflict marker. A replay counts
+of step 7 never commits or publishes a conflict marker. For the same
+reason an adopted worktree with an unstaged change to a tracked file and
+nothing in progress (a `git reset` on the last pick of a sequence also
+removes git's cherry-pick state, leaving the markers in a worktree with
+no `CHERRY_PICK_HEAD` and no `sequencer`; an edit by hand) is exit 3
+`sync-failed` naming the files and the steps (commit, stash or discard
+them, then `agentboard init --into-host` again) before anything is quit,
+replayed or carried over, the worktree kept adoptable, HEAD, the refs
+and `.board` untouched (implementer decision, round 6). A replay counts
 as integrated up to its recorded tip whenever every event file the range
 adds is in HEAD, whether or not HEAD moved (round 6 ruling 1): a conflict
 the human resolved by keeping our side leaves an empty pick, which they
