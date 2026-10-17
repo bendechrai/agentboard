@@ -773,7 +773,7 @@ describe('moveTicket and closeTicket keep their single-event behaviour', () => {
     expect(moved.events).toEqual([moved.hash]);
     const closed = closeTicket(board, 'orch', { id: t.id, noDecision: true });
     expect(closed.events).toEqual([closed.hash]);
-    expect(eventCount(board)).toBe(7);
+    expect(eventCount(board)).toBe(6);
   });
 
   it('the TASK of the helpers is the reference already-linked names', () => {

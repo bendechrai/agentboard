@@ -521,6 +521,7 @@ function renderListLineOf(c: Card): string {
     status: c.status,
     assignee: c.assignee,
     adhoc: c.adhoc ? 'reason' : null,
+    unplanned: null,
     closed: c.closed,
   } as Parameters<typeof renderListLine>[0]);
 }

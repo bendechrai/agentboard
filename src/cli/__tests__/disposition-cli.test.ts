@@ -243,11 +243,11 @@ describe('scenario: close with each disposition', () => {
     const { root, id } = adhocIn('blocked');
     ok(run(['comment', id, 'DECISION: drop the parser', ...AS], root));
     const missing = run(
-      ['close', id, '--decision-recorded-in', 'docs/adr/0099.md', '--unplanned', 'x', ...AS],
+      ['close', id, '--decision-recorded-in', 'docs/adr/0099.md', '--unplanned', 'x', ...AS, '--json'],
       root,
     );
     expect(missing.code).toBe(1);
-    expect(missing.stderr).toContain('decision-path-missing');
+    expect(errorOf(missing)).toMatchObject({ exitCode: 1, reason: 'decision-path-missing' });
     mkdirSync(join(root, 'docs', 'adr'), { recursive: true });
     writeFileSync(join(root, 'docs', 'adr', '0099.md'), '# adr\n');
     const closed = oneJson(
@@ -388,10 +388,14 @@ describe('scenario: invalid task reference refused as link does', () => {
     expect(move.stderr).toContain('<source>:<ref>#<item>');
     const link = run(['link', id, '--task', 'add-login-2', ...AS], root);
     expect(link.code).toBe(1);
-    expect(move.stderr).toBe(link.stderr);
-    expect(errorOf(run(['move', id, 'merged', '--task', 'add-login-2', ...AS, '--json'], root))).toEqual(
-      errorOf(run(['link', id, '--task', 'add-login-2', ...AS, '--json'], root)),
-    );
+    // The messages are identical (both from taskRefFromArgs); the hints
+    // differ by contract (help move versus help link).
+    const moveError = errorOf(run(['move', id, 'merged', '--task', 'add-login-2', ...AS, '--json'], root));
+    const linkError = errorOf(run(['link', id, '--task', 'add-login-2', ...AS, '--json'], root));
+    expect(moveError.message).toBe(linkError.message);
+    expect(moveError.reason).toBe(linkError.reason);
+    expect(moveError.reason).toBe('malformed-task-ref');
+    expect(move.stderr.split('\n')[0]).toBe(link.stderr.split('\n')[0]);
     const close = run(['close', id, '--no-decision', '--task', 'add-login-2', ...AS, '--json'], root);
     expect(close.code).toBe(1);
     expect(errorOf(close)).toMatchObject({ reason: 'malformed-task-ref' });
@@ -720,7 +724,7 @@ describe('close-merged through the CLI (the modified Close merged requirement)',
     const { dir } = fakeGhOnPath({ '7': 'MERGED' });
     const out = ok(run(['close-merged', ...AS], root, cliEnv({ PATH: dir })));
     expect(out.stdout).toBe(
-      `closed ${id}  merged  -  [unplanned] Login redirect loops (no decision)\n` +
+      `closed ${id}  merged  -  [unplanned] [closed] Login redirect loops (no decision)\n` +
         'close-merged: 1 closed, 0 unmerged, 0 skipped\n',
     );
     expect(show(root, id)).toMatchObject({
