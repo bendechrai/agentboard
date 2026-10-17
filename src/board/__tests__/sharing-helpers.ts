@@ -291,27 +291,91 @@ export function worktrees(repo: string): string {
 }
 
 /**
- * Every file under `dir` (recursively, symlinks followed, the SQLite cache
- * and its companions left out because opening a board creates them) as
- * `<relative path> <sha256>` lines, sorted.
+ * Whether `name` is a file git holds only while it works: a `<name>.lock`
+ * (every ref, index, config and packed-refs write, and
+ * `objects/maintenance.lock`) or `gc.pid`. A `git commit` or `git fetch`
+ * starts `git maintenance run --auto --detach`, which takes
+ * `objects/maintenance.lock` before it detaches and releases it after the
+ * command that started it has returned, so on a loaded machine the lock
+ * can still be there when the command's caller looks.
  */
-export function snapshotDir(dir: string): string[] {
+export function isGitTransient(name: string): boolean {
+  return name.endsWith('.lock') || name === 'gc.pid';
+}
+
+/** How long `snapshotDir` waits by default for git's transient files to go. */
+export const SNAPSHOT_SETTLE_MS = 10_000;
+
+/** Blocks the thread for `ms` milliseconds. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Thrown inside a walk when a file vanished between its listing and its read. */
+class Vanished extends Error {}
+
+/**
+ * One walk of `dir` for `snapshotDir`, or null when a git transient file
+ * is present or a file vanished mid-walk; with `last`, the walk as it
+ * stands (a vanished file then throws).
+ */
+function walkOnce(dir: string, last: boolean): string[] | null {
   const out: string[] = [];
+  let transient = false;
   const walk = (current: string): void => {
     for (const name of readdirSync(current).sort()) {
       if (name.startsWith('cache.sqlite')) {
         continue;
       }
+      if (isGitTransient(name)) {
+        transient = true;
+      }
       const path = join(current, name);
-      if (statSync(path).isDirectory()) {
-        walk(path);
-      } else {
-        out.push(`${relative(dir, path)} ${sha256Hex(readFileSync(path))}`);
+      try {
+        if (statSync(path).isDirectory()) {
+          walk(path);
+        } else {
+          out.push(`${relative(dir, path)} ${sha256Hex(readFileSync(path))}`);
+        }
+      } catch (error) {
+        if (!last && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+          throw new Vanished(path);
+        }
+        throw error;
       }
     }
   };
-  walk(dir);
-  return out.sort();
+  try {
+    walk(dir);
+  } catch (error) {
+    if (error instanceof Vanished) {
+      return null;
+    }
+    throw error;
+  }
+  return transient && !last ? null : out.sort();
+}
+
+/**
+ * Every file under `dir` (recursively, symlinks followed, the SQLite cache
+ * and its companions left out because opening a board creates them) as
+ * `<relative path> <sha256>` lines, sorted. The snapshot is taken once git
+ * has settled: while a git transient file (`isGitTransient`) is present,
+ * or a file vanishes during the walk, it walks again, for up to
+ * `settleMs`, then takes the walk as it stands. Nothing is left out for it: a lock file still there at the
+ * deadline is in the snapshot, so a lock a command leaks still fails the
+ * comparison, as does any change to an event file, ref or worktree
+ * registration.
+ */
+export function snapshotDir(dir: string, settleMs: number = SNAPSHOT_SETTLE_MS): string[] {
+  const deadline = Date.now() + settleMs;
+  for (;;) {
+    const out = walkOnce(dir, Date.now() >= deadline);
+    if (out !== null) {
+      return out;
+    }
+    sleepSync(20);
+  }
 }
 
 /** `realpathSync(path)`. */
