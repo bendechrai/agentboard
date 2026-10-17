@@ -67,10 +67,12 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
    `agentboard remote` shows how a board is shared. It closes the gap that
    sharing a board needs manual git setup (a second repository, `git -C
    .board remote add` and `git clone <url> .board` on every machine). ADR
-   0012. Groups 1 to 5 are implemented (groups 3 and 5 are
-   concurrency-critical); group 6 (the git floor in Docker and the
-   end-to-end walkthrough) and the workflow follow-up remain before the
-   change is archived.
+   0012. Groups 1 to 6 are implemented (groups 3 and 5 are
+   concurrency-critical; group 6 added `make check-git-floor`, the
+   sharing tests on git 2.32 built from source in the `dev-git-floor`
+   image, and the end-to-end walkthrough script
+   `src/__tests__/walkthroughs/board-sharing.sh`); the workflow
+   follow-up remains before the change is archived.
 4. `add-adhoc-ticket-lifecycle` (proposed, in `openspec/changes/`): ad hoc
    tickets move through every status like any other; the
    `needs-task-link` gate at `implementing` is removed, and moving an ad
