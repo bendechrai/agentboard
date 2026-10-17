@@ -55,16 +55,22 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
    reconciling tickets when `import-change` is re-run. Groups 1 to 5 are
    concurrency-critical, so they get a second reviewer (see
    CONTRIBUTING.md, "Three roles per task group").
-3. `add-board-sharing` (proposed, in `openspec/changes/`): in a git
+3. `add-board-sharing` (in progress, in `openspec/changes/`): in a git
    project the board's history lives in the host repository under the
    hidden ref `refs/agentboard/board`, with `.board/` as a locked worktree,
    so a second clone joins with `agentboard init` alone; `sync` fetches,
    rebases and pushes that ref; `init --remote <url>` keeps a board in a
-   separate repository; `init --into-host` moves an existing board in with
-   its history; `agentboard remote` shows how a board is shared. It closes
-   the gap that sharing a board needs manual git setup (a second
-   repository, `git -C .board remote add` and `git clone <url> .board` on
-   every machine). ADR 0012. Groups 3 and 5 are concurrency-critical.
+   separate repository; `init --into-host` moves an existing standalone
+   board in with its history, refusing whenever an event could be lost,
+   keeping the old repository under `.git/agentboard/` and resuming after
+   an interruption (README.md, "Moving a board into the host repository");
+   `agentboard remote` shows how a board is shared. It closes the gap that
+   sharing a board needs manual git setup (a second repository, `git -C
+   .board remote add` and `git clone <url> .board` on every machine). ADR
+   0012. Groups 1 to 5 are implemented (groups 3 and 5 are
+   concurrency-critical); group 6 (the git floor in Docker and the
+   end-to-end walkthrough) and the workflow follow-up remain before the
+   change is archived.
 4. `add-adhoc-ticket-lifecycle` (proposed, in `openspec/changes/`): ad hoc
    tickets move through every status like any other; the
    `needs-task-link` gate at `implementing` is removed, and moving an ad

@@ -186,7 +186,32 @@ repository SHALL be kept, not deleted, at
 SHALL be resumable: if the process is killed at any point, `.board` either
 is still the old standalone board or becomes the new host-model board when
 `init --into-host` runs again, and running it again after success changes
-nothing.
+nothing. When integrating an existing `refs/agentboard/board` stops on a
+conflict, the move SHALL exit 3 with reason `sync-conflict`, leave the
+rebase in place in its temporary worktree under
+`<host git common dir>/agentboard/migrating/` for a human, leave the old
+`.board` and `refs/agentboard/board` unchanged, and name the worktree's
+path and the steps (resolve, `git add`, `git rebase --continue` there, then
+`agentboard init --into-host` again). While that rebase is still in
+progress, `init --into-host` SHALL exit 3 with reason `sync-in-progress`
+naming the path with the same steps and SHALL remove nothing; once the
+rebase is finished it SHALL adopt that worktree and complete the move with
+every event, including every commit that reached the standalone board or
+its remote since the worktree was made, integrated as a first run
+integrates its source tip, and SHALL never discard what the human
+resolved nor apply again a commit the human already resolved (the clones
+of one board share its history: the re-run replays only what reached the
+board since the worktree was made, and nothing when nothing did, so one
+re-run completes the move). Every event file present in the old `.board/events` at any
+point of the move (written by another writer or a standalone `sync`
+while the move ran, even between the verification and the moment the old
+repository is kept aside) SHALL end in the new worktree, carried over
+content-addressed and committed by the move's `sync`; only a file whose
+content does not match its name is an `integrity` refusal. The move SHALL
+refuse with exit 3 instead of keeping the old repository aside when
+`.board` is no longer the standalone repository it checked. A temporary
+worktree is named by the pid of the move that made it, and one left by a
+process that is still running is never touched.
 
 #### Scenario: Migration success
 - **WHEN** a standalone board with a remote, fully synced, holding 40 committed events, runs `agentboard init --into-host` in a host repository with no board ref, and `sync` then runs
@@ -207,6 +232,18 @@ nothing.
 #### Scenario: Second clone migrates after the first
 - **WHEN** clone A moved its standalone board into the host and synced, clone B then synced two new events to the old standalone remote and runs `agentboard init --into-host`
 - **THEN** B's `refs/agentboard/board` contains A's history and B's two new commits, after `sync` in both clones every event file is in both, and their rebuilt caches are identical
+
+#### Scenario: Migration stopped on a conflict
+- **WHEN** the host's remote holds a `refs/agentboard/board` whose `.board/.gitignore` differs from the standalone board's committed `.gitignore`, and `agentboard init --into-host` runs
+- **THEN** it exits 3 with reason `sync-conflict` naming `.gitignore`, the temporary worktree under `<host git common dir>/agentboard/migrating/` and `git rebase --continue`, the old `.board` is unchanged and still standalone, the host has no `refs/agentboard/board`, and running it again before the rebase is finished exits 3 with reason `sync-in-progress` naming the same path and removes nothing
+
+#### Scenario: Migration completes after the conflict is resolved
+- **WHEN** the two clones are clones of one standalone board (they share its early commits), a human resolves `.gitignore` in that temporary worktree, runs `git add` and `git rebase --continue` until the rebase is finished, a third clone meanwhile syncs an event to the old standalone remote, and `agentboard init --into-host` runs again
+- **THEN** that one run completes the move with exit 0: `.board` is the host-model board holding every event of both histories, the third clone's event and the resolved `.gitignore`, the resolved commit is an ancestor of `refs/agentboard/board` and appears in its history once, exactly one old repository is kept, and no temporary ref or worktree remains
+
+#### Scenario: Event written during the move is carried over
+- **WHEN** another writer adds an event file to the standalone `.board/events` after `agentboard init --into-host` has verified the events and before it keeps the old repository aside
+- **THEN** the move exits 0, the event file is in the new `.board/events` and in `refs/agentboard/board`, and the kept repository holds it too
 
 #### Scenario: Interrupted migration resumes
 - **WHEN** `agentboard init --into-host` is killed after the old `.board` was moved aside but before the new worktree was moved into place, and it runs again

@@ -851,6 +851,167 @@ origin <url>` followed by `sync` still works too. This repository's own
 board stays standalone for exactly this reason (CONTRIBUTING.md,
 "Coordinating on the board").
 
+### Moving a board into the host repository
+
+A standalone board (one made before the host model existed, or with
+`init --remote`) moves into the host repository, history and all, with
+the counterpart of `init --remote`, run at the root of the main checkout:
+
+```
+agentboard init --into-host
+```
+
+Afterwards `.board` is a locked worktree of the host repository whose
+history is `refs/agentboard/board`, exactly as `init` creates in a git
+project, and the `sync` that the move runs publishes it on the project's
+own remote. It needs git 2.32 or later and no actor. Read the caveat above
+first: once moved, everyone who can fetch the project can fetch the board.
+
+The move never loses an event. Before changing anything it checks the
+standalone board and refuses when a move could drop something:
+
+- Exit 4 `unsynced`: an event file is not committed (untracked or
+  staged), the board has no commit yet, or its branch has commits that
+  its remote does not. Run `agentboard sync` first, so the remote's branch
+  (the source of the move, which may hold other clones' events too) is
+  complete.
+- Exit 3 `sync-in-progress` or `detached-head`: a rebase or merge is in
+  progress in `.board`, or its HEAD is not on a branch, as `sync` refuses;
+  finish or abort it, or check out the branch.
+- Exit 3 `sync-failed`: the board's remote cannot be reached (it is fetched
+  first, to compare).
+- Exit 5 `integrity`: a committed event file is missing from `events/` or
+  differs from its committed content. Event files never change, so this
+  is damage to repair before anything is moved.
+- Exit 1 `no-host-repository`: the board was not found through a git
+  repository with its `.git` directory inside its working tree (outside a
+  git repository, with `AGENTBOARD_DIR` set, a bare repository with
+  worktrees, a `--separate-git-dir` repository, a submodule); exit 1
+  `git-too-old` for git before 2.32; exit 1 `ambiguous-remote` when the
+  host's remote cannot be chosen (see "Sync between machines").
+
+A refusal writes nothing: no ref, no directory under `.git/agentboard`,
+`.board` as it was. When the checks pass, the move fetches the board's
+history into the host repository under a scratch ref
+(`refs/agentboard/migrating-fetch`, the only ref a fetch of the move ever
+writes), records it as `refs/agentboard/migrating` (the tip the temporary
+worktree has integrated; both refs live as long as the worktree does),
+checks it out in a temporary worktree under
+`.git/agentboard/migrating/<pid>`, integrates
+any `refs/agentboard/board` the host or its remote already has (another
+clone moved first: this clone's history is rebased onto it, as `sync`
+would), sets `refs/agentboard/board`, carries over every event file of
+the old `.board/events` that the new worktree lacks (hash-verified, so an
+event written while the move ran is not left behind; a file whose content
+does not match its name is exit 5 `integrity`, with nothing moved), checks
+that `.board` is still the repository it examined (and that its history
+only grew), and only then moves the old repository aside and the new
+worktree into place, deletes both temporary refs and carries over
+anything that landed in between. The old repository is kept, never
+deleted, at `.git/agentboard/standalone-<UTC timestamp>`, inside the git
+directory where the host's `git status` never shows it; the output names
+it and the old remote's URL as written in its configuration. The host
+`.gitignore` gets the `.board/` entry once `refs/agentboard/board` is
+set, so a refusal leaves the host's working tree as it was.
+
+```
+$ agentboard init --into-host
+moved the board at /path/to/project/.board into the host repository (host model: a worktree of the host repository at refs/agentboard/board)
+the old board repository is kept at /path/to/project/.git/agentboard/standalone-20261013T152817Z
+its remote was git@example.com:me/board.git (as written in its configuration)
+every other clone of the project runs agentboard init --into-host too; retire the old remote once they all have
+nothing new to commit
+origin has no refs/agentboard/board yet; nothing to fetch
+pushed refs/agentboard/board to origin
+```
+
+Running it again afterwards exits 0 saying the board is already in the
+host repository, and changes nothing. With `--json` the document is the
+`init` document plus `action` (`moved`; `resumed` after an interrupted
+move; `unchanged` for a board already in the host; `repaired` for a
+broken link, repaired as `init` repairs it), `keptAt`, `oldRemoteUrl` and
+`sync` (the result of the `sync` it ran, else null).
+
+Every clone moves. Each clone of the project that holds the standalone
+board runs `agentboard init --into-host` itself, first clone first. The
+second clone's move finds `refs/agentboard/board` on the project's remote
+(the first clone's) and rebases its own history onto it, so events synced
+to the old board remote after the first move are carried over too. A
+clone that has not moved yet keeps syncing through the old remote;
+`agentboard remote` shows `standalone` there and `host` where the move is
+done. A fresh clone needs no move: `agentboard init` joins the host-model
+board. Retire the old remote (delete the repository, or keep it as an
+archive) once `agentboard remote` reports `host` in every clone; until
+then a clone that has not moved still pushes there, and those events reach
+the host-model board only when that clone moves.
+
+When the histories being integrated conflict (both sides changed
+`.board/.gitignore` differently; event files never conflict), the move
+exits 3 `sync-conflict`, leaves the rebase in its temporary worktree for
+you with the old `.board` untouched and `refs/agentboard/board` unchanged,
+and names the worktree and the steps: resolve the paths, `git add` them
+and `git rebase --continue` in that worktree (or `git rebase --abort`),
+then run `agentboard init --into-host` again, which adopts the finished
+rebase and completes the move. While the rebase is still in progress a
+re-run exits 3 `sync-in-progress` naming the same path and removes
+nothing. A move killed at any point is resumed by running it again:
+`.board` is either still the old standalone board or becomes the
+host-model board, with every event and exactly one kept repository. A
+re-run that picks up an interrupted move's worktree replays onto it,
+with `git cherry-pick`, exactly the commits that reached the old remote
+since (`refs/agentboard/migrating` records what the worktree has
+integrated, and only a finished replay advances it), and never discards
+what a human resolved there. When that replay conflicts (a third clone
+changed the `.gitignore` line you resolved), the move exits 3
+`sync-conflict` naming the worktree and the steps: resolve the paths,
+`git add` them and `git cherry-pick --continue` in that worktree (for a
+pick git then reports as empty, `git cherry-pick --skip` drops it and
+`git commit --allow-empty` keeps it), then run
+`agentboard init --into-host` again, which completes the move with every
+event and applies nothing twice; `git cherry-pick --abort` instead
+returns the worktree to your resolution, which the next run adopts again
+and replays onto once more. A replay killed part way, with nothing of
+yours staged or edited in the worktree, is quit and run again by the
+next run on its own; one you edited or reset in is left for you, and a
+pick that cannot apply over a local change of yours exits 3
+`sync-failed` naming the file, with nothing dropped and nothing
+published until you commit, stash or discard the change. A worktree left
+by a move of a board that was
+replaced since (another standalone board at `.board`) is never adopted:
+it is removed and named. Leftovers of a dead move that hold nothing are
+removed and named
+(plain `agentboard init` removes them too, and reports a move whose
+`sync` has not completed without finishing it), and a move that is still
+running on the same host is never touched. When the final `sync` fails
+(the project's remote unreachable, a host that refuses custom refs), the
+move is done and `init` exits with the failure's code, still naming the
+kept repository and the old remote (with `--json`, `keptAt` and
+`oldRemoteUrl` are in the error document); the next
+`agentboard init --into-host` resumes the move by running the `sync`
+again, and `agentboard sync` publishes the board too.
+
+Rolling a move back. The kept repository is the complete old board, so a
+move is undone by hand in that clone. Copy out the events written since
+the move first (event files are named by their content, so copying is
+safe and never overwrites anything different), because removing the
+worktree deletes its files:
+
+```
+cp .board/events/*.json .git/agentboard/standalone-<timestamp>/events/
+git worktree unlock .board
+git worktree remove --force .board
+mv .git/agentboard/standalone-<timestamp> .board
+agentboard sync
+```
+
+`agentboard remote` then reports `standalone` again, with the old remote,
+and the `sync` commits and pushes the copied events there. Delete
+`refs/agentboard/board` locally and on the remote if the host model is
+being given up altogether (`git update-ref -d refs/agentboard/board` and
+`git push origin :refs/agentboard/board`); a clone that stays host-model
+is unaffected either way, and the next `init --into-host` in the rolled
+back clone integrates whatever the ref holds by then.
+
 ## Watching the board in a browser
 
 `agentboard serve` starts a small web server for the board and prints a

@@ -24,6 +24,7 @@ import { importChange, parseImportTarget } from '../board/import.js';
 import { readInbox } from '../board/inbox.js';
 import { initBoard } from '../board/init.js';
 import { initBoardWithRemote } from '../board/init-remote.js';
+import { moveBoardIntoHost } from '../board/into-host.js';
 import { boardHealth } from '../board/health.js';
 import { closeMerged } from '../board/merged.js';
 import { remoteReport, renderRemote } from '../board/remote.js';
@@ -572,7 +573,11 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   `warnings`, printed to stderr by `runCli`. With `--remote <url>`:
  *   `initBoardWithRemote(url, ...)` and its `InitRemoteResult` (the same
  *   ten keys plus `action`, `remoteUrl` and `sync`), rendered the same
- *   way; an empty `--remote` value is a usage error.
+ *   way; an empty `--remote` value is a usage error. With `--into-host`:
+ *   `moveBoardIntoHost(...)` and its `IntoHostResult` (the same ten keys
+ *   plus `action`, `keptAt`, `oldRemoteUrl` and `sync`), rendered the same
+ *   way; `--remote` with `--into-host` is a usage error (the exclusive
+ *   group).
  * - `new`: `WriteOutcome`; text: `created <full id>` then the `list` line.
  * - `show`: `ShowResult` (`--raw`: `RawEvent[]`); text: `renderShow`
  *   (`--raw`: each raw event's `text` on its own line).
@@ -707,7 +712,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'init',
     summary: 'Create the board for this project',
     description:
-      'Creates the board for the project containing the current directory: a .board directory that is a git repository of its own, ignored by the host project. Running it again on an existing board changes nothing. With --remote <url> the board is a standalone board shared through the repository at <url>, kept out of the host repository (for a public project, or a git host that refuses custom refs): an existing board there is cloned, an empty repository receives the new board on the first sync, a missing local path is created as a bare repository first, and a standalone board without a remote gets <url> as origin and is synced. Needs git; needs no actor.',
+      'Creates the board for the project containing the current directory: a .board directory that is a git repository of its own, ignored by the host project. Running it again on an existing board changes nothing. With --remote <url> the board is a standalone board shared through the repository at <url>, kept out of the host repository (for a public project, or a git host that refuses custom refs): an existing board there is cloned, an empty repository receives the new board on the first sync, a missing local path is created as a bare repository first, and a standalone board without a remote gets <url> as origin and is synced. With --into-host an existing standalone board is moved into the host repository (its history becomes refs/agentboard/board and .board a worktree of the host), keeping every commit; it refuses while the board has events that are not committed or not pushed, keeps the old repository under the host .git directory, runs sync, and can be run again after an interruption. --remote and --into-host are mutually exclusive. Needs git; needs no actor.',
     group: 'setup',
     examples: [
       { command: 'agentboard init', summary: 'Create the board for this project' },
@@ -719,11 +724,27 @@ export const COMMANDS: readonly CommandSpec[] = [
         command: 'agentboard init --remote ../boards/project.git',
         summary: 'Share the board through a local bare repository, created when it is missing',
       },
+      {
+        command: 'agentboard init --into-host',
+        summary: 'Move an existing standalone board into the host repository, keeping its history',
+      },
     ],
     exitCodes: [
-      { code: 0, meaning: 'The board was created, or already existed' },
+      { code: 0, meaning: 'The board was created, already existed, or was moved into the host repository' },
       EXIT_USAGE,
       { code: 1, reason: 'git-missing', meaning: 'git could not be run' },
+      {
+        code: 1,
+        reason: 'git-too-old',
+        meaning:
+          'With --into-host: a board in the host repository needs git 2.32 or later; nothing changed',
+      },
+      {
+        code: 1,
+        reason: 'no-host-repository',
+        meaning:
+          'With --into-host: the board was not found through a git repository (outside one, or with AGENTBOARD_DIR set); nothing changed',
+      },
       {
         code: 1,
         reason: 'ambiguous-remote',
@@ -763,13 +784,31 @@ export const COMMANDS: readonly CommandSpec[] = [
         code: 3,
         reason: 'sync-failed',
         meaning:
-          'The sync that --remote runs failed (the remote rejected the push, or is unreachable); the board and its remote are kept',
+          'The sync that --remote or --into-host runs failed (the remote rejected the push, or is unreachable); the board and its remote are kept, and a move stays done. With --into-host also: the standalone remote cannot be reached, or the ref update in the host repository lost a race; nothing was moved',
       },
       {
         code: 3,
         reason: 'sync-conflict',
         meaning:
-          'The sync that --remote runs stopped on a conflict, left in the board repository for a human',
+          'The sync that --remote or --into-host runs stopped on a conflict, left in the board repository for a human; with --into-host also a conflict while integrating the host board ref, left in the temporary worktree the message names (resolve, git add, git rebase --continue there, then init --into-host again), the old board untouched',
+      },
+      {
+        code: 3,
+        reason: 'sync-in-progress',
+        meaning:
+          'With --into-host: a rebase or merge is in progress in the standalone board repository, or the rebase of an earlier move is still stopped in its temporary worktree (finish it there, then run init --into-host again); nothing changed',
+      },
+      {
+        code: 3,
+        reason: 'detached-head',
+        meaning:
+          'With --into-host: the standalone board repository has a detached HEAD; nothing changed',
+      },
+      {
+        code: 4,
+        reason: 'unsynced',
+        meaning:
+          'With --into-host: the standalone board has an event file that is not committed, or its branch has commits its remote does not; run agentboard sync first; nothing changed',
       },
       EXIT_INTEGRITY,
     ],
@@ -780,14 +819,27 @@ export const COMMANDS: readonly CommandSpec[] = [
         'string',
         'URL or local path of the repository that holds the board (keeps the board out of the host repository)',
       ),
+      flag(
+        'into-host',
+        'boolean',
+        'Move the existing standalone board into the host repository, keeping its history',
+      ),
     ],
-    exclusive: [],
+    exclusive: [
+      {
+        alternatives: [['remote'], ['into-host']],
+        required: false,
+        reason: 'usage',
+        message: 'init takes --remote <url> or --into-host, not both',
+      },
+    ],
     writes: false,
     operation: 'initBoard',
     run: (ctx, values) => {
       const url = str(values, 'remote');
-      const result =
-        url === undefined
+      const result = bool(values, 'into-host')
+        ? moveBoardIntoHost({ cwd: ctx.cwd, env: ctx.env })
+        : url === undefined
           ? initBoard({ cwd: ctx.cwd, env: ctx.env })
           : initBoardWithRemote(url, { cwd: ctx.cwd, env: ctx.env });
       return {

@@ -518,8 +518,8 @@ function agentboardGitDir(git: GitRunner, hostDir: string): string {
   return dir;
 }
 
-/** One entry of `git worktree list --porcelain`. */
-interface WorktreeEntry {
+/** One entry of `git worktree list --porcelain`, as `registeredAt` reports it. */
+export interface WorktreeEntry {
   readonly path: string;
   readonly locked: boolean;
 }
@@ -553,9 +553,13 @@ function listWorktrees(git: GitRunner): WorktreeEntry[] {
 
 /**
  * The worktree entry registered at exactly `dir`, compared as realpaths
- * (of the parent when the directory itself is missing), or null.
+ * (of the parent when the directory itself is missing), or null. `git` is
+ * a runner for the host repository. Read-only; `init --into-host` uses it
+ * to tell a registered temporary worktree from a plain directory.
+ *
+ * @throws BoardError exit 1, reason `git-missing`, when git cannot be run.
  */
-function registeredAt(git: GitRunner, dir: string): WorktreeEntry | null {
+export function registeredAt(git: GitRunner, dir: string): WorktreeEntry | null {
   const wanted = comparablePath(dir);
   return listWorktrees(git).find((entry) => comparablePath(entry.path) === wanted) ?? null;
 }

@@ -133,6 +133,7 @@ export const HINT_REASONS: readonly string[] = [
   'needs-task-or-adhoc',
   'no-cache',
   'no-disposition',
+  'no-host-repository',
   'no-targets',
   'not-a-board',
   'not-a-tty',
@@ -158,6 +159,7 @@ export const HINT_REASONS: readonly string[] = [
   'unknown-ticket',
   'unpromoted-decision',
   'unsupported-source',
+  'unsynced',
   'usage',
 ];
 
@@ -206,6 +208,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'needs-task-or-adhoc': 1,
   'no-cache': 5,
   'no-disposition': 1,
+  'no-host-repository': 1,
   'no-targets': 1,
   'not-a-board': 1,
   'not-a-tty': 1,
@@ -231,6 +234,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'unknown-ticket': 4,
   'unpromoted-decision': 1,
   'unsupported-source': 1,
+  unsynced: 4,
   usage: 1,
 };
 
@@ -549,9 +553,18 @@ interface HintParts {
 /** Renders the hint of one reason. */
 type HintTemplate = (parts: HintParts) => string;
 
-/** What a human does in the board repository, then sync again. */
-function syncHint(what: string): HintTemplate {
-  return (h) => `${what}, then run ${h.step('sync')}`;
+/**
+ * What a human does in the board repository, then sync again. From `init`
+ * the same refusal comes from the `sync` that `init --remote` runs, or
+ * from `init --into-host` (its step 1 checks on the standalone board, or
+ * a conflict in its temporary worktree), so the hint names both commands
+ * to run again, `init --into-host` for the move.
+ */
+function syncHint(what: string, initWhat = what): HintTemplate {
+  return (h) =>
+    h.command?.name === 'init'
+      ? `${initWhat}, then run ${h.step('sync')} (after init --remote) or ${h.step('init', [['into-host', true]])} again (after a move)`
+      : `${what}, then run ${h.step('sync')}`;
 }
 
 /** The fix for a tasks file problem, then the import again. */
@@ -807,6 +820,8 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     `top needs an interactive terminal; for a snapshot of the board use ${h.step('list')}, and for a line stream ${h.step('watch', [['as', h.actor]])}`,
   'no-targets': (h) =>
     `choose what to install with ${h.step('agents install', [['target', '<target>']])}, where <target> is claude, agents-md, openspec or mcp-json`,
+  'no-host-repository': (h) =>
+    `a move needs a board found through a git repository whose .git directory is inside its working tree (not through AGENTBOARD_DIR, and not a bare, separate-git-dir or submodule host); unset AGENTBOARD_DIR and run ${h.step('init', [['into-host', true]])} at the root of the main checkout`,
   // Exit 2.
   'board-not-found': (h) =>
     `create the board with ${h.step('init')} at the root of the main checkout, or set AGENTBOARD_DIR to an existing board`,
@@ -818,14 +833,16 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     `the board is a worktree of the host repository whose link is broken; run ${h.step('init')} at the root of the main checkout to repair it`,
   // Exit 3.
   'sync-in-progress': syncHint(
-    'a human finishes or aborts the rebase, merge or cherry-pick in progress in the board repository',
+    'a human finishes (git rebase --continue) or aborts (git rebase --abort) the rebase, merge or cherry-pick in progress where the message says (the board repository, or the temporary worktree of a move)',
+    'a human finishes (git rebase --continue for a stopped rebase, git cherry-pick --continue or --skip for a stopped cherry-pick) or aborts (git rebase --abort, git cherry-pick --abort) the operation in progress where the message says (the board repository, or the temporary worktree of a move)',
   ),
   'detached-head': syncHint('a human checks out a branch in the board repository'),
   'board-on-branch': syncHint(
     'a human puts the board worktree back on a detached HEAD at the board ref with git -C .board switch --detach refs/agentboard/board',
   ),
   'sync-conflict': syncHint(
-    'a human resolves the conflict in the board repository, runs git add and git rebase --continue (or --abort)',
+    'a human resolves the conflict where the message says (the board repository, or the temporary worktree of a move), runs git add and git rebase --continue (or --abort)',
+    'a human resolves the conflict where the message says (the board repository, or the temporary worktree of a move), runs git add and git rebase --continue for a stopped rebase or git cherry-pick --continue for a stopped cherry-pick (or the matching --abort)',
   ),
   'sync-failed': syncHint(
     'a human fixes what the message names in the board repository (content staged by hand, the remote or the network)',
@@ -833,6 +850,8 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
   'remote-unreachable': (h) =>
     `create an empty repository at that URL (on your git host, or a local bare repository) and check your access to it, then run ${h.step('init', [['remote', '<url>']])} again`,
   // Exit 4.
+  unsynced: (h) =>
+    `the standalone board has events that are not committed or not pushed, which a move could lose; run ${h.step('sync')} first, then ${h.step('init', [['into-host', true]])} again`,
   'unknown-ticket': (h) => `no ticket matches that id; find it with ${h.step('list')}`,
   'duplicate-create': (h) => `that ticket already exists; find it with ${h.step('list')}`,
   'invalid-transition': (h) =>

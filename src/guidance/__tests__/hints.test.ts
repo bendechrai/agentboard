@@ -80,6 +80,8 @@ const PINNED: Readonly<Record<string, number>> = {
   'needs-task-or-adhoc': 1,
   'no-cache': 5,
   'no-disposition': 1,
+  // init --into-host on a board not found through a git repository (add-board-sharing group 5).
+  'no-host-repository': 1,
   'no-targets': 1,
   'not-a-tty': 1,
   // The repository given to init --remote has a branch without events/ (add-board-sharing group 4).
@@ -108,6 +110,8 @@ const PINNED: Readonly<Record<string, number>> = {
   'unknown-ticket': 4,
   'unpromoted-decision': 1,
   'unsupported-source': 1,
+  // init --into-host on a standalone board with events not committed or not pushed (add-board-sharing group 5).
+  unsynced: 4,
   usage: 1,
 };
 
@@ -467,6 +471,22 @@ describe('hint contracts (CLI)', () => {
     ['not-a-board', 'init', ['events', "'agentboard init --remote <url>'"]],
     ['remote-mismatch', 'init', ['remote set-url', "'agentboard remote'"]],
     ['board-in-host', 'init', ['refs/agentboard/board', "'agentboard remote'"]],
+    // init --into-host (add-board-sharing group 5).
+    ['unsynced', 'init', ["'agentboard sync'", "'agentboard init --into-host'"]],
+    ['no-host-repository', 'init', ['git repository', "'agentboard init --into-host'"]],
+    ['git-too-old', 'init', ['2.32', "'agentboard init --into-host'"]],
+    // A move stops on a rebase (step 3) or on a cherry-pick (the replay of
+    // an adopted worktree), so the init branch names both --continue commands.
+    [
+      'sync-in-progress',
+      'init',
+      ['git rebase --continue', 'git cherry-pick --continue', "'agentboard init --into-host'"],
+    ],
+    [
+      'sync-conflict',
+      'init',
+      ['git rebase --continue', 'git cherry-pick --continue', "'agentboard init --into-host'"],
+    ],
     ['integrity', 'show', ["'agentboard rebuild --check'"]],
     ['no-cache', 'rebuild', ["'agentboard rebuild'"]],
     ['schema-mismatch', 'rebuild', ["'agentboard rebuild'"]],
@@ -934,5 +954,35 @@ describe('the hints of the scope disposition (add-adhoc-ticket-lifecycle task 2.
     expect(scan().reasons.has('needs-task-link')).toBe(false);
     expect(HINT_EXIT_CODES['needs-scope-disposition']).toBe(4);
     expect(HINT_EXIT_CODES['already-linked']).toBe(4);
+  });
+});
+
+describe('the hints of the move into the host repository (add-board-sharing group 5)', () => {
+  it('unsynced says to sync first, then run init --into-host again, on both surfaces, in CLI form', () => {
+    for (const surface of SURFACES) {
+      for (const context of [ctx(surface, 'init'), ctx(surface, null)]) {
+        const hint = renderHint('unsynced', context) ?? '';
+        expect(hint, surface).not.toBe('');
+        const steps = cliSteps(hint).map((step) => parseStep(step));
+        expect(steps.map((step) => step.command)).toEqual(['sync', 'init']);
+        expect(steps[1]?.values['into-host']).toBe(true);
+        expect(toolSteps(hint)).toEqual([]);
+      }
+    }
+  });
+
+  it('no-host-repository names a git repository, AGENTBOARD_DIR and the main checkout, then init --into-host', () => {
+    for (const surface of SURFACES) {
+      for (const context of [ctx(surface, 'init'), ctx(surface, null)]) {
+        const hint = renderHint('no-host-repository', context) ?? '';
+        expect(hint, surface).toContain('git repository');
+        expect(hint).toContain('AGENTBOARD_DIR');
+        expect(hint).toMatch(/main checkout/);
+        const steps = cliSteps(hint).map((step) => parseStep(step));
+        expect(steps.map((step) => step.command)).toContain('init');
+        expect(steps.some((step) => step.values['into-host'] === true)).toBe(true);
+        expect(toolSteps(hint)).toEqual([]);
+      }
+    }
   });
 });

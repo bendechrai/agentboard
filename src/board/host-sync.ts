@@ -501,10 +501,22 @@ function remoteTarget(
   info: BoardModelInfo,
   dir: string,
 ): string {
+  const top = info.gitDir === null ? dirname(dir) : dirname(info.gitDir);
+  return resolveRemoteTarget(remote, url, top);
+}
+
+/**
+ * The remote argument of a fetch, `ls-remote` or push run in a worktree of
+ * the host at `top`: `remote` itself, or, when `url` (its fetch URL) is a
+ * relative path, that path resolved against `top`, so a command run in
+ * `.board` (or a temporary worktree under `.git`) reaches the repository
+ * `git remote add origin ../project.git` meant. `init --into-host`
+ * resolves the host remote the same way. Pure.
+ */
+export function resolveRemoteTarget(remote: string, url: string | null, top: string): string {
   if (url === null || url === '' || !isRelativePathUrl(url)) {
     return remote;
   }
-  const top = info.gitDir === null ? dirname(dir) : dirname(info.gitDir);
   return resolve(top, url);
 }
 
@@ -546,10 +558,14 @@ const PUSH_REFUSAL = /^!\t[^\t]*\t(.*)$/;
  * moved while the push was being received (receive-pack lost the ref
  * update to a concurrent push: the files backend's `failed to update ref`
  * or `failed to lock`, the transaction's `incorrect old value provided`,
- * `cannot lock ref ... is at <new> but expected <old>`): a race, retried
- * like a `[rejected]` non-fast-forward, not a refusal.
+ * `cannot lock ref ... is at <new> but expected <old>`, and `reference
+ * already exists` when the other push created the ref between this
+ * push's advertisement and its ref update, as two clones moving their
+ * boards into one host at the same time do): a race, retried like a
+ * `[rejected]` non-fast-forward, not a refusal.
  */
-const LOST_RACE = /failed to (update|lock)|cannot lock|incorrect old value|but expected/i;
+const LOST_RACE =
+  /failed to (update|lock)|cannot lock|incorrect old value|but expected|reference already exists/i;
 
 /**
  * Step 6: push. Returns false when the remote moved (a `[rejected]`

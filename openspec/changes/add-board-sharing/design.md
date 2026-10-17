@@ -144,7 +144,9 @@ Known limit: a holder that is still alive after 60 seconds (a slow fetch,
 a credential prompt inside `ensureBoardRef`) has its lock broken by a
 waiting `init`, which then runs concurrently with it; the create-only
 `update-ref` and the idempotent worktree steps keep the outcome
-consistent, and 60 seconds is far beyond a normal `init`.
+consistent, and 60 seconds is far beyond a normal `init`. The move of
+decision 9, whose steps are not all idempotent, refreshes the lock's
+mtime before each of its network steps instead.
 
 `git worktree add --orphan` would create the first commit without
 plumbing, but it needs git 2.42 and makes a non-deterministic commit.
@@ -298,8 +300,11 @@ Steps:
    `[remote rejected]` whose reason is a lost ref update, which is how
    receive-pack reports a push received at the same time as another one
    to the same ref: `failed to update ref`, `failed to lock`, `incorrect
-   old value provided`, `cannot lock ref`; ten writers and two syncs per
-   clone hit it in the first round of the concurrency test) retries once
+   old value provided`, `cannot lock ref`, and `reference already exists`
+   when the other push created the ref between this push's advertisement
+   and its ref update; ten writers and two syncs per clone hit it in the
+   first round of the concurrency test, and two clones moving their boards
+   into one host at the same time hit the last wording) retries once
    from step 4; a second such rejection is exit 3 `sync-failed`. A remote
    that refuses the ref (any other `[remote rejected]`: a `pre-receive`
    hook, a host that does not accept custom refs) is not a race and is
@@ -494,31 +499,292 @@ the host's `git status` never shows them and nothing can `git add` them):
    tip (else exit 4 `unsynced`). The source tip is the fetched tip when
    there is a remote (it may hold other clones' events too), else HEAD.
 2. Fetch the source tip from the standalone repository into the host as
-   `refs/agentboard/migrating` (a reserved, temporary ref).
-3. Add a worktree at `<git common dir>/agentboard/migrating` on it, and
-   integrate the local `refs/agentboard/board` and the host remote's
+   `refs/agentboard/migrating-fetch` (a reserved scratch ref, the only
+   ref a fetch of the move ever writes).
+3. Set `refs/agentboard/migrating` (the tip the temporary worktree has
+   integrated) to it, add a worktree at `<git common dir>/agentboard/migrating`
+   on it, record the standalone repository's identity in the worktree,
+   and integrate the local `refs/agentboard/board` and the host remote's
    `refs/agentboard/board` when they exist, with the rebase of decision 4
    (a conflict stops with exit 3, the old `.board` untouched, and the
    message naming the temporary worktree).
 4. `update-ref refs/agentboard/board` to the result (compare-and-swap
-   against the value seen in step 3) and delete `refs/agentboard/migrating`.
+   against the value seen in step 3).
 5. Verify every `events/*.json` of the old `.board` is in the new worktree
    with identical bytes (exit 5 `integrity` otherwise, nothing moved).
 6. Rename the old `.board` to
    `<git common dir>/agentboard/standalone-<UTC timestamp>` (same file
    system, atomic), `git worktree move` the temporary worktree to `.board`,
-   lock it.
+   lock it, then delete `refs/agentboard/migrating` and
+   `refs/agentboard/migrating-fetch`.
 7. `sync` (publishes the ref) and catch up the cache.
 
+The temporary worktree is `<git common dir>/agentboard/migrating/<pid>`,
+one subdirectory per move named by the pid of the process that made it,
+and `refs/agentboard/migrating` is one ref that records what the
+temporary worktree integrated and lives as long as the worktree does: set
+when the worktree is added, advanced only after a replay integrated the
+fresh tip (round 4 ruling: never by the fetch of step 2, which writes the
+scratch ref `refs/agentboard/migrating-fetch` only, so a run that fetched
+and then stopped, by a kill, a lost lock or a conflict of the replay,
+leaves the next run replaying from the tip the worktree really holds and
+no event synced to the old remote meanwhile is skipped), deleted in step
+6 once the worktree is in place (round 3 ruling: not at the end of step
+4, so a kill between the compare-and-swap and the `worktree move` leaves
+a re-run that adopts the temporary with the tip it integrated, and its
+replay is never based on a merge base or `--root`), by a resumed move
+when it still exists, and when no temporary worktree remains at all; the
+scratch ref goes with it. A leftover of an earlier
+move is touched only when its pid is dead (the group 4 review of
+`init --remote`, whose cleanup of every `.board-clone-*` can make a
+concurrent run fail): a live-pid temporary is left alone; a temporary
+named by the running process's own pid counts as dead, since one process
+runs one move at a time under the init lock (this also covers pid
+namespaces in containers). The step 1 checks run before the init lock, so
+a refusal creates no `<git common dir>/agentboard` directory; steps 2 to
+7 run under it, and the move refreshes the lock file's mtime immediately
+before each network step (the `ls-remote` and the fetch of step 3, the
+`sync` of step 7), so a move waiting on a slow remote is not broken as
+stale at 60 seconds while it is alive (the known limit of decision 2 does
+not apply to it). The host `.gitignore` entry is written only after the
+compare-and-swap of step 4 succeeded, so a refusal of steps 2 to 4 leaves
+the host's working tree as it was.
+
+Conflicts are not a dead end (orchestrator rulings, group 5): a rebase of
+step 3 that stops on a conflict exits 3 `sync-conflict` with the
+temporary worktree left as git left it, the old `.board` untouched and
+`refs/agentboard/board` unchanged, and the message names the worktree's
+path and the human steps: resolve, `git add`, `git rebase --continue` in
+that worktree, then `agentboard init --into-host` again. A re-run never
+removes a dead-pid temporary worktree that has rebase state, or
+cherry-pick state a human is in the middle of: it exits 3
+`sync-in-progress` naming the path with the matching instructions (`git
+rebase --continue` or `git cherry-pick --continue`) and changes nothing
+(an interrupted replay of the move's own, with nothing unmerged and a
+clean index, is quit and run again instead, see below). A dead-pid
+temporary worktree without such state
+whose HEAD differs from `refs/agentboard/migrating` (its rebase finished,
+by the move before it was killed or by a human, or its compare-and-swap
+was lost) is adopted when it belongs to the board at `.board`: every
+temporary records the identity of the standalone repository it was made
+from (the git directory identity of step 1, in the file
+`agentboard-source` of the worktree's git directory), and one whose
+record is missing or names another repository (`.board` replaced by
+another standalone board since) is never adopted (round 4 ruling):
+without rebase or cherry-pick state it is removed like a dead leftover
+and named as left by a move of another board, with such state it is the
+`sync-in-progress` refusal saying the same. Adoption integrates: the
+re-run reads the value `refs/agentboard/migrating` holds (the source tip
+the worktree integrated), fetches the fresh source tip into
+`refs/agentboard/migrating-fetch` as step 2 does, and replays onto the
+adopted HEAD exactly the source commits that reached the standalone board
+or its remote since, from this clone's own `sync` or from a third clone:
+nothing when the fresh tip equals the integrated one or is already an
+ancestor of HEAD (no cherry-pick and no rebase runs), else `git
+cherry-pick <base>..refs/agentboard/migrating-fetch` (round 4 ruling: a
+cherry-pick, not `rebase --onto`, so HEAD stays the branch the commits
+land on and a human's `git cherry-pick --abort` returns to the HEAD they
+resolved instead of to the fresh tip) with `<base>` the integrated tip
+when it is an ancestor of the fresh tip, which is the normal case (round
+3 ruling: clones of one board share its history, so the merge base of
+the adopted HEAD and the fresh tip predates the commits the human
+resolved and a replay based on it applies them again, conflicting
+forever); the merge base is only the fallback when the integrated tip is
+unrelated, and every commit of the fresh tip the last one. A commit whose
+patch HEAD already holds (one the human finished by hand) is skipped,
+never kept empty and never a refusal. Only after the replay,
+`refs/agentboard/migrating` is advanced to the fresh tip. A replay that
+stops on a conflict exits 3 `sync-conflict` naming the worktree, `git
+cherry-pick --continue` and `agentboard init --into-host`, with the
+worktree, both refs and the old `.board` as they were; after the human's
+`--continue` the re-run completes the move with every event, after their
+`--abort` it adopts the worktree again, still at the resolution, and
+replays again. A replay a human finished is told from one they abandoned
+by a record the move writes in the temporary worktree's git directory
+before the cherry-pick (`agentboard-replay`: the HEAD the replay started
+from and the tip it replays up to; implementer decision, round 4): a
+re-run that finds the record with HEAD moved on and every event file of
+the replayed range in HEAD's tree counts the worktree as having
+integrated that tip and replays nothing of it again (a commit the human
+resolved by hand would conflict with the same commit replayed once more,
+and git cannot tell them apart by patch), while HEAD still at the
+recorded start (`--abort`, or every commit skipped) or an event file of
+the range missing from HEAD (`git cherry-pick --quit` half way) replays
+again from the integrated tip, the commits already applied becoming
+empty and skipped; the record goes once `refs/agentboard/migrating` has
+been advanced. The cherry-pick runs without `--no-verify` (git takes no
+such option on `cherry-pick` and exits 129 on it; implementer decision,
+round 4): the host's hooks are kept out of it by the runner's
+`core.hooksPath`, as every other git command of the move. A replay the
+move itself left half done (round 5 rulings 1 and 2: a kill between two
+picks of a multi-commit replay leaves git's `sequencer` directory alone,
+a kill while a pick is committed leaves `CHERRY_PICK_HEAD` too, and
+both count as a cherry-pick in progress, as `CHERRY_PICK_HEAD` alone
+does) is not a dead end and not a human's: when nothing is unmerged, the
+index equals HEAD and the working tree is clean (`git diff --quiet` as
+well as `git diff --cached --quiet`; round 6 ruling 2), the re-run runs
+`git cherry-pick --quit` in the worktree (HEAD and the picks already
+made stay), then adopts it and replays again from the integrated tip,
+the picks already made becoming empty and skipped, so a kill anywhere in
+a replay is completed by the re-run with every event, each once. A
+stopped cherry-pick with an unmerged path, or with a resolution staged
+and not continued, is a human's and stays, never quit, the refusal
+naming `git cherry-pick --continue`, `git cherry-pick --abort` and, for
+a pick git reports as empty, `git cherry-pick --skip` and `git commit
+--allow-empty` (round 6 ruling 1); one with unstaged changes (a `git
+reset` that left the conflict markers in the file) is never quit either:
+while git's sequencer is still present (a reset on an earlier pick of
+the sequence) it is that same human's conflict in progress and the same
+`sync-in-progress` refusal, and once git has dropped its cherry-pick
+state (a reset on the last pick) it is the dirty worktree described
+below (orchestrator ruling, round 6); the hints of `sync-conflict`
+and `sync-in-progress` from `init` name `git cherry-pick --continue`
+beside `git rebase --continue` (round 5 ruling 4). The move itself skips
+a pick only on git's own empty stop (`CHERRY_PICK_HEAD` present, nothing
+unmerged, the index equal to HEAD); any other stop of its replay (a pick
+refused over a local change of a tracked file) is exit 3 `sync-failed`
+with the sequencer quit, the replay record removed and the temporary
+kept adoptable, so no commit of the range is ever dropped and the `sync`
+of step 7 never commits or publishes a conflict marker. For the same
+reason an adopted worktree with an unstaged change to a tracked file and
+no cherry-pick state left (a `git reset` on the last pick of a sequence
+also removes git's cherry-pick state, leaving the markers in a worktree
+with no `CHERRY_PICK_HEAD` and no `sequencer`; an edit by hand) is exit 3
+`sync-failed` naming the files and the steps (commit, stash or discard
+them, then `agentboard init --into-host` again) before anything is quit,
+replayed or carried over, the worktree kept adoptable, HEAD, the refs
+and `.board` untouched (implementer decision, round 6). A replay counts
+as integrated up to its recorded tip whenever every event file the range
+adds is in HEAD, whether or not HEAD moved (round 6 ruling 1): a conflict
+the human resolved by keeping our side leaves an empty pick, which they
+skip, and the re-run then completes instead of replaying the same commit
+and conflicting forever. Before a
+replay, every untracked `events/*.json` of the worktree whose content
+equals the fresh tip's blob of the same path is removed (round 5 ruling
+3): the step 5 carry-over of an earlier run that stopped before the
+rename leaves such files, the standalone board commits them since, and
+git refuses to let a pick overwrite an untracked file even with identical
+content; the pick re-creates them, and anything the fresh tip lacks is
+left for step 5. A temporary without the `agentboard-source` record
+(older code; round 5 ruling 5) is this board's when the tip it
+integrated is an ancestor of the fresh tip fetched from `.board`, else
+it is removed and named like one of another board. Nothing the
+human resolved is replayed; the resolution
+stays the ancestor of the result. Then the re-run integrates the current
+local and remote board refs as step 3 does (no-ops for what is already
+integrated), then runs steps 4 to 7. Nothing a human resolved in a
+temporary worktree is ever discarded. Only dead-pid temporaries with no
+rebase or cherry-pick state and nothing integrated (HEAD still at the
+temporary ref, or not registered at all), or made from another board,
+are removed, and the output names them. A `worktree add` that fails for
+any reason leaves nothing behind (round 4 ruling): a registration git
+wrote before failing is removed, the directory and this run's refs go,
+and the refusal is exit 3 `sync-failed` naming `agentboard init
+--into-host`, so the re-run adds a fresh worktree at the same path.
+
+Leftovers on a board already in the host (plain `init` and
+`init --into-host`, round 3 rulings): both remove every dead-pid
+temporary without rebase state under `migrating/`, whatever its HEAD (the
+board is in place, there is nothing to adopt), naming it, and leave a
+stopped rebase or a live pid alone. The `migrating` directory emptied by
+that is removed only when no kept `standalone-*` repository exists; with
+one it is the marker of a move whose `sync` has not completed (see
+"Resuming"), and the two commands differ in what they do with it: plain
+`init` never removes it and never finishes the move, it reports that an
+`init --into-host` was interrupted before its sync completed and names
+`agentboard init --into-host`; `init --into-host` resumes it (the
+carry-over and the `sync`, both idempotent when nothing is pending, so a
+marker left by a cleaned temporary beside an old kept repository costs one
+no-op `sync`), and is `unchanged` only when the directory still holds a
+temporary or no kept repository exists; in the latter case the emptied
+directory is removed in that same run (round 4 ruling), so a plain `init`
+afterwards finds no directory and reports no pending move.
+
+A move whose init lock went stale while it stalled before its `worktree
+add` (another `init --into-host` or `init` took the lock and finished,
+deleting `refs/agentboard/migrating` and moving the board) refuses with
+exit 3 `sync-failed` saying it lost its lock and naming
+`agentboard init --into-host` (round 3 ruling), never with a raw git
+failure; it leaves nothing behind, and the board the other init made is
+untouched.
+
+Step 5 is a carry-over, not a bare verification, as the repair of
+decision 7: every event file of the old `.board/events` that the new
+worktree lacks (written by a writer or a standalone `sync` after step 1)
+is copied in when its content hashes to its name, and the `sync` of step
+7 commits it; only a file whose content does not match its name (or whose
+copy in the worktree differs) is exit 5 `integrity`, with nothing moved
+and the temporary left for the re-run. Immediately before the rename,
+step 6 re-checks that `.board` is still the standalone repository step 1
+saw (the same resolved git directory, by realpath, device and inode; the
+HEAD commit step 1 saw still an ancestor of, or equal to, its HEAD, so a
+repository rebuilt at the same path with another history is refused even
+where inode numbers are reused, while a standalone `sync` that committed
+meanwhile is not a replacement; no host worktree registered there)
+and refuses with exit 3 `sync-failed` otherwise, so a move that lost its
+lock to a second one never renames the second move's worktree away. After
+the `worktree move` the carry-over runs again from the kept repository,
+for an event that landed in the old `.board` between step 5 and the
+rename (the rename window). The `migrating` directory stays, empty, until
+the `sync` of step 7 has completed: it marks a move whose publication is
+not done.
+
 Resuming: a re-run that finds `.board` missing and a registered worktree
-at `<git common dir>/agentboard/migrating` whose HEAD equals
-`refs/agentboard/board` finishes step 6; one that finds the temporary
-worktree while the old `.board` is still standalone removes it (it holds
-nothing that is not in the old board or the refs) and starts again.
+under `<git common dir>/agentboard/migrating/` with a dead pid, no rebase
+state and a HEAD equal to `refs/agentboard/board` finishes step 6 and
+runs step 7 (`resumed`); one that finds `.board` a host-model board with
+the empty `migrating` marker (a move killed between the `worktree move`
+and the end of step 7, or whose `sync` failed) restores the lock when it
+is missing, deletes `refs/agentboard/migrating` and
+`refs/agentboard/migrating-fetch` when they still exist,
+repeats the carry-over from the newest kept repository (the greatest
+`standalone-*` name; with several kept repositories, from several moves
+or a rollback, the others are left alone), runs
+step 7 and reports `resumed` with the kept repository; only a board
+without the marker is `unchanged`. The marker counts only with a kept
+repository to carry over from (every move keeps one before it moves the
+worktree into place): a `migrating` directory left empty by the removal
+of dead temporaries on a board that was never moved is removed, and the
+board is `unchanged`; beside a kept repository it is never removed by
+plain `init`, only by the `sync` of a resumed move. When the `sync` of step 7 fails, the
+move stays done, `init` exits with the sync's code and reason, and its
+output still carries the move's lines (the kept repository, the old
+remote) with `keptAt` and `oldRemoteUrl` in the `--json` error document.
+
+Other details of step 1: a committed event file whose content differs
+from its committed blob (a content-addressed file modified in place) is
+exit 5 `integrity`, not `unsynced`; a standalone board with no commit yet
+is exit 4 `unsynced`, telling the user to run `agentboard sync` first; a
+host whose git directory is not in its working tree (a bare repository
+with worktrees, a `--separate-git-dir` repository, a submodule) is exit 1
+`no-host-repository`, as is a board found outside a git repository or
+with `AGENTBOARD_DIR`; `git-too-old` is checked before everything else,
+also outside a git repository and on a host-model board. The standalone
+remote's tip is fetched with
+`git fetch --no-tags <remote> +refs/heads/<branch>:refs/remotes/<remote>/<branch>`,
+and step 2 fetches that tracking ref (`refs/heads/<branch>` without a
+remote) from the standalone repository as a local path into the scratch
+ref. In step 3 a host
+remote whose `ls-remote` fails is treated as having no board ref, with a
+warning naming it; the move completes and the `sync` of step 7 then fails
+with exit 3 `sync-failed`, the move done, the next `sync` publishing. A
+compare-and-swap failure in step 4 (the old value is the one read before
+the rebases of step 3) leaves the old `.board` untouched, the host
+`.gitignore` unwritten and the temporary worktree in place for the re-run
+to adopt; a rebase that fails without a conflict, or a fetch of the
+remote's ref that fails after the `ls-remote`, removes the temporary (it
+holds nothing a human did); `refs/agentboard/board` keeps whatever value
+step 4 gave it (a correct board history either way).
 
 The old repository is kept rather than deleted: it is the only copy of
 anything a bug in steps 2 to 5 might miss, and inside the git directory it
-costs nothing visible. The output names it and the old remote's URL.
+costs nothing visible. The output names it and the old remote's URL as
+written in the board's configuration (the raw `remote.<name>.url`, so a
+URL rewritten by `insteadOf` is reported the way the user wrote it). With
+`--json` the document is the ten keys of `init` plus `action` (`moved`,
+`resumed`, `unchanged` for a board already in the host, `repaired` for a
+broken link repaired as `init` does), `keptAt`, `oldRemoteUrl` and `sync`
+(the result of step 7, null when no `sync` ran).
 
 ### 10. Showing the configuration: `agentboard remote`
 

@@ -22,7 +22,9 @@ import { openBoard } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
 import { boardExists, locateBoard, type LocateOptions } from '../store/locate.js';
 import { gitRunner, gitVersion, isGitFailure, meetsGitFloor, type GitVersion } from './git.js';
+import { MIGRATING_DIR, cleanDeadMigratingWorktrees, pendingMove } from './into-host.js';
 import {
+  AGENTBOARD_GIT_SUBDIR,
   BOARD_GITIGNORE_LINES,
   addBoardWorktree,
   adoptRepairingWorktree,
@@ -152,6 +154,26 @@ export interface InitResult {
  * that an `init` interrupted after `git worktree add` is completed by
  * running it again: a host-model board whose worktree is not locked is
  * locked (`addBoardWorktree`, which changes nothing on a healthy board).
+ * A second exception, for the temporary worktrees of `init --into-host`
+ * (`src/board/into-host.ts`; add-board-sharing design.md decision 9,
+ * ruling E): on a host-model board, under the init lock,
+ * `cleanDeadMigratingWorktrees` removes every dead-pid temporary
+ * worktree without rebase state under `<git common dir>/agentboard/migrating/`
+ * (one with a rebase stopped in it, or a live pid, is left alone); the
+ * board, its ref and its events are untouched, and the message names what
+ * was removed. The `migrating` directory, when it is then empty, is
+ * removed only when no kept repository (`standalone-*`) exists under
+ * `<git common dir>/agentboard/` (round 3 ruling 3): beside one it is the
+ * marker of a move whose `sync` has not completed (a move killed after
+ * its `worktree move`, or whose `sync` failed; design.md decision 9,
+ * "Resuming"), which plain `init` never removes and never finishes: the
+ * message then says that an `agentboard init --into-host` was interrupted
+ * before its sync completed and names `agentboard init --into-host` to
+ * run (both texts `sync` and `agentboard init --into-host` appear), the
+ * worktree lock is restored as above, no carry-over and no `sync` run
+ * (the ref, the remote and the kept repository are as they were), and the
+ * next `agentboard init --into-host` is `resumed`. A healthy host-model
+ * board without the marker never says `agentboard init --into-host`.
  *
  * Broken host link or a `.board` directory that is not a repository
  * (`detectBoardModel` is `broken-host-link` or `not-a-repository` and the
@@ -295,7 +317,13 @@ export function initBoard(options?: LocateOptions): InitResult {
   // the init lock: no init changes a healthy board.
   const healthy = healthyBoard(dir, env);
   if (healthy !== null) {
-    return existingBoard(dir, healthy, hostModel, env);
+    // A host-model board with temporary worktrees of a move under
+    // `<git common dir>/agentboard/migrating` is cleaned under the lock.
+    return healthy.model === 'host' && hostModel && existsSync(migratingDirOf(dirname(dir), env))
+      ? withInitLock(dirname(dir), () => existingBoard(dir, healthy, hostModel, env, true), {
+          env,
+        })
+      : existingBoard(dir, healthy, hostModel, env, false);
   }
   if (!hostModel) {
     return createStandaloneBoard(dir, inTree, warnings, why, env);
@@ -307,6 +335,12 @@ export function initBoard(options?: LocateOptions): InitResult {
   const hostRoot = dirname(dir);
   const remote = hostRemote(hostRoot, env);
   return withInitLock(hostRoot, () => hostModelBoard(dir, remote, env), { env });
+}
+
+/** `<git common dir>/agentboard/migrating` of the host at `hostRoot`, the directory of a move's temporary worktrees. */
+function migratingDirOf(hostRoot: string, env: Env): string {
+  const common = gitRunner(hostRoot, { env }).run('rev-parse', '--git-common-dir').trim();
+  return join(resolve(hostRoot, common), AGENTBOARD_GIT_SUBDIR, MIGRATING_DIR);
 }
 
 /** The model of the board at `dir` when it exists and is healthy (`host` or `standalone`), else null. */
@@ -328,7 +362,7 @@ function healthyBoard(dir: string, env: Env): BoardModelInfo | null {
 function hostModelBoard(dir: string, remote: string | null, env: Env): InitResult {
   const healthy = healthyBoard(dir, env);
   if (healthy !== null) {
-    return existingBoard(dir, healthy, true, env);
+    return existingBoard(dir, healthy, true, env, true);
   }
   return existsSync(dir) ? repairBoard(dir, remote, env) : createHostBoard(dir, remote, env);
 }
@@ -371,6 +405,7 @@ function existingBoard(
   info: BoardModelInfo,
   hostModel: boolean,
   env: Env,
+  locked: boolean,
 ): InitResult {
   const choice = boardRemote(info, { env });
   const remote = choice.chosen?.name ?? null;
@@ -387,6 +422,25 @@ function existingBoard(
       `board already exists at ${asciiText(dir)} (host model: its history is ${BOARD_REF} ` +
         `in the host repository; ${remoteText}); ${changed}`,
     );
+    if (hostModel && locked) {
+      // Temporary worktrees of a move that died: removed under the init
+      // lock (held by the caller), as `init --into-host` removes them on a
+      // board already moved.
+      const removed = cleanDeadMigratingWorktrees(dirname(dir), { env });
+      if (removed.length > 0) {
+        lines.push(
+          `removed ${removed.map((p) => asciiText(p)).join(', ')}, left by an interrupted ` +
+            'agentboard init --into-host',
+        );
+      }
+      if (pendingMove(dirname(dir), { env })) {
+        lines.push(
+          'an agentboard init --into-host was interrupted before its sync completed (the old ' +
+            'board repository is kept under .git/agentboard); run agentboard init --into-host ' +
+            'to finish it',
+        );
+      }
+    }
   } else {
     const history =
       choice.branch === null
