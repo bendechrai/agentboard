@@ -46,7 +46,7 @@ a second reviewer on the strongest model, and `make check-floor` and
 
 ## 4. Cards, feed and ticket views (`view/scope-disposition`)
 
-- [ ] 4.1 Add `unplanned` to the view-model card and `recorded as unplanned: <reason>` to `describeEvent`. Verify: the "Unplanned card" and "Unplanned summary" scenarios; a rejected `ticket.unplanned` producing no feed entry
+- [ ] 4.1 Pin the view-model card's `unplanned` (the field is added in 3.1) and add `recorded as unplanned: <reason>` to `describeEvent`. Verify: the "Unplanned card" and "Unplanned summary" scenarios; a rejected `ticket.unplanned` producing no feed entry
 - [ ] 4.2 Show the disposition in the web card ("unplanned" in place of "ad hoc"), the web ticket detail and the TUI ticket detail, and add the scope disposition to the web move control (target `merged`) and close form for an undisposed ticket. Verify: the scenarios "Merge an ad hoc ticket from the browser", "Missing disposition from the browser" and "Secret-like unplanned reason from the browser"; a TUI frame golden for a ticket with an unplanned disposition; web text rendered as text, never markup
 
 ## 5. Guidance (`guidance/adhoc-lifecycle`)

@@ -227,6 +227,20 @@ section as information (neutral, like the cache check when it matches),
 not like stale claims or stuck tickets. It is the one section that
 includes closed tickets, because closed is where unplanned work ends up.
 
+Decisions taken in task group 3:
+- The window is exclusive: an entry is listed when `ageMs <
+  unplannedWithin` (one exactly that old is counted in `total` but not
+  listed), matching "less than `unplannedWithin` old"; `staleAfter` and
+  `blockedAfter` stay inclusive ("at least").
+- The `thresholds:` line of the text report is unchanged (stale after,
+  blocked after); the window is shown in the unplanned scope heading.
+- In the web view severity is a class: `warning` on the stale claims and
+  stuck in blocked sections, `info` on the unplanned scope section, which
+  never carries `warning`.
+- `Card.unplanned` (section 8) is added with the health section, so every
+  health list line shows `[unplanned]`; task 4.1 keeps the card scenario,
+  the web card and `describeEvent`.
+
 Text output, after the close-merged sections:
 
 ```
