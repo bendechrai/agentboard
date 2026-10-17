@@ -15,8 +15,8 @@
  * - relies on the fold's own rules (through `runCommand`) for the state
  *   machine and assignment checks, so a refusal is exit 4 with the fold
  *   rejection reason (`invalid-transition`, `already-assigned`,
- *   `not-assignee`, `checklist-index`, `needs-task-link`) and writes
- *   nothing;
+ *   `not-assignee`, `checklist-index`, `needs-scope-disposition`,
+ *   `already-linked`) and writes nothing;
  * - throws `BoardError(1, 'missing-actor')` when `actor` is empty.
  */
 
@@ -60,7 +60,11 @@ function writeTicketEvent(
     () => ({ ok: true, event: build(resolveTicket(board.db, id)) }),
     options,
   );
-  return { hash: result.hash, ticket: ticketOf(result.ticket) };
+  return {
+    hash: result.hash,
+    events: result.events.map((written) => written.hash),
+    ticket: ticketOf(result.ticket),
+  };
 }
 
 /**
@@ -107,7 +111,7 @@ export function claimTicket(
     );
   } catch (error) {
     if (error instanceof AlreadyHeld) {
-      return { hash: null, ticket: error.ticket };
+      return { hash: null, events: [], ticket: error.ticket };
     }
     throw error;
   }
@@ -138,8 +142,9 @@ export function releaseTicket(
  *
  * - `to` given: that target. The state machine decides (exit 4
  *   `invalid-transition`, including a move to the current status and every
- *   move out of `merged`; exit 4 `needs-task-link` for a ticket without a
- *   task reference entering `implementing`).
+ *   move out of `merged`; exit 4 `needs-scope-disposition` for a ticket
+ *   with neither a task reference nor an unplanned disposition entering
+ *   `merged`; an ad hoc ticket enters `implementing` like any other).
  * - `to` omitted on a `blocked` ticket: the remembered origin
  *   (`blockedFrom`); the event still names it.
  * - `to` omitted on any other ticket: `BoardError(1, 'missing-status')`

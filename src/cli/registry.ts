@@ -233,11 +233,6 @@ const EXIT_TRANSITION: ExitCodeSpec = {
   reason: 'invalid-transition',
   meaning: 'The status machine does not permit this move from the current status',
 };
-const EXIT_TASK_LINK: ExitCodeSpec = {
-  code: 4,
-  reason: 'needs-task-link',
-  meaning: 'A ticket without a task reference cannot enter implementing; link one first',
-};
 const EXIT_INTEGRITY: ExitCodeSpec = {
   code: 5,
   meaning: 'Event log or cache integrity problem, or the cache stayed locked (busy)',
@@ -925,7 +920,6 @@ export const COMMANDS: readonly CommandSpec[] = [
       EXIT_ID_AMBIGUOUS,
       EXIT_NO_BOARD,
       EXIT_TRANSITION,
-      EXIT_TASK_LINK,
       EXIT_UNKNOWN_TICKET,
       EXIT_INTEGRITY,
     ],
@@ -1007,7 +1001,6 @@ export const COMMANDS: readonly CommandSpec[] = [
       EXIT_SECRET,
       EXIT_NO_BOARD,
       EXIT_TRANSITION,
-      EXIT_TASK_LINK,
       EXIT_UNKNOWN_TICKET,
       EXIT_INTEGRITY,
     ],

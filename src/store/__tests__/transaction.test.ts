@@ -272,7 +272,7 @@ describe('runCommand: validation failures write nothing', () => {
     expectNoWrite(board, () => run(board, 'orch', make(T1), now), 4, reason);
   });
 
-  it('refuses moving an ad hoc ticket into implementing with needs-task-link', () => {
+  it('moves an ad hoc ticket into implementing: needs-task-link is no longer a refusal', () => {
     const { board, now } = setup();
     run(
       board,
@@ -281,12 +281,30 @@ describe('runCommand: validation failures write nothing', () => {
       now,
     );
     run(board, 'orch', P.move(T1, 'tests'), now);
-    expectNoWrite(
+    const result = run(board, 'orch', P.move(T1, 'implementing'), now);
+    expect(result.ticket?.status).toBe('implementing');
+    expect(result.ticket?.task).toBeNull();
+  });
+
+  it('refuses moving an undisposed ad hoc ticket into merged with needs-scope-disposition', () => {
+    const { board, now } = setup();
+    run(
       board,
-      () => run(board, 'orch', P.move(T1, 'implementing'), now),
-      4,
-      'needs-task-link',
+      'orch',
+      { kind: 'ticket.create', ticket: T1, body: { title: 'x', adhoc: 'why' } },
+      now,
     );
+    for (const to of ['tests', 'implementing', 'review'] as const) {
+      run(board, 'orch', P.move(T1, to), now);
+    }
+    const err = expectNoWrite(
+      board,
+      () => run(board, 'orch', P.move(T1, 'merged'), now),
+      4,
+      'needs-scope-disposition',
+    );
+    expect(err.message).toContain(T1);
+    expect(readTicket(board.db, T1)?.status).toBe('review');
   });
 
   it("passes an operation's refusal through unchanged", () => {

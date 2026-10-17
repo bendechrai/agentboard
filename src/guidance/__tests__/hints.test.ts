@@ -73,7 +73,10 @@ const PINNED: Readonly<Record<string, number>> = {
   'method-not-allowed': 1,
   'missing-actor': 1,
   'missing-status': 1,
-  'needs-task-link': 4,
+  // The scope disposition at merge and close (add-adhoc-ticket-lifecycle):
+  // `needs-task-link` is no longer a reason.
+  'needs-scope-disposition': 4,
+  'already-linked': 4,
   'needs-task-or-adhoc': 1,
   'no-cache': 5,
   'no-disposition': 1,
@@ -393,12 +396,6 @@ describe('hint contracts (CLI)', () => {
     expect(hint).not.toContain('agentboard mcp');
   });
 
-  it('scenario: needs-task-link names link with a task reference', () => {
-    expect(cli('needs-task-link', 'move', { id: '01J9K3', actor: 'impl' })).toContain(
-      "'agentboard link 01J9K3 --task <source>:<ref>#<item> --as impl'",
-    );
-  });
-
   it('scenario: the decision rule on close names --decision-recorded-in <path>', () => {
     const none = cli('no-disposition', 'close', { actor: 'orch' });
     expect(none).toContain("'agentboard close <id> --decision-recorded-in <path> --as orch'");
@@ -591,12 +588,6 @@ describe('hint contracts (MCP)', () => {
     expect(hint).toContain("'agentboard mcp --as <actor>'");
     expect(hint).not.toContain('AGENTBOARD_ACTOR');
     expect(hint).not.toBe(renderHint('missing-actor', ctx('cli', 'comment', { id: '01J9K3' })));
-  });
-
-  it('scenario: needs-task-link names board_link with a task reference', () => {
-    expect(mcp('needs-task-link', 'move', { id: '01J9K3', actor: 'impl' })).toContain(
-      'board_link {"id":"01J9K3","task":"<source>:<ref>#<item>","as":"impl"}',
-    );
   });
 
   it('scenario: the decision rule on close names board_close with decision-recorded-in', () => {

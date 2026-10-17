@@ -2,7 +2,8 @@
  * Folding the event log into board state (board-events: "Deterministic
  * ordering", "Fold semantics", "Unknown kinds are preserved"; board-cli:
  * "Status state machine", "Claim, release and handoff";
- * board-openspec-integration: "Tickets reference tasks").
+ * board-openspec-integration: "Tickets reference tasks or are ad hoc",
+ * "Scope disposition at merge and close").
  *
  * Pure: the result is a function of the set of inputs only, never of their
  * order in the array or of any clock. Every lease, queue and grant decision
@@ -48,7 +49,11 @@ export interface FoldInput {
   event: BoardEvent | UnknownKindEvent;
 }
 
-/** Why an otherwise well-formed event was not applied. */
+/**
+ * Why an otherwise well-formed event was not applied. `needs-task-link` is
+ * not a reason: no rule depends on a task reference for a move into any
+ * status but `merged` (board-events: "Fold semantics"; ADR 0013).
+ */
 export type RejectionReason =
   | 'unknown-ticket'
   | 'duplicate-create'
@@ -56,7 +61,8 @@ export type RejectionReason =
   | 'already-assigned'
   | 'not-assignee'
   | 'checklist-index'
-  | 'needs-task-link'
+  | 'needs-scope-disposition'
+  | 'already-linked'
   | 'queued'
   | 'holder-changed'
   | 'invalid-queue'
@@ -150,6 +156,22 @@ export interface Availability {
 export type CloseDisposition = { decision: string } | { noDecision: true };
 
 /**
+ * The unplanned scope disposition of a ticket (board-events: "Unplanned
+ * disposition"): set by the latest applied `ticket.unplanned` (its
+ * `body.reason`, its `actor` and its `ts`, copied), cleared by an applied
+ * task link. Serialized to the cache `tickets.unplanned` column as
+ * canonical JSON (board-cache: "Cache schema").
+ */
+export interface UnplannedDisposition {
+  /** `body.reason` of the event. */
+  reason: string;
+  /** `actor` of the event. */
+  actor: string;
+  /** `ts` of the event. */
+  ts: Hlc;
+}
+
+/**
  * Folded state of one ticket. Every field is always present (absent values
  * are `null` or empty arrays, never `undefined`), so the state serializes
  * with `canonicalEncode`.
@@ -176,6 +198,13 @@ export interface Ticket {
   task: TaskRef | null;
   /** From create; cleared to null when a task link is applied. */
   adhoc: string | null;
+  /**
+   * The unplanned scope disposition, or null: null at create, set by an
+   * applied `ticket.unplanned` (replacing any earlier one), cleared to null
+   * when a task link is applied. Never set while `task` is non-null, and
+   * `adhoc` is untouched by it (see `UnplannedDisposition`).
+   */
+  unplanned: UnplannedDisposition | null;
   /**
    * From create, all `done: false` (`[]` when not given), followed by the
    * items of each applied `ticket.checklist.add`, in fold order.
@@ -284,9 +313,13 @@ export function isTransitionAllowed(from: Status, to: Status, blockedFrom: Statu
  *   ticket as documented on `Ticket`, status `todo`, unassigned, version 1.
  * - `ticket.comment`: appends a comment.
  * - `ticket.move`: `invalid-transition` unless `isTransitionAllowed(status,
- *   to, blockedFrom)`; then `needs-task-link` if `to` is `implementing` and
- *   `task` is null. Moving to `blocked` records the previous status in
- *   `blockedFrom`; leaving `blocked` clears it.
+ *   to, blockedFrom)`; then `needs-scope-disposition` if `to` is `merged`
+ *   and both `task` and `unplanned` are null (board-events: "Fold
+ *   semantics", scenario "Undisposed ticket cannot enter merged"). No rule
+ *   depends on `task` for any other target: an ad hoc ticket moves
+ *   `todo` -> `tests` -> `implementing` -> `review` and is blocked freely.
+ *   Moving to `blocked` records the previous status in `blockedFrom`;
+ *   leaving `blocked` clears it.
  * - `ticket.assign`: sets `assignee` to `body.to` unconditionally, clears
  *   `lease`, and removes `body.to` from `queue` when it is queued (the
  *   assignee is never queued; the order of the other waiters is kept).
@@ -350,12 +383,22 @@ export function isTransitionAllowed(from: Status, to: Status, blockedFrom: Statu
  * leave, grant, and an assign or handoff to a queued actor change `queue`.
  * So the assignee is never in `queue` at any fold position.
  * - `ticket.link`: `task` sets `task` (replacing any earlier one) and clears
- *   `adhoc`; `pr` and `decision` append to `links`.
+ *   `adhoc` and `unplanned`; `pr` and `decision` append to `links`.
+ * - `ticket.unplanned`: `already-linked` when `task` is not null (the
+ *   ticket is unchanged); otherwise sets `unplanned` to `{ reason:
+ *   body.reason, actor, ts }` (a copy of `ts`), replacing any earlier
+ *   disposition, and changes nothing else (`adhoc`, status, assignee and
+ *   the closed flag are untouched). Applied in any status, open or closed,
+ *   so a second disposition records a new reason and a disposition without
+ *   its move (a command that died after this file) is a valid state
+ *   (board-events: "Unplanned disposition").
  * - `ticket.close`: `invalid-transition` if the ticket is already closed or
  *   its status is neither `merged` nor `blocked`; otherwise sets `closed`
  *   and `disposition`. Status is unchanged. The fold does not apply the
- *   decision-comment rule; that is the CLI's `close` check. Events after a
- *   close are folded by their own rules.
+ *   decision-comment rule or the scope disposition rule to a close; both
+ *   are the CLI's `close` checks, so a close of an undisposed ad hoc ticket
+ *   written by an earlier version still folds. Events after a close are
+ *   folded by their own rules.
  * - `ticket.checklist`: `checklist-index` if `index` is negative or not less
  *   than the checklist length; otherwise sets that item's `done` (setting
  *   it to its current value still counts as applied).
@@ -581,6 +624,7 @@ function createTicket(event: TicketCreateEvent): Ticket {
     labels: [...(body.labels ?? [])],
     task: body.task === undefined ? null : copyTaskRef(body.task),
     adhoc: body.adhoc ?? null,
+    unplanned: null,
     checklist: (body.checklist ?? []).map((text) => ({ text, done: false })),
     comments: [],
     links: [],
@@ -679,11 +723,18 @@ function applyToTicket(
       }
       return reason;
     }
+    case 'ticket.unplanned':
+      if (ticket.task !== null) {
+        return 'already-linked';
+      }
+      ticket.unplanned = { reason: event.body.reason, actor, ts: { ...ts } };
+      return null;
     case 'ticket.link': {
       const { body } = event;
       if ('task' in body) {
         ticket.task = copyTaskRef(body.task);
         ticket.adhoc = null;
+        ticket.unplanned = null;
       } else if ('pr' in body) {
         ticket.links.push({ type: 'pr', pr: body.pr, actor, ts: { ...ts }, hash });
       } else {
@@ -716,16 +767,20 @@ function applyToTicket(
 }
 
 /**
- * Moves `ticket` to `to` when the state machine and the task-link rule allow
- * it, recording or clearing the blocked origin. Returns the rejection reason,
- * or null when moved.
+ * Moves `ticket` to `to` when the state machine and the scope disposition
+ * rule allow it, recording or clearing the blocked origin. Returns the
+ * rejection reason, or null when moved. The state machine is checked
+ * first (`invalid-transition`), then, for `to === 'merged'` only, the
+ * scope disposition (`needs-scope-disposition` when `task` and `unplanned`
+ * are both null). Shared by `ticket.move` and a `ticket.handoff` that
+ * changes status, so a hand-off into `merged` obeys the same rule.
  */
 function moveTo(ticket: Ticket, to: Status): RejectionReason | null {
   if (!isTransitionAllowed(ticket.status, to, ticket.blockedFrom)) {
     return 'invalid-transition';
   }
-  if (to === 'implementing' && ticket.task === null) {
-    return 'needs-task-link';
+  if (to === 'merged' && ticket.task === null && ticket.unplanned === null) {
+    return 'needs-scope-disposition';
   }
   ticket.blockedFrom = to === 'blocked' ? ticket.status : null;
   ticket.status = to;

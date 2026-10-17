@@ -71,6 +71,7 @@ export interface HintContext {
  */
 export const HINT_REASONS: readonly string[] = [
   'already-assigned',
+  'already-linked',
   'ambiguous-id',
   'ambiguous-remote',
   'board-in-host',
@@ -100,7 +101,7 @@ export const HINT_REASONS: readonly string[] = [
   'method-not-allowed',
   'missing-actor',
   'missing-status',
-  'needs-task-link',
+  'needs-scope-disposition',
   'needs-task-or-adhoc',
   'no-cache',
   'no-disposition',
@@ -143,6 +144,7 @@ export const HINT_REASONS: readonly string[] = [
  */
 export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'already-assigned': 4,
+  'already-linked': 4,
   'ambiguous-id': 1,
   'ambiguous-remote': 1,
   'board-in-host': 1,
@@ -172,7 +174,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'method-not-allowed': 1,
   'missing-actor': 1,
   'missing-status': 1,
-  'needs-task-link': 4,
+  'needs-scope-disposition': 4,
   'needs-task-or-adhoc': 1,
   'no-cache': 5,
   'no-disposition': 1,
@@ -413,8 +415,19 @@ export function hintStep(
  * - `holder-changed`, `invalid-queue`, `stale-grant`: step `show` with I
  *   (for the current holder, queue and lease).
  * - `queued`: step `show` with I (for the queue).
- * - `needs-task-link`: step `link` with I, `task`
- *   `<source>:<ref>#<item>`, A.
+ * - `needs-scope-disposition`: the scope of the work is given on the
+ *   refused command itself, as a task reference (on the CLI `--task
+ *   <source>:<ref>#<item>` or `--change <name> --group <n>`; over MCP the
+ *   `task`, or `change` and `group`, arguments) or as an unplanned reason
+ *   (`--unplanned <reason>`; the `unplanned` argument), both named
+ *   literally, with "do not create an issue or task only to satisfy
+ *   this". For the command `close`: keep the decision flag given, then
+ *   step `help close`. Otherwise (`move`, `handoff`, unknown): step `move`
+ *   with I, `status` `merged`, A, to be run with either flag (a hand-off
+ *   takes no disposition flag, so it points at `move` too).
+ * - `already-linked`: the ticket already names a planned task (the
+ *   message names it), so it needs no unplanned reason: run the command
+ *   again without it; step `show` with I (for the link).
  *
  * Exit 5: `integrity`: a human must inspect the file named in the
  * message; step `rebuild --check`. `busy`: retry the command. `no-cache`,
@@ -571,6 +584,37 @@ const usageHint: HintTemplate = (h) => {
     ? `call tools/list for the tool names and their input schemas, or run ${h.help()} in a shell`
     : `check the input schema of ${tool} in tools/list, or run ${h.help()} in a shell`;
 };
+
+/**
+ * The two scope dispositions as the surface names them: flags on the
+ * CLI, arguments over MCP (board-openspec-integration: "Scope disposition
+ * at merge and close").
+ */
+function dispositionForms(surface: HintSurface): string {
+  return surface === 'mcp'
+    ? 'the task argument (<source>:<ref>#<item>, or change and group) naming the planned task it delivered, or the unplanned argument saying why it was never planned'
+    : '--task <source>:<ref>#<item> (or --change <name> --group <n>) naming the planned task it delivered, or --unplanned <reason> saying why it was never planned';
+}
+
+/** The template of `needs-scope-disposition`. */
+const needsScopeDispositionHint: HintTemplate = (h) => {
+  const forms = dispositionForms(h.context.surface);
+  const warning = 'do not create an issue or task only to satisfy this';
+  if (h.command?.name === 'close') {
+    return `closing needs the scope of the work: run close again with the same decision flag and with ${forms}; ${warning}; see ${h.help()}`;
+  }
+  return `merging needs the scope of the work: run ${h.step('move', [
+    ['id', h.id],
+    ['status', 'merged'],
+    ['as', h.actor],
+  ])} with ${forms}; ${warning}`;
+};
+
+/** The template of `already-linked`. */
+const alreadyLinkedHint: HintTemplate = (h) =>
+  `the ticket already names a planned task, so it needs no unplanned reason: run the command again without ${
+    h.context.surface === 'mcp' ? 'the unplanned argument' : '--unplanned'
+  }; see the link with ${h.step('show', [['id', h.id]])}`;
 
 /** Every reason's template (the contract is on `renderHint`). */
 const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
@@ -738,12 +782,8 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     `that grant is no longer the one due; see the ticket's holder, lease and queue with ${h.step('show', [['id', h.id]])}`,
   queued: (h) =>
     `other actors are waiting for this ticket and have priority; see the queue with ${h.step('show', [['id', h.id]])}`,
-  'needs-task-link': (h) =>
-    `an ad hoc ticket cannot enter implementing until it names a planned task: ${h.step('link', [
-      ['id', h.id],
-      ['task', '<source>:<ref>#<item>'],
-      ['as', h.actor],
-    ])}`,
+  'needs-scope-disposition': needsScopeDispositionHint,
+  'already-linked': alreadyLinkedHint,
   // Exit 5.
   integrity: (h) =>
     `a human must inspect the file named in the message; compare the cache with the events using ${h.step('rebuild', [['check', true]])}`,
