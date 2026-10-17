@@ -368,8 +368,10 @@ events), but tickets that moved past `tests` without a link fold back to
   board-agent-guidance "Agent guide" (also 180 lines). It also plans an
   ADR; this proposal ships ADR 0013, so that one takes the next free
   number.
-- `add-board-sharing` restates board-cli "Command surface" and "MCP
-  server" (adding `remote`).
+- `add-board-sharing` restated board-cli "Command surface" and "MCP
+  server" (adding `remote`, `init --remote` and `init --into-host`). It
+  was archived first (2026-10-17), and this change's text of both
+  requirements is re-synced with the main spec, keeping those additions.
 - The draft `add-harness-integration` also restates "Command surface" and
   "MCP server".
 

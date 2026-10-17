@@ -5,7 +5,10 @@ Overlap with in-flight changes: `add-claim-leases` restates board-cli
 semantics" (its text still names `needs-task-link`), board-cache "Cache
 schema" and "One command, one transaction", board-view-model "Activity feed
 entries" and board-agent-guidance "Agent guide"; `add-board-sharing`
-restates "Command surface" and "MCP server"; the draft
+restated "Command surface" and "MCP server" and has been archived
+(2026-10-17), so this change's text of both is re-synced with the main
+spec and keeps `remote`, `init [--remote <url> | --into-host]` and their
+scenarios; the draft
 `add-harness-integration` restates "Command surface" and "MCP server" too.
 This change's MODIFIED text restates the main specs as they are now.
 Whichever change is archived later re-syncs each shared requirement with

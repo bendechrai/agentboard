@@ -16,7 +16,12 @@ CLI-only); lease and queue controls in the web app are out of scope.
 `add-harness-integration` also modifies `board-cli` "Command surface" and
 "MCP server" (`hook`, `--command`); whichever change is archived second
 re-syncs both requirements with the main spec first, keeping the other
-change's additions.
+change's additions. `add-board-sharing` was archived on 2026-10-17, and
+its archive folded `remote`, `init [--remote <url> | --into-host]` and the
+`move`, `close` and `health` flags of `add-adhoc-ticket-lifecycle` into the
+main "Command surface" and "MCP server"; this change's text of both
+requirements is re-synced with that main text, keeping those additions and
+adding its own, so its archive applies cleanly.
 
 Every group is delivered by a test author, an implementer and a reviewer
 in turn (see CONTRIBUTING.md), on one branch per group named

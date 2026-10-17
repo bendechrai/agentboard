@@ -33,6 +33,14 @@ tested and documented in README.md.
 - **Insights** (`board-insights`): `agentboard health`, the
   `board_health` MCP tool, and the Health, Replay and Graph views of the
   web app.
+- **Board sharing** (`board-events`, `board-concurrency`, `board-cli`): in
+  a git project the board's history lives in the host repository under the
+  hidden ref `refs/agentboard/board`, with `.board/` as a locked worktree,
+  so a second clone joins with `agentboard init` alone and `sync` fetches,
+  rebases and pushes that ref; `init --remote <url>` keeps a board in a
+  separate repository; `init --into-host` moves a standalone board in with
+  its history; `agentboard remote` shows how a board is shared; `make
+  check-git-floor` runs the sharing tests on git 2.32. ADR 0012.
 
 Released as `@bendechrai/agentboard` 0.1.0 on npm (tag `v0.1.0`), with the
 landing site in `docs/` served at https://bendechrai.github.io/agentboard/.
@@ -55,25 +63,7 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
    reconciling tickets when `import-change` is re-run. Groups 1 to 5 are
    concurrency-critical, so they get a second reviewer (see
    CONTRIBUTING.md, "Three roles per task group").
-3. `add-board-sharing` (in progress, in `openspec/changes/`): in a git
-   project the board's history lives in the host repository under the
-   hidden ref `refs/agentboard/board`, with `.board/` as a locked worktree,
-   so a second clone joins with `agentboard init` alone; `sync` fetches,
-   rebases and pushes that ref; `init --remote <url>` keeps a board in a
-   separate repository; `init --into-host` moves an existing standalone
-   board in with its history, refusing whenever an event could be lost,
-   keeping the old repository under `.git/agentboard/` and resuming after
-   an interruption (README.md, "Moving a board into the host repository");
-   `agentboard remote` shows how a board is shared. It closes the gap that
-   sharing a board needs manual git setup (a second repository, `git -C
-   .board remote add` and `git clone <url> .board` on every machine). ADR
-   0012. Groups 1 to 6 are implemented (groups 3 and 5 are
-   concurrency-critical; group 6 added `make check-git-floor`, the
-   sharing tests on git 2.32 built from source in the `dev-git-floor`
-   image, and the end-to-end walkthrough script
-   `src/__tests__/walkthroughs/board-sharing.sh`); the workflow
-   follow-up remains before the change is archived.
-4. `add-adhoc-ticket-lifecycle` (proposed, in `openspec/changes/`): ad hoc
+3. `add-adhoc-ticket-lifecycle` (proposed, in `openspec/changes/`): ad hoc
    tickets move through every status like any other; the
    `needs-task-link` gate at `implementing` is removed, and moving an ad
    hoc ticket to `merged` or closing it needs a scope disposition on the
