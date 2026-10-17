@@ -237,24 +237,30 @@ export function runCommand(
     // 5. Write the event files (atomic), in order. Every event was accepted
     // in memory before the first file is written, so a refusal never
     // leaves a file behind.
-    const write = (event: BoardEvent): WrittenEvent => {
+    const write = (event: BoardEvent, before: readonly WrittenEvent[]): WrittenEvent => {
       const written = writeEventFile(board.eventsDir, event, hooks);
       if (written.existed) {
         // Catch-up recorded every file and ts sorts after all of them, so the
         // file can only have been dropped out of band since: never fold it here.
+        // An earlier event of the same command is already on disk and is folded
+        // by the next catch-up, so the message names it.
+        const left =
+          before.length === 0
+            ? 'nothing was written'
+            : `${before.map((w) => w.path).join(', ')} was written and is folded by the next command`;
         throw new BoardError(
           5,
           'integrity',
-          `event file ${written.path} appeared while the command ran; nothing was written`,
+          `event file ${written.path} appeared while the command ran; ${left}`,
         );
       }
       return { hash: written.hash, path: written.path, event };
     };
     const [firstAccepted, ...moreAccepted] = accepted;
-    let last = write(firstAccepted.event);
+    let last = write(firstAccepted.event, []);
     const events = [last];
     for (const next of moreAccepted) {
-      last = write(next.event);
+      last = write(next.event, events);
       events.push(last);
     }
 
