@@ -92,11 +92,7 @@ export function describeEvent(event: BoardEvent | UnknownKindEvent): string {
     case 'board.meta':
       return `set ${oneLine(event.body.key)}`;
     case 'ticket.unplanned':
-      // Stub (add-adhoc-ticket-lifecycle 4.1): the contract is
-      // `recorded as unplanned: <reason>`, see the doc comment. It returns
-      // the kind rather than throwing because this module is bundled into
-      // the web client.
-      return event.kind;
+      return `recorded as unplanned: ${oneLine(event.body.reason)}`;
     case 'ticket.renew':
     case 'ticket.release.force':
     case 'ticket.queue.join':

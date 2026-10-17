@@ -199,11 +199,11 @@ function Fields({ ticket }: { ticket: Ticket }): JSX.Element {
   if (ticket.blockedFrom !== null) {
     rows.push(['Blocked from', ticket.blockedFrom]);
   }
-  rows.push(
-    ['Task', taskText(ticket)],
-    ['Labels', ticket.labels.join(', ')],
-    ['Created by', ticket.createdBy],
-  );
+  rows.push(['Task', taskText(ticket)]);
+  if (ticket.unplanned !== null) {
+    rows.push(['Unplanned', `${ticket.unplanned.reason} (by ${ticket.unplanned.actor})`]);
+  }
+  rows.push(['Labels', ticket.labels.join(', ')], ['Created by', ticket.createdBy]);
   if (ticket.description !== null) {
     rows.push(['Description', ticket.description]);
   }

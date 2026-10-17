@@ -221,6 +221,9 @@ function ticketLines(model: BoardModel, t: Ticket): LogicalLine[] {
   } else {
     lines.push(plain(t.adhoc === null ? 'task: -' : `task: adhoc: ${t.adhoc}`));
   }
+  if (t.unplanned !== null) {
+    lines.push(plain(`unplanned: ${t.unplanned.reason} (by ${t.unplanned.actor})`));
+  }
   lines.push(plain(t.labels.length === 0 ? 'labels: -' : `labels: ${t.labels.join(', ')}`));
   lines.push(plain(`description: ${t.description ?? '-'}`));
   if (t.checklist.length === 0) {

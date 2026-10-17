@@ -134,6 +134,7 @@ import {
   type ActionName,
   type ActionResult,
   type ActionSuccess,
+  type ScopeDisposition,
 } from '../actions.js';
 import type { Connection, ErrorDocument } from '../api.js';
 
@@ -166,7 +167,7 @@ export function handoffStatuses(ticket: Ticket): Status[] {
  * server decides. Pure.
  */
 export function needsScopeDisposition(ticket: Ticket): boolean {
-  throw new Error(`not implemented: needsScopeDisposition(${ticket.id})`);
+  return ticket.task === null && ticket.unplanned === null;
 }
 
 /** What every control needs. */
@@ -327,21 +328,114 @@ function CommentControl(props: ActionControlProps): JSX.Element {
   );
 }
 
+/** The scope a disposition names: the `task` or `unplanned` property of the body. */
+type ScopeKind = 'unplanned' | 'task';
+
+/** The options of the scope select, in order; `unplanned` is the initial one. */
+const SCOPE_KINDS: readonly { kind: ScopeKind; text: string }[] = [
+  { kind: 'unplanned', text: 'unplanned reason' },
+  { kind: 'task', text: 'task reference' },
+];
+
+/** The one property the scope names, with the value as entered. */
+function scopeDisposition(kind: ScopeKind, value: string): ScopeDisposition {
+  return kind === 'task' ? { task: value } : { unplanned: value };
+}
+
+/** The entries of the scope fields of one control, kept like every other input. */
+interface ScopeEntry {
+  kind: ScopeKind;
+  value: string;
+}
+
+/** The scope entries of a control and their setters. */
+function useScope(): {
+  scope: ScopeEntry;
+  setKind: (kind: string) => void;
+  setValue: (value: string) => void;
+} {
+  const [scope, setScope] = useState<ScopeEntry>({ kind: 'unplanned', value: '' });
+  return {
+    scope,
+    setKind: (kind) => {
+      const next = SCOPE_KINDS.find((k) => k.kind === kind);
+      if (next !== undefined) {
+        setScope((current) => ({ ...current, kind: next.kind }));
+      }
+    },
+    setValue: (value) => {
+      setScope((current) => ({ ...current, value }));
+    },
+  };
+}
+
+/**
+ * The scope fields of the move control and the close form (module
+ * comment): the `select` `#action-<control>-scope` labelled `Scope` and
+ * the text `input` `#action-<control>-scope-value` labelled `Value`.
+ */
+function ScopeFields(props: {
+  control: 'move' | 'close';
+  scope: ScopeEntry;
+  onKind: (kind: string) => void;
+  onValue: (value: string) => void;
+}): JSX.Element {
+  const selectId = `action-${props.control}-scope`;
+  const valueId = `${selectId}-value`;
+  return (
+    <>
+      <label for={selectId}>Scope</label>
+      <select
+        id={selectId}
+        value={props.scope.kind}
+        onChange={(e) => {
+          props.onKind(e.currentTarget.value);
+        }}
+      >
+        {SCOPE_KINDS.map((k) => (
+          <option key={k.kind} value={k.kind}>
+            {k.text}
+          </option>
+        ))}
+      </select>
+      <label for={valueId}>Value</label>
+      <input
+        type="text"
+        id={valueId}
+        value={props.scope.value}
+        onInput={(e) => {
+          props.onValue(e.currentTarget.value);
+        }}
+      />
+    </>
+  );
+}
+
 function MoveControl(props: ActionControlProps): JSX.Element {
   const state = useAction(props);
   const targets = moveTargets(props.ticket);
   const [picked, setPicked] = useState('');
   const status = chosen(picked, targets);
+  const { scope, setKind, setValue } = useScope();
+  // The scope fields exist only while `merged` is chosen for an undisposed ticket.
+  const asksScope = status === 'merged' && needsScopeDisposition(props.ticket);
   return (
     <form
       class="action action-inline"
       data-action="move"
       onSubmit={(e) => {
         e.preventDefault();
+        const id = props.ticket.id;
         const target = targets.find((t) => t === status);
-        if (target !== undefined) {
-          state.send('move', { id: props.ticket.id, status: target });
+        if (target === undefined) {
+          return;
         }
+        state.send(
+          'move',
+          target === 'merged' && asksScope
+            ? { id, status: target, ...scopeDisposition(scope.kind, scope.value) }
+            : { id, status: target },
+        );
       }}
     >
       <label for="action-move-status">Move to</label>
@@ -358,6 +452,9 @@ function MoveControl(props: ActionControlProps): JSX.Element {
           </option>
         ))}
       </select>
+      {asksScope ? (
+        <ScopeFields control="move" scope={scope} onKind={setKind} onValue={setValue} />
+      ) : null}
       <button type="submit" disabled={state.inFlight || targets.length === 0}>
         Move
       </button>
@@ -522,6 +619,9 @@ function CloseControl(props: ActionControlProps): JSX.Element {
   const state = useAction(props);
   const [decision, setDecision] = useState(true);
   const [path, setPath] = useState('');
+  const { scope, setKind, setValue } = useScope();
+  // The scope fields exist only for an undisposed ticket.
+  const asksScope = needsScopeDisposition(props.ticket);
   return (
     <form
       class="action"
@@ -529,9 +629,12 @@ function CloseControl(props: ActionControlProps): JSX.Element {
       onSubmit={(e) => {
         e.preventDefault();
         const id = props.ticket.id;
+        const decided: ActionBodies['close'] = decision
+          ? { id, 'decision-recorded-in': path }
+          : { id, 'no-decision': true };
         state.send(
           'close',
-          decision ? { id, 'decision-recorded-in': path } : { id, 'no-decision': true },
+          asksScope ? { ...decided, ...scopeDisposition(scope.kind, scope.value) } : decided,
         );
       }}
     >
@@ -563,6 +666,11 @@ function CloseControl(props: ActionControlProps): JSX.Element {
           <label for="action-close-none">No decision</label>
         </span>
       </div>
+      {asksScope ? (
+        <div class="action-row">
+          <ScopeFields control="close" scope={scope} onKind={setKind} onValue={setValue} />
+        </div>
+      ) : null}
       <div class="action-row">
         <label for="action-close-path">Decision path</label>
         <input

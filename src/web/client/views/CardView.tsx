@@ -47,6 +47,11 @@ export function CardView({ card }: CardViewProps): JSX.Element {
       <p class="card-meta">
         {card.task !== null ? (
           <span class="task">{card.task}</span>
+        ) : card.unplanned !== null ? (
+          <>
+            <span class="task unplanned">unplanned</span>
+            <span class="unplanned-reason">{card.unplanned.reason}</span>
+          </>
         ) : card.adhoc ? (
           <span class="task adhoc">ad hoc</span>
         ) : null}
