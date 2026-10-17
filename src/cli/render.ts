@@ -34,7 +34,11 @@ export { asciiText };
  * back into any command. Pure.
  */
 export function renderListLine(ticket: Ticket): string {
-  return listLine({ ...ticket, adhoc: ticket.adhoc !== null, unplanned: ticket.unplanned !== null });
+  return listLine({
+    ...ticket,
+    adhoc: ticket.adhoc !== null,
+    unplanned: ticket.unplanned !== null,
+  });
 }
 
 /** The fields of a `list` line. */
@@ -282,8 +286,28 @@ export function renderCheck(doc: CheckDocument): string {
  * <card>  pr <prs>; <k> open decision(s), no decision link
  * close-merged missing pr: <n>
  * <card>  no pr link
+ * unplanned scope: <w> in the last <U> (<t> in all)
+ * <card>  <outcome> <age>, unplanned: <reason>
+ * <card>  closed <age>, no reason recorded (ad hoc: <adhoc>)
  * cache check: <check>
  * ```
+ *
+ * The unplanned scope section (board-insights: "Health command", "Unplanned
+ * merges in text output"; add-adhoc-ticket-lifecycle design.md section 7)
+ * comes after the close-merged sections and before the cache check:
+ * - `<w>` is `unplannedScope.tickets.length` (the entries within the
+ *   window), `<U>` is `report.thresholds.unplannedWithin` written as `<S>`
+ *   and `<B>` are, and `<t>` is `unplannedScope.total`; the heading is
+ *   followed by one line per entry of `tickets`, in the report's order;
+ * - `<outcome>` is the entry's `outcome` (`merged` or `closed`), `<age>` is
+ *   `relativeTime(ageMs)`, and the line ends with `unplanned: <reason>`
+ *   (the entry's `reason` through `asciiText`) when `reason` is not null,
+ *   else `no reason recorded (ad hoc: <adhoc>)` with the entry's `adhoc`
+ *   through `asciiText` (an entry with a null `reason` always has an ad
+ *   hoc reason);
+ * - the `<card>` of an entry carries `[unplanned]` (and no `[adhoc]`) when
+ *   the card's `unplanned` is not null, as `renderListLine` does, so an
+ *   undisclosed close shows `[adhoc] [closed]`.
  *
  * where:
  * - `<S>` and `<B>` are `report.thresholds.staleAfter` and `blockedAfter`
@@ -296,8 +320,8 @@ export function renderCheck(doc: CheckDocument): string {
  *   no entry is just its heading with `0`.
  * - `<card>` is the `list` line of the finding's `ticket` card, exactly as
  *   `renderListLine` writes a ticket with the same id, status, assignee,
- *   ad hoc marker, closed marker and title:
- *   `<id>  <status>  <assignee or ->  <markers><title>`.
+ *   ad hoc marker, unplanned marker (`Card.unplanned`), closed marker and
+ *   title: `<id>  <status>  <assignee or ->  <markers><title>`.
  * - `<age>` is `relativeTime` (`src/view/time.ts`) of `idleMs` or
  *   `blockedMs`, for example `3h ago`.
  * - stale claim: `<kind>` and `<actor>` are `since.kind` and `since.actor`.
@@ -328,21 +352,36 @@ export function renderCheck(doc: CheckDocument): string {
  * ```
  */
 export function renderHealth(report: HealthReport): string {
-  const { thresholds, staleClaims, stuckBlocked, unpromotedDecisions, closeMerged } = report;
+  const {
+    thresholds,
+    staleClaims,
+    stuckBlocked,
+    unpromotedDecisions,
+    closeMerged,
+    unplannedScope,
+  } = report;
   const lines = [
     `thresholds: stale after ${durationText(thresholds.staleAfter)}, blocked after ${durationText(thresholds.blockedAfter)}`,
   ];
+  // A heading line, then one list line per entry with its finding.
+  const listed = <T extends { ticket: Card }>(
+    heading: string,
+    entries: readonly T[],
+    finding: (entry: T) => string,
+  ): void => {
+    lines.push(heading);
+    for (const entry of entries) {
+      const card = entry.ticket;
+      lines.push(`${listLine({ ...card, unplanned: card.unplanned !== null })}  ${finding(entry)}`);
+    }
+  };
+  // A section headed with its count.
   const section = <T extends { ticket: Card }>(
     heading: string,
     entries: readonly T[],
     finding: (entry: T) => string,
   ): void => {
-    lines.push(`${heading}: ${String(entries.length)}`);
-    for (const entry of entries) {
-      // The view-model card gains its unplanned marker in task 4.1 of
-      // add-adhoc-ticket-lifecycle; until then a health line shows none.
-      lines.push(`${listLine({ ...entry.ticket, unplanned: false })}  ${finding(entry)}`);
-    }
+    listed(`${heading}: ${String(entries.length)}`, entries, finding);
   };
   section(
     'stale claims',
@@ -365,6 +404,16 @@ export function renderHealth(report: HealthReport): string {
     (c) => `${prsText(c.prs)}; ${decisionsText(c.decisions.length)}`,
   );
   section('close-merged missing pr', closeMerged.missingPr, () => 'no pr link');
+  listed(
+    `unplanned scope: ${String(unplannedScope.tickets.length)} in the last ${durationText(thresholds.unplannedWithin)} (${String(unplannedScope.total)} in all)`,
+    unplannedScope.tickets,
+    (u) =>
+      `${u.outcome} ${relativeTime(u.ageMs)}, ${
+        u.reason === null
+          ? `no reason recorded (ad hoc: ${asciiText(u.adhoc ?? '')})`
+          : `unplanned: ${asciiText(u.reason)}`
+      }`,
+  );
   const check = report.check;
   lines.push(
     `cache check: ${

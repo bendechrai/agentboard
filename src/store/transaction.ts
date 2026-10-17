@@ -9,7 +9,7 @@ import { writeSync } from 'node:fs';
 import { canonicalHash } from '../events/canonical.js';
 import type { ApplyOutcome, BoardState, FoldInput, Ticket } from '../events/fold.js';
 import { nextHlc, type Hlc } from '../events/hlc.js';
-import { formatTaskRef, validateEvent, type BoardEvent } from '../events/schema.js';
+import { formatTaskRef, validateEvent, type BoardEvent, type TaskRef } from '../events/schema.js';
 import type { Board } from './board.js';
 import { readState, readTicket, type CatchUpReport } from './cache.js';
 import {
@@ -345,6 +345,16 @@ function build(proposed: ProposedEvent, actor: string, ts: Hlc): BoardEvent {
 }
 
 /**
+ * The message of a `BoardError(4, 'already-linked')`: the fold's refusal of
+ * `kind` (a `ticket.unplanned`) on `ticket`, naming the task reference
+ * `task` it already has. Shared with `closeTicket` (`src/board/actions.ts`),
+ * which raises the same refusal before its decision guard.
+ */
+export function alreadyLinkedMessage(kind: string, ticket: string, task: TaskRef): string {
+  return `${kind} on ticket ${ticket} refused: already-linked (it is linked to ${formatTaskRef(task)})`;
+}
+
+/**
  * Step 4: applies `event` to `session` in memory with the fold's own rules,
  * or throws `BoardError(4, <fold rejection reason>)`; the message of
  * `already-assigned` names the current assignee and that of
@@ -361,7 +371,7 @@ function accept(session: FoldSession, event: BoardEvent): Accepted {
       reason === 'already-assigned'
         ? `ticket ${ticket} is already assigned to ${String(before?.assignee)}`
         : reason === 'already-linked' && task !== null
-          ? `${kind} on ticket ${ticket} refused: ${reason} (it is linked to ${formatTaskRef(task)})`
+          ? alreadyLinkedMessage(kind, ticket, task)
           : `${kind} on ticket ${ticket} refused: ${reason}`;
     throw new BoardError(4, reason, message);
   }

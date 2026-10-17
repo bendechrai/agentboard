@@ -25,11 +25,16 @@ import { dirname } from 'node:path';
 
 import { openDecisions } from '../events/decisions.js';
 import type { Ticket } from '../events/fold.js';
-import { formatTaskRef, type TaskRef, type Status } from '../events/schema.js';
+import { type TaskRef, type Status } from '../events/schema.js';
 import { asciiText } from './text.js';
 import type { Board } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
-import { runCommand, type ProposedEvent, type ProposedEvents } from '../store/transaction.js';
+import {
+  alreadyLinkedMessage,
+  runCommand,
+  type ProposedEvent,
+  type ProposedEvents,
+} from '../store/transaction.js';
 import { requireActor, resolveTicket, ticketOf } from './lookup.js';
 import { treePath, type TreePathOptions } from './paths.js';
 import { taskReminder, type TaskReminder } from './reminder.js';
@@ -201,7 +206,8 @@ export interface DispositionArgs extends TaskArgs {
  */
 export function scopeDispositionFromArgs(args: DispositionArgs): ScopeDisposition | undefined {
   const { unplanned } = args;
-  const taskGiven = args.task !== undefined || args.change !== undefined || args.group !== undefined;
+  const taskGiven =
+    args.task !== undefined || args.change !== undefined || args.group !== undefined;
   if (unplanned !== undefined && taskGiven) {
     throw new BoardError(
       1,
@@ -520,8 +526,7 @@ export interface CloseScope {
  * <path>` or `--no-decision`) and, optionally, the scope disposition.
  */
 export type CloseInput = (
-  | ({ id: string; decisionRecordedIn: string } & TreePathOptions)
-  | { id: string; noDecision: true }
+  ({ id: string; decisionRecordedIn: string } & TreePathOptions) | { id: string; noDecision: true }
 ) &
   CloseScope;
 
@@ -638,7 +643,7 @@ export function closeTicket(
         throw new BoardError(
           4,
           'already-linked',
-          `ticket.unplanned on ticket ${ticket.id} refused: already-linked (it is linked to ${formatTaskRef(ticket.task)})`,
+          alreadyLinkedMessage('ticket.unplanned', ticket.id, ticket.task),
         );
       }
       const open = 'noDecision' in body ? openDecisions(ticket.comments) : [];

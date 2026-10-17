@@ -483,24 +483,27 @@ function noCacheOutput(cachePath: string): CommandOutput {
 
 /**
  * `health [--stale-after <duration>] [--blocked-after <duration>]
- * [--check]` (board-insights: "Health command", "Durations").
+ * [--unplanned-within <duration>] [--check]` (board-insights: "Health
+ * command", "Durations").
  *
- * First, before the board is located or opened, each of `--stale-after`
- * and `--blocked-after` that is given is parsed with `parseDuration`
- * (`src/view/health.ts`); a value it refuses is `BoardError(1, 'usage')`
- * whose message names the flag, the value given (through `asciiText`) and
- * the accepted forms, for example:
+ * First, before the board is located or opened, each of `--stale-after`,
+ * `--blocked-after` and `--unplanned-within` that is given is parsed, in
+ * that order, with `parseDuration` (`src/view/health.ts`); a value it
+ * refuses is `BoardError(1, 'usage')` whose message names the flag, the
+ * value given (through `asciiText`) and the accepted forms, for example:
  * `invalid --stale-after 2hours: a duration is <n>m, <n>h or <n>d with <n> a positive integer of at most 5 digits (for example 30m, 2h or 1d)`.
- * When both are invalid, `--stale-after` is reported. So a malformed
- * duration exits 1 even where there is no board.
+ * When several are invalid, the first in that order is reported. So a
+ * malformed duration exits 1 even where there is no board.
  *
  * Then `boardHealth(ctx.board(), { thresholds, check })`, with only the
- * given thresholds (the others default), `check` from `--check`, `now`
- * and the event cache left to their defaults. The board is opened as any
- * read command opens it (with catch-up). The output is
+ * given thresholds (the others default; `--unplanned-within` is
+ * `thresholds.unplannedWithin`), `check` from `--check`, `now` and the
+ * event cache left to their defaults. The board is opened as any read
+ * command opens it (with catch-up). The output is
  * `{ json: report, text: renderHealth(report) }`, with no `exitCode` and no
- * warnings, whatever the report contains (a cache that differs included):
- * findings are data. Needs no actor (`--as` is accepted and ignored).
+ * warnings, whatever the report contains (a cache that differs and
+ * unplanned scope included): findings are data. Needs no actor (`--as` is
+ * accepted and ignored).
  */
 function runHealth(ctx: RunContext, values: ArgValues): CommandOutput {
   const thresholds: Partial<HealthThresholds> = {};
@@ -511,6 +514,10 @@ function runHealth(ctx: RunContext, values: ArgValues): CommandOutput {
   const blockedAfter = durationFlag(values, 'blocked-after');
   if (blockedAfter !== undefined) {
     thresholds.blockedAfter = blockedAfter;
+  }
+  const unplannedWithin = durationFlag(values, 'unplanned-within');
+  if (unplannedWithin !== undefined) {
+    thresholds.unplannedWithin = unplannedWithin;
   }
   const report = boardHealth(ctx.board(), { thresholds, check: bool(values, 'check') });
   return { json: report, text: renderHealth(report) };
@@ -1539,9 +1546,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'health',
     summary:
-      'Report stale claims, long-blocked tickets, unpromoted decisions and close-merged candidates',
+      'Report stale claims, long-blocked tickets, unpromoted decisions, close-merged candidates and unplanned scope',
     description:
-      "Prints the board's health report, section by section with counts: claims whose assignee has been idle for at least --stale-after (default 2h), tickets blocked for at least --blocked-after (default 24h) with the status they were blocked from and their latest comment, open tickets with a DECISION: comment and no decision link, and the tickets in merged as close-merged would see them (ready, held by an open decision, or missing a pr link; whether a pull request is merged is known only to close-merged). Durations are <n>m, <n>h or <n>d. --check also compares the cache with the event log as rebuild --check does, which briefly pauses writers. Writes nothing and needs no actor. It exits 0 whatever it finds, so read the report (or --json) rather than the exit code. Run it before archiving a change and when choosing what to dispatch.",
+      "Prints the board's health report, section by section with counts: claims whose assignee has been idle for at least --stale-after (default 2h), tickets blocked for at least --blocked-after (default 24h) with the status they were blocked from and their latest comment, open tickets with a DECISION: comment and no decision link, the tickets in merged as close-merged would see them (ready, held by an open decision, or missing a pr link; whether a pull request is merged is known only to close-merged), and the unplanned scope: tickets merged or closed as unplanned (and ad hoc tickets closed with no disposition) with their reasons, those disposed of within --unplanned-within (default 7d) listed and all of them counted. Unplanned scope is information, not a finding to fix. Durations are <n>m, <n>h or <n>d. --check also compares the cache with the event log as rebuild --check does, which briefly pauses writers. Writes nothing and needs no actor. It exits 0 whatever it finds, so read the report (or --json) rather than the exit code. Run it before archiving a change and when choosing what to dispatch.",
     group: 'awareness',
     examples: [
       {
@@ -1551,6 +1558,10 @@ export const COMMANDS: readonly CommandSpec[] = [
       {
         command: 'agentboard health --stale-after 30m --blocked-after 2d',
         summary: 'Flag claims idle for 30 minutes and tickets blocked for 2 days',
+      },
+      {
+        command: 'agentboard health --unplanned-within 30d',
+        summary: 'List the unplanned scope of the last 30 days',
       },
       {
         command: 'agentboard health --check --json',
@@ -1579,6 +1590,11 @@ export const COMMANDS: readonly CommandSpec[] = [
         'blocked-after',
         'string',
         'A ticket is stuck when blocked this long: <n>m, <n>h or <n>d (default 24h)',
+      ),
+      flag(
+        'unplanned-within',
+        'string',
+        'List the unplanned scope disposed of within this long: <n>m, <n>h or <n>d (default 7d); the total counts all of it',
       ),
       flag(
         'check',

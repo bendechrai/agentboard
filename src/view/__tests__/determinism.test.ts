@@ -88,7 +88,7 @@ describe('view-model functions are deterministic and leave their inputs unchange
     twice(healthReport, {
       model: m,
       now: NOW + 100_000_000,
-      thresholds: { staleAfter: 1, blockedAfter: 1 },
+      thresholds: { staleAfter: 1, blockedAfter: 1, unplannedWithin: 1 },
       late: [
         {
           hash: inputs[4]?.hash ?? '',

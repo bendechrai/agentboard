@@ -33,6 +33,12 @@ import {
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
+const WEEK = 7 * DAY;
+
+/** Thresholds with the given stale and blocked values and the default window. */
+function th(staleAfter: number, blockedAfter: number): HealthThresholds {
+  return { staleAfter, blockedAfter, unplannedWithin: WEEK };
+}
 
 /** Event options with an explicit wall (and counter), so ages are exact. */
 function at(wall: number, actor = 'orch', counter = 0): Opts {
@@ -67,8 +73,12 @@ function toMerged(ticket: string, wall: number): FoldInput[] {
 }
 
 describe('DEFAULT_THRESHOLDS', () => {
-  it('is 2 hours stale and 24 hours blocked', () => {
-    expect(DEFAULT_THRESHOLDS).toEqual({ staleAfter: 7_200_000, blockedAfter: 86_400_000 });
+  it('is 2 hours stale, 24 hours blocked and 7 days unplanned', () => {
+    expect(DEFAULT_THRESHOLDS).toEqual({
+      staleAfter: 7_200_000,
+      blockedAfter: 86_400_000,
+      unplannedWithin: 604_800_000,
+    });
     expect(Object.isFrozen(DEFAULT_THRESHOLDS)).toBe(true);
   });
 });
@@ -146,14 +156,15 @@ describe('healthReport: echo and optional server data', () => {
   const m = model([E.create(T1, { title: 'x', task: TASK }, at(0))]);
 
   it('echoes now and the thresholds, and has null late and check when not supplied', () => {
-    const thresholds = { staleAfter: 5 * MINUTE, blockedAfter: HOUR };
+    const thresholds = { staleAfter: 5 * MINUTE, blockedAfter: HOUR, unplannedWithin: 3 * DAY };
     expect(healthReport({ model: m, now: 1234, thresholds })).toEqual({
       now: 1234,
-      thresholds: { staleAfter: 5 * MINUTE, blockedAfter: HOUR },
+      thresholds: { staleAfter: 5 * MINUTE, blockedAfter: HOUR, unplannedWithin: 3 * DAY },
       staleClaims: [],
       stuckBlocked: [],
       unpromotedDecisions: [],
       closeMerged: { ready: [], heldByDecision: [], missingPr: [] },
+      unplannedScope: { total: 0, tickets: [] },
       late: null,
       check: null,
     });
@@ -189,6 +200,7 @@ describe('healthReport: echo and optional server data', () => {
     expect(r.stuckBlocked).toEqual([]);
     expect(r.unpromotedDecisions).toEqual([]);
     expect(r.closeMerged).toEqual({ ready: [], heldByDecision: [], missingPr: [] });
+    expect(r.unplannedScope).toEqual({ total: 0, tickets: [] });
   });
 });
 
@@ -227,7 +239,7 @@ describe('healthReport: stale claims', () => {
       E.claim(T1, at(0, 'impl-1', 1)),
       own,
     ]);
-    const exact = report(m, 7_300_000, { staleAfter: 300_000, blockedAfter: DAY });
+    const exact = report(m, 7_300_000, th(300_000, DAY));
     expect(exact.staleClaims).toEqual([
       {
         ticket: ticketCard(ticketOf(m, T1), 7_300_000),
@@ -236,9 +248,7 @@ describe('healthReport: stale claims', () => {
         idleMs: 300_000,
       },
     ]);
-    expect(report(m, 7_300_000, { staleAfter: 300_001, blockedAfter: DAY }).staleClaims).toEqual(
-      [],
-    );
+    expect(report(m, 7_300_000, th(300_001, DAY)).staleClaims).toEqual([]);
   });
 
   interface IdleCase {
@@ -397,7 +407,7 @@ describe('healthReport: stale claims', () => {
     const claim = E.claim(T1, at(10_000_000, 'impl-1'));
     const m = model([E.create(T1, { title: 'skew', task: TASK }, at(9_000_000)), claim]);
     const now = 5_000_000;
-    expect(report(m, now, { staleAfter: 0, blockedAfter: DAY }).staleClaims).toEqual([
+    expect(report(m, now, th(0, DAY)).staleClaims).toEqual([
       {
         ticket: ticketCard(ticketOf(m, T1), now),
         assignee: 'impl-1',
@@ -405,7 +415,7 @@ describe('healthReport: stale claims', () => {
         idleMs: 0,
       },
     ]);
-    expect(report(m, now, { staleAfter: 1, blockedAfter: DAY }).staleClaims).toEqual([]);
+    expect(report(m, now, th(1, DAY)).staleClaims).toEqual([]);
   });
 });
 
@@ -539,9 +549,9 @@ describe('healthReport: stuck in blocked', () => {
       E.create(T1, { title: 'skew', task: TASK }, at(B)),
       E.move(T1, 'blocked', at(B + 10)),
     ]);
-    const r = report(m, 0, { staleAfter: HOUR, blockedAfter: 0 });
+    const r = report(m, 0, th(HOUR, 0));
     expect(r.stuckBlocked.map((s) => s.blockedMs)).toEqual([0]);
-    expect(report(m, 0, { staleAfter: HOUR, blockedAfter: 1 }).stuckBlocked).toEqual([]);
+    expect(report(m, 0, th(HOUR, 1)).stuckBlocked).toEqual([]);
   });
 });
 
@@ -689,10 +699,12 @@ describe('healthReport: closed tickets appear in no section', () => {
       E.comment(T2, 'DECISION: abandon', at(3, 'impl-2')),
       E.close(T2, { noDecision: true }, at(4)),
     ]);
-    const r = report(m, 100 * DAY, { staleAfter: 1, blockedAfter: 1 });
+    const r = report(m, 100 * DAY, th(1, 1));
     expect(r.staleClaims).toEqual([]);
     expect(r.stuckBlocked).toEqual([]);
     expect(r.unpromotedDecisions).toEqual([]);
     expect(r.closeMerged).toEqual({ ready: [], heldByDecision: [], missingPr: [] });
+    // Both are planned tickets, so not unplanned scope either.
+    expect(r.unplannedScope).toEqual({ total: 0, tickets: [] });
   });
 });

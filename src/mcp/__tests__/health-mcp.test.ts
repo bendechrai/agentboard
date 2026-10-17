@@ -1,8 +1,10 @@
 /**
  * `board_health` (board-cli: "MCP server" scenario "Health is a tool";
- * board-insights: "Health command" scenario "Health over MCP"): the tool is generated from the registry with its
- * three optional properties, and a call through the MCP server returns the
- * document `agentboard health --json` prints with the same arguments.
+ * board-insights: "Health command" scenarios "Health over MCP" and
+ * "Unplanned scope over MCP and JSON"): the tool is generated from the
+ * registry with its four optional properties, and a call through the MCP
+ * server returns the document `agentboard health --json` prints with the
+ * same arguments.
  *
  * The clock is faked (`Date` only) so that both documents are computed at
  * the same `now`.
@@ -23,6 +25,8 @@ import { SPEC_TOOLS } from './mcp-helpers.js';
 
 const NOW = 1_700_000_000_000;
 const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
 
 const servers: BoardMcpServer[] = [];
 const clients: Client[] = [];
@@ -72,7 +76,7 @@ async function connect(server: BoardMcpServer): Promise<Client> {
 }
 
 describe('scenario: Health is a tool', () => {
-  it('lists board_health with the optional properties stale-after, blocked-after and check', () => {
+  it('lists board_health with the optional properties stale-after, blocked-after, unplanned-within and check', () => {
     expect(EXCLUDED_COMMANDS).not.toContain('health');
     const tool = findTool('board_health');
     expect(tool?.command.name).toBe('health');
@@ -81,6 +85,7 @@ describe('scenario: Health is a tool', () => {
       properties: {
         'stale-after': { type: 'string', description: expect.any(String) as string },
         'blocked-after': { type: 'string', description: expect.any(String) as string },
+        'unplanned-within': { type: 'string', description: expect.any(String) as string },
         check: { type: 'boolean', description: expect.any(String) as string },
         as: { type: 'string', description: expect.any(String) as string },
       },
@@ -98,8 +103,105 @@ describe('scenario: Health is a tool', () => {
     const health = listed.tools.find((t) => t.name === 'board_health');
     expect(health?.inputSchema.properties).toHaveProperty('stale-after');
     expect(health?.inputSchema.properties).toHaveProperty('blocked-after');
+    expect(health?.inputSchema.properties).toHaveProperty('unplanned-within');
     expect(health?.inputSchema.properties).toHaveProperty('check');
     expect(health?.inputSchema.required ?? []).toEqual([]);
+  });
+});
+
+/**
+ * A board where ad hoc ticket T1 was moved to `merged` with `--unplanned
+ * "production hotfix"` 2 hours before `NOW` (the `ticket.unplanned` 2
+ * hours and 1 second before, as the command writes it first).
+ */
+function unplannedBoard(): { root: string; boardDir: string } {
+  const { root, boardDir } = project();
+  const eventsDir = join(boardDir, 'events');
+  const adhoc = { task: undefined, checklist: undefined, labels: undefined, adhoc: 'hotfix' };
+  // `P.create` spreads `undefined` for the omitted fields; the file must not carry them.
+  const create = JSON.parse(
+    JSON.stringify(P.create(T1, 'Fix login redirect', adhoc)),
+  ) as ReturnType<typeof P.create>;
+  putEvent(eventsDir, ev(create, 'orch', NOW - DAY));
+  putEvent(eventsDir, ev(P.move(T1, 'tests'), 'impl', NOW - DAY + 1000));
+  putEvent(eventsDir, ev(P.move(T1, 'implementing'), 'impl', NOW - DAY + 2000));
+  putEvent(eventsDir, ev(P.move(T1, 'review'), 'impl', NOW - DAY + 3000));
+  putEvent(eventsDir, ev(P.unplanned(T1, 'production hotfix'), 'orch', NOW - 2 * HOUR - 1000));
+  putEvent(eventsDir, ev(P.move(T1, 'merged'), 'orch', NOW - 2 * HOUR));
+  return { root, boardDir };
+}
+
+describe('scenario: Unplanned scope over MCP and JSON', () => {
+  it('board_health with unplanned-within 30d equals health --unplanned-within 30d --json', async () => {
+    const { root } = unplannedBoard();
+    const client = await connect(serve(root));
+    const result = await client.callTool({
+      name: 'board_health',
+      arguments: { 'unplanned-within': '30d' },
+    });
+    expect(result.isError).toBeFalsy();
+    const cli = oneJson(run(['health', '--unplanned-within', '30d', '--json'], root));
+    expect(result.structuredContent).toEqual(cli);
+    expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(cli) }]);
+    const doc = cli as {
+      thresholds: { unplannedWithin: number };
+      unplannedScope: {
+        total: number;
+        tickets: { ticket: { id: string }; reason: string | null; outcome: string }[];
+      };
+    };
+    expect(doc.thresholds.unplannedWithin).toBe(2_592_000_000);
+    expect(doc.unplannedScope.total).toBe(1);
+    expect(doc.unplannedScope.tickets).toHaveLength(1);
+    expect(doc.unplannedScope.tickets[0]).toMatchObject({
+      ticket: { id: T1 },
+      reason: 'production hotfix',
+      outcome: 'merged',
+    });
+  });
+
+  it('with no window uses the default 7d, like the CLI', () => {
+    const { root } = unplannedBoard();
+    const server = serve(root);
+    const result = server.callTool('board_health', {});
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toEqual(oneJson(run(['health', '--json'], root)));
+    expect(result.structuredContent).toMatchObject({
+      thresholds: { unplannedWithin: 7 * DAY },
+      unplannedScope: { total: 1, tickets: [{ ticket: { id: T1 }, outcome: 'merged' }] },
+    });
+  });
+
+  it('a window of 1h leaves the 2 hour old disposition out of the list but not the total', () => {
+    const { root } = unplannedBoard();
+    const server = serve(root);
+    const result = server.callTool('board_health', { 'unplanned-within': '1h' });
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toEqual(
+      oneJson(run(['health', '--unplanned-within', '1h', '--json'], root)),
+    );
+    expect(result.structuredContent).toMatchObject({
+      thresholds: { unplannedWithin: HOUR },
+      unplannedScope: { total: 1, tickets: [] },
+    });
+  });
+
+  it('refuses a malformed unplanned-within as a tool error with exit 1 usage and the MCP hint', () => {
+    const { root } = unplannedBoard();
+    const server = serve(root);
+    const result = server.callTool('board_health', { 'unplanned-within': '7days' });
+    expect(result.isError).toBe(true);
+    const error = result.structuredContent as {
+      exitCode: number;
+      reason: string;
+      message: string;
+      hint: string | null;
+    };
+    expect(error).toMatchObject({ exitCode: 1, reason: 'usage' });
+    expect(error.message).toContain('--unplanned-within');
+    expect(error.message).toContain('7days');
+    expect(error.message).toContain('<n>d');
+    expect(error.hint).toBe(renderHint('usage', { surface: 'mcp', command: 'health' }));
   });
 });
 
