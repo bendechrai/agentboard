@@ -33,10 +33,11 @@ import { canonicalDump, expectCheckClean } from '../../__tests__/harness/host-sy
 import { canonicalEncode, sha256Hex } from '../../events/canonical.js';
 import { openBoard } from '../../store/board.js';
 import { P, T1, T2, T3, ev, putEvent } from '../../store/__tests__/helpers.js';
-import { AGENTBOARD_GIT_SUBDIR, WORKTREE_LOCK_REASON } from '../host-init.js';
+import { AGENTBOARD_GIT_SUBDIR, BOARD_GITIGNORE_LINES, WORKTREE_LOCK_REASON } from '../host-init.js';
 import { initBoard } from '../init.js';
 import {
   MIGRATING_DIR,
+  MIGRATING_FETCH_REF,
   MIGRATING_REF,
   MoveSyncFailure,
   STANDALONE_KEPT_PREFIX,
@@ -57,6 +58,7 @@ import { expectBoardError, git, gitRepo, tempDir } from './helpers.js';
 import {
   agentboardDir,
   bareHost,
+  cherryPickInProgress,
   cloneProject,
   cloneWithStandalone,
   conflictingClones,
@@ -71,11 +73,13 @@ import {
   project,
   refEvents,
   registeredMigrating,
+  resolveCherryPickConflicts,
   resolveIgnoreConflicts,
   standaloneInHostWithoutIgnore,
   standaloneProject,
   syncStandalone,
   syncedStandalone,
+  thirdCloneRewritesIgnore,
   untouched,
   withShellGitShim,
   writeEvents,
@@ -130,6 +134,7 @@ function isAncestor(repo: string, ancestor: string, descendant: string): boolean
 describe('constants and names', () => {
   it('name the temporary ref, the temporary directory and the kept prefix as the design does', () => {
     expect(MIGRATING_REF).toBe('refs/agentboard/migrating');
+    expect(MIGRATING_FETCH_REF).toBe('refs/agentboard/migrating-fetch');
     expect(MIGRATING_DIR).toBe('migrating');
     expect(STANDALONE_KEPT_PREFIX).toBe('standalone-');
   });
@@ -842,11 +847,13 @@ describe('integrating board refs that already exist', () => {
     expect(refEvents(bRoot)).toEqual(all);
     expect(readFileSync(join(bDir, '.gitignore'), 'utf8')).toBe(resolved);
     // The human's resolution is what the result descends from; with the tip
-    // unchanged the re-run replayed nothing onto it (no --onto rebase, and
-    // never a --root one), and B's conflicting commit appears once.
+    // unchanged the re-run replayed nothing onto it (no cherry-pick, no
+    // --onto rebase, never a --root one), and B's conflicting commit appears once.
     expect(isAncestor(bRoot, resolvedHead, BOARD_REF)).toBe(true);
     expect(refCommit(bRoot)).toBe(resolvedHead);
-    expect(calls().filter((c) => c.includes('--onto') || c.includes('--root'))).toEqual([]);
+    expect(
+      calls().filter((c) => c.includes('cherry-pick') || c.includes('--onto') || c.includes('--root')),
+    ).toEqual([]);
     expect(git(bRoot, 'log', '--format=%s', BOARD_REF).split('\n').filter((s) => s === 'ignore bar')).toHaveLength(1);
     expect(isAncestor(bRoot, String(sourceBefore), BOARD_REF)).toBe(false);
     expect(isAncestor(bRoot, String(refCommit(aRoot)), BOARD_REF)).toBe(true);
@@ -885,14 +892,17 @@ describe('integrating board refs that already exist', () => {
     expect(refEvents(bRoot)).toEqual(all);
     expect(refEvents(remote)).toEqual(all);
     // The human's resolution is what the result descends from, not a replay
-    // of it: the replay was based on the old temporary ref value (an
-    // ancestor of the fresh tip), never on the merge base or --root, so only
-    // C's commit was applied on top and B's conflicting commit appears once.
+    // of it: the replay was a cherry-pick of the commits between the tip the
+    // worktree integrated (refs/agentboard/migrating, an ancestor of the
+    // fresh tip) and the fresh tip in refs/agentboard/migrating-fetch, never
+    // a rebase --onto, never from the merge base or --root, so only C's
+    // commit was applied on top and B's conflicting commit appears once.
     expect(isAncestor(bRoot, resolvedHead, BOARD_REF)).toBe(true);
-    const replays = calls().filter((c) => c.includes('--onto'));
+    const replays = calls().filter((c) => c.includes('cherry-pick') && !c.includes('--skip'));
     expect(replays).toHaveLength(1);
-    expect(replays[0]).toContain(`--onto HEAD ${sourceBefore} ${MIGRATING_REF}`);
-    expect(calls().filter((c) => c.includes('--root'))).toEqual([]);
+    expect(replays[0]).toContain(`${sourceBefore}..${MIGRATING_FETCH_REF}`);
+    expect(calls().filter((c) => c.includes('--onto') || c.includes('--root'))).toEqual([]);
+    expect(calls().filter((c) => c.includes(`:${MIGRATING_REF} `) || c.endsWith(`:${MIGRATING_REF}`))).toEqual([]);
     expect(git(bRoot, 'log', '--format=%s', BOARD_REF).split('\n').filter((s) => s === 'ignore bar')).toHaveLength(1);
     expect(readFileSync(join(bDir, '.gitignore'), 'utf8')).toBe(resolved);
     expect(existsSync(String(temporary))).toBe(false);
@@ -900,6 +910,100 @@ describe('integrating board refs that already exist', () => {
     const [kept] = keptRepositories(bRoot);
     expect(revParse(String(kept))).not.toBe(tip);
     expect(eventFiles(String(kept))).toEqual([...files, `${String(fromC)}.json`].sort());
+    expectCheckClean(bRoot, env);
+  });
+
+  it('a replay that conflicts (a third clone rewrote the resolved .gitignore line): exit 3 sync-conflict naming git cherry-pick --continue; a re-run is sync-in-progress; git cherry-pick --abort returns to the resolved HEAD and the next re-run keeps it (round 4 ruling 2)', () => {
+    const env = syncEnv();
+    const fx = conflictingClones(env);
+    const { bRoot, bDir } = fx;
+    expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+    const [temporary] = registeredMigrating(bRoot);
+    resolveIgnoreConflicts(String(temporary));
+    const resolvedHead = revParse(String(temporary));
+    const integrated = String(refCommit(bRoot, MIGRATING_REF));
+    const { fromD } = thirdCloneRewritesIgnore(fx, env);
+    const before = untouched(bRoot, bDir);
+
+    const err = expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+
+    expect(err.message).toContain('.gitignore');
+    expect(err.message).toContain(String(temporary));
+    expect(err.message).toContain('git cherry-pick --continue');
+    expect(err.message).toContain('agentboard init --into-host');
+    expect(err.message).not.toContain('git rebase --continue');
+    expect(cherryPickInProgress(String(temporary))).toBe(true);
+    expect(unmerged(String(temporary))).toEqual(['.gitignore']);
+    // The resolution is still the ancestor of the worktree's HEAD (D's event
+    // commit landed on it; its .gitignore commit is the one stopped on), and
+    // refs/agentboard/migrating still records the tip the worktree integrated.
+    expect(isAncestor(String(temporary), resolvedHead, 'HEAD')).toBe(true);
+    expect(refCommit(bRoot, MIGRATING_REF)).toBe(integrated);
+    expect(refCommit(bRoot, MIGRATING_FETCH_REF)).not.toBe(integrated);
+    expect(snapshotDir(bDir)).toEqual(before.board);
+    expect(refCommit(bRoot)).toBeNull();
+    expect(keptRepositories(bRoot)).toEqual([]);
+
+    const again = expectBoardError(() => move(bRoot, env), 3, 'sync-in-progress');
+    expect(again.message).toContain(String(temporary));
+    expect(again.message).toContain('git cherry-pick --continue');
+    expect(again.message).toContain('agentboard init --into-host');
+    expect(registeredMigrating(bRoot)).toEqual([temporary]);
+    expect(cherryPickInProgress(String(temporary))).toBe(true);
+    expect(refCommit(bRoot, MIGRATING_REF)).toBe(integrated);
+
+    // The human gives up on this replay: the worktree is back at the resolution,
+    // and the next run adopts it again (the resolution never discarded) and
+    // stops on the same conflict, D's event still waiting in the fresh tip.
+    git(String(temporary), 'cherry-pick', '--abort');
+    expect(revParse(String(temporary))).toBe(resolvedHead);
+    const third = expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+    expect(third.message).toContain('git cherry-pick --continue');
+    expect(registeredMigrating(bRoot)).toEqual([temporary]);
+    expect(isAncestor(String(temporary), resolvedHead, 'HEAD')).toBe(true);
+    expect(cherryPickInProgress(String(temporary))).toBe(true);
+    expect(refCommit(bRoot)).toBeNull();
+    expect(detectBoardModel(bDir, { env }).model).toBe('standalone');
+    expect(eventFiles(bDir)).not.toContain(`${fromD}.json`);
+    expect(keptRepositories(bRoot)).toEqual([]);
+  });
+
+  it('a replay that conflicts, resolved with git cherry-pick --continue: the re-run adopts the worktree and completes with every event, both resolutions kept, nothing applied twice (round 4 ruling 2)', () => {
+    const env = syncEnv();
+    const fx = conflictingClones(env);
+    const { remote, bRoot, bDir, shared, fromA, fromB } = fx;
+    expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+    const [temporary] = registeredMigrating(bRoot);
+    resolveIgnoreConflicts(String(temporary));
+    const resolvedHead = revParse(String(temporary));
+    const { fromD } = thirdCloneRewritesIgnore(fx, env);
+    const freshTip = revParse(bDir, `refs/remotes/origin/main`);
+    expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+    const both = [...BOARD_GITIGNORE_LINES, 'foo', 'baz', 'bar'].map((line) => `${line}\n`).join('');
+    resolveCherryPickConflicts(String(temporary), both);
+    const continuedHead = revParse(String(temporary));
+    expect(isAncestor(String(temporary), resolvedHead, continuedHead)).toBe(true);
+    const { env: recording, calls } = withRecordingGitShim(env);
+
+    const result = move(bRoot, recording);
+
+    expect(result).toMatchObject({ action: 'moved', model: 'host', joined: true, events: 4 });
+    expectMoved(bRoot, env);
+    const all = [...shared, `${fromA}.json`, ...fromB.map((h) => `${h}.json`), `${fromD}.json`].sort();
+    expect(eventFiles(bDir)).toEqual(all);
+    expect(refEvents(bRoot)).toEqual(all);
+    expect(refEvents(remote)).toEqual(all);
+    expect(readFileSync(join(bDir, '.gitignore'), 'utf8')).toBe(both);
+    // What the human finished is the ancestor of the result; D's commits,
+    // already applied by hand, were not applied a second time.
+    expect(isAncestor(bRoot, continuedHead, BOARD_REF)).toBe(true);
+    const subjects = git(bRoot, 'log', '--format=%s', BOARD_REF).split('\n');
+    expect(subjects.filter((s) => s === 'ignore bar')).toHaveLength(1);
+    expect(subjects.filter((s) => s === 'ignore baz')).toHaveLength(1);
+    expect(git(bRoot, 'log', '--format=%s', '--diff-filter=A', '--', `events/${fromD}.json`).trim().split('\n')).toHaveLength(1);
+    expect(calls().filter((c) => c.includes('--onto') || c.includes('--root'))).toEqual([]);
+    expect(isAncestor(bRoot, git(bRoot, 'rev-parse', `${freshTip}^{commit}`).trim(), BOARD_REF)).toBe(false);
+    expect(existsSync(String(temporary))).toBe(false);
     expectCheckClean(bRoot, env);
   });
 
@@ -1040,11 +1144,11 @@ describe('step 5 and the rename window: events written during the move are carri
 
 describe('refusals of steps 3 to 6 (ruling B, D and F)', () => {
   /** A host holding a local refs/agentboard/board with one event, from another repository. */
-  function hostWithLocalRef(root: string, env: Env): { commit: string; hash: string; other: ReturnType<typeof hostBoard> } {
+  function hostWithLocalRef(root: string, env: Env): { commit: string; hash: string; other: ReturnType<typeof hostBoard> & { hash: string } } {
     const other = hostBoard(env);
     const hash = commitHostEvent(other.dir, ev(P.create(T2, 'From the host ref'), 'x', 2000), env);
     git(root, 'fetch', '-q', other.root, `${BOARD_REF}:${BOARD_REF}`);
-    return { commit: String(refCommit(root)), hash, other };
+    return { commit: String(refCommit(root)), hash, other: { ...other, hash } };
   }
 
   it('the compare-and-swap lost in step 4: exit 3 sync-failed, .board and the host .gitignore untouched, the temporary kept; the re-run adopts it with the new events (one run)', () => {
@@ -1219,6 +1323,88 @@ describe('refusals of steps 3 to 6 (ruling B, D and F)', () => {
     expect(git(dir, 'remote', 'get-url', 'origin').trim()).toBe(aside);
     expect(worktreeEntry(root, dir)).toBeNull();
     expect(migratingEntries(root)).toHaveLength(1);
+  });
+
+  it('a worktree add that fails after git registered the worktree: exit 3 sync-failed, no registration, directory or ref left, .board untouched; the re-run moves (round 4 ruling 5)', () => {
+    const env = syncEnv();
+    const { root, dir, tip } = standaloneProject(env, 2);
+    const files = eventFiles(dir);
+    const before = untouched(root, dir);
+    const once = join(tempDir(), 'failed-once');
+    // git registers and checks out the worktree, then the command fails (a
+    // hook, a full disk, a signal): the move must not trust the exit code
+    // to mean nothing was written.
+    const failing = withShellGitShim(
+      env,
+      [
+        'case " $* " in',
+        `  *" worktree add --detach "*) if [ ! -e '${once}' ]; then : > '${once}'; "$GIT" "$@"; echo 'fatal: simulated failure after the worktree was registered' >&2; exit 128; fi ;;`,
+        'esac',
+      ].join('\n'),
+    );
+
+    const err = expectBoardError(() => move(root, failing), 3, 'sync-failed');
+
+    expect(existsSync(once)).toBe(true);
+    expect(err.message).toContain('agentboard init --into-host');
+    expect(snapshotDir(dir)).toEqual(before.board);
+    expect(detectBoardModel(dir, { env }).model).toBe('standalone');
+    expect(revParse(dir)).toBe(tip);
+    expect(keptRepositories(root)).toEqual([]);
+    expect(migratingEntries(root)).toEqual([]);
+    expect(worktrees(root)).not.toContain(`/${MIGRATING_DIR}/`);
+    expect(git(root, 'for-each-ref', '--format=%(refname)', 'refs/agentboard/')).toBe('');
+    expect(git(root, 'status', '--porcelain')).toBe(before.status);
+
+    const result = move(root, env);
+    expect(result.action).toBe('moved');
+    expectMoved(root, env);
+    expect(eventFiles(dir)).toEqual(files);
+    expectKept(String(result.keptAt), tip, files);
+    expectCheckClean(root, env);
+  });
+
+  it('a temporary left by a move of a different .board (replaced since) is not adopted: removed and named, the new board moved on its own (round 4 ruling 3)', () => {
+    const env = syncEnv();
+    const { root, dir } = standaloneProject(env, 3);
+    const oldFiles = eventFiles(dir);
+    const { commit: c1, other } = hostWithLocalRef(root, env);
+    const fromOther2 = commitHostEvent(other.dir, ev(P.comment(T2, 'second'), 'x', 2100), env);
+    git(root, 'fetch', '-q', other.root, `${BOARD_REF}:refs/test/c2`);
+    const c2 = git(root, 'rev-parse', 'refs/test/c2').trim();
+    // The first move integrates c1 (its worktree HEAD leaves the temporary
+    // ref) and loses the compare-and-swap: an adoptable temporary of this board.
+    const racing = withGitShimBefore(
+      env,
+      ['update-ref', BOARD_REF],
+      `"$GIT" -C '${root}' update-ref ${BOARD_REF} ${c2} ${c1}`,
+    );
+    expectBoardError(() => move(root, racing), 3, 'sync-failed');
+    const [temporary] = registeredMigrating(root);
+    expect(registeredMigrating(root)).toHaveLength(1);
+    expect(revParse(String(temporary))).not.toBe(refCommit(root, MIGRATING_REF));
+    // The user replaces the board with another standalone board (its own
+    // repository, its own history and events) before running the move again.
+    rmSync(dir, { recursive: true, force: true });
+    const replacement = syncedStandalone(root, env, 2, bareRemote(), 'other');
+    const newFiles = eventFiles(dir);
+    expect(newFiles.some((f) => oldFiles.includes(f))).toBe(false);
+
+    const result = move(root, env);
+
+    expect(result).toMatchObject({ action: 'moved', events: 4 });
+    expect(result.message).toContain(String(temporary));
+    expectMoved(root, env);
+    const all = [...newFiles, `${other.hash}.json`, `${fromOther2}.json`].sort();
+    expect(eventFiles(dir)).toEqual(all);
+    expect(refEvents(root)).toEqual(all);
+    for (const old of oldFiles) {
+      expect(eventFiles(dir)).not.toContain(old);
+    }
+    expect(isAncestor(root, c2, BOARD_REF)).toBe(true);
+    expect(isAncestor(root, replacement.tip, BOARD_REF)).toBe(false);
+    expectKept(String(result.keptAt), replacement.tip, newFiles);
+    expectCheckClean(root, env);
   });
 
   it('.board re-created at the same path with a different history before the rename: refused by the step 1 HEAD of the identity re-check, nothing renamed (round 3 ruling 6)', () => {
@@ -1398,10 +1584,19 @@ describe('the temporary worktree helpers', () => {
     mkdirSync(junk);
     const rebasing = temporary(root, DEAD_PID + 1, commit);
     mkdirSync(join(git(rebasing, 'rev-parse', '--absolute-git-dir').trim(), 'rebase-merge'));
+    const picking = temporary(root, DEAD_PID + 3, commit);
+    writeFileSync(join(git(picking, 'rev-parse', '--absolute-git-dir').trim(), 'CHERRY_PICK_HEAD'), `${commit}\n`);
 
     const found = findMigratingWorktrees(root, { env });
 
-    expect(found.map((w) => w.path)).toEqual([plain, dead, alive, junk, rebasing].sort());
+    expect(found.map((w) => w.path)).toEqual([plain, dead, alive, junk, rebasing, picking].sort());
+    // A stopped cherry-pick (the replay of an adopted worktree) counts as rebasing.
+    expect(found.find((w) => w.path === picking)).toMatchObject({
+      pid: DEAD_PID + 3,
+      alive: false,
+      registered: true,
+      rebasing: true,
+    });
     expect(found.find((w) => w.path === dead)).toEqual({
       path: dead,
       pid: DEAD_PID,
@@ -1443,6 +1638,7 @@ describe('the temporary worktree helpers', () => {
     const env = syncEnv();
     const { root, commit } = hostWithRefOnly(env);
     git(root, 'update-ref', MIGRATING_REF, commit);
+    git(root, 'update-ref', MIGRATING_FETCH_REF, commit);
     const dead = temporary(root, DEAD_PID, commit);
     const alive = temporary(root, process.pid, commit);
     const plain = join(agentboardDir(root), MIGRATING_DIR, String(DEAD_PID + 3));
@@ -1470,8 +1666,9 @@ describe('the temporary worktree helpers', () => {
     expect(worktreeEntry(root, alive)).not.toBeNull();
     expect(worktreeEntry(root, rebasing)).not.toBeNull();
     expect(worktreeEntry(root, rebased)).not.toBeNull();
-    // Moves still in flight, stopped or finished keep the temporary ref.
+    // Moves still in flight, stopped or finished keep the temporary refs.
     expect(refCommit(root, MIGRATING_REF)).toBe(commit);
+    expect(refCommit(root, MIGRATING_FETCH_REF)).toBe(commit);
     expect(refCommit(root)).toBe(commit);
 
     for (const path of [alive, rebasing, rebased]) {
@@ -1480,6 +1677,7 @@ describe('the temporary worktree helpers', () => {
     }
     expect(removeDeadMigratingWorktrees(root, { env })).toEqual([]);
     expect(refCommit(root, MIGRATING_REF)).toBeNull();
+    expect(refCommit(root, MIGRATING_FETCH_REF)).toBeNull();
     expect(refCommit(root)).toBe(commit);
     expect(removeDeadMigratingWorktrees(bareHost('empty'), { env })).toEqual([]);
   });
@@ -1643,13 +1841,64 @@ describe('resuming after the worktree is in place, and cleaning dead temporaries
     expect([refCommit(root), snapshotDir(dir), worktreeEntry(root, dir)]).toEqual(before);
     expect(eventFiles(dir)).toEqual([`${hash}.json`]);
 
-    // init --into-host on the same board does the same, and the empty directory goes once the last one is gone.
+    // Without a kept repository the directory, still holding the stopped
+    // one, is not a pending move: plain init does not say so (the removal
+    // line names the command that left the temporaries, not a sync to finish).
+    expect(result.message).not.toMatch(/sync/);
+    expect(existsSync(base)).toBe(true);
+
+    // init --into-host on the same board does the same, and the empty
+    // directory goes in that run once the last one is gone (round 4 ruling
+    // 4), so plain init afterwards reports no phantom pending move.
     git(root, 'worktree', 'remove', '--force', '--force', stopped);
     rmSync(stopped, { recursive: true, force: true });
     const again = move(root, env);
-    expect(again.action).toBe('unchanged');
+    expect(again).toMatchObject({ action: 'unchanged', sync: null });
     expect(existsSync(base)).toBe(false);
     expect(eventFiles(dir)).toEqual([`${hash}.json`]);
+    const plainAgain = initBoard({ cwd: root, env });
+    expect(plainAgain.message).not.toContain('agentboard init --into-host');
+    expect(plainAgain.message).not.toMatch(/interrupted/);
+    expect(existsSync(base)).toBe(false);
+
+    // And plain init itself removes the directory it empties when no kept repository exists.
+    mkdirSync(join(base, String(DEAD_PID + 4)), { recursive: true });
+    const cleaned = initBoard({ cwd: root, env });
+    expect(cleaned.message).toContain(join(base, String(DEAD_PID + 4)));
+    expect(cleaned.message).not.toMatch(/sync/);
+    expect(existsSync(base)).toBe(false);
+  });
+
+  it('resuming with two kept repositories carries over from the newest and leaves the older one alone (round 4 ruling 3)', () => {
+    const env = syncEnv();
+    const { root, remote, dir, boardRemote } = standaloneProject(env, 2);
+    const first = move(root, env);
+    expect(first.action).toBe('moved');
+    const kept = String(first.keptAt);
+    // An older kept repository from an earlier move (rolled back since), holding an event of its own.
+    const older = join(agentboardDir(root), `${STANDALONE_KEPT_PREFIX}20200101T000000Z`);
+    cpSync(kept, older, { recursive: true });
+    const [stale] = writeEvents(older, 1, 'stale', 900);
+    expect(older < kept).toBe(true);
+    git(root, 'worktree', 'unlock', dir);
+    mkdirSync(join(agentboardDir(root), MIGRATING_DIR), { recursive: true });
+    git(remote, 'update-ref', '-d', BOARD_REF);
+    const [late] = writeEvents(kept, 1, 'late', 800);
+    const files = [...eventFiles(dir), `${String(late)}.json`].sort();
+
+    const result = move(root, env);
+
+    expect(result).toMatchObject({ action: 'resumed', keptAt: kept, oldRemoteUrl: boardRemote, events: 3 });
+    expect(result.message).toContain(kept);
+    expect(result.message).not.toContain(older);
+    expectMoved(root, env, 2);
+    expect(eventFiles(dir)).toEqual(files);
+    expect(refEvents(root)).toEqual(files);
+    expect(eventFiles(dir)).not.toContain(`${String(stale)}.json`);
+    expect(eventFiles(older)).toContain(`${String(stale)}.json`);
+    expect(git(remote, 'rev-parse', BOARD_REF).trim()).toBe(refCommit(root));
+    expect(move(root, env).action).toBe('unchanged');
+    expectCheckClean(root, env);
   });
 
   it('plain init on a moved board whose sync did not complete leaves the migrating marker, restores the lock, names the pending move and runs no sync; init --into-host then resumes it with the kept repository event (round 3 ruling 3)', () => {

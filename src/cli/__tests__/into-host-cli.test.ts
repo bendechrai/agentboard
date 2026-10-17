@@ -64,7 +64,12 @@ import {
   type KillWhen,
 } from '../../board/__tests__/sharing-helpers.js';
 import { bareRemote, revParse, syncEnv, type Env } from '../../board/__tests__/sync-helpers.js';
-import { MIGRATING_DIR, MIGRATING_REF, STANDALONE_KEPT_PREFIX } from '../../board/into-host.js';
+import {
+  MIGRATING_DIR,
+  MIGRATING_FETCH_REF,
+  MIGRATING_REF,
+  STANDALONE_KEPT_PREFIX,
+} from '../../board/into-host.js';
 import { detectBoardModel } from '../../board/model.js';
 import { P, T1, T2, ev } from '../../store/__tests__/helpers.js';
 import { splitCommandLine } from '../../guidance/__tests__/command-line.js';
@@ -456,19 +461,50 @@ describe('an interrupted move is finished by running init --into-host again', ()
     expectCheckClean(fx.root, env);
   }
 
-  it('killed after the fetch into refs/agentboard/migrating (step 2): the board is still standalone; the re-run moves it', () => {
+  it('killed after the fetch into refs/agentboard/migrating-fetch (step 2): only the scratch ref is written, the board is still standalone; the re-run moves it', () => {
     const env = syncEnv();
     const fx = fixture(env);
 
-    killedAt(fx.root, env, [`:${MIGRATING_REF}`], 'after');
+    killedAt(fx.root, env, [`:${MIGRATING_FETCH_REF}`], 'after');
 
-    expect(refCommit(fx.root, MIGRATING_REF)).toBe(fx.tip);
+    expect(refCommit(fx.root, MIGRATING_FETCH_REF)).toBe(fx.tip);
+    expect(refCommit(fx.root, MIGRATING_REF)).toBeNull();
     expect(detectBoardModel(fx.dir, { env }).model).toBe('standalone');
     expect(refCommit(fx.root)).toBeNull();
     expect(keptRepositories(fx.root)).toEqual([]);
 
     expect(intoHostOk(fx.root, env)).toMatchObject({ action: 'moved' });
     expectFinished(fx, env);
+  });
+
+  it('a re-run adopting a temporary, killed after its step 2 fetch and before the replay, a third clone having pushed meanwhile: the next run still replays and ends with that event (round 4 ruling 1)', () => {
+    const env = syncEnv();
+    const fx = fixture(env);
+    const other = hostBoard(env);
+    const fromOther = commitHostEvent(other.dir, ev(P.create(T2, 'From the host ref'), 'x', 2000), env);
+    git(fx.root, 'fetch', '-q', other.root, `${BOARD_REF}:${BOARD_REF}`);
+    // Run 1 integrates the local ref and dies: an adoptable temporary whose
+    // integrated tip is the board's tip.
+    killedAt(fx.root, env, [...COMMANDS.rebaseLocal], 'after');
+    expect(migratingEntries(fx.root)).toHaveLength(1);
+    expect(refCommit(fx.root, MIGRATING_REF)).toBe(fx.tip);
+    // A third clone syncs an event to the old remote; this clone never pulls it.
+    const d = cloneWithStandalone(fx.remote, fx.boardRemote, 'd');
+    const [fromD] = writeEvents(d.dir, 1, 'd', 600);
+    syncStandalone(d.dir, env);
+    const fresh = revParse(d.dir);
+
+    // Run 2 fetches the fresh tip and dies before replaying it.
+    killedAt(fx.root, env, [`:${MIGRATING_FETCH_REF}`], 'after');
+
+    expect(refCommit(fx.root, MIGRATING_FETCH_REF)).toBe(fresh);
+    expect(refCommit(fx.root, MIGRATING_REF)).toBe(fx.tip);
+    expect(migratingEntries(fx.root)).toHaveLength(1);
+    expect(detectBoardModel(fx.dir, { env }).model).toBe('standalone');
+
+    const doc = intoHostOk(fx.root, env);
+    expect(doc).toMatchObject({ action: 'moved', events: 5 });
+    expectFinished(fx, env, [`${fromOther}.json`, `${String(fromD)}.json`]);
   });
 
   it('killed after the temporary worktree is added (step 3): the re-run removes the dead leftover, names it, and moves', () => {
@@ -592,7 +628,9 @@ describe('an interrupted move is finished by running init --into-host again', ()
 
     expect(out.code, out.stderr).toBe(0);
     expect(oneJson(out)).toMatchObject({ action: 'moved', joined: true, events: 3 });
-    expect(calls().filter((c) => c.includes('--onto') || c.includes('--root'))).toEqual([]);
+    expect(
+      calls().filter((c) => c.includes('cherry-pick') || c.includes('--onto') || c.includes('--root')),
+    ).toEqual([]);
     expectMoved(bRoot, env);
     const all = [...shared, `${fromA}.json`, ...fromB.map((h) => `${h}.json`)].sort();
     expect(eventFiles(bDir)).toEqual(all);
@@ -627,7 +665,9 @@ describe('an interrupted move is finished by running init --into-host again', ()
 
     expect(out.code, out.stderr).toBe(0);
     expect(oneJson(out)).toMatchObject({ action: 'resumed', events: 3 });
-    expect(calls().filter((c) => c.includes('--onto') || c.includes('--root'))).toEqual([]);
+    expect(
+      calls().filter((c) => c.includes('cherry-pick') || c.includes('--onto') || c.includes('--root')),
+    ).toEqual([]);
     expectMoved(bRoot, env);
     const all = [...shared, `${fromA}.json`, ...fromB.map((h) => `${h}.json`)].sort();
     expect(eventFiles(bDir)).toEqual(all);

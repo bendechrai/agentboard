@@ -398,6 +398,52 @@ export function resolveIgnoreConflicts(temporary: string): string {
   return resolved;
 }
 
+/** Whether a cherry-pick is stopped in the worktree at `dir` (`CHERRY_PICK_HEAD` in its git directory). */
+export function cherryPickInProgress(dir: string): boolean {
+  return existsSync(join(git(dir, 'rev-parse', '--absolute-git-dir').trim(), 'CHERRY_PICK_HEAD'));
+}
+
+/**
+ * The human's resolution of a `.gitignore` conflict the replay of an
+ * adopted worktree stops on: writes `content`, `git add`, `git cherry-pick
+ * --continue`, until no cherry-pick is in progress in `temporary`.
+ */
+export function resolveCherryPickConflicts(temporary: string, content: string): void {
+  for (let step = 0; cherryPickInProgress(temporary); step += 1) {
+    expect(step).toBeLessThan(5);
+    writeFileSync(join(temporary, '.gitignore'), content);
+    git(temporary, 'add', '--', '.gitignore');
+    try {
+      git(temporary, '-c', 'core.editor=true', 'cherry-pick', '--continue');
+    } catch {
+      // The next commit conflicts too; the loop resolves it.
+    }
+  }
+}
+
+/**
+ * A third clone D of the old board remote of `conflictingClones`, made
+ * after B synced `bar`: it syncs one event of its own to the old remote,
+ * then rewrites `.gitignore` to insert `baz` before `bar`, exactly where
+ * B's resolution inserted `foo`, so a replay of D's commit onto the
+ * resolution conflicts on `.gitignore`. Returns D's board directory, the
+ * event hash and D's `.gitignore` content.
+ */
+export function thirdCloneRewritesIgnore(
+  fx: ConflictingClones,
+  env: Env,
+): { dDir: string; fromD: string; ignore: string } {
+  const d = cloneWithStandalone(fx.remote, fx.boardRemote, 'd');
+  const [fromD] = writeEvents(d.dir, 1, 'd', 600);
+  syncStandalone(d.dir, env);
+  const ignore = [...BOARD_GITIGNORE_LINES, 'baz', 'bar'].map((line) => `${line}\n`).join('');
+  writeFileSync(join(d.dir, '.gitignore'), ignore);
+  git(d.dir, 'add', '--', '.gitignore');
+  git(d.dir, 'commit', '-q', '--no-verify', '-m', 'ignore baz');
+  syncStandalone(d.dir, env);
+  return { dDir: d.dir, fromD: String(fromD), ignore };
+}
+
 /** The registered worktrees of `root` under `agentboard/migrating/`. */
 export function registeredMigrating(root: string): string[] {
   return worktrees(root)
