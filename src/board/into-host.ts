@@ -714,17 +714,23 @@ export interface IntoHostResult extends InitResult {
  * ruling 1), with nothing changed: the old `.board` untouched, the
  * worktree, its rebase or cherry-pick state, `MIGRATING_REF` and
  * `MIGRATING_FETCH_REF` as they were, and nothing published. An
- * unstaged change to a tracked file of the adopted worktree (`git diff
+ * unstaged change to a tracked file of a temporary (`git diff
  * --name-only` not empty: conflict markers a `git reset` left in place,
- * or an edit by hand), whether or not cherry-pick state remains (git
- * drops `CHERRY_PICK_HEAD` and the sequencer with a reset on the last
- * pick of a sequence, and keeps the sequencer on an earlier pick;
- * implementer decision, round 6) is `BoardError(3, 'sync-failed')`
- * before anything is quit, replayed or carried over: the message names
- * the worktree, the files and the steps (commit, stash or discard them,
- * `git -C <temp> checkout -- <path>`, then `agentboard init --into-host`
- * again), the worktree stays adoptable with its state and HEAD as they
- * were, and the refs, `.board` and the remote are untouched. A dead-pid
+ * or an edit by hand) is refused in one of two ways, by what git left
+ * (orchestrator ruling, round 6): with cherry-pick state still present
+ * (a reset on an earlier pick of a sequence keeps the sequencer) it is a
+ * human's conflict in progress, the `sync-in-progress` refusal above
+ * naming `git cherry-pick --continue`, `--skip` and `--abort`; with no
+ * cherry-pick state left (a reset on the last pick drops
+ * `CHERRY_PICK_HEAD` and the sequencer with it; an edit by hand in a
+ * worktree with nothing in progress) it is `BoardError(3,
+ * 'sync-failed')` before anything is quit, replayed or carried over,
+ * whose message names the worktree, the files and the steps (commit,
+ * stash or discard them, `git -C <temp> checkout -- <path>`, then
+ * `agentboard init --into-host` again; implementer decision, round 6).
+ * Either way nothing is quit, the worktree stays adoptable with its
+ * state and HEAD as they were, and the refs, `.board` and the remote are
+ * untouched. A dead-pid
  * temporary with cherry-pick state that no human is in the middle of
  * (nothing unmerged, the index equal to HEAD and the working tree equal
  * to the index, `git diff --quiet` and `git diff --cached --quiet` both

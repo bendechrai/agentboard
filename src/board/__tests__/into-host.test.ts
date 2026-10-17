@@ -1049,9 +1049,13 @@ describe('integrating board refs that already exist', () => {
   });
 
   /**
-   * The assertions a dirty adopted worktree's refusal must satisfy: exit 3
-   * sync-failed naming the worktree, the file and the steps; nothing quit,
-   * replayed, dropped or published; the same refusal on the next run.
+   * The assertions a dirty adopted worktree's refusal must satisfy (round
+   * 6 ruling 2 and the orchestrator's ruling on the sequencer case): with
+   * git's sequencer still present it is a human's conflict in progress,
+   * exit 3 sync-in-progress naming the worktree and the cherry-pick steps;
+   * with no cherry-pick state left it is exit 3 sync-failed naming the
+   * worktree, the file and the checkout step. Either way nothing is quit,
+   * replayed, dropped or published, and the next run refuses the same way.
    */
   function expectDirtyWorktreeRefused(
     fx: ConflictingClones,
@@ -1062,13 +1066,21 @@ describe('integrating board refs that already exist', () => {
     const { remote, bRoot, bDir } = fx;
     const env = syncEnv();
     const before = untouched(bRoot, bDir);
+    const reason = sequencerStays ? 'sync-in-progress' : 'sync-failed';
 
-    const err = expectBoardError(() => move(bRoot, env), 3, 'sync-failed');
+    const err = expectBoardError(() => move(bRoot, env), 3, reason);
 
     expect(err.message).toContain(temporary);
-    expect(err.message).toContain('.gitignore');
-    expect(err.message).toContain('checkout -- ');
     expect(err.message).toContain('agentboard init --into-host');
+    if (sequencerStays) {
+      expect(err.message).toContain('git cherry-pick --continue');
+      expect(err.message).toContain('git cherry-pick --skip');
+      expect(err.message).toContain('git cherry-pick --abort');
+      expect(err.message).not.toContain('git rebase --continue');
+    } else {
+      expect(err.message).toContain('.gitignore');
+      expect(err.message).toContain('checkout -- ');
+    }
     expect(registeredMigrating(bRoot)).toEqual([temporary]);
     expect(sequencerInProgress(temporary)).toBe(sequencerStays);
     expect(revParse(temporary)).toBe(state.halfway);
@@ -1083,7 +1095,7 @@ describe('integrating board refs that already exist', () => {
       expect(eventFiles(bDir)).not.toContain(`${state.fromD}.json`);
     }
     // The re-run refuses the same way until the human acts.
-    expectBoardError(() => move(bRoot, env), 3, 'sync-failed');
+    expectBoardError(() => move(bRoot, env), 3, reason);
     expect(revParse(temporary)).toBe(state.halfway);
     expect(sequencerInProgress(temporary)).toBe(sequencerStays);
     expect(readFileSync(join(temporary, '.gitignore'), 'utf8')).toContain('<<<<<<<');
@@ -1120,7 +1132,7 @@ describe('integrating board refs that already exist', () => {
     expectDirtyWorktreeRefused(fx, String(temporary), { halfway, resolvedHead, integrated, published, fromD }, false);
   });
 
-  it('git reset after a conflict on a non-last pick (the sequencer stays, the markers stay in .gitignore): the re-run refuses the dirty worktree as sync-failed, quits nothing, loses nothing and publishes nothing (round 6 ruling 2)', () => {
+  it('git reset after a conflict on a non-last pick (the sequencer stays, the markers stay in .gitignore): a human conflict in progress, refused as sync-in-progress naming the cherry-pick steps, nothing quit, lost or published (round 6 ruling 2)', () => {
     const env = syncEnv();
     const fx = conflictingClones(env);
     const { remote, bRoot } = fx;

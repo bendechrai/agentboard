@@ -632,10 +632,12 @@ and not continued, is a human's and stays, never quit, the refusal
 naming `git cherry-pick --continue`, `git cherry-pick --abort` and, for
 a pick git reports as empty, `git cherry-pick --skip` and `git commit
 --allow-empty` (round 6 ruling 1); one with unstaged changes (a `git
-reset` that left the conflict markers in the file) is never quit either,
-and is refused as the dirty worktree described below, whether git kept
-the sequencer (a reset on an earlier pick) or dropped it (a reset on the
-last pick); the hints of `sync-conflict`
+reset` that left the conflict markers in the file) is never quit either:
+while git's sequencer is still present (a reset on an earlier pick of
+the sequence) it is that same human's conflict in progress and the same
+`sync-in-progress` refusal, and once git has dropped its cherry-pick
+state (a reset on the last pick) it is the dirty worktree described
+below (orchestrator ruling, round 6); the hints of `sync-conflict`
 and `sync-in-progress` from `init` name `git cherry-pick --continue`
 beside `git rebase --continue` (round 5 ruling 4). The move itself skips
 a pick only on git's own empty stop (`CHERRY_PICK_HEAD` present, nothing
@@ -644,11 +646,10 @@ refused over a local change of a tracked file) is exit 3 `sync-failed`
 with the sequencer quit, the replay record removed and the temporary
 kept adoptable, so no commit of the range is ever dropped and the `sync`
 of step 7 never commits or publishes a conflict marker. For the same
-reason an adopted worktree with an unstaged change to a tracked file (a
-`git reset` on the last pick of a sequence also removes git's cherry-pick
-state, leaving the markers in a worktree with no `CHERRY_PICK_HEAD` and
-no `sequencer`, while a reset on an earlier pick keeps the sequencer; an
-edit by hand), whatever state remains, is exit 3
+reason an adopted worktree with an unstaged change to a tracked file and
+no cherry-pick state left (a `git reset` on the last pick of a sequence
+also removes git's cherry-pick state, leaving the markers in a worktree
+with no `CHERRY_PICK_HEAD` and no `sequencer`; an edit by hand) is exit 3
 `sync-failed` naming the files and the steps (commit, stash or discard
 them, then `agentboard init --into-host` again) before anything is quit,
 replayed or carried over, the worktree kept adoptable, HEAD, the refs
