@@ -471,8 +471,18 @@ describe('hint contracts (CLI)', () => {
     ['unsynced', 'init', ["'agentboard sync'", "'agentboard init --into-host'"]],
     ['no-host-repository', 'init', ['git repository', "'agentboard init --into-host'"]],
     ['git-too-old', 'init', ['2.32', "'agentboard init --into-host'"]],
-    ['sync-in-progress', 'init', ['git rebase --continue', "'agentboard init --into-host'"]],
-    ['sync-conflict', 'init', ['git rebase --continue', "'agentboard init --into-host'"]],
+    // A move stops on a rebase (step 3) or on a cherry-pick (the replay of
+    // an adopted worktree), so the init branch names both --continue commands.
+    [
+      'sync-in-progress',
+      'init',
+      ['git rebase --continue', 'git cherry-pick --continue', "'agentboard init --into-host'"],
+    ],
+    [
+      'sync-conflict',
+      'init',
+      ['git rebase --continue', 'git cherry-pick --continue', "'agentboard init --into-host'"],
+    ],
     ['integrity', 'show', ["'agentboard rebuild --check'"]],
     ['no-cache', 'rebuild', ["'agentboard rebuild'"]],
     ['schema-mismatch', 'rebuild', ["'agentboard rebuild'"]],

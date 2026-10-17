@@ -14,6 +14,7 @@
  */
 
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -505,6 +506,178 @@ describe('an interrupted move is finished by running init --into-host again', ()
     const doc = intoHostOk(fx.root, env);
     expect(doc).toMatchObject({ action: 'moved', events: 5 });
     expectFinished(fx, env, [`${fromOther}.json`, `${String(fromD)}.json`]);
+  });
+
+  /**
+   * An adoptable temporary (run 1 killed after the rebase onto a local
+   * ref) and two commits synced to the old remote by a third clone since,
+   * so the re-run's replay is a two-commit cherry-pick.
+   */
+  function adoptableWithTwoFreshCommits(env: Env): {
+    fx: ReturnType<typeof fixture>;
+    extra: string[];
+  } {
+    const fx = fixture(env);
+    const other = hostBoard(env);
+    const fromOther = commitHostEvent(other.dir, ev(P.create(T2, 'From the host ref'), 'x', 2000), env);
+    git(fx.root, 'fetch', '-q', other.root, `${BOARD_REF}:${BOARD_REF}`);
+    killedAt(fx.root, env, [...COMMANDS.rebaseLocal], 'after');
+    expect(migratingEntries(fx.root)).toHaveLength(1);
+    const d = cloneWithStandalone(fx.remote, fx.boardRemote, 'd');
+    const [e0] = writeEvents(d.dir, 1, 'd', 600);
+    syncStandalone(d.dir, env);
+    const [e1] = writeEvents(d.dir, 1, 'd', 601);
+    syncStandalone(d.dir, env);
+    return { fx, extra: [`${fromOther}.json`, `${String(e0)}.json`, `${String(e1)}.json`] };
+  }
+
+  /**
+   * `env` with a `git` shim that, on the cherry-pick of the replay, points
+   * `core.hooksPath` at a hooks directory whose `post-commit` hook kills
+   * the CLI process and git itself right after the first pick's commit, so
+   * a multi-commit replay is interrupted in the middle, exactly as a kill
+   * there leaves it (git's sequencer directory, and the marker of the pick
+   * being committed).
+   */
+  function killingAfterFirstPick(env: Env): Env {
+    const hooks = join(tempDir(), 'kill-hooks');
+    mkdirSync(hooks);
+    const flag = join(hooks, 'fired');
+    const nodePid = join(hooks, 'nodepid');
+    writeFileSync(
+      join(hooks, 'post-commit'),
+      [
+        '#!/bin/sh',
+        `if [ ! -e '${flag}' ]; then : > '${flag}'; kill -KILL "$(cat '${nodePid}')"; kill -KILL "$PPID"; fi`,
+        'exit 0',
+        '',
+      ].join('\n'),
+    );
+    chmodSync(join(hooks, 'post-commit'), 0o755);
+    return withShellGitShim(
+      env,
+      [
+        'case " $* " in',
+        `  *" cherry-pick "*) echo "$PPID" > '${nodePid}'; n=$#; for a in "$@"; do case "$a" in core.hooksPath=*) a="core.hooksPath=${hooks}";; esac; set -- "$@" "$a"; done; shift "$n"; exec "$GIT" "$@" ;;`,
+        'esac',
+      ].join('\n'),
+    );
+  }
+
+  /** The git directory of the one registered temporary worktree of `root`. */
+  function temporaryGitDir(root: string): { temporary: string; gitDir: string } {
+    const [temporary] = registeredMigrating(root);
+    expect(registeredMigrating(root)).toHaveLength(1);
+    return { temporary: String(temporary), gitDir: git(String(temporary), 'rev-parse', '--absolute-git-dir').trim() };
+  }
+
+  it('a two-commit replay killed while its first pick is committed (sequencer and CHERRY_PICK_HEAD left, nothing unmerged): the re-run quits it, replays again and completes with every event once (round 5 rulings 1 and 2)', () => {
+    const env = syncEnv();
+    const { fx, extra } = adoptableWithTwoFreshCommits(env);
+
+    expectKilled(intoHost(fx.root, killingAfterFirstPick(env)));
+
+    const { temporary, gitDir } = temporaryGitDir(fx.root);
+    expect(existsSync(join(gitDir, 'sequencer'))).toBe(true);
+    expect(git(temporary, 'diff', '--name-only', '--diff-filter=U')).toBe('');
+    expect(eventFiles(temporary)).toContain(extra[1]);
+    expect(eventFiles(temporary)).not.toContain(extra[2]);
+    expect(refCommit(fx.root, MIGRATING_REF)).toBe(fx.tip);
+    expect(detectBoardModel(fx.dir, { env }).model).toBe('standalone');
+
+    const doc = intoHostOk(fx.root, env);
+
+    expect(doc).toMatchObject({ action: 'moved', events: 6 });
+    expectFinished(fx, env, extra);
+    const subjects = git(fx.root, 'log', '--format=%s', BOARD_REF).split('\n');
+    expect(subjects.filter((s) => s.includes('1 event file')).length).toBeGreaterThanOrEqual(2);
+    expect(git(fx.root, 'log', '--format=%H', '--diff-filter=A', '--', `events/${extra[1]}`).trim().split('\n')).toHaveLength(1);
+  });
+
+  it('a two-commit replay killed between its two picks (only the sequencer left): the re-run recognises the cherry-pick in progress, quits it and completes with every event once (round 5 rulings 1 and 2)', () => {
+    const env = syncEnv();
+    const { fx, extra } = adoptableWithTwoFreshCommits(env);
+
+    expectKilled(intoHost(fx.root, killingAfterFirstPick(env)));
+
+    const { temporary, gitDir } = temporaryGitDir(fx.root);
+    // The state a kill between two picks leaves: git's sequencer with the
+    // second pick still to do, no CHERRY_PICK_HEAD, nothing unmerged.
+    rmSync(join(gitDir, 'CHERRY_PICK_HEAD'), { force: true });
+    expect(existsSync(join(gitDir, 'sequencer'))).toBe(true);
+    expect(existsSync(join(gitDir, 'CHERRY_PICK_HEAD'))).toBe(false);
+    expect(git(temporary, 'status', '--porcelain')).toBe('');
+    expect(eventFiles(temporary)).toContain(extra[1]);
+
+    const doc = intoHostOk(fx.root, env);
+
+    expect(doc).toMatchObject({ action: 'moved', events: 6 });
+    expectFinished(fx, env, extra);
+    expect(git(fx.root, 'log', '--format=%H', '--diff-filter=A', '--', `events/${extra[1]}`).trim().split('\n')).toHaveLength(1);
+    expect(git(fx.root, 'log', '--format=%H', '--diff-filter=A', '--', `events/${extra[2]}`).trim().split('\n')).toHaveLength(1);
+  });
+
+  it('killed between the step 5 carry-over and the rename (an event copied into the temporary untracked), the standalone board then syncing it: the re-run replays over the untracked copy and completes with every event (round 5 ruling 3)', () => {
+    const env = syncEnv();
+    const fx = fixture(env);
+    const other = hostBoard(env);
+    const fromOther = commitHostEvent(other.dir, ev(P.create(T2, 'From the host ref'), 'x', 2000), env);
+    git(fx.root, 'fetch', '-q', other.root, `${BOARD_REF}:${BOARD_REF}`);
+    const late = lateEventFile('before the swap');
+    const landed = join(tempDir(), 'landed');
+    // A writer lands an event just before the compare-and-swap (step 5 then
+    // copies it into the temporary, untracked), and the move is killed at
+    // the rename re-check, before anything is kept aside.
+    const killing = withShellGitShim(
+      env,
+      [
+        'case " $* " in',
+        `  *" update-ref ${BOARD_REF} "*) [ -e '${landed}' ] || { : > '${landed}'; cp '${late.source}' '${join(fx.dir, 'events', late.name)}'; } ;;`,
+        `  *" merge-base --is-ancestor ${fx.tip} HEAD "*) kill -KILL "$PPID"; sleep 5; exit 1 ;;`,
+        'esac',
+      ].join('\n'),
+    );
+
+    expectKilled(intoHost(fx.root, killing));
+
+    const { temporary } = temporaryGitDir(fx.root);
+    expect(detectBoardModel(fx.dir, { env }).model).toBe('standalone');
+    expect(keptRepositories(fx.root)).toEqual([]);
+    expect(eventFiles(fx.dir)).toContain(late.name);
+    expect(eventFiles(temporary)).toContain(late.name);
+    expect(git(temporary, 'status', '--porcelain', '--', 'events')).toContain(late.name);
+    expect(refCommit(fx.root)).toBe(revParse(temporary));
+    // The standalone board commits the event (and one more) to the old remote.
+    const [x] = writeEvents(fx.dir, 1, 'late', 950);
+    syncStandalone(fx.dir, env);
+    const newTip = revParse(fx.dir);
+
+    const doc = intoHostOk(fx.root, env);
+
+    expect(doc).toMatchObject({ action: 'moved', events: 6 });
+    syncOk(fx.root, env, 'final sync');
+    const files = [...fx.files, `${fromOther}.json`, late.name, `${String(x)}.json`].sort();
+    expectMoved(fx.root, env);
+    expect(eventFiles(fx.dir)).toEqual(files);
+    expect(refEvents(fx.root)).toEqual(files);
+    expect(refEvents(fx.remote)).toEqual(files);
+    expect(git(fx.root, 'log', '--format=%H', '--diff-filter=A', '--', `events/${late.name}`).trim().split('\n')).toHaveLength(1);
+    const [kept] = keptRepositories(fx.root);
+    expectKept(String(kept), newTip, [...fx.files, late.name, `${String(x)}.json`]);
+    expect(refCommit(fx.root, MIGRATING_REF)).toBeNull();
+    expectCheckClean(fx.root, env);
+  });
+
+  it('a re-run adopting a temporary, killed after its step 2 fetch and before the replay, a third clone having pushed meanwhile: the next run still replays and ends with that event (round 4 ruling 1, repeated as the two-commit fixture)', () => {
+    const env = syncEnv();
+    const { fx, extra } = adoptableWithTwoFreshCommits(env);
+
+    killedAt(fx.root, env, [`:${MIGRATING_FETCH_REF}`], 'after');
+
+    expect(refCommit(fx.root, MIGRATING_REF)).toBe(fx.tip);
+    const doc = intoHostOk(fx.root, env);
+    expect(doc).toMatchObject({ action: 'moved', events: 6 });
+    expectFinished(fx, env, extra);
   });
 
   it('killed after the temporary worktree is added (step 3): the re-run removes the dead leftover, names it, and moves', () => {

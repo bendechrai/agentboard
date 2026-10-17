@@ -127,7 +127,12 @@ const AGAIN = 'agentboard init --into-host';
  * The file in a temporary worktree's git directory that records the
  * identity of the standalone repository the worktree was made from
  * (`boardGitDir` of step 1; round 4 ruling 3): a re-run adopts the
- * worktree only when the record names the repository at `.board` now.
+ * worktree only when the record names the repository at `.board` now. A
+ * worktree without the record (made by older code; round 5 ruling 5)
+ * counts as this board's when the tip it integrated, the value of
+ * `MIGRATING_REF`, is an ancestor of (or equal to) the fresh tip fetched
+ * from the board at `.board` (`MIGRATING_FETCH_REF`), else it is removed
+ * and named as left by a move of another board.
  */
 const SOURCE_RECORD = 'agentboard-source';
 
@@ -148,7 +153,14 @@ const SOURCE_RECORD = 'agentboard-source';
  */
 const REPLAY_RECORD = 'agentboard-replay';
 
-/** The operation stopped in a temporary worktree, by the marker in its git directory. */
+/**
+ * The operation stopped in a temporary worktree, by the markers in its
+ * git directory: `rebase` for `rebase-merge` or `rebase-apply`;
+ * `cherry-pick` for `CHERRY_PICK_HEAD` or a `sequencer` directory, with
+ * or without the other (round 5 ruling 1: a multi-commit cherry-pick
+ * killed between two picks leaves `sequencer` alone, one killed while a
+ * pick is committed leaves both).
+ */
 type StoppedOperation = 'rebase' | 'cherry-pick';
 
 /**
@@ -198,10 +210,12 @@ export interface MigratingWorktree {
   readonly head: string | null;
   /**
    * True when a rebase or a cherry-pick is stopped in the worktree
-   * (`rebase-merge`, `rebase-apply` or `CHERRY_PICK_HEAD` exists in its
-   * git directory): a move that stopped on a conflict in step 3, or on a
-   * conflict of the replay of an adopted worktree (round 4 ruling 2),
-   * left for a human. False when not registered.
+   * (`rebase-merge`, `rebase-apply`, `CHERRY_PICK_HEAD` or a `sequencer`
+   * directory exists in its git directory, round 5 ruling 1): a move that
+   * stopped on a conflict in step 3, or on a conflict of the replay of an
+   * adopted worktree (round 4 ruling 2), left for a human, or a replay
+   * interrupted by a kill, which the move quits and runs again itself
+   * (see `moveBoardIntoHost`, "leftovers"). False when not registered.
    */
   readonly rebasing: boolean;
 }
@@ -677,17 +691,32 @@ export interface IntoHostResult extends InitResult {
  * `resumed`, see "Resuming"). First, leftovers
  * (`findMigratingWorktrees(hostRoot)`; a temporary named by this
  * process's own pid counts as dead, ruling G): a dead-pid temporary
- * worktree with a rebase or a cherry-pick stopped in it (a move that
- * stopped on a conflict in step 3, or on a conflict of the replay below)
- * is never removed: `BoardError(3, 'sync-in-progress')` whose message
- * names its path and the human steps (resolve, `git add`, then
- * `git rebase --continue` for a stopped rebase or `git cherry-pick
+ * worktree with a rebase stopped in it (a move that stopped on a
+ * conflict in step 3), or with a cherry-pick stopped in it that a human
+ * is in the middle of (a stop of the replay below with an unmerged path,
+ * or with the index differing from HEAD: a resolution staged and not
+ * yet continued), is never removed: `BoardError(3, 'sync-in-progress')`
+ * whose message names its path and the human steps (resolve, `git add`,
+ * then `git rebase --continue` for a stopped rebase or `git cherry-pick
  * --continue` for a stopped cherry-pick, in that worktree, then
  * `agentboard init --into-host` again; the text of the matching
- * `--continue` command and `agentboard init --into-host` appear), with
+ * `--continue` command and `agentboard init --into-host` appear; for a
+ * stopped cherry-pick the message also names `git cherry-pick --skip`,
+ * the step for a pick git reports as empty, round 5 ruling 2), with
  * nothing changed: the old `.board` untouched, the worktree, its
  * rebase or cherry-pick state, `MIGRATING_REF` and `MIGRATING_FETCH_REF`
- * as they were. Otherwise `removeDeadMigratingWorktrees(hostRoot)`
+ * as they were. A dead-pid temporary with cherry-pick state that no
+ * human is in the middle of (nothing unmerged, the index equal to HEAD:
+ * the move's own replay interrupted by a kill between two picks, leaving
+ * `sequencer` alone, or while a pick was committed, leaving
+ * `CHERRY_PICK_HEAD` too; round 5 rulings 1 and 2) is not a refusal: the
+ * move runs `cherry-pick --quit` in it (HEAD and the commits already
+ * picked stay), and it is then treated like any other temporary without
+ * such state: removed when its HEAD is still `MIGRATING_REF`, adopted and
+ * replayed again from the recorded integrated tip otherwise (the commits
+ * already picked becoming empty and skipped, so a kill anywhere in a
+ * multi-commit replay is completed by the re-run with every event, each
+ * once). Otherwise `removeDeadMigratingWorktrees(hostRoot)`
  * removes the temporaries that hold nothing (the message names what was
  * removed), and a dead-pid temporary worktree without rebase or
  * cherry-pick state whose HEAD differs from `MIGRATING_REF` (or whose ref
@@ -699,12 +728,16 @@ export interface IntoHostResult extends InitResult {
  * directory identity of step 1, as `boardGitDir` computes it, written to
  * the file `agentboard-source` in the temporary's own git directory,
  * `git rev-parse --absolute-git-dir` in it, right after `worktree add`),
- * and one whose record is missing or names another repository (`.board`
- * was replaced by another standalone board since that move) is never
- * adopted (round 4 ruling 3): without rebase or cherry-pick state it is
- * removed like a dead leftover and the message names it, saying it was
- * left by a move of another board; with such state it is the
- * `sync-in-progress` refusal above, whose message says the same. The
+ * and one whose record names another repository (`.board` was replaced
+ * by another standalone board since that move) is never adopted (round 4
+ * ruling 3): without rebase or cherry-pick state it is removed like a
+ * dead leftover and the message names it, saying it was left by a move
+ * of another board; with such state it is the `sync-in-progress` refusal
+ * above, whose message says the same. One whose record is missing (made
+ * by older code; round 5 ruling 5) is this board's when the tip it
+ * integrated (`MIGRATING_REF`) is an ancestor of, or equal to, the fresh
+ * tip step 2 fetched from `.board` (adopted, its resolution kept, and
+ * the record written), else it is removed and named the same way. The
  * adoption, with `<old>` the value `MIGRATING_REF` holds (the source tip
  * the worktree integrated, kept until step 6): step 2 runs as in a first
  * run (the re-run's freshly fetched source tip lands in
@@ -715,7 +748,14 @@ export interface IntoHostResult extends InitResult {
  * `<old>` are replayed onto it (round 3 ruling 1; round 4 rulings 1 and
  * 2): nothing at all when `refs/agentboard/migrating-fetch` equals
  * `<old>` or is an ancestor of HEAD (no `cherry-pick` and no `rebase`
- * runs); otherwise `cherry-pick <base>..refs/agentboard/migrating-fetch`
+ * runs); otherwise, first every untracked `events/*.json` of the
+ * worktree whose content equals the blob of the same path in the fresh
+ * tip's tree is removed (one copied in by the step 5 carry-over of an
+ * earlier run that stopped before the rename, since committed by the
+ * standalone board; the pick re-creates it, and git refuses to overwrite
+ * an untracked file even with identical content; round 5 ruling 3; a
+ * file the fresh tip lacks or holds with other content is left for step
+ * 5), then `cherry-pick <base>..refs/agentboard/migrating-fetch`
  * in the worktree (`cherry-pick` takes no `--no-verify`; the runner's
  * `core.hooksPath` keeps the host's hooks out of it, as for every command
  * of the move; HEAD stays
@@ -1514,7 +1554,9 @@ function replayBase(worktree: GitRunner, oldSource: string): string | null {
  * conflict is left in place for a human: `BoardError(3,
  * 'sync-conflict')` naming the unmerged paths, the worktree and the human
  * steps with `git cherry-pick --continue` (or `--abort`, which returns
- * the worktree to the HEAD it started from); the worktree, the record,
+ * the worktree to the HEAD it started from), run after the untracked
+ * event files the fresh tip holds with the same content were removed
+ * from the worktree (round 5 ruling 3); the worktree, the record,
  * `MIGRATING_REF` (still the integrated tip) and `MIGRATING_FETCH_REF`
  * stay. Any other failure is `BoardError(3, 'sync-failed')` with git's
  * first error line, the adopted worktree kept (it may hold a human's

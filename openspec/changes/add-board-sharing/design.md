@@ -556,10 +556,13 @@ temporary worktree left as git left it, the old `.board` untouched and
 `refs/agentboard/board` unchanged, and the message names the worktree's
 path and the human steps: resolve, `git add`, `git rebase --continue` in
 that worktree, then `agentboard init --into-host` again. A re-run never
-removes a dead-pid temporary worktree that has rebase or cherry-pick
-state: it exits 3 `sync-in-progress` naming the path with the matching
-instructions (`git rebase --continue` or `git cherry-pick --continue`)
-and changes nothing. A dead-pid temporary worktree without such state
+removes a dead-pid temporary worktree that has rebase state, or
+cherry-pick state a human is in the middle of: it exits 3
+`sync-in-progress` naming the path with the matching instructions (`git
+rebase --continue` or `git cherry-pick --continue`) and changes nothing
+(an interrupted replay of the move's own, with nothing unmerged and a
+clean index, is quit and run again instead, see below). A dead-pid
+temporary worktree without such state
 whose HEAD differs from `refs/agentboard/migrating` (its rebase finished,
 by the move before it was killed or by a human, or its compare-and-swap
 was lost) is adopted when it belongs to the board at `.board`: every
@@ -612,7 +615,32 @@ empty and skipped; the record goes once `refs/agentboard/migrating` has
 been advanced. The cherry-pick runs without `--no-verify` (git takes no
 such option on `cherry-pick` and exits 129 on it; implementer decision,
 round 4): the host's hooks are kept out of it by the runner's
-`core.hooksPath`, as every other git command of the move. Nothing the
+`core.hooksPath`, as every other git command of the move. A replay the
+move itself left half done (round 5 rulings 1 and 2: a kill between two
+picks of a multi-commit replay leaves git's `sequencer` directory alone,
+a kill while a pick is committed leaves `CHERRY_PICK_HEAD` too, and
+both count as a cherry-pick in progress, as `CHERRY_PICK_HEAD` alone
+does) is not a dead end and not a human's: when nothing is unmerged and
+the index equals HEAD, the re-run runs `git cherry-pick --quit` in the
+worktree (HEAD and the picks already made stay), then adopts it and
+replays again from the integrated tip, the picks already made becoming
+empty and skipped, so a kill anywhere in a replay is completed by the
+re-run with every event, each once. A stopped cherry-pick with an
+unmerged path, or with a resolution staged and not continued, is a
+human's and stays, the refusal naming `git cherry-pick --continue` and,
+for a pick git reports as empty, `git cherry-pick --skip`; the hints of
+`sync-conflict` and `sync-in-progress` from `init` name `git cherry-pick
+--continue` beside `git rebase --continue` (round 5 ruling 4). Before a
+replay, every untracked `events/*.json` of the worktree whose content
+equals the fresh tip's blob of the same path is removed (round 5 ruling
+3): the step 5 carry-over of an earlier run that stopped before the
+rename leaves such files, the standalone board commits them since, and
+git refuses to let a pick overwrite an untracked file even with identical
+content; the pick re-creates them, and anything the fresh tip lacks is
+left for step 5. A temporary without the `agentboard-source` record
+(older code; round 5 ruling 5) is this board's when the tip it
+integrated is an ancestor of the fresh tip fetched from `.board`, else
+it is removed and named like one of another board. Nothing the
 human resolved is replayed; the resolution
 stays the ancestor of the result. Then the re-run integrates the current
 local and remote board refs as step 3 does (no-ops for what is already

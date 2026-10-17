@@ -952,15 +952,34 @@ describe('integrating board refs that already exist', () => {
     const again = expectBoardError(() => move(bRoot, env), 3, 'sync-in-progress');
     expect(again.message).toContain(String(temporary));
     expect(again.message).toContain('git cherry-pick --continue');
+    // The step for a pick git reports as empty is named too (round 5 ruling 2).
+    expect(again.message).toContain('git cherry-pick --skip');
     expect(again.message).toContain('agentboard init --into-host');
+    expect(again.message).not.toContain('git rebase --continue');
     expect(registeredMigrating(bRoot)).toEqual([temporary]);
     expect(cherryPickInProgress(String(temporary))).toBe(true);
+    expect(refCommit(bRoot, MIGRATING_REF)).toBe(integrated);
+
+    // A resolution staged but not continued is a human's work in progress
+    // (nothing unmerged, the index differs from HEAD): still the refusal,
+    // never quit or replayed over (round 5 ruling 2).
+    const halfway = revParse(String(temporary));
+    writeFileSync(join(String(temporary), '.gitignore'), [...BOARD_GITIGNORE_LINES, 'foo', 'baz', 'bar'].map((l) => `${l}\n`).join(''));
+    git(String(temporary), 'add', '--', '.gitignore');
+    expect(unmerged(String(temporary))).toEqual([]);
+    const staged = expectBoardError(() => move(bRoot, env), 3, 'sync-in-progress');
+    expect(staged.message).toContain('git cherry-pick --continue');
+    expect(cherryPickInProgress(String(temporary))).toBe(true);
+    expect(revParse(String(temporary))).toBe(halfway);
+    expect(git(String(temporary), 'diff', '--cached', '--name-only')).toContain('.gitignore');
     expect(refCommit(bRoot, MIGRATING_REF)).toBe(integrated);
 
     // The human gives up on this replay: the worktree is back at the resolution,
     // and the next run adopts it again (the resolution never discarded) and
     // stops on the same conflict, D's event still waiting in the fresh tip.
     git(String(temporary), 'cherry-pick', '--abort');
+    git(String(temporary), 'checkout', '--', '.gitignore');
+    expect(git(String(temporary), 'status', '--porcelain')).toBe('');
     expect(revParse(String(temporary))).toBe(resolvedHead);
     const third = expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
     expect(third.message).toContain('git cherry-pick --continue');
@@ -1369,6 +1388,66 @@ describe('refusals of steps 3 to 6 (ruling B, D and F)', () => {
     expectCheckClean(root, env);
   });
 
+  it('a temporary without an agentboard-source record (older code) whose integrated tip is in the board history is adopted, the resolution kept (round 5 ruling 5)', () => {
+    const env = syncEnv();
+    const fx = conflictingClones(env);
+    const { remote, bRoot, bDir, shared, fromA, fromB } = fx;
+    expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+    const [temporary] = registeredMigrating(bRoot);
+    const resolved = resolveIgnoreConflicts(String(temporary));
+    const resolvedHead = revParse(String(temporary));
+    const record = join(git(String(temporary), 'rev-parse', '--absolute-git-dir').trim(), 'agentboard-source');
+    expect(existsSync(record)).toBe(true);
+    rmSync(record);
+    expect(isAncestor(bRoot, String(refCommit(bRoot, MIGRATING_REF)), revParse(bDir))).toBe(true);
+
+    const result = move(bRoot, env);
+
+    expect(result).toMatchObject({ action: 'moved', joined: true, events: 3 });
+    expect(result.message).not.toContain(String(temporary));
+    expectMoved(bRoot, env);
+    const all = [...shared, `${fromA}.json`, ...fromB.map((h) => `${h}.json`)].sort();
+    expect(eventFiles(bDir)).toEqual(all);
+    expect(refEvents(bRoot)).toEqual(all);
+    expect(refEvents(remote)).toEqual(all);
+    expect(isAncestor(bRoot, resolvedHead, BOARD_REF)).toBe(true);
+    expect(readFileSync(join(bDir, '.gitignore'), 'utf8')).toBe(resolved);
+    expectCheckClean(bRoot, env);
+  });
+
+  it('a temporary without an agentboard-source record whose integrated tip is not in the board history (.board replaced) is removed and named (round 5 ruling 5)', () => {
+    const env = syncEnv();
+    const { root, dir } = standaloneProject(env, 3);
+    const oldFiles = eventFiles(dir);
+    const { commit: c1, other } = hostWithLocalRef(root, env);
+    const fromOther2 = commitHostEvent(other.dir, ev(P.comment(T2, 'second'), 'x', 2100), env);
+    git(root, 'fetch', '-q', other.root, `${BOARD_REF}:refs/test/c2`);
+    const c2 = git(root, 'rev-parse', 'refs/test/c2').trim();
+    const racing = withGitShimBefore(
+      env,
+      ['update-ref', BOARD_REF],
+      `"$GIT" -C '${root}' update-ref ${BOARD_REF} ${c2} ${c1}`,
+    );
+    expectBoardError(() => move(root, racing), 3, 'sync-failed');
+    const [temporary] = registeredMigrating(root);
+    rmSync(join(git(String(temporary), 'rev-parse', '--absolute-git-dir').trim(), 'agentboard-source'));
+    rmSync(dir, { recursive: true, force: true });
+    const replacement = syncedStandalone(root, env, 2, bareRemote(), 'other');
+    const newFiles = eventFiles(dir);
+
+    const result = move(root, env);
+
+    expect(result).toMatchObject({ action: 'moved', events: 4 });
+    expect(result.message).toContain(String(temporary));
+    expectMoved(root, env);
+    const all = [...newFiles, `${other.hash}.json`, `${fromOther2}.json`].sort();
+    expect(eventFiles(dir)).toEqual(all);
+    for (const old of oldFiles) {
+      expect(eventFiles(dir)).not.toContain(old);
+    }
+    expectKept(String(result.keptAt), replacement.tip, newFiles);
+  });
+
   it('a temporary left by a move of a different .board (replaced since) is not adopted: removed and named, the new board moved on its own (round 4 ruling 3)', () => {
     const env = syncEnv();
     const { root, dir } = standaloneProject(env, 3);
@@ -1591,13 +1670,23 @@ describe('the temporary worktree helpers', () => {
     mkdirSync(join(git(rebasing, 'rev-parse', '--absolute-git-dir').trim(), 'rebase-merge'));
     const picking = temporary(root, DEAD_PID + 3, commit);
     writeFileSync(join(git(picking, 'rev-parse', '--absolute-git-dir').trim(), 'CHERRY_PICK_HEAD'), `${commit}\n`);
+    // A multi-commit cherry-pick killed between two picks leaves only git's
+    // sequencer directory behind (round 5 ruling 1).
+    const sequencing = temporary(root, DEAD_PID + 4, commit);
+    mkdirSync(join(git(sequencing, 'rev-parse', '--absolute-git-dir').trim(), 'sequencer'));
 
     const found = findMigratingWorktrees(root, { env });
 
-    expect(found.map((w) => w.path)).toEqual([plain, dead, alive, junk, rebasing, picking].sort());
+    expect(found.map((w) => w.path)).toEqual([plain, dead, alive, junk, rebasing, picking, sequencing].sort());
     // A stopped cherry-pick (the replay of an adopted worktree) counts as rebasing.
     expect(found.find((w) => w.path === picking)).toMatchObject({
       pid: DEAD_PID + 3,
+      alive: false,
+      registered: true,
+      rebasing: true,
+    });
+    expect(found.find((w) => w.path === sequencing)).toMatchObject({
+      pid: DEAD_PID + 4,
       alive: false,
       registered: true,
       rebasing: true,
