@@ -451,6 +451,36 @@ describe('scenario: unplanned on a linked ticket', () => {
   });
 });
 
+describe('close check order with a disposition on a linked ticket (review ruling)', () => {
+  it('a linked ticket in review with --unplanned is invalid-transition, and its hint is the move hint', () => {
+    const { root, eventsDir, id } = plannedInReview();
+    const names = allNames(eventsDir);
+    const out = run(['close', id, '--no-decision', '--unplanned', 'y', ...AS, '--json'], root);
+    expect(out.code).toBe(4);
+    expect(errorOf(out)).toMatchObject({ exitCode: 4, reason: 'invalid-transition' });
+    expect(errorOf(out).hint).toContain(`'agentboard show ${id}'`);
+    expect(allNames(eventsDir)).toEqual(names);
+    expect(show(root, id)).toMatchObject({ status: 'review', closed: false });
+  });
+
+  it('a linked blocked ticket with an open DECISION and --unplanned is already-linked, not unpromoted-decision', () => {
+    const { root, eventsDir, id } = plannedInReview();
+    ok(run(['move', id, 'blocked', ...AS], root));
+    ok(run(['comment', id, 'DECISION: keep the old parser', ...AS], root));
+    const names = allNames(eventsDir);
+    const out = run(['close', id, '--no-decision', '--unplanned', 'y', ...AS, '--json'], root);
+    expect(out.code).toBe(4);
+    expect(errorOf(out)).toMatchObject({ exitCode: 4, reason: 'already-linked' });
+    expect(errorOf(out).message).toContain(LOGIN);
+    expect(errorOf(out).hint).toContain(`'agentboard close ${id} --no-decision --as orch'`);
+    expect(allNames(eventsDir)).toEqual(names);
+    expect(show(root, id).closed).toBe(false);
+    const guarded = run(['close', id, '--no-decision', ...AS, '--json'], root);
+    expect(guarded.code).toBe(1);
+    expect(errorOf(guarded)).toMatchObject({ reason: 'unpromoted-decision' });
+  });
+});
+
 describe('scenario: disposition with an invalid move writes nothing', () => {
   it('exits 4 invalid-transition and creates no ticket.unplanned or ticket.move file', () => {
     const { root, eventsDir, id } = adhocIn('todo');

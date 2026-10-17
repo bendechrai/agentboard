@@ -175,7 +175,20 @@ then `invalid-transition` before `needs-scope-disposition`).
 - `--unplanned` on a ticket that is already unplanned records the new
   reason (a second `ticket.unplanned`).
 - `handoff` gains no flags: a hand-off into `merged` is rare, and its hint
-  points at `move <id> merged` with either flag.
+  points at `move <id> merged` with either flag. Its exit codes list
+  `needs-scope-disposition` but not `already-linked`: a command lists
+  every code it can produce, and a hand-off never writes a
+  `ticket.unplanned`.
+- The scope check of `close` applies to every closable status, `merged`
+  included: a merged ticket with neither a task reference nor an unplanned
+  disposition can only come from outside agentboard, and `close` refuses
+  it with `needs-scope-disposition` like a blocked one (which is why
+  `close-merged` lists it as skipped, below). When `close` is given a
+  disposition, the section 5 order still holds: a ticket that is not
+  closable gets only the `ticket.close` proposed, so it is
+  `invalid-transition` whatever the flag; a closable linked ticket given
+  `--unplanned` is `already-linked` before the decision guard, so an open
+  `DECISION:` comment is reported only once the scope is settled.
 - MCP and the web action bodies get `task`, `change`, `group` and
   `unplanned` from the registry with no extra code. The web server refuses
   a secret-like `unplanned` with no override, as for comments.

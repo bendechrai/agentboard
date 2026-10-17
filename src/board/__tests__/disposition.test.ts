@@ -566,6 +566,44 @@ describe('closeTicket: the scope disposition', () => {
     );
   });
 
+  it('a linked ticket that is not closable with --unplanned is invalid-transition, not already-linked', () => {
+    // Not closable: only the close is proposed, so the fold never sees the
+    // ticket.unplanned (orchestrator ruling on the group 2 review).
+    const { board } = setup();
+    const t = ticketIn(board, 'review');
+    const names = allNames(board.eventsDir);
+    expectBoardError(
+      () =>
+        closeTicket(board, 'orch', { id: t.id, noDecision: true, disposition: { unplanned: 'y' } }),
+      4,
+      'invalid-transition',
+    );
+    expect(allNames(board.eventsDir)).toEqual(names);
+    expect(current(board, t.id)).toEqual(t);
+  });
+
+  it('a closable linked ticket with an open DECISION and --unplanned is already-linked, before the guard', () => {
+    const { board } = setup();
+    const t = ticketIn(board, 'blocked');
+    commentTicket(board, 'impl', { id: t.id, text: 'DECISION: keep the old parser' });
+    const names = allNames(board.eventsDir);
+    const err = expectBoardError(
+      () =>
+        closeTicket(board, 'orch', { id: t.id, noDecision: true, disposition: { unplanned: 'y' } }),
+      4,
+      'already-linked',
+    );
+    expect(err.message).toContain('openspec:add-board-core#3');
+    expect(allNames(board.eventsDir)).toEqual(names);
+    expect(current(board, t.id).closed).toBe(false);
+    // Without the unplanned reason the guard applies as before.
+    expectBoardError(
+      () => closeTicket(board, 'orch', { id: t.id, noDecision: true }),
+      1,
+      'unpromoted-decision',
+    );
+  });
+
   it('the decision path checks come before the scope disposition', () => {
     const { board, root } = setup();
     const t = adhocIn(board, 'blocked');
