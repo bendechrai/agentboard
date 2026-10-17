@@ -694,21 +694,26 @@ export interface IntoHostResult extends InitResult {
  * worktree with a rebase stopped in it (a move that stopped on a
  * conflict in step 3), or with a cherry-pick stopped in it that a human
  * is in the middle of (a stop of the replay below with an unmerged path,
- * or with the index differing from HEAD: a resolution staged and not
- * yet continued), is never removed: `BoardError(3, 'sync-in-progress')`
+ * with the index differing from HEAD: a resolution staged and not yet
+ * continued, or with the working tree differing from the index: a `git
+ * reset` that left the conflict markers in place, round 6 ruling 2), is
+ * never removed and never quit: `BoardError(3, 'sync-in-progress')`
  * whose message names its path and the human steps (resolve, `git add`,
  * then `git rebase --continue` for a stopped rebase or `git cherry-pick
  * --continue` for a stopped cherry-pick, in that worktree, then
  * `agentboard init --into-host` again; the text of the matching
  * `--continue` command and `agentboard init --into-host` appear; for a
- * stopped cherry-pick the message also names `git cherry-pick --skip`,
- * the step for a pick git reports as empty, round 5 ruling 2), with
- * nothing changed: the old `.board` untouched, the worktree, its
- * rebase or cherry-pick state, `MIGRATING_REF` and `MIGRATING_FETCH_REF`
- * as they were. A dead-pid temporary with cherry-pick state that no
- * human is in the middle of (nothing unmerged, the index equal to HEAD:
- * the move's own replay interrupted by a kill between two picks, leaving
- * `sequencer` alone, or while a pick was committed, leaving
+ * stopped cherry-pick the message also names `git cherry-pick --skip`
+ * and `git commit --allow-empty`, the two ways out of a pick git reports
+ * as empty, and `git cherry-pick --abort`; round 5 ruling 2, round 6
+ * ruling 1), with nothing changed: the old `.board` untouched, the
+ * worktree, its rebase or cherry-pick state, `MIGRATING_REF` and
+ * `MIGRATING_FETCH_REF` as they were, and nothing published. A dead-pid
+ * temporary with cherry-pick state that no human is in the middle of
+ * (nothing unmerged, the index equal to HEAD and the working tree equal
+ * to the index, `git diff --quiet` and `git diff --cached --quiet` both
+ * clean: the move's own replay interrupted by a kill between two picks,
+ * leaving `sequencer` alone, or while a pick was committed, leaving
  * `CHERRY_PICK_HEAD` too; round 5 rulings 1 and 2) is not a refusal: the
  * move runs `cherry-pick --quit` in it (HEAD and the commits already
  * picked stay), and it is then treated like any other temporary without
@@ -1569,19 +1574,28 @@ function replayBase(worktree: GitRunner, oldSource: string): string | null {
  * (every commit of the fresh tip, oldest first, when `replayBase` finds
  * no base), with `REPLAY_RECORD` written first (the HEAD it starts from
  * and `fresh`, the tip it replays up to). A commit whose patch HEAD
- * already holds makes git stop with an empty result and no unmerged path:
- * it is skipped (`cherry-pick --skip`) and the sequence goes on. A
- * conflict is left in place for a human: `BoardError(3,
+ * already holds makes git stop with an empty result: exactly that stop
+ * (`CHERRY_PICK_HEAD` present, no unmerged path, the index equal to HEAD;
+ * round 6 ruling 2) is skipped (`cherry-pick --skip`) and the sequence
+ * goes on. A conflict is left in place for a human: `BoardError(3,
  * 'sync-conflict')` naming the unmerged paths, the worktree and the human
  * steps with `git cherry-pick --continue` (or `--abort`, which returns
  * the worktree to the HEAD it started from), run after the untracked
  * event files the fresh tip holds with the same content were removed
  * from the worktree (round 5 ruling 3); the worktree, the record,
  * `MIGRATING_REF` (still the integrated tip) and `MIGRATING_FETCH_REF`
- * stay. Any other failure is `BoardError(3, 'sync-failed')` with git's
- * first error line, the adopted worktree kept (it may hold a human's
- * work). The caller advances `MIGRATING_REF` and removes the record once
- * the replay succeeded.
+ * stay. Any other stop (a pick refused over a local change of a tracked
+ * file, whose `sequencer` git leaves behind without `CHERRY_PICK_HEAD`;
+ * anything else git reports) is never skipped: the move runs
+ * `cherry-pick --quit` in the worktree (HEAD and the picks already made
+ * stay, the local change untouched), removes the record (so the next
+ * run replays the whole range again from the integrated tip, the picks
+ * already made becoming empty and skipped, and no commit is dropped),
+ * and throws `BoardError(3, 'sync-failed')` with git's first error line,
+ * the adopted worktree kept and adoptable, `MIGRATING_REF` still the
+ * integrated tip, nothing published. The caller advances `MIGRATING_REF`
+ * and removes the record once the replay succeeded; the `sync` of step 7
+ * therefore never commits or publishes a conflict marker.
  */
 function replayFreshCommits(
   host: GitRunner,
@@ -1657,13 +1671,18 @@ function removeUntrackedEventsHeldBy(worktree: GitRunner, temp: string, fresh: s
 /**
  * The tip a replay recorded in `REPLAY_RECORD` of the adopted worktree at
  * `temp` reached, when that replay finished without the move advancing
- * `MIGRATING_REF` (the human's `git cherry-pick --continue`, or a kill
- * after the `cherry-pick` completed): HEAD left the recorded start and
- * every event file the range `<oldSource>..<tip>` adds is in HEAD's tree.
- * Null, and the record removed, when there is no record, when HEAD is
- * still the recorded start (`git cherry-pick --abort`, or every commit
- * skipped), or when an event file of the range is missing from HEAD (the
- * sequence was quit half way): the replay then runs again from
+ * `MIGRATING_REF` (the human's `git cherry-pick --continue`, a
+ * resolution that kept our side and skipped the then empty pick, or a
+ * kill after the `cherry-pick` completed): every event file the range
+ * `<oldSource>..<tip>` adds is in HEAD's tree, whether or not HEAD left
+ * the recorded start (round 6 ruling 1: a range whose only commit the
+ * human resolved by keeping our side adds no event and moves HEAD
+ * nowhere, and is integrated all the same; a `git cherry-pick --abort`
+ * is told apart by the record being removed when nothing of the range
+ * is in HEAD). Null, and the record removed, when there is no record,
+ * when no cherry-pick is stopped and an event file of the range is
+ * missing from HEAD (the sequence was quit half way, or aborted before
+ * an event commit was applied): the replay then runs again from
  * `oldSource`, the commits already applied becoming empty and skipped.
  */
 function finishedReplay(

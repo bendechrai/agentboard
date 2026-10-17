@@ -620,17 +620,32 @@ move itself left half done (round 5 rulings 1 and 2: a kill between two
 picks of a multi-commit replay leaves git's `sequencer` directory alone,
 a kill while a pick is committed leaves `CHERRY_PICK_HEAD` too, and
 both count as a cherry-pick in progress, as `CHERRY_PICK_HEAD` alone
-does) is not a dead end and not a human's: when nothing is unmerged and
-the index equals HEAD, the re-run runs `git cherry-pick --quit` in the
-worktree (HEAD and the picks already made stay), then adopts it and
-replays again from the integrated tip, the picks already made becoming
-empty and skipped, so a kill anywhere in a replay is completed by the
-re-run with every event, each once. A stopped cherry-pick with an
-unmerged path, or with a resolution staged and not continued, is a
-human's and stays, the refusal naming `git cherry-pick --continue` and,
-for a pick git reports as empty, `git cherry-pick --skip`; the hints of
-`sync-conflict` and `sync-in-progress` from `init` name `git cherry-pick
---continue` beside `git rebase --continue` (round 5 ruling 4). Before a
+does) is not a dead end and not a human's: when nothing is unmerged, the
+index equals HEAD and the working tree is clean (`git diff --quiet` as
+well as `git diff --cached --quiet`; round 6 ruling 2), the re-run runs
+`git cherry-pick --quit` in the worktree (HEAD and the picks already
+made stay), then adopts it and replays again from the integrated tip,
+the picks already made becoming empty and skipped, so a kill anywhere in
+a replay is completed by the re-run with every event, each once. A
+stopped cherry-pick with an unmerged path, with a resolution staged and
+not continued, or with unstaged changes (a `git reset` that left the
+conflict markers in the file), is a human's and stays, never quit, the
+refusal naming `git cherry-pick --continue`, `git cherry-pick --abort`
+and, for a pick git reports as empty, `git cherry-pick --skip` and `git
+commit --allow-empty` (round 6 ruling 1); the hints of `sync-conflict`
+and `sync-in-progress` from `init` name `git cherry-pick --continue`
+beside `git rebase --continue` (round 5 ruling 4). The move itself skips
+a pick only on git's own empty stop (`CHERRY_PICK_HEAD` present, nothing
+unmerged, the index equal to HEAD); any other stop of its replay (a pick
+refused over a local change of a tracked file) is exit 3 `sync-failed`
+with the sequencer quit, the replay record removed and the temporary
+kept adoptable, so no commit of the range is ever dropped and the `sync`
+of step 7 never commits or publishes a conflict marker. A replay counts
+as integrated up to its recorded tip whenever every event file the range
+adds is in HEAD, whether or not HEAD moved (round 6 ruling 1): a conflict
+the human resolved by keeping our side leaves an empty pick, which they
+skip, and the re-run then completes instead of replaying the same commit
+and conflicting forever. Before a
 replay, every untracked `events/*.json` of the worktree whose content
 equals the fresh tip's blob of the same path is removed (round 5 ruling
 3): the step 5 carry-over of an earlier run that stopped before the

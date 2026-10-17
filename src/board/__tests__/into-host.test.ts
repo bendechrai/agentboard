@@ -75,11 +75,13 @@ import {
   registeredMigrating,
   resolveCherryPickConflicts,
   resolveIgnoreConflicts,
+  sequencerInProgress,
   standaloneInHostWithoutIgnore,
   standaloneProject,
   syncStandalone,
   syncedStandalone,
   thirdCloneRewritesIgnore,
+  thirdCloneRewritesIgnoreOnly,
   untouched,
   withShellGitShim,
   writeEvents,
@@ -952,8 +954,11 @@ describe('integrating board refs that already exist', () => {
     const again = expectBoardError(() => move(bRoot, env), 3, 'sync-in-progress');
     expect(again.message).toContain(String(temporary));
     expect(again.message).toContain('git cherry-pick --continue');
-    // The step for a pick git reports as empty is named too (round 5 ruling 2).
+    // The steps for a pick git reports as empty are named too: --skip drops
+    // it, git commit --allow-empty keeps it (round 5 ruling 2, round 6 ruling 1).
     expect(again.message).toContain('git cherry-pick --skip');
+    expect(again.message).toContain('git cherry-pick --abort');
+    expect(again.message).toContain('git commit --allow-empty');
     expect(again.message).toContain('agentboard init --into-host');
     expect(again.message).not.toContain('git rebase --continue');
     expect(registeredMigrating(bRoot)).toEqual([temporary]);
@@ -969,6 +974,8 @@ describe('integrating board refs that already exist', () => {
     expect(unmerged(String(temporary))).toEqual([]);
     const staged = expectBoardError(() => move(bRoot, env), 3, 'sync-in-progress');
     expect(staged.message).toContain('git cherry-pick --continue');
+    expect(staged.message).toContain('git cherry-pick --skip');
+    expect(staged.message).toContain('git commit --allow-empty');
     expect(cherryPickInProgress(String(temporary))).toBe(true);
     expect(revParse(String(temporary))).toBe(halfway);
     expect(git(String(temporary), 'diff', '--cached', '--name-only')).toContain('.gitignore');
@@ -990,6 +997,152 @@ describe('integrating board refs that already exist', () => {
     expect(detectBoardModel(bDir, { env }).model).toBe('standalone');
     expect(eventFiles(bDir)).not.toContain(`${fromD}.json`);
     expect(keptRepositories(bRoot)).toEqual([]);
+  });
+
+  it('a replay conflict resolved by keeping our side (an empty pick, skipped): the re-run counts the tip as integrated and completes with every event, the resolution kept (round 6 ruling 1)', () => {
+    const env = syncEnv();
+    const fx = conflictingClones(env);
+    const { remote, bRoot, bDir, shared, fromA, fromB } = fx;
+    expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+    const [temporary] = registeredMigrating(bRoot);
+    const resolved = resolveIgnoreConflicts(String(temporary));
+    const resolvedHead = revParse(String(temporary));
+    // D's only commit rewrites the resolved line and adds no event.
+    thirdCloneRewritesIgnoreOnly(fx, env);
+    const freshTip = revParse(bDir, 'refs/remotes/origin/main');
+    expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+    expect(cherryPickInProgress(String(temporary))).toBe(true);
+    // The human keeps B's side: git reports the pick empty on --continue
+    // and the human skips it, as the message says; HEAD is the resolution.
+    git(String(temporary), 'checkout', '--ours', '--', '.gitignore');
+    git(String(temporary), 'add', '--', '.gitignore');
+    try {
+      git(String(temporary), '-c', 'core.editor=true', 'cherry-pick', '--continue');
+    } catch {
+      // The pick is empty: git refuses to continue and names --skip.
+    }
+    git(String(temporary), 'cherry-pick', '--skip');
+    expect(cherryPickInProgress(String(temporary))).toBe(false);
+    expect(sequencerInProgress(String(temporary))).toBe(false);
+    expect(revParse(String(temporary))).toBe(resolvedHead);
+    expect(git(String(temporary), 'status', '--porcelain')).toBe('');
+    const { env: recording, calls } = withRecordingGitShim(env);
+
+    const result = move(bRoot, recording);
+
+    expect(result).toMatchObject({ action: 'moved', model: 'host', joined: true, events: 3 });
+    expectMoved(bRoot, env);
+    const all = [...shared, `${fromA}.json`, ...fromB.map((h) => `${h}.json`)].sort();
+    expect(eventFiles(bDir)).toEqual(all);
+    expect(refEvents(bRoot)).toEqual(all);
+    expect(refEvents(remote)).toEqual(all);
+    expect(readFileSync(join(bDir, '.gitignore'), 'utf8')).toBe(resolved);
+    expect(isAncestor(bRoot, resolvedHead, BOARD_REF)).toBe(true);
+    // D's rewrite was dropped by the human, once: no second replay of it.
+    expect(calls().filter((c) => c.includes('cherry-pick'))).toEqual([]);
+    expect(isAncestor(bRoot, freshTip, BOARD_REF)).toBe(false);
+    expect(git(bRoot, 'log', '--format=%s', BOARD_REF).split('\n').filter((s) => s === 'ignore baz')).toEqual([]);
+    expect(existsSync(String(temporary))).toBe(false);
+    expectCheckClean(bRoot, env);
+  });
+
+  it('git reset after a replay conflict (markers left in .gitignore, index equal to HEAD): the re-run refuses naming the human steps, quits nothing, loses nothing and publishes nothing (round 6 ruling 2)', () => {
+    const env = syncEnv();
+    const fx = conflictingClones(env);
+    const { remote, bRoot, bDir } = fx;
+    expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+    const [temporary] = registeredMigrating(bRoot);
+    resolveIgnoreConflicts(String(temporary));
+    const resolvedHead = revParse(String(temporary));
+    const integrated = String(refCommit(bRoot, MIGRATING_REF));
+    const { fromD } = thirdCloneRewritesIgnore(fx, env);
+    const published = git(remote, 'rev-parse', BOARD_REF).trim();
+    expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+    const halfway = revParse(String(temporary));
+    // The human clears the index without resolving: the conflict markers
+    // stay in the working tree and nothing is unmerged any more.
+    git(String(temporary), 'reset', '-q');
+    expect(unmerged(String(temporary))).toEqual([]);
+    expect(git(String(temporary), 'diff', '--cached', '--name-only')).toBe('');
+    expect(readFileSync(join(String(temporary), '.gitignore'), 'utf8')).toContain('<<<<<<<');
+    const before = untouched(bRoot, bDir);
+
+    const err = expectBoardError(() => move(bRoot, env), 3, 'sync-in-progress');
+
+    expect(err.message).toContain(String(temporary));
+    expect(err.message).toContain('git cherry-pick --continue');
+    expect(err.message).toContain('git cherry-pick --skip');
+    expect(err.message).toContain('git cherry-pick --abort');
+    expect(err.message).toContain('agentboard init --into-host');
+    // Nothing was quit, replayed, dropped or published.
+    expect(registeredMigrating(bRoot)).toEqual([temporary]);
+    expect(cherryPickInProgress(String(temporary))).toBe(true);
+    expect(revParse(String(temporary))).toBe(halfway);
+    expect(readFileSync(join(String(temporary), '.gitignore'), 'utf8')).toContain('<<<<<<<');
+    expect(refCommit(bRoot, MIGRATING_REF)).toBe(integrated);
+    expect(refCommit(bRoot)).toBeNull();
+    expect(git(remote, 'rev-parse', BOARD_REF).trim()).toBe(published);
+    expect(untouched(bRoot, bDir)).toEqual(before);
+    expect(keptRepositories(bRoot)).toEqual([]);
+    expect(eventFiles(bDir)).not.toContain(`${fromD}.json`);
+    // The re-run refuses the same way until the human acts.
+    expectBoardError(() => move(bRoot, env), 3, 'sync-in-progress');
+    expect(revParse(String(temporary))).toBe(halfway);
+    expect(isAncestor(String(temporary), resolvedHead, 'HEAD')).toBe(true);
+  });
+
+  it('a dirty tracked file in an adopted temporary makes the replay stop for another reason: exit 3 sync-failed, the sequencer quit, the temporary kept and no pick dropped; cleaned up, the re-run conflicts as normal (round 6 ruling 2)', () => {
+    const env = syncEnv();
+    const fx = conflictingClones(env);
+    const { remote, bRoot, bDir, shared, fromA, fromB } = fx;
+    expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+    const [temporary] = registeredMigrating(bRoot);
+    const resolved = resolveIgnoreConflicts(String(temporary));
+    const resolvedHead = revParse(String(temporary));
+    const integrated = String(refCommit(bRoot, MIGRATING_REF));
+    const { fromD, ignore } = thirdCloneRewritesIgnore(fx, env);
+    const published = git(remote, 'rev-parse', BOARD_REF).trim();
+    // An unstaged edit of a tracked file in the adopted worktree: D's
+    // .gitignore commit cannot be applied over it.
+    writeFileSync(join(String(temporary), '.gitignore'), `${resolved}local\n`);
+    expect(cherryPickInProgress(String(temporary))).toBe(false);
+
+    const err = expectBoardError(() => move(bRoot, env), 3, 'sync-failed');
+
+    expect(err.message).toContain('.gitignore');
+    // Not a conflict, not an empty pick: the sequence is quit, nothing is
+    // skipped, the worktree stays adoptable with its edit untouched.
+    expect(cherryPickInProgress(String(temporary))).toBe(false);
+    expect(sequencerInProgress(String(temporary))).toBe(false);
+    expect(registeredMigrating(bRoot)).toEqual([temporary]);
+    expect(isAncestor(String(temporary), resolvedHead, 'HEAD')).toBe(true);
+    expect(readFileSync(join(String(temporary), '.gitignore'), 'utf8')).toBe(`${resolved}local\n`);
+    expect(refCommit(bRoot, MIGRATING_REF)).toBe(integrated);
+    expect(refCommit(bRoot)).toBeNull();
+    expect(git(remote, 'rev-parse', BOARD_REF).trim()).toBe(published);
+    expect(detectBoardModel(bDir, { env }).model).toBe('standalone');
+    expect(keptRepositories(bRoot)).toEqual([]);
+
+    // Cleaned up, the re-run replays D's commits again: the event once, the
+    // .gitignore rewrite conflicting as it normally does (never dropped).
+    git(String(temporary), 'checkout', '--', '.gitignore');
+    const conflict = expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+    expect(conflict.message).toContain('.gitignore');
+    expect(conflict.message).toContain('git cherry-pick --continue');
+    expect(unmerged(String(temporary))).toEqual(['.gitignore']);
+    expect(git(String(temporary), 'log', '--format=%H', '--diff-filter=A', '--', `events/${fromD}.json`).trim().split('\n')).toHaveLength(1);
+    const both = [...BOARD_GITIGNORE_LINES, 'foo', 'baz', 'bar'].map((line) => `${line}\n`).join('');
+    resolveCherryPickConflicts(String(temporary), both);
+    const result = move(bRoot, env);
+    expect(result).toMatchObject({ action: 'moved', events: 4 });
+    expectMoved(bRoot, env);
+    const all = [...shared, `${fromA}.json`, ...fromB.map((h) => `${h}.json`), `${fromD}.json`].sort();
+    expect(eventFiles(bDir)).toEqual(all);
+    expect(refEvents(remote)).toEqual(all);
+    expect(readFileSync(join(bDir, '.gitignore'), 'utf8')).toBe(both);
+    expect(ignore).not.toBe(both);
+    expect(git(bRoot, 'log', '--format=%s', BOARD_REF).split('\n').filter((s) => s === 'ignore baz')).toHaveLength(1);
+    expectCheckClean(bRoot, env);
   });
 
   it('a replay that conflicts, resolved with git cherry-pick --continue: the re-run adopts the worktree and completes with every event, both resolutions kept, nothing applied twice (round 4 ruling 2)', () => {

@@ -444,6 +444,30 @@ export function thirdCloneRewritesIgnore(
   return { dDir: d.dir, fromD: String(fromD), ignore };
 }
 
+/**
+ * As `thirdCloneRewritesIgnore`, but D syncs no event of its own: the
+ * replay of D's single commit onto B's resolution conflicts on
+ * `.gitignore` and adds no event file, so a human who keeps B's side
+ * leaves an empty pick behind.
+ */
+export function thirdCloneRewritesIgnoreOnly(
+  fx: ConflictingClones,
+  env: Env,
+): { dDir: string; ignore: string } {
+  const d = cloneWithStandalone(fx.remote, fx.boardRemote, 'd');
+  const ignore = [...BOARD_GITIGNORE_LINES, 'baz', 'bar'].map((line) => `${line}\n`).join('');
+  writeFileSync(join(d.dir, '.gitignore'), ignore);
+  git(d.dir, 'add', '--', '.gitignore');
+  git(d.dir, 'commit', '-q', '--no-verify', '-m', 'ignore baz');
+  syncStandalone(d.dir, env);
+  return { dDir: d.dir, ignore };
+}
+
+/** Whether git's cherry-pick sequencer directory exists for the worktree at `dir`. */
+export function sequencerInProgress(dir: string): boolean {
+  return existsSync(join(git(dir, 'rev-parse', '--absolute-git-dir').trim(), 'sequencer'));
+}
+
 /** The registered worktrees of `root` under `agentboard/migrating/`. */
 export function registeredMigrating(root: string): string[] {
   return worktrees(root)
