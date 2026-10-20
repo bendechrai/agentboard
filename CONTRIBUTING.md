@@ -225,6 +225,13 @@ This repository coordinates its own agents with agentboard:
   `refs/agentboard/board` with the public repository. In a project of
   your own, `init` inside a git repository creates a host-model board
   instead (README, "Set up a project").
+- This repository's board is kept in the private repository
+  `bendechrai/agentboard-board`. A maintainer's first clone runs
+  `agentboard init --remote https://github.com/bendechrai/agentboard-board.git`
+  (or the `git@github.com:bendechrai/agentboard-board.git` form when ssh
+  keys are set up), then `agentboard sync` to share events. Collaborators
+  without access to that repository keep a local standalone board from
+  plain `agentboard init`.
 - `agentboard import-change <name> --as orchestrator` creates one ticket
   per task group of a merged OpenSpec change; run it again when `tasks.md`
   gains lines.
