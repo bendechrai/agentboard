@@ -62,7 +62,7 @@ tested and documented in README.md.
   README example end to end. ADR 0013 (amends ADR 0004). Archived as
   `openspec/changes/archive/2026-10-17-add-adhoc-ticket-lifecycle`.
 
-Released as `@bendechrai/agentboard` 0.1.0 on npm (tag `v0.1.0`), with the
+Released as `@bendechrai/agentboard` 0.2.0 on npm (tag `v0.2.0`), with the
 landing site in `docs/` served at https://bendechrai.github.io/agentboard/.
 Later releases are staged by `.github/workflows/release.yml` (see
 CONTRIBUTING.md, "Releasing").
