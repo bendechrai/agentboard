@@ -164,6 +164,78 @@ describe('feedEntries (board-view-model: "Activity feed entries")', () => {
     expect(feedEntries(m, { change: 'openspec:add-board-tui#1' })).toEqual([]);
   });
 
+  describe('the unplanned disposition (ADR 0013)', () => {
+    const createAdhoc = E.create(T1, { title: 'Hotfix one', adhoc: 'found in prod' }, { actor: 'orch' });
+    const steps = [
+      E.move(T1, 'tests', { actor: 'impl-1' }),
+      E.move(T1, 'implementing', { actor: 'impl-1' }),
+      E.move(T1, 'review', { actor: 'impl-1' }),
+    ];
+    // `orch` runs `move T1 merged --unplanned "hotfix"`: the disposition, then the move.
+    const unplanned = E.unplanned(T1, 'hotfix', { actor: 'orch' });
+    const merge = E.move(T1, 'merged', { actor: 'orch' });
+
+    it('scenario Unplanned summary: the feed has, newest first, moved to merged and then recorded as unplanned: hotfix, both by orch', () => {
+      const m = model([createAdhoc, ...steps, unplanned, merge]);
+      const entries = feedEntries(m);
+      expect(entries.slice(0, 2)).toMatchObject([
+        { hash: merge.hash, kind: 'ticket.move', actor: 'orch', summary: 'moved to merged' },
+        {
+          hash: unplanned.hash,
+          kind: 'ticket.unplanned',
+          actor: 'orch',
+          summary: 'recorded as unplanned: hotfix',
+        },
+      ]);
+    });
+
+    it('gives the disposition entry the ticket, its title, no change and the event time', () => {
+      const m = model([createAdhoc, ...steps, unplanned, merge]);
+      const entry = feedEntries(m).find((e) => e.hash === unplanned.hash);
+      expect(entry).toEqual({
+        hash: unplanned.hash,
+        kind: 'ticket.unplanned',
+        actor: 'orch',
+        ts: unplanned.event.ts,
+        ticket: T1,
+        title: 'Hotfix one',
+        change: null,
+        summary: 'recorded as unplanned: hotfix',
+        late: false,
+      });
+    });
+
+    it('a rejected ticket.unplanned (already-linked) produces no feed entry', () => {
+      const linked = E.create(T2, { title: 'Planned', task: TASK }, { actor: 'orch' });
+      const rejected = E.unplanned(T2, 'hotfix', { actor: 'orch' });
+      const m = model([linked, rejected]);
+      expect(m.events.find((e) => e.hash === rejected.hash)).toMatchObject({
+        outcome: 'rejected',
+        reason: 'already-linked',
+      });
+      expect(hashes(feedEntries(m))).toEqual([linked.hash]);
+      expect(feedEntries(m, { kinds: ['ticket.unplanned'] })).toEqual([]);
+      expect(feedEntries(m, { actor: 'orch' }).map((e) => e.kind)).toEqual(['ticket.create']);
+    });
+
+    it('a rejected ticket.unplanned on an unknown ticket produces no feed entry either', () => {
+      const rejected = E.unplanned(T3, 'hotfix', { actor: 'orch' });
+      const m = model([createAdhoc, rejected]);
+      expect(m.events.find((e) => e.hash === rejected.hash)?.outcome).toBe('rejected');
+      expect(hashes(feedEntries(m))).toEqual([createAdhoc.hash]);
+    });
+
+    it('filters the disposition by its kind', () => {
+      const m = model([createAdhoc, ...steps, unplanned, merge]);
+      expect(hashes(feedEntries(m, { kinds: ['ticket.unplanned'] }))).toEqual([unplanned.hash]);
+      expect(hashes(feedEntries(m, { kinds: ['ticket.unplanned', 'ticket.move'] }))).toEqual([
+        merge.hash,
+        unplanned.hash,
+        ...steps.map((s) => s.hash).reverse(),
+      ]);
+    });
+  });
+
   it('combines change, actor and kinds with AND', () => {
     expect(
       hashes(

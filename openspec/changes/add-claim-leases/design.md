@@ -138,7 +138,9 @@ it instead) are rejected `invalid-queue`.
 While the queue is not empty, a plain claim or a takeover by anyone on
 that ticket is rejected `queued`: waiters have priority, and the only way
 the ticket passes to a new holder is a grant (or a hand-off by the
-holder, which the queue does not constrain).
+holder, which the queue does not constrain). A hand-off or assign to a
+queued actor removes that actor from the queue in the same step, so the
+assignee is never queued and a later grant never goes to the holder.
 
 ### Grants: derived, backdated, identical from every writer
 A grant is due when the queue is not empty and the ticket has become
@@ -170,15 +172,27 @@ So:
 - any command that catches up (every command except `rebuild` and
   `rebuild --check`, including `list`, `show`, `inbox`, `watch` and a
   waiting `claim --wait`) writes the grants that are due, in the same
-  transaction as its catch-up;
+  transaction as its catch-up; a grant so written is a derived event
+  independent of the command, never deleted, and a command refused after
+  its catch-up commits that catch-up (grant included) without writing its
+  own event;
+- deriving a grant needs the whole log (each grant at its own fold
+  position), so catch-up does not walk it on every command: the cache
+  keeps a grant watermark, the slot time of the first grant that would be
+  due and is not folded, computed by the fold like any other derived row,
+  and catch-up reads event files only for new files, stale temporaries,
+  or a clock that has reached the watermark; a warm read-only command
+  with nothing due therefore opens no event file;
 - two writers on one machine are serialised by the write lock, and the
   second finds the file already present (writing identical bytes is a
   no-op); two machines write identical files, so `sync` merges them as
   one;
-- the fold accepts a `ticket.grant` only when its bytes equal the grant
-  it derives at that position, and rejects it `stale-grant` otherwise
-  (for example when a renew or a leave from another machine, with an
-  earlier wall, arrives after the grant was written);
+- the fold accepts a `ticket.grant` only when it equals, field by field,
+  the grant `dueGrant` derives at that position, and rejects it
+  `stale-grant` otherwise (for example when a renew or a leave from
+  another machine, with an earlier wall, arrives after the grant was
+  written); the comparison is structural because the fold stays
+  browser-safe and does not import the canonical encoder;
 - `agentboard` is a reserved actor: commands refuse `--as agentboard`
   and the fold treats any other kind written by it, or a grant written
   by anyone else, as malformed.
@@ -240,7 +254,10 @@ milliseconds, written by a new `config set <key> <value>` (duration
 form, 30 seconds to 10 minutes) and read by `config get`. The claim
 records its grace in its own body; a grant reads `queue.window` as folded
 at its position, which every writer computes identically. `config` is a
-setup command and not an MCP tool.
+setup command and not an MCP tool. A cache fold session loads the
+`board.*` settings from the cache rows when it starts, and a refold clears
+them, so a grant folded incrementally or in a refold always sees the
+setting in effect at its position.
 
 ### Clock skew tolerance
 `LEASE_SKEW_MS` is a constant of 60 seconds in the fold rules. On one

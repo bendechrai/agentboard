@@ -169,10 +169,14 @@ function timeless(value: unknown): unknown {
       return { actor: record.actor };
     }
     return Object.fromEntries(
-      Object.entries(record).map(([key, item]) => [
-        key,
-        key === 'hash' ? '<hash>' : timeless(item),
-      ]),
+      Object.entries(record).map(([key, item]) => {
+        if (key === 'hash') return [key, '<hash>'];
+        // `events` lists the hashes the command wrote: as many on each side.
+        if (key === 'events' && Array.isArray(item)) return [key, item.map(() => '<hash>')];
+        // `available` holds a wall time and an event hash, which differ between the boards.
+        if (key === 'available' && item !== null) return [key, '<available>'];
+        return [key, timeless(item)];
+      }),
     );
   }
   return value;

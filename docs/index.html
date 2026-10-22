@@ -338,7 +338,7 @@
         <div class="card" style="--lane: var(--tests)">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div>
           <h3>Local and offline</h3>
-          <p>The board lives in <code class="i">.board/</code> next to your code. A SQLite cache makes reads fast and can be deleted at any time. <code class="i">agentboard sync</code> shares boards between machines over plain git.</p>
+          <p>The board lives in <code class="i">.board/</code> next to your code, its history under a hidden ref in your project's own repository: no branch, no CI, nothing a plain clone sees. A SQLite cache makes reads fast and can be deleted at any time. <code class="i">agentboard sync</code> shares the board over your existing remote, and <code class="i">init</code> in a second clone joins it.</p>
         </div>
         <div class="card" style="--lane: var(--review)">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01"/></svg></div>
@@ -476,7 +476,7 @@ stuck in blocked: 0</span>
       <div class="steps">
         <div>
           <h3>Create the board</h3>
-          <p>At the root of your project. The board is its own git repository inside <code class="i">.board/</code>, ignored by yours.</p>
+          <p>At the root of your project. The board becomes a worktree inside <code class="i">.board/</code>, ignored by your project, with its history on a hidden ref of your repository. Run it in a second clone to join the same board.</p>
           <div class="term"><pre><span class="p">$ </span>npx @bendechrai/agentboard init</pre></div>
         </div>
         <div>

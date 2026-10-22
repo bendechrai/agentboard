@@ -23,6 +23,8 @@ after: an object with exactly one of `released`, an event hash, or
 `lease`, an object with `holder`, `expiresAt` and `event`);
 `ticket.handoff` (to: actor, status, note);
 `ticket.link` (exactly one of: `task` reference, pr URL or number, decision path);
+`ticket.unplanned` (reason: non-empty string; records that the ticket's
+scope was never planned, see "Unplanned disposition");
 `ticket.close` (either `decision` path string or `noDecision` true);
 `ticket.checklist` (index: integer, done: boolean);
 `ticket.checklist.add` (items: non-empty array of objects with `text`, a
@@ -50,6 +52,10 @@ malformed.
 - **WHEN** a `ticket.checklist` event names an index beyond the ticket's checklist length
 - **THEN** the event is reported as rejected with reason `checklist-index` and the ticket is unchanged
 
+#### Scenario: Unplanned body is checked
+- **WHEN** a `ticket.unplanned` event has an empty `reason`, or a body with a field other than `reason`
+- **THEN** the event is reported as malformed naming the field and is not folded
+
 #### Scenario: Plain claim bytes are unchanged
 - **WHEN** a claim is written without a lease on a ticket with no lease
 - **THEN** its body is the empty object and its canonical bytes are those a version without leases writes for the same envelope
@@ -66,11 +72,20 @@ malformed.
 Folding SHALL produce, per ticket: id, title, description, status, assignee,
 lease (null, or its requested ttl, expiresAt, the hash of the event that set
 it and whether it is confirmed), the waiting queue (in order, each waiter's
-actor, requested ttl and join event), labels, task reference or ad hoc reason, checklist with done flags, ordered comments (each
+actor, requested ttl and join event), availability (null, or when and by
+which event the ticket becomes or became available for a grant), labels,
+task reference or ad hoc reason, unplanned disposition (reason, actor
+and timestamp, or none), checklist with done flags, ordered comments (each
 with actor, timestamp and text), links, closed flag with its decision record
 path or explicit no-decision marker, `version` (the count of folded events
 that changed the ticket), and `updated_at` (the timestamp of the last such
-event). A `ticket.create` SHALL be the first event for its id; any other event
+event). Availability SHALL be derived after every applied event: for an
+unassigned ticket, the wall and hash of the latest applied
+`ticket.release` or `ticket.release.force` (null when there has been
+none); for a ticket held under a lease, the lease's `expiresAt` plus
+`LEASE_SKEW_MS` and the hash of the event that set the lease; for a ticket
+held without a lease, null. It SHALL appear as `available` in the ticket's
+`--json` document, because that document is the folded ticket. A `ticket.create` SHALL be the first event for its id; any other event
 for an unknown ticket id SHALL be reported as rejected with reason
 `unknown-ticket` and held aside. A second `ticket.create` for an existing id
 SHALL be rejected with reason `duplicate-create`. A `ticket.move` to a status
@@ -86,18 +101,24 @@ with reason `holder-changed` (see "Forced release"); a queue event that
 does not apply SHALL be rejected with reason `invalid-queue`; a
 `ticket.grant` that differs from the derived grant SHALL be rejected with
 reason `stale-grant` (see "Grants"); a
-`ticket.move` or `ticket.handoff` that would take a ticket with no task
-reference into `implementing` SHALL be rejected with reason
-`needs-task-link` (see board-openspec-integration). Rejected
+`ticket.move` or `ticket.handoff` that would take a ticket with neither a
+task reference nor an unplanned disposition into `merged` SHALL be rejected
+with reason `needs-scope-disposition` (see board-openspec-integration); a
+`ticket.unplanned` on a ticket that has a task reference SHALL be rejected
+with reason `already-linked`. No rule SHALL depend on a task reference for
+a move into `implementing` or any status other than `merged`. Rejected
 events SHALL be listed in the fold report with hash, kind, ticket and reason
 and SHALL never be deleted.
 
 Where the requirements above leave a case open, the fold SHALL behave as
 follows. A `ticket.close` on a ticket not in `merged` or `blocked`, or on an
 already closed ticket, SHALL be rejected with reason `invalid-transition`.
+The fold SHALL NOT apply the scope disposition rule to `ticket.close`; that
+is the CLI's `close` check, like the decision-comment rule.
 Events after a close SHALL fold by their own rules (a comment on a closed
 ticket is accepted; a move out of `merged` is still rejected). A task link
-SHALL replace the ticket's task reference and clear its ad hoc reason; pr
+SHALL replace the ticket's task reference and clear its ad hoc reason and
+its unplanned disposition; pr
 and decision links SHALL be appended in fold order. `version` SHALL count
 every applied event of a defined kind, including one that leaves the state
 unchanged, such as ticking an already ticked checklist line. `board.meta`
@@ -122,6 +143,18 @@ decision SHALL be made from the timestamps and bodies of the events alone.
 #### Scenario: Version counts effective events
 - **WHEN** a ticket has one create, two comments and one rejected move
 - **THEN** its version is 3 and its updated_at equals the timestamp of the second comment
+
+#### Scenario: Ad hoc ticket enters implementing
+- **WHEN** a `ticket.move` to `implementing` is folded for an ad hoc ticket in `tests` with no task reference
+- **THEN** it is applied and the ticket is in `implementing`
+
+#### Scenario: Undisposed ticket cannot enter merged
+- **WHEN** a `ticket.move` to `merged`, or a `ticket.handoff` with status `merged`, is folded for an ad hoc ticket in `review` with no task reference and no unplanned disposition
+- **THEN** it is rejected with reason `needs-scope-disposition` and the ticket stays in `review`
+
+#### Scenario: Close of an undisposed ticket still folds
+- **WHEN** a log written by a release without `ticket.unplanned` holds an ad hoc ticket moved to `blocked` and then closed with `noDecision`, with no task link and no `ticket.unplanned`
+- **THEN** the close is applied and the ticket is closed
 
 ## ADDED Requirements
 
@@ -202,7 +235,11 @@ SHALL remove its actor from the queue, and SHALL be rejected with reason
 `invalid-queue` when the actor is not queued. While the queue is not
 empty, a `ticket.claim` by any actor SHALL be rejected with reason
 `queued`, except a claim by the assignee, which is handled as before.
-`ticket.handoff` SHALL NOT be constrained by the queue.
+`ticket.handoff` SHALL NOT be constrained by the queue. An applied
+`ticket.handoff` or `ticket.assign` whose `to` is a queued actor SHALL
+remove that actor from the queue in the same fold step, so the assignee
+is never queued; one whose `to` is not queued SHALL leave the queue
+unchanged.
 
 #### Scenario: Join order is fold order
 - **WHEN** `a` joins at wall 1000 and `b` joins at wall 900, arriving in the order a then b
@@ -215,6 +252,10 @@ empty, a `ticket.claim` by any actor SHALL be rejected with reason
 #### Scenario: Queue-jumping claim is refused
 - **WHEN** T1 has waiters and `x`, not queued, writes a claim with a valid `supersedes` after the holder's lease lapsed
 - **THEN** the claim is rejected with reason `queued`
+
+#### Scenario: Hand-off to a waiter removes it from the queue
+- **WHEN** `h` holds T1, `a`, `b` and `c` are queued in that order, and `h` hands T1 off to `b`
+- **THEN** T1 is assigned to `b`, the queue is `a`, `c`, and when `b` later releases the derived grant is to `a`
 
 #### Scenario: Join on a free ticket
 - **WHEN** T1 is unassigned with no waiters and `a` writes a join

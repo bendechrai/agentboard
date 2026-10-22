@@ -20,24 +20,37 @@ export { asciiText };
 /**
  * The `list` line of a ticket, without a newline:
  * `<full 26-character id>  <status>  <assignee or ->  <markers><title>`,
- * fields separated by two spaces, where `<markers>` is `[adhoc] ` for a
- * ticket with an ad hoc reason and `[closed] ` for a closed ticket (in
- * that order when both apply), and assignee and title pass through
- * `asciiText`. Example:
- * `01ARYZ6S41TSV4RRFFQ69G5FAV  todo  -  [adhoc] Fix thing`. The id is never
- * shortened, so every id printed by `list` can be pasted back into any
- * command. Pure.
+ * fields separated by two spaces, where `<markers>` is `[unplanned] ` for
+ * a ticket with an unplanned disposition (`unplanned` not null), else
+ * `[adhoc] ` for a ticket with an ad hoc reason and no unplanned
+ * disposition, then `[closed] ` for a closed ticket (in that order when
+ * both apply; a ticket with a task reference shows neither of the first
+ * two: board-openspec-integration "Ad hoc markers in list"), and assignee
+ * and title pass through `asciiText`. Examples:
+ * `01ARYZ6S41TSV4RRFFQ69G5FAV  todo  -  [adhoc] Fix thing`,
+ * `01ARYZ6S41TSV4RRFFQ69G5FAV  merged  -  [unplanned] Fix thing`,
+ * `01ARYZ6S41TSV4RRFFQ69G5FAV  blocked  -  [unplanned] [closed] Fix thing`.
+ * The id is never shortened, so every id printed by `list` can be pasted
+ * back into any command. Pure.
  */
 export function renderListLine(ticket: Ticket): string {
-  return listLine({ ...ticket, adhoc: ticket.adhoc !== null });
+  return listLine({
+    ...ticket,
+    adhoc: ticket.adhoc !== null,
+    unplanned: ticket.unplanned !== null,
+  });
 }
 
 /** The fields of a `list` line. */
-type ListFields = Pick<Card, 'id' | 'status' | 'assignee' | 'adhoc' | 'closed' | 'title'>;
+type ListFields = Pick<Card, 'id' | 'status' | 'assignee' | 'adhoc' | 'closed' | 'title'> & {
+  /** The unplanned marker: true when the ticket has an unplanned disposition. */
+  unplanned: boolean;
+};
 
 /** The `list` line of `fields` (see `renderListLine`). */
 function listLine(fields: ListFields): string {
-  const markers = (fields.adhoc ? '[adhoc] ' : '') + (fields.closed ? '[closed] ' : '');
+  const scope = fields.unplanned ? '[unplanned] ' : fields.adhoc ? '[adhoc] ' : '';
+  const markers = scope + (fields.closed ? '[closed] ' : '');
   return [
     fields.id,
     fields.status,
@@ -56,6 +69,9 @@ function listLine(fields: ListFields): string {
  * status: <status>                  (blocked: `blocked (from <origin>)`)
  * assignee: <assignee or ->
  * task: <source>:<ref>#<item>       (or `adhoc: <reason>`, or `task: -`)
+ * unplanned: <reason> (by <actor>)  (only when the ticket has an unplanned
+ *                                    disposition: its reason and actor,
+ *                                    right after the task or adhoc line)
  * labels: <comma+space separated, or ->
  * description: <text or ->
  * checklist:                        (then per line `  [x] <index> <text>` or `  [ ] ...`)
@@ -83,6 +99,9 @@ export function renderShow(show: ShowResult): string {
     lines.push(`adhoc: ${asciiText(t.adhoc)}`);
   } else {
     lines.push('task: -');
+  }
+  if (t.unplanned !== null) {
+    lines.push(`unplanned: ${asciiText(t.unplanned.reason)} (by ${asciiText(t.unplanned.actor)})`);
   }
   lines.push(
     `labels: ${t.labels.length === 0 ? '-' : t.labels.map(asciiText).join(', ')}`,
@@ -267,8 +286,28 @@ export function renderCheck(doc: CheckDocument): string {
  * <card>  pr <prs>; <k> open decision(s), no decision link
  * close-merged missing pr: <n>
  * <card>  no pr link
+ * unplanned scope: <w> in the last <U> (<t> in all)
+ * <card>  <outcome> <age>, unplanned: <reason>
+ * <card>  closed <age>, no reason recorded (ad hoc: <adhoc>)
  * cache check: <check>
  * ```
+ *
+ * The unplanned scope section (board-insights: "Health command", "Unplanned
+ * merges in text output"; add-adhoc-ticket-lifecycle design.md section 7)
+ * comes after the close-merged sections and before the cache check:
+ * - `<w>` is `unplannedScope.tickets.length` (the entries within the
+ *   window), `<U>` is `report.thresholds.unplannedWithin` written as `<S>`
+ *   and `<B>` are, and `<t>` is `unplannedScope.total`; the heading is
+ *   followed by one line per entry of `tickets`, in the report's order;
+ * - `<outcome>` is the entry's `outcome` (`merged` or `closed`), `<age>` is
+ *   `relativeTime(ageMs)`, and the line ends with `unplanned: <reason>`
+ *   (the entry's `reason` through `asciiText`) when `reason` is not null,
+ *   else `no reason recorded (ad hoc: <adhoc>)` with the entry's `adhoc`
+ *   through `asciiText` (an entry with a null `reason` always has an ad
+ *   hoc reason);
+ * - the `<card>` of an entry carries `[unplanned]` (and no `[adhoc]`) when
+ *   the card's `unplanned` is not null, as `renderListLine` does, so an
+ *   undisclosed close shows `[adhoc] [closed]`.
  *
  * where:
  * - `<S>` and `<B>` are `report.thresholds.staleAfter` and `blockedAfter`
@@ -281,8 +320,8 @@ export function renderCheck(doc: CheckDocument): string {
  *   no entry is just its heading with `0`.
  * - `<card>` is the `list` line of the finding's `ticket` card, exactly as
  *   `renderListLine` writes a ticket with the same id, status, assignee,
- *   ad hoc marker, closed marker and title:
- *   `<id>  <status>  <assignee or ->  <markers><title>`.
+ *   ad hoc marker, unplanned marker (`Card.unplanned`), closed marker and
+ *   title: `<id>  <status>  <assignee or ->  <markers><title>`.
  * - `<age>` is `relativeTime` (`src/view/time.ts`) of `idleMs` or
  *   `blockedMs`, for example `3h ago`.
  * - stale claim: `<kind>` and `<actor>` are `since.kind` and `since.actor`.
@@ -313,19 +352,36 @@ export function renderCheck(doc: CheckDocument): string {
  * ```
  */
 export function renderHealth(report: HealthReport): string {
-  const { thresholds, staleClaims, stuckBlocked, unpromotedDecisions, closeMerged } = report;
+  const {
+    thresholds,
+    staleClaims,
+    stuckBlocked,
+    unpromotedDecisions,
+    closeMerged,
+    unplannedScope,
+  } = report;
   const lines = [
     `thresholds: stale after ${durationText(thresholds.staleAfter)}, blocked after ${durationText(thresholds.blockedAfter)}`,
   ];
+  // A heading line, then one list line per entry with its finding.
+  const listed = <T extends { ticket: Card }>(
+    heading: string,
+    entries: readonly T[],
+    finding: (entry: T) => string,
+  ): void => {
+    lines.push(heading);
+    for (const entry of entries) {
+      const card = entry.ticket;
+      lines.push(`${listLine({ ...card, unplanned: card.unplanned !== null })}  ${finding(entry)}`);
+    }
+  };
+  // A section headed with its count.
   const section = <T extends { ticket: Card }>(
     heading: string,
     entries: readonly T[],
     finding: (entry: T) => string,
   ): void => {
-    lines.push(`${heading}: ${String(entries.length)}`);
-    for (const entry of entries) {
-      lines.push(`${listLine(entry.ticket)}  ${finding(entry)}`);
-    }
+    listed(`${heading}: ${String(entries.length)}`, entries, finding);
   };
   section(
     'stale claims',
@@ -348,6 +404,16 @@ export function renderHealth(report: HealthReport): string {
     (c) => `${prsText(c.prs)}; ${decisionsText(c.decisions.length)}`,
   );
   section('close-merged missing pr', closeMerged.missingPr, () => 'no pr link');
+  listed(
+    `unplanned scope: ${String(unplannedScope.tickets.length)} in the last ${durationText(thresholds.unplannedWithin)} (${String(unplannedScope.total)} in all)`,
+    unplannedScope.tickets,
+    (u) =>
+      `${u.outcome} ${relativeTime(u.ageMs)}, ${
+        u.reason === null
+          ? `no reason recorded (ad hoc: ${asciiText(u.adhoc ?? '')})`
+          : `unplanned: ${asciiText(u.reason)}`
+      }`,
+  );
   const check = report.check;
   lines.push(
     `cache check: ${

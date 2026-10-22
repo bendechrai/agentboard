@@ -59,6 +59,34 @@ export interface HintContext {
    * when none is known.
    */
   readonly actor?: string;
+  /**
+   * The decision disposition `close` was given, when the command is
+   * `close` and it was parsed: `--no-decision`, or `--decision-recorded-in`
+   * with the path exactly as given. Undefined for every other command and
+   * when it is unknown. `cliHintContext` (`src/cli/main.ts`) fills it from
+   * the parsed values and `runTool` (`src/mcp/server.ts`) from the tool
+   * arguments, so the `needs-scope-disposition` and `already-linked` hints
+   * of `close` repeat the decision flag the caller gave.
+   */
+  readonly closeDecision?:
+    | { readonly flag: 'no-decision' }
+    | { readonly flag: 'decision-recorded-in'; readonly path: string };
+}
+
+/**
+ * The `closeDecision` of a `HintContext` from the parsed values of `close`
+ * (the CLI) or the arguments of `board_close` (MCP): `no-decision` when
+ * that is true, `decision-recorded-in` with its path when that is a
+ * non-empty string, else undefined. Pure.
+ */
+export function closeDecisionOf(
+  values: Readonly<Record<string, unknown>>,
+): HintContext['closeDecision'] | undefined {
+  const path = values['decision-recorded-in'];
+  if (typeof path === 'string' && path !== '') {
+    return { flag: 'decision-recorded-in', path };
+  }
+  return values['no-decision'] === true ? { flag: 'no-decision' } : undefined;
 }
 
 /**
@@ -71,10 +99,14 @@ export interface HintContext {
  */
 export const HINT_REASONS: readonly string[] = [
   'already-assigned',
+  'already-linked',
   'ambiguous-id',
   'ambiguous-remote',
+  'board-in-host',
+  'board-link-broken',
   'board-not-a-repository',
   'board-not-found',
+  'board-on-branch',
   'body-too-large',
   'busy',
   'checklist-index',
@@ -85,8 +117,11 @@ export const HINT_REASONS: readonly string[] = [
   'forbidden-host',
   'gh-missing',
   'git-missing',
+  'git-too-old',
+  'holder-changed',
   'id-too-short',
   'integrity',
+  'invalid-queue',
   'invalid-transition',
   'malformed-event',
   'malformed-task-ref',
@@ -94,19 +129,25 @@ export const HINT_REASONS: readonly string[] = [
   'method-not-allowed',
   'missing-actor',
   'missing-status',
-  'needs-task-link',
+  'needs-scope-disposition',
   'needs-task-or-adhoc',
   'no-cache',
   'no-disposition',
+  'no-host-repository',
   'no-targets',
+  'not-a-board',
   'not-a-tty',
   'not-assignee',
   'not-found',
   'path-outside-tree',
   'port-in-use',
+  'queued',
   'read-only',
+  'remote-mismatch',
+  'remote-unreachable',
   'schema-mismatch',
   'secret-like',
+  'stale-grant',
   'streaming-command',
   'sync-conflict',
   'sync-failed',
@@ -118,6 +159,7 @@ export const HINT_REASONS: readonly string[] = [
   'unknown-ticket',
   'unpromoted-decision',
   'unsupported-source',
+  'unsynced',
   'usage',
 ];
 
@@ -132,10 +174,14 @@ export const HINT_REASONS: readonly string[] = [
  */
 export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'already-assigned': 4,
+  'already-linked': 4,
   'ambiguous-id': 1,
   'ambiguous-remote': 1,
+  'board-in-host': 1,
+  'board-link-broken': 2,
   'board-not-a-repository': 2,
   'board-not-found': 2,
+  'board-on-branch': 3,
   'body-too-large': 1,
   busy: 5,
   'checklist-index': 4,
@@ -146,8 +192,11 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'forbidden-host': 1,
   'gh-missing': 1,
   'git-missing': 1,
+  'git-too-old': 1,
+  'holder-changed': 4,
   'id-too-short': 1,
   integrity: 5,
+  'invalid-queue': 4,
   'invalid-transition': 4,
   'malformed-event': 1,
   'malformed-task-ref': 1,
@@ -155,19 +204,25 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'method-not-allowed': 1,
   'missing-actor': 1,
   'missing-status': 1,
-  'needs-task-link': 4,
+  'needs-scope-disposition': 4,
   'needs-task-or-adhoc': 1,
   'no-cache': 5,
   'no-disposition': 1,
+  'no-host-repository': 1,
   'no-targets': 1,
+  'not-a-board': 1,
   'not-a-tty': 1,
   'not-assignee': 4,
   'not-found': 1,
   'path-outside-tree': 1,
   'port-in-use': 1,
+  queued: 4,
   'read-only': 1,
+  'remote-mismatch': 1,
+  'remote-unreachable': 3,
   'schema-mismatch': 5,
   'secret-like': 1,
+  'stale-grant': 4,
   'streaming-command': 1,
   'sync-conflict': 3,
   'sync-failed': 3,
@@ -179,6 +234,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'unknown-ticket': 4,
   'unpromoted-decision': 1,
   'unsupported-source': 1,
+  unsynced: 4,
   usage: 1,
 };
 
@@ -269,7 +325,8 @@ export function hintStep(
  * - `id-too-short`, `ambiguous-id`: give a longer unique prefix; step
  *   `list`.
  * - `secret-like`: remove the secret from the text; for a command that has
- *   the flag `--allow-secret-like` (`new`, `comment`, `handoff`), also
+ *   the flag `--allow-secret-like` (`new`, `comment`, `handoff`, and `move`
+ *   and `close` for their `--unplanned` reason), also
  *   pass it for a false positive (the text `--allow-secret-like` appears).
  *   For a known command without that flag (`import-change`, whose text
  *   comes from the tasks file) the flag is never mentioned: the secret
@@ -332,8 +389,27 @@ export function hintStep(
  * - `git-missing`, `gh-missing`: install `git` or `gh` and put it on the
  *   `PATH` (the word `PATH` appears); `gh-missing` also names
  *   `gh auth login`.
- * - `ambiguous-remote`: set an upstream or a remote named `origin` in the
- *   board repository, then step `sync`.
+ * - `ambiguous-remote`: choose the remote with
+ *   `git config agentboard.remote <name>` (that text appears) in the
+ *   repository that holds the board's history, or name one `origin`, then
+ *   step `sync`; when the command is `init` (which refuses before writing
+ *   anything), step `init` again, and step `sync` as the command that
+ *   uses the same choice.
+ * - `git-too-old`: a board in the host repository needs git 2.32 or later
+ *   (the text `2.32` and the word `upgrade` appear); upgrade git, then
+ *   step `init` with `into-host` when the command is `init`, else step
+ *   `sync`.
+ * - `not-a-board`: the repository given to `init --remote` has a branch
+ *   without an `events/` directory (the word `events` appears); give
+ *   `--remote` an empty repository or one that holds a board, then step
+ *   `init` with `remote` `<url>`.
+ * - `remote-mismatch`: the standalone board already has a remote with
+ *   another URL; keep it, or change it with `git -C .board remote set-url
+ *   <name> <url>` (the text `remote set-url` appears); step `remote` shows
+ *   the remote `sync` would use.
+ * - `board-in-host`: the board is already shared through the host
+ *   repository at `refs/agentboard/board` (that text appears), which
+ *   `--remote` does not apply to; step `remote` shows how it is shared.
  * - `streaming-command`: run the command from the agentboard executable
  *   (step `<command>` when the command is known).
  * - `no-targets`: `agents install` detected nothing to install; names the
@@ -343,11 +419,22 @@ export function hintStep(
  *   stream step `watch` with `as` A.
  *
  * Exit 2: `board-not-found`: step `init`, and `AGENTBOARD_DIR`;
- * `board-not-a-repository`: step `help sync`.
+ * `board-not-a-repository`: step `help sync` (from `init`: move `.board`
+ * aside, or step `init` first when it holds event files, then step `init`
+ * with `remote` `<url>`); `board-link-broken`: step
+ * `init`, which repairs the board's link to the host repository.
  *
- * Exit 3: `sync-in-progress`, `detached-head`, `sync-conflict`,
- * `sync-failed`: what a human does in the board repository, then step
- * `sync`; `sync-conflict` names `git rebase --continue`.
+ * Exit 3: `sync-in-progress`, `detached-head`, `board-on-branch`,
+ * `sync-conflict`, `sync-failed`: what a human does in the board
+ * repository, then step `sync`; `sync-conflict` names
+ * `git rebase --continue`; `board-on-branch` names
+ * `git -C .board switch --detach refs/agentboard/board` (that text
+ * appears: a host-model board is synced on a detached HEAD).
+ * `remote-unreachable`: create an empty repository at the URL given to
+ * `init --remote` (on the git host, or as a local bare repository) and
+ * check the access to it (the words `create` and `access` appear; a git
+ * host answers the same for a missing repository and one the user cannot
+ * read), then step `init` with `remote` `<url>`.
  *
  * Exit 4:
  * - `unknown-ticket`, `duplicate-create`: step `list`.
@@ -358,8 +445,35 @@ export function hintStep(
  *   run `agentboard inbox --as <itself>`).
  * - `not-assignee`: step `show` with I.
  * - `checklist-index`: step `show` with I.
- * - `needs-task-link`: step `link` with I, `task`
- *   `<source>:<ref>#<item>`, A.
+ * - `holder-changed`, `invalid-queue`, `stale-grant`: step `show` with I
+ *   (for the current holder, queue and lease).
+ * - `queued`: step `show` with I (for the queue).
+ * - `needs-scope-disposition` (board-agent-guidance: "Error hints",
+ *   scenario "Missing disposition hint"; design.md section 9): both forms
+ *   of the refused command, each a step, and the text "do not create an
+ *   issue or task only to satisfy this" (literally). For the command
+ *   `close` (D is the decision flag of `context.closeDecision`:
+ *   `no-decision` `true`, or `decision-recorded-in` with its path; when
+ *   `closeDecision` is unknown, `no-decision` `true`): step `close` with
+ *   I, D, `task` `<source>:<ref>#<item>`, A and step `close` with I, D,
+ *   `unplanned` `<reason>`, A. Otherwise (`move`, `handoff`, which takes
+ *   no disposition flag, and unknown): step `move` with I, `status`
+ *   `merged`, `task` `<source>:<ref>#<item>`, A and step `move` with I,
+ *   `status` `merged`, `unplanned` `<reason>`, A. On the CLI the unplanned
+ *   step is written with the placeholder in double quotes, exactly
+ *   `--unplanned "<reason>"` (the spec's wording; `splitCommandLine` and a
+ *   shell both read it as the one word `<reason>`), so for
+ *   `move T1 merged --as orch` the hint contains
+ *   `'agentboard move T1 merged --task <source>:<ref>#<item> --as orch'`
+ *   and `'agentboard move T1 merged --unplanned "<reason>" --as orch'`;
+ *   over MCP `board_move {"id":"T1","status":"merged","task":"<source>:<ref>#<item>","as":"orch"}`
+ *   and `board_move {"id":"T1","status":"merged","unplanned":"<reason>","as":"orch"}`.
+ *   The CLI form also names `--change <name> --group <n>` literally.
+ * - `already-linked`: the ticket already names a planned task (the
+ *   message names it), so it needs no unplanned reason: step the refused
+ *   command without it, that is step `move` with I, `status` `merged`, A
+ *   (for `move`, and unknown) or step `close` with I, D, A (for `close`),
+ *   and step `show` with I (for the link).
  *
  * Exit 5: `integrity`: a human must inspect the file named in the
  * message; step `rebuild --check`. `busy`: retry the command. `no-cache`,
@@ -439,9 +553,18 @@ interface HintParts {
 /** Renders the hint of one reason. */
 type HintTemplate = (parts: HintParts) => string;
 
-/** What a human does in the board repository, then sync again. */
-function syncHint(what: string): HintTemplate {
-  return (h) => `${what}, then run ${h.step('sync')}`;
+/**
+ * What a human does in the board repository, then sync again. From `init`
+ * the same refusal comes from the `sync` that `init --remote` runs, or
+ * from `init --into-host` (its step 1 checks on the standalone board, or
+ * a conflict in its temporary worktree), so the hint names both commands
+ * to run again, `init --into-host` for the move.
+ */
+function syncHint(what: string, initWhat = what): HintTemplate {
+  return (h) =>
+    h.command?.name === 'init'
+      ? `${initWhat}, then run ${h.step('sync')} (after init --remote) or ${h.step('init', [['into-host', true]])} again (after a move)`
+      : `${what}, then run ${h.step('sync')}`;
 }
 
 /** The fix for a tasks file problem, then the import again. */
@@ -515,6 +638,64 @@ const usageHint: HintTemplate = (h) => {
   return tool === undefined
     ? `call tools/list for the tool names and their input schemas, or run ${h.help()} in a shell`
     : `check the input schema of ${tool} in tools/list, or run ${h.help()} in a shell`;
+};
+
+/**
+ * The arguments of the refused `move <id> merged` or `close <id> <decision
+ * flag>` before its disposition (board-openspec-integration: "Scope
+ * disposition at merge and close"): for `close`, the decision flag of
+ * `context.closeDecision`, or `--no-decision` when it is unknown; for any
+ * other command (`move`, `handoff`, unknown), `move` to `merged`.
+ */
+function refusedExit(h: HintParts): {
+  command: 'move' | 'close';
+  args: (readonly [string, string | true])[];
+} {
+  if (h.command?.name !== 'close') {
+    return {
+      command: 'move',
+      args: [
+        ['id', h.id],
+        ['status', 'merged'],
+      ],
+    };
+  }
+  const decision = h.context.closeDecision;
+  return {
+    command: 'close',
+    args: [
+      ['id', h.id],
+      decision?.flag === 'decision-recorded-in'
+        ? ['decision-recorded-in', decision.path]
+        : ['no-decision', true],
+    ],
+  };
+}
+
+/** The template of `needs-scope-disposition`. */
+const needsScopeDispositionHint: HintTemplate = (h) => {
+  const mcp = h.context.surface === 'mcp';
+  const { command, args } = refusedExit(h);
+  const task = h.step(command, [...args, ['task', '<source>:<ref>#<item>'], ['as', h.actor]]);
+  // On the CLI the placeholder is written in double quotes, as the spec
+  // words it; the shell and the parser both read it as the one word
+  // <reason>.
+  const unplanned = h.step(command, [
+    ...args,
+    ['unplanned', mcp ? '<reason>' : '"<reason>"'],
+    ['as', h.actor],
+  ]);
+  const shorthand = mcp ? ' (or change and group)' : ' (or --change <name> --group <n>)';
+  const exit = command === 'close' ? 'closing' : 'merging';
+  return `${exit} needs the scope of the work: run ${task}${shorthand} naming the planned task it delivered, or ${unplanned} saying why it was never planned; do not create an issue or task only to satisfy this`;
+};
+
+/** The template of `already-linked`. */
+const alreadyLinkedHint: HintTemplate = (h) => {
+  const { command, args } = refusedExit(h);
+  const again = h.step(command, [...args, ['as', h.actor]]);
+  const flag = h.context.surface === 'mcp' ? 'the unplanned argument' : '--unplanned';
+  return `the ticket already names a planned task, so it needs no unplanned reason: run ${again} (without ${flag}); see the link with ${h.step('show', [['id', h.id]])}`;
 };
 
 /** Every reason's template (the contract is on `renderHint`). */
@@ -600,9 +781,22 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
       'close-merged',
       [['as', h.actor]],
     )} again`,
-  'ambiguous-remote': syncHint(
-    'in the board repository, set an upstream for the branch or name one remote origin',
-  ),
+  'ambiguous-remote': (h) =>
+    `in the repository that holds the board history, choose the remote with git config agentboard.remote <name> (or name one of them origin), then run ${
+      h.command?.name === 'init'
+        ? `${h.step('init')} again (${h.step('sync')} uses the same choice)`
+        : h.step('sync')
+    }`,
+  'git-too-old': (h) =>
+    `a board in the host repository needs git 2.32 or later; upgrade git, then run ${
+      h.command?.name === 'init' ? h.step('init', [['into-host', true]]) : h.step('sync')
+    } again`,
+  'not-a-board': (h) =>
+    `the repository has a branch without an events/ directory, so it holds no board; give --remote an empty repository or one that holds a board, then run ${h.step('init', [['remote', '<url>']])} again`,
+  'remote-mismatch': (h) =>
+    `the board already has a remote with another URL; keep it, or change it with git -C .board remote set-url <name> <url>; ${h.step('remote')} shows the remote sync would use`,
+  'board-in-host': (h) =>
+    `the board is already shared through the host repository at refs/agentboard/board, which --remote does not apply to; ${h.step('remote')} shows how it is shared`,
   'streaming-command': streamingHint,
   'port-in-use': (h) =>
     `another process listens on that port; let the system choose a free one with ${h.step('serve', [['port', '0']])}, or pass another --port`,
@@ -626,23 +820,38 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     `top needs an interactive terminal; for a snapshot of the board use ${h.step('list')}, and for a line stream ${h.step('watch', [['as', h.actor]])}`,
   'no-targets': (h) =>
     `choose what to install with ${h.step('agents install', [['target', '<target>']])}, where <target> is claude, agents-md, openspec or mcp-json`,
+  'no-host-repository': (h) =>
+    `a move needs a board found through a git repository whose .git directory is inside its working tree (not through AGENTBOARD_DIR, and not a bare, separate-git-dir or submodule host); unset AGENTBOARD_DIR and run ${h.step('init', [['into-host', true]])} at the root of the main checkout`,
   // Exit 2.
   'board-not-found': (h) =>
     `create the board with ${h.step('init')} at the root of the main checkout, or set AGENTBOARD_DIR to an existing board`,
   'board-not-a-repository': (h) =>
-    `the board directory must be the top level of its own git repository; see ${h.step('help', [['topic', 'sync']])}`,
+    h.command?.name === 'init'
+      ? `.board exists but is not a board repository; move it aside (run ${h.step('init')} first instead when it holds event files you want to keep), then run ${h.step('init', [['remote', '<url>']])} again`
+      : `the board directory must be the top level of its own git repository; see ${h.step('help', [['topic', 'sync']])}`,
+  'board-link-broken': (h) =>
+    `the board is a worktree of the host repository whose link is broken; run ${h.step('init')} at the root of the main checkout to repair it`,
   // Exit 3.
   'sync-in-progress': syncHint(
-    'a human finishes or aborts the rebase, merge or cherry-pick in progress in the board repository',
+    'a human finishes (git rebase --continue) or aborts (git rebase --abort) the rebase, merge or cherry-pick in progress where the message says (the board repository, or the temporary worktree of a move)',
+    'a human finishes (git rebase --continue for a stopped rebase, git cherry-pick --continue or --skip for a stopped cherry-pick) or aborts (git rebase --abort, git cherry-pick --abort) the operation in progress where the message says (the board repository, or the temporary worktree of a move)',
   ),
   'detached-head': syncHint('a human checks out a branch in the board repository'),
+  'board-on-branch': syncHint(
+    'a human puts the board worktree back on a detached HEAD at the board ref with git -C .board switch --detach refs/agentboard/board',
+  ),
   'sync-conflict': syncHint(
-    'a human resolves the conflict in the board repository, runs git add and git rebase --continue (or --abort)',
+    'a human resolves the conflict where the message says (the board repository, or the temporary worktree of a move), runs git add and git rebase --continue (or --abort)',
+    'a human resolves the conflict where the message says (the board repository, or the temporary worktree of a move), runs git add and git rebase --continue for a stopped rebase or git cherry-pick --continue for a stopped cherry-pick (or the matching --abort)',
   ),
   'sync-failed': syncHint(
     'a human fixes what the message names in the board repository (content staged by hand, the remote or the network)',
   ),
+  'remote-unreachable': (h) =>
+    `create an empty repository at that URL (on your git host, or a local bare repository) and check your access to it, then run ${h.step('init', [['remote', '<url>']])} again`,
   // Exit 4.
+  unsynced: (h) =>
+    `the standalone board has events that are not committed or not pushed, which a move could lose; run ${h.step('sync')} first, then ${h.step('init', [['into-host', true]])} again`,
   'unknown-ticket': (h) => `no ticket matches that id; find it with ${h.step('list')}`,
   'duplicate-create': (h) => `that ticket already exists; find it with ${h.step('list')}`,
   'invalid-transition': (h) =>
@@ -653,12 +862,16 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     `only the assignee can do this; see who holds the ticket with ${h.step('show', [['id', h.id]])}`,
   'checklist-index': (h) =>
     `checklist lines are numbered from 0; see them with ${h.step('show', [['id', h.id]])}`,
-  'needs-task-link': (h) =>
-    `an ad hoc ticket cannot enter implementing until it names a planned task: ${h.step('link', [
-      ['id', h.id],
-      ['task', '<source>:<ref>#<item>'],
-      ['as', h.actor],
-    ])}`,
+  'holder-changed': (h) =>
+    `the ticket is no longer held by that holder; see who holds it now with ${h.step('show', [['id', h.id]])}`,
+  'invalid-queue': (h) =>
+    `that queue change does not apply to the ticket as it stands; see its holder and queue with ${h.step('show', [['id', h.id]])}`,
+  'stale-grant': (h) =>
+    `that grant is no longer the one due; see the ticket's holder, lease and queue with ${h.step('show', [['id', h.id]])}`,
+  queued: (h) =>
+    `other actors are waiting for this ticket and have priority; see the queue with ${h.step('show', [['id', h.id]])}`,
+  'needs-scope-disposition': needsScopeDispositionHint,
+  'already-linked': alreadyLinkedHint,
   // Exit 5.
   integrity: (h) =>
     `a human must inspect the file named in the message; compare the cache with the events using ${h.step('rebuild', [['check', true]])}`,

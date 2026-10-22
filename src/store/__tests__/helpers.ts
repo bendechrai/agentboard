@@ -157,6 +157,12 @@ export const P = {
   meta(key: string, value: unknown): ProposedEvent {
     return { kind: 'board.meta', body: { key, value } } as ProposedEvent;
   },
+  unplanned(ticket: string, reason: string): ProposedEvent {
+    return { kind: 'ticket.unplanned', ticket, body: { reason } };
+  },
+  task(ticket: string, task: TaskRef = TASK): ProposedEvent {
+    return { kind: 'ticket.link', ticket, body: { task } };
+  },
 };
 
 /** An operation that always proposes `event`, without looking at state. */

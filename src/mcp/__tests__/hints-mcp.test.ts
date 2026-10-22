@@ -108,19 +108,24 @@ describe('scenario: missing actor over MCP', () => {
   });
 });
 
-describe('scenario: needs-task-link over MCP', () => {
-  it('hints a board_link tool call with a task reference', () => {
+describe('scenario: an ad hoc ticket enters implementing over MCP', () => {
+  // The `needs-task-link` refusal is removed (add-adhoc-ticket-lifecycle);
+  // the hints of `needs-scope-disposition` and `already-linked` over MCP
+  // are pinned by group 2 of that change.
+  it('board_move into implementing succeeds without a task reference', () => {
     const server = serve();
     const id = newId(server, { adhoc: 'found in CI' });
     expect(server.callTool('board_claim', { id, as: 'impl' }).isError).toBeUndefined();
     expect(
       server.callTool('board_move', { id, status: 'tests', as: 'impl' }).isError,
     ).toBeUndefined();
-    const err = failure(server.callTool('board_move', { id, status: 'implementing', as: 'impl' }));
-    expect(err).toMatchObject({ exitCode: 4, reason: 'needs-task-link' });
-    expect(err.hint).toContain(
-      `board_link {"id":"${id}","task":"<source>:<ref>#<item>","as":"impl"}`,
-    );
+    const moved = server.callTool('board_move', { id, status: 'implementing', as: 'impl' });
+    expect(moved.isError, JSON.stringify(moved)).toBeUndefined();
+    expect(moved.structuredContent.ticket).toMatchObject({
+      status: 'implementing',
+      task: null,
+      adhoc: 'found in CI',
+    });
   });
 });
 

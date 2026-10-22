@@ -5,3 +5,4 @@ coverage/
 openspec/
 docs/
 site-tools/
+src/events/__tests__/fixtures/

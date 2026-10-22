@@ -9,19 +9,59 @@ sequence of events folds into ticket state.
 
 ### Requirement: Board directory per project
 Each project SHALL have at most one board, stored in a directory named
-`.board` at the root of the project's main checkout. The `.board` directory
-SHALL itself be a git repository, so that board history is versioned and
-synced independently of the host project. The host project SHALL ignore
-`.board/` in its own `.gitignore`; `agentboard init` SHALL add that entry when
-it is missing.
+`.board` at the root of the project's main checkout. A board's history
+SHALL be versioned in git in one of two models:
+
+- **Host model**: `.board` is a linked git worktree of the host project's
+  repository, on a detached HEAD, and the board's history is the ref
+  `refs/agentboard/board` in the host repository (see "Board ref in the host
+  repository").
+- **Standalone model**: `.board` is itself the top level of a git
+  repository of its own, synced independently of the host project.
+
+`agentboard init` without flags SHALL create a host-model board when it
+runs inside a git repository (discovery source `git`) with git 2.32 or
+later and the host has an in-tree git directory: the parent of `.board`
+(the parent of the git common directory) is the top level of a working
+tree, and that working tree's git common directory is `<top level>/.git`,
+compared as realpaths. It SHALL create a standalone board otherwise:
+outside a git repository, when `AGENTBOARD_DIR` is set, when git is older
+than 2.32 (in which case it SHALL say that the host model needs git 2.32
+or later), or when the host's git directory is not in its working tree (a
+bare repository with linked worktrees, a `--separate-git-dir` repository,
+or a submodule whose git directory is `<superproject>/.git/modules/<name>`;
+in which case it SHALL say that the host model needs the repository's
+`.git` directory inside its working tree, naming the git directory found).
+That decision is taken before anything is written. `init --remote <url>`
+SHALL always create a standalone board (see board-cli). An existing board
+of either model SHALL keep its model until it is moved with
+`init --into-host`. The host project SHALL ignore `.board/` in its own
+`.gitignore`; whenever the parent of `.board` is the top level of a
+working tree (the host model, or a standalone fallback inside such a
+repository), `agentboard init` SHALL add that entry when it is missing,
+before it creates the board; outside a working tree (no git repository,
+`AGENTBOARD_DIR`, or a parent that is a git directory's container) it
+SHALL write no host `.gitignore`.
 
 #### Scenario: Init creates the board
-- **WHEN** `agentboard init` runs at the root of a git repository with no `.board` directory
-- **THEN** a `.board` directory is created containing an initialized git repository, an `events` directory containing only an empty `.gitkeep` (so the directory survives a git clone) and a `.gitignore` that excludes the cache file, and the host project's `.gitignore` contains a `.board/` entry
+- **WHEN** `agentboard init` runs at the root of a git repository with git 2.32 or later, no `.board` directory, no `refs/agentboard/board` and no remote
+- **THEN** the host repository has a ref `refs/agentboard/board`, `.board` is a linked worktree of the host repository on a detached HEAD at that ref, containing an `events` directory with only an empty `.gitkeep` and a `.gitignore` that excludes the cache file, and the host project's `.gitignore` contains a `.board/` entry
+
+#### Scenario: Init outside a git repository
+- **WHEN** `agentboard init` runs in a directory that is not inside a git repository
+- **THEN** a `.board` directory is created containing an initialized git repository of its own, an `events` directory containing only an empty `.gitkeep` and a `.gitignore` that excludes the cache file, no commit is made, and no host `.gitignore` is written
+
+#### Scenario: Init with an old git
+- **WHEN** `agentboard init` runs at the root of a git repository with no `.board` and git 2.31 is on the PATH
+- **THEN** a standalone board is created as outside a git repository, the host `.gitignore` gains `.board/`, and the output says the host model needs git 2.32 or later
 
 #### Scenario: Init is idempotent
-- **WHEN** `agentboard init` runs where a `.board` directory already exists
-- **THEN** nothing is created or modified and the command exits 0 with a message that the board already exists
+- **WHEN** `agentboard init` runs where a healthy `.board` of either model already exists
+- **THEN** nothing is created or modified and the command exits 0 with a message that the board already exists, naming its model; the one exception is a host-model worktree that is not locked (an `init` interrupted after the worktree was added), whose lock `init` restores and reports
+
+#### Scenario: Init in a host whose git directory is not in its working tree
+- **WHEN** `agentboard init` runs with git 2.32 or later in a linked worktree of a bare repository, in a repository made with `git init --separate-git-dir`, or inside a submodule of a superproject
+- **THEN** it creates a standalone board where discovery puts it, exits 0 with a message that the host model needs the repository's `.git` directory inside its working tree, writes no `.gitignore` outside a working tree, and creates no ref under `refs/agentboard/` and no worktree in the repository or the superproject
 
 ### Requirement: Board discovery from any worktree
 Commands SHALL locate the board without being told where it is. Resolution
@@ -133,6 +173,8 @@ of strings; `task` and `adhoc` SHALL NOT both be present);
 `ticket.release` (no body fields);
 `ticket.handoff` (to: actor, status, note);
 `ticket.link` (exactly one of: `task` reference, pr URL or number, decision path);
+`ticket.unplanned` (reason: non-empty string; records that the ticket's
+scope was never planned, see "Unplanned disposition");
 `ticket.close` (either `decision` path string or `noDecision` true);
 `ticket.checklist` (index: integer, done: boolean);
 `ticket.checklist.add` (items: non-empty array of objects with `text`, a
@@ -147,6 +189,10 @@ set). Bodies with extra fields SHALL be malformed.
 #### Scenario: Checklist tick out of range
 - **WHEN** a `ticket.checklist` event names an index beyond the ticket's checklist length
 - **THEN** the event is reported as rejected with reason `checklist-index` and the ticket is unchanged
+
+#### Scenario: Unplanned body is checked
+- **WHEN** a `ticket.unplanned` event has an empty `reason`, or a body with a field other than `reason`
+- **THEN** the event is reported as malformed naming the field and is not folded
 
 ### Requirement: Unknown kinds are preserved
 An event whose `kind` is not defined by this specification SHALL be kept in
@@ -181,7 +227,8 @@ display order only, never correctness.
 
 ### Requirement: Fold semantics
 Folding SHALL produce, per ticket: id, title, description, status, assignee,
-labels, task reference or ad hoc reason, checklist with done flags, ordered comments (each
+labels, task reference or ad hoc reason, unplanned disposition (reason,
+actor and timestamp, or none), checklist with done flags, ordered comments (each
 with actor, timestamp and text), links, closed flag with its decision record
 path or explicit no-decision marker, `version` (the count of folded events
 that changed the ticket), and `updated_at` (the timestamp of the last such
@@ -193,18 +240,24 @@ not permitted by the state machine (see board-cli) SHALL be rejected with
 reason `invalid-transition`; a `ticket.claim` on an assigned ticket SHALL be
 rejected with reason `already-assigned`; a `ticket.release` by an actor other
 than the assignee SHALL be rejected with reason `not-assignee`; a
-`ticket.move` or `ticket.handoff` that would take a ticket with no task
-reference into `implementing` SHALL be rejected with reason
-`needs-task-link` (see board-openspec-integration). Rejected
+`ticket.move` or `ticket.handoff` that would take a ticket with neither a
+task reference nor an unplanned disposition into `merged` SHALL be rejected
+with reason `needs-scope-disposition` (see board-openspec-integration); a
+`ticket.unplanned` on a ticket that has a task reference SHALL be rejected
+with reason `already-linked`. No rule SHALL depend on a task reference for
+a move into `implementing` or any status other than `merged`. Rejected
 events SHALL be listed in the fold report with hash, kind, ticket and reason
 and SHALL never be deleted.
 
 Where the requirements above leave a case open, the fold SHALL behave as
 follows. A `ticket.close` on a ticket not in `merged` or `blocked`, or on an
 already closed ticket, SHALL be rejected with reason `invalid-transition`.
+The fold SHALL NOT apply the scope disposition rule to `ticket.close`; that
+is the CLI's `close` check, like the decision-comment rule.
 Events after a close SHALL fold by their own rules (a comment on a closed
 ticket is accepted; a move out of `merged` is still rejected). A task link
-SHALL replace the ticket's task reference and clear its ad hoc reason; pr
+SHALL replace the ticket's task reference and clear its ad hoc reason and
+its unplanned disposition; pr
 and decision links SHALL be appended in fold order. `version` SHALL count
 every applied event of a defined kind, including one that leaves the state
 unchanged, such as ticking an already ticked checklist line. `board.meta`
@@ -227,3 +280,146 @@ the six statuses or the state machine. A ticket SHALL always be created in
 #### Scenario: Version counts effective events
 - **WHEN** a ticket has one create, two comments and one rejected move
 - **THEN** its version is 3 and its updated_at equals the timestamp of the second comment
+
+#### Scenario: Ad hoc ticket enters implementing
+- **WHEN** a `ticket.move` to `implementing` is folded for an ad hoc ticket in `tests` with no task reference
+- **THEN** it is applied and the ticket is in `implementing`
+
+#### Scenario: Undisposed ticket cannot enter merged
+- **WHEN** a `ticket.move` to `merged`, or a `ticket.handoff` with status `merged`, is folded for an ad hoc ticket in `review` with no task reference and no unplanned disposition
+- **THEN** it is rejected with reason `needs-scope-disposition` and the ticket stays in `review`
+
+#### Scenario: Close of an undisposed ticket still folds
+- **WHEN** a log written by a release without `ticket.unplanned` holds an ad hoc ticket moved to `blocked` and then closed with `noDecision`, with no task link and no `ticket.unplanned`
+- **THEN** the close is applied and the ticket is closed
+
+### Requirement: Board ref in the host repository
+A host-model board's history SHALL be the commit history of the single ref
+`refs/agentboard/board` in the host repository. Every ref under
+`refs/agentboard/` is reserved for agentboard; agentboard SHALL never create
+a branch (`refs/heads/*`) or tag for a board. The ref SHALL be the only
+thing that keeps board commits reachable: when any agentboard command that
+moves the worktree's HEAD completes (one that stops on a conflict for a
+human has not completed), `refs/agentboard/board` SHALL equal that HEAD, so `git gc` in the host repository never loses a board commit even if
+`.board` is removed. A new empty board's first commit SHALL be
+deterministic: the tree holds `.gitignore` (the cache exclusions) and
+`events/.gitkeep`, author and committer are
+`agentboard <agentboard@localhost>` at time 0 (`1970-01-01T00:00:00Z`), and
+the message is `agentboard: empty board`, so empty boards created
+independently in clones of one project share their root commit. The
+worktree SHALL be registered in the host repository and locked with the
+reason `agentboard board` so `git worktree prune` and `git worktree remove`
+leave it alone. `init` SHALL hold a pid lock file
+`<git common dir>/agentboard/init.lock` while it finds or makes the ref,
+adds and locks the worktree or repairs a broken link, removing it when
+done, so two `init` processes racing on one host leave one ref and one
+worktree; a lock whose pid is not running or that is older than 60
+seconds SHALL be treated as stale and broken by the next `init`. Every git command agentboard runs against the host
+repository for the board SHALL run with the host's git hooks disabled,
+without writing the host's configuration: each command is given
+`core.hooksPath` pointing at an empty directory `agentboard-no-hooks` that
+agentboard creates under the board worktree's git directory (a temporary
+directory when git cannot name it), and `git config core.hooksPath` in the
+host is unchanged afterwards.
+Apart from the `.board/` entry `init` adds to the host `.gitignore`,
+agentboard SHALL never modify a branch, a tag, the index or the working
+tree of any other worktree of the host. `git clone` of the host and `git fetch` without an
+explicit refspec SHALL NOT transfer the board, because they only fetch
+branches and tags.
+
+#### Scenario: Plain clone does not fetch the board
+- **WHEN** clone A of a project has pushed `refs/agentboard/board` to `origin` and someone runs `git clone <origin>` and then `git fetch origin`
+- **THEN** the new clone has no ref under `refs/agentboard/`, no branch or tag was added for the board, and `git ls-remote origin refs/agentboard/board` still lists it
+
+#### Scenario: Garbage collection keeps the board
+- **WHEN** a host-model board has synced commits and `git gc --prune=now` runs in the host repository
+- **THEN** every event file in the board's history is still readable from `refs/agentboard/board`
+
+#### Scenario: Independent empty boards share their root
+- **WHEN** two clones of a project each run `agentboard init` with no board on any remote
+- **THEN** the root commits of their `refs/agentboard/board` have the same id
+
+#### Scenario: Host hooks do not run for the board
+- **WHEN** the host repository has a `pre-push` hook that fails and `agentboard sync` pushes a host-model board
+- **THEN** the push succeeds and the hook did not run
+
+#### Scenario: Worktree cleanup leaves the board alone
+- **WHEN** `git worktree prune` runs in the host repository, and then `git worktree remove .board` without `--force`
+- **THEN** `.board` is still registered and present, and the remove is refused because the worktree is locked
+
+### Requirement: Board model detection
+Every command that runs git on the board (`init`, `sync` and `remote`) SHALL
+decide the board's model the same way. With `<parent>` the directory that
+contains the board directory:
+
+- **host**: the board directory is the top level of a linked worktree whose
+  git common directory is the git common directory of `<parent>`;
+- **standalone**: the board directory is the top level of a repository that
+  is not a linked worktree (its git common directory is its git directory,
+  after resolving), whether `.git` is a directory or a file naming a git
+  directory elsewhere (`git init --separate-git-dir`, a submodule of the
+  host whose git directory is `<host>/.git/modules/<name>`);
+- **broken host link**: the board directory contains a `.git` file whose
+  target is missing, or is a linked worktree whose git common directory is
+  not `<parent>`'s (the host was moved, or a `.board` was copied from
+  another clone);
+- **not a repository**: none of the above (no `.git`, or a plain
+  subdirectory of the host repository).
+
+Where a standalone board's git directory lies SHALL NOT change how it is
+treated: `sync` and `remote` SHALL handle a standalone board whose `.git`
+is a file exactly as one whose git directory is `.board/.git`, so every
+board that synced before the host model existed keeps syncing unchanged.
+A board's model never affects commands that only read or write events.
+Detection decides the model of an existing board; `init` SHALL take the
+host model for a new board only in a host with an in-tree git directory
+(see "Board directory per project"), so a board that detection would
+report as a worktree of a bare repository or of a superproject is never
+created. On
+a broken host link, `sync` SHALL exit 2 with reason `board-link-broken`,
+naming the directory and that `agentboard init` repairs it, and SHALL change
+nothing.
+
+#### Scenario: Separate git directory is standalone
+- **WHEN** `.board` was made with `git init --separate-git-dir <dir> .board` (its `.git` is a file naming a git directory outside `.board`), has `origin` configured and a new event file, and `agentboard sync` runs
+- **THEN** the model is `standalone`, `sync` commits the event, pushes `main` to `origin` and exits 0, exactly as on a standalone board whose git directory is `.board/.git`
+
+#### Scenario: Submodule board is standalone
+- **WHEN** `.board` is a submodule of the host repository (its `.git` file names `<host>/.git/modules/.board`) and `agentboard remote` runs
+- **THEN** it reports the model `standalone` with the git directory the `.git` file names, not a broken host link
+
+#### Scenario: Stale board copied into a fresh clone
+- **WHEN** a host-model `.board` directory is copied from clone A into a fresh clone C of the same project and `agentboard sync` runs in C
+- **THEN** it exits 2 with reason `board-link-broken`, and neither clone's repository or board changed
+
+#### Scenario: Board commands work on a broken link
+- **WHEN** the host link is broken and `agentboard list` runs
+- **THEN** it lists the tickets from the event files in `.board/events` and exits 0
+
+### Requirement: Unplanned disposition
+A `ticket.unplanned` event SHALL record that the ticket's scope was never
+planned. When applied it SHALL set the ticket's unplanned disposition to
+its `reason`, actor and `ts`, replacing any earlier one, and SHALL leave
+the ad hoc reason, status, assignee and closed flag unchanged. It SHALL be
+applied in any status, open or closed, unless the ticket has a task
+reference (`already-linked`). An applied task link SHALL clear it.
+
+#### Scenario: Unplanned then merged
+- **WHEN** an ad hoc ticket in `review` has an applied `ticket.unplanned` with reason `hotfix` followed by a `ticket.move` to `merged`
+- **THEN** both are applied, the ticket is in `merged` with the unplanned disposition `hotfix`, its ad hoc reason is unchanged, and its version went up by 2
+
+#### Scenario: Unplanned on a linked ticket
+- **WHEN** a `ticket.unplanned` is folded for a ticket whose task reference is `openspec:add-login#2`
+- **THEN** it is rejected with reason `already-linked` and the ticket is unchanged
+
+#### Scenario: Later task link clears the disposition
+- **WHEN** a ticket merged with an unplanned disposition later receives an applied `ticket.link` with a task reference
+- **THEN** the ticket has that task reference, no ad hoc reason and no unplanned disposition
+
+#### Scenario: Disposition without its move
+- **WHEN** the log holds an applied `ticket.unplanned` for a ticket in `review` and no later event for it (the writing command died before its move)
+- **THEN** the ticket is in `review` with the unplanned disposition, and a later `ticket.move` to `merged` without another disposition is applied
+
+#### Scenario: Older version keeps the event
+- **WHEN** a version without `ticket.unplanned` folds a log containing one
+- **THEN** it reports the event as an unknown kind, preserves it, and folds every other event of the ticket by its own rules

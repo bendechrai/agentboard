@@ -126,7 +126,7 @@ A two-word command is suggested when its first word is close enough
 
 ## The agent guide
 
-`agentboard help agents` prints a plain ASCII guide of at most 150 lines,
+`agentboard help agents` prints a plain ASCII guide of at most 180 lines,
 stamped with the version, written for a coding agent that has never seen
 the board: what the board is and is not, the actor rule, finding work
 (`inbox`, `list`), claiming before starting, handing off and blocking with
@@ -153,19 +153,47 @@ Run `init` once at the root of the project's main checkout:
 
 ```
 $ agentboard init
-created the board at /path/to/project/.board
+created the board at /path/to/project/.board (host model: a worktree of the host repository at refs/agentboard/board); a new empty board; agentboard sync publishes it to origin, where everyone who can fetch the remote can read it
 Next: run 'agentboard agents install' so this project's coding agents learn to use the board.
 ```
 
-This creates `.board/`, which is itself a small git repository holding
-`events/` (with an empty `.gitkeep`) and a `.gitignore` that excludes the
-cache (`cache.sqlite` and its `-wal` and `-shm` files). `init` also adds a
-`.board/` entry to the host project's `.gitignore` when it is missing, so
-board activity never touches the host project's history; commit that
-`.gitignore` change. Running `init` again changes nothing and exits 0.
-Either way its last line suggests `agentboard agents install` (see
+A board's history is kept in git in one of two models:
+
+- **Host model**, the default inside a git repository with git 2.32 or
+  later: the board's commits live in the project's own repository under
+  the hidden ref `refs/agentboard/board`, and `.board/` is a linked
+  worktree of that repository on a detached HEAD, locked with the reason
+  `agentboard board` so `git worktree prune` and `git worktree remove`
+  leave it alone. The ref is not a branch: it triggers no CI, falls under
+  no branch protection, appears in no branch list, and a plain `git clone`
+  or `git fetch` never transfers it, so contributors who do not use
+  agentboard never see it. Sharing needs no setup: the board travels over
+  the project's remote and credentials (see "Sync between machines").
+- **Standalone model**: `.board/` is a small git repository of its own.
+  `init` creates one outside a git repository, when `AGENTBOARD_DIR` is
+  set, when git is older than 2.32, or when the repository's `.git`
+  directory is not inside its working tree (a bare repository with linked
+  worktrees, `git init --separate-git-dir`, a submodule); it says so in
+  each case. Every board made before the host model existed is one.
+  `init --remote <url>` creates a standalone board shared through a
+  repository of its own, for a board that must stay out of a public
+  project.
+
+In both models `.board/` holds `events/` (with an empty `.gitkeep`) and a
+`.gitignore` that excludes the cache (`cache.sqlite` and its `-wal` and
+`-shm` files). Inside a git repository `init` also adds a `.board/` entry
+to the host project's `.gitignore` when it is missing, so board activity
+never touches the host project's history; commit that `.gitignore`
+change. Running `init` again changes nothing and exits 0, naming the
+board's model, where its history lives and the remote `sync` would use;
+an interrupted `init` is completed by running it again. With several
+remotes and none chosen (no `origin`, no upstream on the main checkout's
+branch, no `agentboard.remote`), `init` exits 1 (`ambiguous-remote`) and
+creates nothing: set `git config agentboard.remote <name>` and run it
+again. Either way its last line suggests `agentboard agents install` (see
 "Installing agent guidance into a project"); `init --json` prints only
-its JSON document.
+its JSON document, with `dir`, `created`, `model`, `joined`, `remote`,
+`events`, `hostGitignore`, `warnings`, `repair` and `message`.
 
 Every command finds the board without being told where it is:
 
@@ -183,10 +211,13 @@ found, commands exit 2 naming the path they looked at.
 `agentboard agents install` writes short guidance into the project so
 that the coding agents working in it know the board exists and follow
 its rules. The installed text is a pointer, not a copy of the guide: it
-says when to use the board, states the five rules an agent must never
+says when to use the board, states the six rules an agent must never
 break (always pass an actor; claim before working; hand off or block with
 a comment before stopping; never mark completion on the board instead of
-in the tasks file; promote `DECISION:` comments before closing) and sends
+in the tasks file; promote `DECISION:` comments before closing; never
+create an issue, task file or task reference only to move a ticket, and
+give an ad hoc ticket its scope with `--unplanned` or `--task` when it is
+merged or closed) and sends
 the agent to `agentboard help agents` for everything else, so it does not
 go stale when the CLI changes.
 
@@ -253,7 +284,7 @@ selected claude: .claude/ exists
 selected mcp-json: requested with --mcp-command
 created claude .claude/skills/agentboard/SKILL.md
 created mcp-json .mcp.json
-agents install: 2 created, 0 updated, 0 unchanged, 0 refused (guidance v1) in /path/to/project
+agents install: 2 created, 0 updated, 0 unchanged, 0 refused (guidance v2) in /path/to/project
 ```
 
 An existing `mcpServers.agentboard` entry is managed when it is exactly
@@ -284,7 +315,7 @@ selected claude: .claude/ exists
 selected openspec: openspec/config.yaml exists
 created claude .claude/skills/agentboard/SKILL.md
 updated openspec openspec/config.yaml
-agents install: 1 created, 1 updated, 0 unchanged, 0 refused (guidance v1) in /path/to/project
+agents install: 1 created, 1 updated, 0 unchanged, 0 refused (guidance v2) in /path/to/project
 ```
 
 Each target reports `created`, `updated`, `unchanged` or `refused`.
@@ -410,9 +441,36 @@ $ agentboard new "Photo albums" --as orchestrator --task speckit:001-photo-album
 (for example `--task add-login-3`) exits 1 and shows the expected form.
 Sources other than `openspec` are accepted and fully usable; only
 `import-change` needs a source adapter, and only the `openspec` one ships.
-An ad hoc ticket cannot move into `implementing` (exit 4,
-`needs-task-link`) until it is linked to a task with `link <id> --task ...`
-or `link <id> --change ... --group ...`: the board never introduces scope.
+
+An ad hoc ticket is worked like any other: it is claimed, moved through
+`tests`, `implementing` and `review`, blocked and handed off with the same
+commands. What it needs is a **scope disposition** when it leaves the
+flow: whoever moves it to `merged`, or closes it, says on that command
+either which planned task the work turned out to deliver (`--task
+<source>:<ref>#<item>`, or `--change <name> --group <n>`, validated as
+`link` validates them) or why it was never planned (`--unplanned
+<reason>`). Without one the move is refused with exit 4 and
+`needs-scope-disposition`, and the hint names both flags:
+
+```
+$ agentboard move 01M38YRHC32109EYJ1TPDZPQ2N merged --as reviewer-1
+agentboard: ticket.move on ticket 01M38YRHC32109EYJ1TPDZPQ2N refused: needs-scope-disposition
+hint: merging needs the scope of the work: run 'agentboard move 01M38YRHC32109EYJ1TPDZPQ2N merged --task <source>:<ref>#<item> --as reviewer-1' (or --change <name> --group <n>) naming the planned task it delivered, or 'agentboard move 01M38YRHC32109EYJ1TPDZPQ2N merged --unplanned "<reason>" --as reviewer-1' saying why it was never planned; do not create an issue or task only to satisfy this
+
+$ agentboard move 01M38YRHC32109EYJ1TPDZPQ2N merged --unplanned "production hotfix" --as reviewer-1
+01M38YRHC32109EYJ1TPDZPQ2N  merged  impl-1  [unplanned] Fix typo in footer
+```
+
+`--unplanned` writes a `ticket.unplanned` event with the reason, and then
+the move, in one transaction (both or neither); `--task` writes the same
+`ticket.link` that `link` would. A ticket linked earlier with `link`, or
+one that already has an unplanned disposition, needs nothing more, and
+`--unplanned` on a ticket that names a planned task is refused with exit
+4, `already-linked`. `close` takes the same flags (see "Decisions and
+closing tickets"). Never create an issue, task file or task reference
+only to move a ticket: the disposition is the honest answer to "was this
+planned, and if so, where?", and unplanned scope is shown in `list`,
+`show`, the web app and `health` rather than blocked (ADR 0013).
 
 Reading the board:
 
@@ -430,8 +488,12 @@ agentboard show 01M38YRHC3 --raw             # the ticket's raw event files
 
 Ticket ids are ULIDs; any unique prefix of at least 6 characters works, and
 an ambiguous prefix exits 1 listing the matches. `list` prints
-`<id>  <status>  <assignee or ->  <title>`, with `[adhoc]` and `[closed]`
-markers.
+`<id>  <status>  <assignee or ->  <title>`, with `[adhoc]`, `[unplanned]`
+(in place of `[adhoc]` once the unplanned disposition is recorded) and
+`[closed]` markers; a ticket with a task reference shows neither of the
+first two. `show` prints the `adhoc: <reason>` line and, after it,
+`unplanned: <reason> (by <actor>)`; `--json` carries the `unplanned`
+object (`reason`, `actor`, `ts`) or null.
 
 Every command accepts `--json` and then prints exactly one JSON document on
 stdout: an object for single-ticket commands, an array for `list`, and for
@@ -492,6 +554,16 @@ agentboard release 01M38YRHC3 --as impl-1
   not permitted, nothing is written and it exits 4.
 - `move <id> <status>` and `move <id>` (leave `blocked`) change status only.
   Blocking is a `move` to `blocked` plus a `comment` saying why.
+  `move <id> merged` also takes `--task <source>:<ref>#<item>` (or
+  `--change <name> --group <n>`) or `--unplanned <reason>`, at most one
+  of them, as the scope disposition of a ticket that has no task
+  reference yet, and `--allow-secret-like` for a reason that looks like
+  a secret.
+  Without one, a ticket that has neither a task reference nor an unplanned
+  disposition is refused with exit 4, `needs-scope-disposition`; a
+  disposition flag with any target but `merged` exits 1 (`usage`) before
+  the board is read. `handoff --status merged` is refused the same way and
+  its hint points at `move`.
 - `comment <id> <text>` appends to the ticket's thread. Text that starts
   with `--` would be read as a flag, so it goes after a lone `--`:
   `comment <id> --as a -- "--force was needed"`.
@@ -564,6 +636,30 @@ agentboard close 01M38YRHC3 --as orchestrator --no-decision
 - Only tickets in `merged` or `blocked` can be closed. Closed tickets drop
   out of `list` unless `--closed` is given.
 
+`close` also takes the scope disposition of "Tickets and task references"
+when the ticket has neither a task reference nor an unplanned disposition,
+which in practice means an ad hoc ticket closed from `blocked` (a ticket
+in `merged` already has one): `--task <source>:<ref>#<item>` (or
+`--change <name> --group <n>`) or `--unplanned <reason>`, beside the
+decision flag:
+
+```
+agentboard close 01M38YRHC3 --as orchestrator --no-decision --unplanned "abandoned: superseded"
+agentboard close 01M38YRHC3 --as orchestrator --no-decision --task openspec:add-login#2
+```
+
+Without one the close is refused with exit 4, `needs-scope-disposition`,
+and the hint repeats the decision flag you gave; `--unplanned` on a ticket
+that names a planned task exits 4, `already-linked`. The checks run in
+this order: the arguments (both or neither decision flag, two
+dispositions, a malformed reference, an empty or secret-like reason, all
+exit 1 before the board is opened), then the decision record path
+(`path-outside-tree`, `decision-path-missing`, exit 1), then whether the
+ticket can be closed
+(`invalid-transition`), then the scope disposition, then the decision
+rule (`unpromoted-decision`). The disposition event and the close are
+written in one transaction, both or neither.
+
 ## OpenSpec integration
 
 `agentboard import-change <name> --as <actor>` reads
@@ -599,48 +695,413 @@ never close because they have no `pr` link (see "Board health").
 
 ## Sync between machines
 
-`.board/` is its own git repository, so the board moves between machines
-(a desktop and a laptop, say) without touching the host project. Give it a
-remote once:
+A host-model board rides along with the project's own remote. On the
+machine that created it:
 
 ```
-git -C .board remote add origin <url-of-an-empty-repository>
 agentboard sync
 ```
 
-On another machine, clone the host project, then clone the board into it
-with `git clone <board-url> .board` (the host `.gitignore` already ignores
-it).
+commits the new event files and pushes `refs/agentboard/board` to the
+remote. On another machine (or in a second clone), clone the project and
+run `agentboard init` at its root: it finds `refs/agentboard/board` on
+the remote, fetches it, creates the `.board` worktree at it and folds the
+events, so `agentboard list` shows the tickets before any `sync`:
+
+```
+$ git clone <project-url> project && cd project
+$ agentboard init
+created the board at /path/to/project/.board (host model: a worktree of the host repository at refs/agentboard/board); joined 5 events from origin
+```
+
+When the remote has no board yet, or cannot be reached (`init` warns and
+carries on), `init` creates a new empty board whose first commit is the
+same in every clone, and the first `sync` publishes it or joins the board
+that appeared in the meantime. Everyone who can fetch the project's remote
+can fetch the board: a project whose repository is public, or whose git
+host refuses pushes to custom refs, keeps its board in a repository of its
+own with `init --remote <url>`. The host model needs git 2.32 or later on
+every machine that shares the board; `init` on an older git falls back to
+a standalone board and says so, and older agentboard versions refuse to
+sync a host-model board.
+
+`init` also repairs a host-model `.board` whose link to the repository is
+broken: a checkout moved to another directory is relinked in place, and a
+`.board` copied from another clone is rebuilt as a fresh worktree of this
+clone with every event file carried over (one whose content does not match
+its name is skipped and reported), the copy kept under
+`.git/agentboard/stale-board-<timestamp>`.
+
+A standalone board (`.board/` as a repository of its own) moves between
+machines without touching the host project: it is shared through a
+repository of its own, set up on every machine with
+`agentboard init --remote <url>` ("Keeping the board in a separate
+repository", below). Boards made before the host model existed are
+standalone and keep working as they are.
+
+Whichever model a shared board uses, upgrade agentboard on every machine
+that shares it before an ad hoc ticket is moved past `tests`. The 0.1.0
+release still refuses an ad hoc ticket's move into `implementing`, so on
+a machine running it the board folds differently (the ticket falls back
+to `tests` there) until it is upgraded; it keeps the `ticket.unplanned`
+event as an unknown kind, so nothing is lost, and once it is upgraded
+the board folds as it does everywhere else, with no migration.
 
 `agentboard sync` stages only new event files and `.board/.gitignore`,
 commits them as the fixed identity `agentboard <agentboard@localhost>`
-(never your git identity, and only when something is staged), runs
-`git pull --rebase` from the upstream remote (or `origin`, or the only
-remote), pushes (retrying once if the remote moved in between) and folds
-the events that arrived. Event files are add-only and named by their
-content, so two machines that both added events always merge without
-conflict and end up with identical boards. Without a remote, `sync` commits
-and reports that no remote is configured, exiting 0. It warns (without
-failing) when the host repository tracks anything under `.board`.
+(never your git identity, and only when something is staged), integrates
+what the remote holds with a rebase, pushes (retrying once if the remote
+moved in between) and folds the events that arrived. Event files are
+add-only and named by their content, so two machines that both added
+events always merge without conflict and end up with identical boards.
+Without a remote, `sync` commits and reports that no remote is configured,
+exiting 0. It warns (without failing) when the host repository tracks
+anything under `.board`. The steps after the commit depend on the model:
 
-`sync` exits 3 and leaves things for a human when:
+- Host model (`.board` is a worktree of the host repository, its history
+  the ref `refs/agentboard/board`): `sync` first makes the local
+  `refs/agentboard/board` equal to the worktree's HEAD (rebasing HEAD onto
+  the ref when someone fetched into it by hand), then fetches
+  `refs/agentboard/board` from the host's remote into the worktree's own
+  `FETCH_HEAD` (no remote-tracking ref, no tags), rebases onto it when it
+  holds commits the worktree does not, updates the local ref with a
+  compare-and-swap, and pushes `HEAD:refs/agentboard/board` without force.
+  It never creates or moves a branch, and the host's git hooks
+  (`pre-commit`, `pre-rebase`, `pre-push`, `post-checkout`, ...) do not
+  run for the board: every command runs with an empty hooks directory,
+  and nothing is written to the host's configuration. `agentboard remote`
+  shows the ref and the commit it holds.
+- Standalone model (`.board` is a repository of its own): `sync` runs
+  `git pull --rebase` from its remote and pushes its branch, setting the
+  upstream only when the branch has none; the board repository's own
+  hooks run as git normally runs them.
 
-- git reports a conflict (only possible on non-event paths such as
-  `.board/.gitignore`); the rebase is left in place: resolve it, `git add`,
-  `git rebase --continue` (or `--abort`) and run `sync` again;
-- a rebase, merge or cherry-pick is already in progress in `.board`;
-- `.board` is on a detached HEAD;
-- something you staged yourself in `.board` is still staged (sync commits
-  only its own paths; commit or unstage it);
-- the remote is unreachable or rejects the pull or push.
+`sync` chooses the remote in this order: the one named by
+`git config agentboard.remote <name>` in the repository that holds the
+board's history (the host repository, or the standalone board
+repository), the upstream of the current branch (for the host model, the
+branch checked out in the host's main checkout; an upstream remote of `.`
+is ignored), `origin`, then the only remote. `agentboard.remote` is for
+repositories with several remotes, such as a fork workflow with `fork` and
+`upstream` and no `origin`; setting it never changes the branch's upstream,
+so your own `git pull` behaves as before.
 
-It exits 5 without staging anything when event files recorded in the
-board's git history are missing from `events/` (restore them from git), 2
-when `.board` is not itself the top level of a git repository, and 1 when
-there are several remotes and none is the upstream or `origin`.
+What `sync` does when it cannot finish, and what a human does next:
+
+- 3 `sync-conflict`: git reported a conflict (only possible on non-event
+  paths such as `.board/.gitignore`). The rebase is left in place in
+  `.board`: resolve it, `git add` the paths, `git rebase --continue` (or
+  `git rebase --abort`) and run `sync` again. Until then every `sync`
+  exits 3 `sync-in-progress`.
+- 3 `sync-in-progress`: a rebase, merge or cherry-pick is already in
+  progress in `.board`; finish or abort it there.
+- 3 `board-on-branch` (host model): someone ran `git switch` in `.board`,
+  so the worktree is on a branch instead of the detached HEAD the board
+  ref needs. Run `git -C .board switch --detach refs/agentboard/board`
+  (delete the branch if it was only a scratch one) and `sync` again.
+- 3 `detached-head` (standalone model): `.board` is on a detached HEAD;
+  check out its branch (`git -C .board switch main`) and `sync` again.
+- 3 `sync-failed`: the remote is unreachable, rejected the push twice, or
+  `agentboard.remote` names a remote that does not exist; or (standalone)
+  something you staged yourself in `.board` is still staged (`sync`
+  commits only its own paths; commit or unstage it). The local commit is
+  kept; fix what the message names and `sync` again. A host that refuses
+  pushes to custom refs (Gerrit without a push permission on
+  `refs/agentboard/*`; GitHub and GitLab accept them) fails here on the
+  first push, is not retried, and the message carries the remote's own
+  reason (a hook's text): keep such a board in a repository of its own
+  with `init --remote <url>` ("Keeping the board in a separate
+  repository", below).
+- 2 `board-link-broken` (host model): `.board` is a worktree whose link
+  to the host repository is broken (the checkout was moved, or `.board`
+  was copied from another clone); `agentboard init` repairs it. 2
+  `board-not-a-repository`: `.board` is not itself the top level of a git
+  repository or worktree.
+- 1 `git-too-old` (host model): the git found is older than 2.32, which
+  a board in the host repository needs; upgrade git (nothing is staged).
+  1 `ambiguous-remote`: there are several remotes and none is chosen;
+  `sync` has committed locally, so set `agentboard.remote` and run it
+  again.
+- 5 `integrity`: event files recorded in the board's git history are
+  missing from `events/`; nothing is staged (a deletion is never synced).
+  Restore them from git as the message says. Exit 5 without a reason is
+  an unexpected git failure; the one to expect is two `sync` processes
+  of one clone colliding on git's `index.lock` (nothing serialises them;
+  inside a rebase the second exits 3 `sync-in-progress` instead). The
+  ref equals HEAD afterwards and nothing is lost: run `sync` again.
+
+Two cautions for the host model. Never `git push --mirror` from a working
+clone: it rewinds the remote's `refs/agentboard/board` to that clone's
+board; the other clones restore their own events on their next `sync`,
+but an event whose only copy was on the remote is lost (a `--mirror` push
+from a backup clone made with `git clone --mirror` carries the board, as
+intended). And a board in a public repository is readable by anyone who
+can clone it; a project that needs a private board, or whose git host
+refuses custom refs, keeps it in a repository of its own with
+`init --remote <url>`, described next (`agentboard init --into-host`
+moves it the other way, into the host repository).
+
+To see how a board is shared without changing anything:
+
+```
+agentboard remote
+```
+
+It prints the board directory, its model (`host` when the board is a
+worktree of the host repository with its history under
+`refs/agentboard/board`, `standalone` when `.board` is a repository of its
+own, `broken host link`, or `not a repository`), where the history lives,
+the remote `sync` would use with its URL and the rule that chose it, and
+every remote of that repository. A broken link or an ambiguous choice comes
+with how to fix it. `remote` is read-only, never contacts the network and
+exits 0 whenever a board exists (problems are in its output), so it is safe
+to run when something is wrong. `--json` prints one object with `dir`,
+`model`, `gitDir`, `ref`, `refCommit`, `branch`, `head`, `remote`,
+`remotes` and `problems`. It needs no actor and is not exposed as an MCP
+tool.
 
 Sync is for machines that take turns, not for several people editing at
 once.
+
+### Keeping the board in a separate repository
+
+A board in the host repository is readable by anyone who can fetch the
+project, and needs a git host that accepts pushes to custom refs. When
+either rules the host model out (a public project whose board should stay
+private; a host that refuses custom refs), keep the board in a repository
+of its own: a standalone board (`.board/` as a git repository of its own,
+as every board was before the host model) shared through any empty git
+repository you can push to. Create that repository first (a private one on
+your git host, or a local bare repository on a shared disk), then, at the
+root of the project:
+
+```
+agentboard init --remote <url>
+```
+
+`<url>` is anything `git clone` accepts: an SSH or HTTPS URL, or a local
+path, absolute or relative (a relative path is resolved against the
+project's top level, from any worktree, and stored absolute, so `sync`
+reaches it from any directory). A local path that does not exist is
+created as a bare repository first, so two checkouts on one machine, or on
+one shared disk, need nothing but the path. What `init --remote` does
+depends on what it finds:
+
+- The repository is empty: it creates a standalone board, adds `<url>` as
+  `origin` and runs `sync`, whose first push creates the branch there.
+- The repository already holds a board (another clone pushed it): it
+  clones it into `.board` and folds the events, so `agentboard list`
+  shows the tickets before any `sync`; nothing is pushed.
+- `.board` is already a standalone board with no remote (made before this
+  command existed, or offline): `<url>` becomes its `origin` and `sync`
+  commits and pushes its events. Existing standalone boards join in with
+  the same command and are otherwise unchanged.
+- `.board` already has that remote: nothing changes, exit 0.
+
+It exits 3 `remote-unreachable` when the repository cannot be read (create
+it and check your access: a git host answers the same for a missing
+repository and for one you cannot read), 1 `not-a-board` when the
+repository holds a branch without an `events/` directory (nothing is left
+behind), 1 `remote-mismatch` when `.board` already has a remote with
+another URL (the message names `git -C .board remote set-url`), and 1
+`board-in-host` when `.board` is in the host repository. When the `sync`
+it runs fails (the first push refused, say), `init` exits with that
+failure's code and reason; the board and its `origin` are kept, so the
+next `sync` finishes the job.
+
+On every other machine, clone the project and run the same command:
+
+```
+$ git clone <project-url> project && cd project
+$ agentboard init --remote ../boards/project.git
+cloned the board at /path/to/project/.board from /path/to/boards/project.git (standalone model: a git repository of its own) with 5 events
+```
+
+Inside a git project the board is still a standalone board, never a
+host-model one, whatever the git version: `init --remote` writes the host
+`.gitignore` entry and nothing else to the host repository (no ref, no
+worktree, and the project's own remote is never contacted). `agentboard
+remote` then reports `model: standalone` with `origin` at the stored URL,
+and `sync` runs the standalone steps above. `git -C .board remote add
+origin <url>` followed by `sync` still works too. This repository's own
+board stays standalone for exactly this reason (CONTRIBUTING.md,
+"Coordinating on the board").
+
+### Moving a board into the host repository
+
+A standalone board (one made before the host model existed, or with
+`init --remote`) moves into the host repository, history and all, with
+the counterpart of `init --remote`, run at the root of the main checkout:
+
+```
+agentboard init --into-host
+```
+
+Afterwards `.board` is a locked worktree of the host repository whose
+history is `refs/agentboard/board`, exactly as `init` creates in a git
+project, and the `sync` that the move runs publishes it on the project's
+own remote. It needs git 2.32 or later and no actor. Read the caveat above
+first: once moved, everyone who can fetch the project can fetch the board.
+
+The move never loses an event. Before changing anything it checks the
+standalone board and refuses when a move could drop something:
+
+- Exit 4 `unsynced`: an event file is not committed (untracked or
+  staged), the board has no commit yet, or its branch has commits that
+  its remote does not. Run `agentboard sync` first, so the remote's branch
+  (the source of the move, which may hold other clones' events too) is
+  complete.
+- Exit 3 `sync-in-progress` or `detached-head`: a rebase or merge is in
+  progress in `.board`, or its HEAD is not on a branch, as `sync` refuses;
+  finish or abort it, or check out the branch.
+- Exit 3 `sync-failed`: the board's remote cannot be reached (it is fetched
+  first, to compare).
+- Exit 5 `integrity`: a committed event file is missing from `events/` or
+  differs from its committed content. Event files never change, so this
+  is damage to repair before anything is moved.
+- Exit 1 `no-host-repository`: the board was not found through a git
+  repository with its `.git` directory inside its working tree (outside a
+  git repository, with `AGENTBOARD_DIR` set, a bare repository with
+  worktrees, a `--separate-git-dir` repository, a submodule); exit 1
+  `git-too-old` for git before 2.32; exit 1 `ambiguous-remote` when the
+  host's remote cannot be chosen (see "Sync between machines").
+
+A refusal writes nothing: no ref, no directory under `.git/agentboard`,
+`.board` as it was. When the checks pass, the move fetches the board's
+history into the host repository under a scratch ref
+(`refs/agentboard/migrating-fetch`, the only ref a fetch of the move ever
+writes), records it as `refs/agentboard/migrating` (the tip the temporary
+worktree has integrated; both refs live as long as the worktree does),
+checks it out in a temporary worktree under
+`.git/agentboard/migrating/<pid>`, integrates
+any `refs/agentboard/board` the host or its remote already has (another
+clone moved first: this clone's history is rebased onto it, as `sync`
+would), sets `refs/agentboard/board`, carries over every event file of
+the old `.board/events` that the new worktree lacks (hash-verified, so an
+event written while the move ran is not left behind; a file whose content
+does not match its name is exit 5 `integrity`, with nothing moved), checks
+that `.board` is still the repository it examined (and that its history
+only grew), and only then moves the old repository aside and the new
+worktree into place, deletes both temporary refs and carries over
+anything that landed in between. The old repository is kept, never
+deleted, at `.git/agentboard/standalone-<UTC timestamp>`, inside the git
+directory where the host's `git status` never shows it; the output names
+it and the old remote's URL as written in its configuration. The host
+`.gitignore` gets the `.board/` entry once `refs/agentboard/board` is
+set, so a refusal leaves the host's working tree as it was.
+
+```
+$ agentboard init --into-host
+moved the board at /path/to/project/.board into the host repository (host model: a worktree of the host repository at refs/agentboard/board)
+the old board repository is kept at /path/to/project/.git/agentboard/standalone-20261013T152817Z
+its remote was git@example.com:me/board.git (as written in its configuration)
+every other clone of the project runs agentboard init --into-host too; retire the old remote once they all have
+nothing new to commit
+origin has no refs/agentboard/board yet; nothing to fetch
+pushed refs/agentboard/board to origin
+```
+
+Running it again afterwards exits 0 saying the board is already in the
+host repository, and changes nothing. With `--json` the document is the
+`init` document plus `action` (`moved`; `resumed` after an interrupted
+move; `unchanged` for a board already in the host; `repaired` for a
+broken link, repaired as `init` repairs it), `keptAt`, `oldRemoteUrl` and
+`sync` (the result of the `sync` it ran, else null).
+
+Every clone moves. Each clone of the project that holds the standalone
+board runs `agentboard init --into-host` itself, first clone first. The
+second clone's move finds `refs/agentboard/board` on the project's remote
+(the first clone's) and rebases its own history onto it, so events synced
+to the old board remote after the first move are carried over too. A
+clone that has not moved yet keeps syncing through the old remote;
+`agentboard remote` shows `standalone` there and `host` where the move is
+done. A fresh clone needs no move: `agentboard init` joins the host-model
+board. Retire the old remote (delete the repository, or keep it as an
+archive) once `agentboard remote` reports `host` in every clone; until
+then a clone that has not moved still pushes there, and those events reach
+the host-model board only when that clone moves.
+
+When the histories being integrated conflict (both sides changed
+`.board/.gitignore` differently; event files never conflict), the move
+exits 3 `sync-conflict`, leaves the rebase in its temporary worktree for
+you with the old `.board` untouched and `refs/agentboard/board` unchanged,
+and names the worktree and the steps: resolve the paths, `git add` them
+and `git rebase --continue` in that worktree, then run
+`agentboard init --into-host` again, which adopts the finished rebase and
+completes the move (`git rebase --abort` instead returns the worktree to
+where the move started, so the next run begins again and stops on the
+same conflict). While the rebase is still in progress a
+re-run exits 3 `sync-in-progress` naming the same path and removes
+nothing. A move killed at any point is resumed by running it again:
+`.board` is either still the old standalone board or becomes the
+host-model board, with every event and exactly one kept repository. A
+re-run that picks up an interrupted move's worktree replays onto it,
+with `git cherry-pick`, exactly the commits that reached the old remote
+since (`refs/agentboard/migrating` records what the worktree has
+integrated, and only a finished replay advances it), and never discards
+what a human resolved there. When that replay conflicts (a third clone
+changed the `.gitignore` line you resolved), the move exits 3
+`sync-conflict` naming the worktree and the steps: resolve the paths,
+`git add` them and `git cherry-pick --continue` in that worktree, then
+run `agentboard init --into-host` again, which completes the move with
+every event and applies nothing twice. Resolving by keeping your own side
+leaves a pick with nothing to commit: `git cherry-pick --skip` drops it
+(`git commit --allow-empty` keeps it as an empty commit), while
+`--continue` stops on that empty pick again until it is skipped, and on a
+replay of several commits the next pick may stop in its turn.
+`git cherry-pick --abort` instead returns the worktree to your
+resolution, and what the next run does with it depends on what the
+replay carried: commits that add events are replayed onto it once more,
+for you to resolve again; a replay whose commits add no event (the other
+clone's `.gitignore` edit and nothing else) counts as done once aborted,
+so aborting it declines that edit and the move completes without it. A
+replay killed part way, with nothing of yours staged or edited in the
+worktree, is quit and run again by the next run on its own; one you
+edited or reset in is left for you, with the same steps (`git cherry-pick
+--skip` to keep your side, `--continue` after resolving). A pick that
+cannot apply over a local change of yours, or a change left in the
+worktree with no pick in progress (a `git reset` on the last pick of a
+replay), exits 3 `sync-failed` naming the file, with nothing dropped and
+nothing published until the change is out of the way: discard it
+(`git checkout -- <path>` in that worktree) or stash it, and the next
+run replays the pick again for you to resolve; committing it instead
+makes the replayed pick conflict with your commit, a second stop for the
+same conflict. A worktree left
+by a move of a board that was
+replaced since (another standalone board at `.board`) is never adopted:
+it is removed and named. Leftovers of a dead move that hold nothing are
+removed and named
+(plain `agentboard init` removes them too, and reports a move whose
+`sync` has not completed without finishing it), and a move that is still
+running on the same host is never touched. When the final `sync` fails
+(the project's remote unreachable, a host that refuses custom refs), the
+move is done and `init` exits with the failure's code, still naming the
+kept repository and the old remote (with `--json`, `keptAt` and
+`oldRemoteUrl` are in the error document); the next
+`agentboard init --into-host` resumes the move by running the `sync`
+again, and `agentboard sync` publishes the board too.
+
+Rolling a move back. The kept repository is the complete old board, so a
+move is undone by hand in that clone. Copy out the events written since
+the move first (event files are named by their content, so copying is
+safe and never overwrites anything different), because removing the
+worktree deletes its files:
+
+```
+cp .board/events/*.json .git/agentboard/standalone-<timestamp>/events/
+git worktree unlock .board
+git worktree remove --force .board
+mv .git/agentboard/standalone-<timestamp> .board
+agentboard sync
+```
+
+`agentboard remote` then reports `standalone` again, with the old remote,
+and the `sync` commits and pushes the copied events there. Delete
+`refs/agentboard/board` locally and on the remote if the host model is
+being given up altogether (`git update-ref -d refs/agentboard/board` and
+`git push origin :refs/agentboard/board`); a clone that stays host-model
+is unaffected either way, and the next `init --into-host` in the rolled
+back clone integrates whatever the ref holds by then.
 
 ## Watching the board in a browser
 
@@ -653,7 +1114,8 @@ up to date as agents write, including events that arrive late through
 
 - **Board**: one column per status, one card per ticket (title, short id
   with the full id as its tooltip, assignee, task reference or an "ad hoc"
-  badge, labels, checklist progress, open decisions, a "from <status>"
+  badge (an "unplanned" badge with the reason once the unplanned
+  disposition is recorded), labels, checklist progress, open decisions, a "from <status>"
   badge on a blocked ticket and a "closed" badge on a closed one), cards
   that just changed highlighted.
   Filter by change and by assignee; closed tickets are hidden unless you
@@ -661,8 +1123,10 @@ up to date as agents write, including events that arrive late through
 - **Feed**: every applied event on the board as a one-line summary,
   newest first, filterable by change, actor and event kind. Events that arrived late
   through `sync` are marked.
-- **Ticket detail** (click a card or a feed entry): the ticket's fields,
-  checklist, links and close disposition, its conversation (comments and
+- **Ticket detail** (click a card or a feed entry): the ticket's fields
+  (an `Unplanned` field, `<reason> (by <actor>)`, right after `Task` when
+  the ticket has an unplanned disposition), checklist, links and close
+  disposition, its conversation (comments and
   hand-off notes, with `DECISION:` comments highlighted and retracted ones
   flagged), and every event on it with its outcome, including rejected
   ones with their reason (for example a claim that lost a race,
@@ -874,14 +1338,18 @@ The header shows `acting as <actor>`, and the ticket detail
 - a **Comment** box;
 - **Move to**, listing only the statuses the state machine permits from
   the current one (a blocked ticket offers only the status it was blocked
-  from; a merged ticket offers nothing);
+  from; a merged ticket offers nothing); for a ticket with neither a task
+  reference nor an unplanned disposition, choosing `merged` adds a
+  **Scope** select (`unplanned reason`, then `task reference`) and a
+  **Value** input, sent as the `unplanned` or `task` property;
 - **Claim** and **Release** buttons;
 - a **hand-off** form: To, Status (the current status first, which makes
   the hand-off a reassignment, then the permitted moves) and Note;
 - **Link to**: a task reference (`openspec:add-login#1`), a pull request
   (a URL or number) or a decision path, one per submission;
 - **Close**, with exactly one disposition: "Decision recorded in" with a
-  decision path, or "No decision";
+  decision path, or "No decision", plus the same Scope and Value fields
+  for a ticket with neither a task reference nor an unplanned disposition;
 - a checkbox per checklist line: checking it ticks the line, unchecking it
   unticks it. A tick on a ticket with a task reference shows the reminder
   to tick the line in `tasks.md` too.
@@ -918,7 +1386,8 @@ path must exist on the machine running `serve` and lie inside the tree,
 and "No decision" is refused with `unpromoted-decision`, quoting the
 comments, while the ticket has an open `DECISION:` comment.
 
-**No secret-like override.** Comments and hand-off notes are checked
+**No secret-like override.** Comments, hand-off notes and unplanned
+reasons are checked
 against the same secret patterns as the CLI and refused with 400
 `secret-like` and the pattern name, never echoing the text. The page has
 no equivalent of `--allow-secret-like`, and a body that contains the
@@ -936,14 +1405,14 @@ without `as`:
 | Action | Body |
 | ------ | ---- |
 | `comment` | `{"id", "text"}` |
-| `move` | `{"id", "status"}`; without `status`, a blocked ticket returns to the status it was blocked from |
+| `move` | `{"id", "status"}`; without `status`, a blocked ticket returns to the status it was blocked from; with `"status": "merged"`, at most one of `"task"`, `"change"` with `"group"` or `"unplanned"` as the scope disposition |
 | `claim` | `{"id"}` |
 | `release` | `{"id"}` |
 | `handoff` | `{"id", "to", "status", "note"}` |
 | `checklist-tick` | `{"id", "index"}`, `index` an integer counted from 0 |
 | `checklist-untick` | `{"id", "index"}` |
 | `link` | `{"id"}` and exactly one of `"task"`, `"change"` with `"group"`, `"pr"` or `"decision"` |
-| `close` | `{"id"}` and exactly one of `"decision-recorded-in": "<path>"` or `"no-decision": true` |
+| `close` | `{"id"}` and exactly one of `"decision-recorded-in": "<path>"` or `"no-decision": true`, plus at most one of `"task"`, `"change"` with `"group"` or `"unplanned"` as the scope disposition |
 
 `id` is a full ticket id or a unique prefix of at least 6 characters, as
 on the CLI. The properties `as`, `json` and `allow-secret-like` are
@@ -960,7 +1429,7 @@ checklist tick or untick. A refusal writes nothing and is an
 | Status | When |
 | ------ | ---- |
 | 400 | a refusal with exit code 1: `usage`, `secret-like`, `unpromoted-decision`, `decision-path-missing`, `path-outside-tree`, `id-too-short`, `ambiguous-id`, ... |
-| 409 | a refusal by board state (exit code 4): `already-assigned`, `not-assignee`, `invalid-transition`, `needs-task-link`, `checklist-index`, `unknown-ticket`, ... |
+| 409 | a refusal by board state (exit code 4): `already-assigned`, `not-assignee`, `invalid-transition`, `needs-scope-disposition`, `already-linked`, `checklist-index`, `unknown-ticket`, ... |
 | 503 | `busy`: the cache stayed locked; try again |
 | 500 | anything else |
 | 405 | `read-only` (a server without `--as`), or `method-not-allowed` for another method on an action path (`Allow: POST`) |
@@ -1240,7 +1709,7 @@ never disagree. It writes nothing.
 Every age is the time now minus the wall clock of the event it is
 measured from, and 0 when that event's clock is ahead of yours. Only
 applied events count (a claim that lost a race changes nothing), and a
-closed ticket appears in no section.
+closed ticket appears in no section but the unplanned scope.
 
 | Section | What it lists | Default threshold |
 | ------- | ------------- | ----------------- |
@@ -1250,6 +1719,7 @@ closed ticket appears in no section.
 | close-merged: ready | Open tickets in `merged` with a `pr` link, and either no open decision or a `decision` link | none |
 | close-merged: held by a decision | Open tickets in `merged` with a `pr` link, an open decision and no `decision` link | none |
 | close-merged: missing a PR link | Open tickets in `merged` with no `pr` link | none |
+| Unplanned scope | Tickets in `merged` or closed with an unplanned disposition, and ad hoc tickets closed with no disposition at all, with their reasons: those disposed of less than the window ago are listed, all of them are counted | 7 days (`--unplanned-within`) |
 | Late arrivals | Events a running `serve` saw arrive late or be removed (web only) | none |
 | Cache check | Whether the cache matches the event log, run only on request | none |
 
@@ -1274,6 +1744,18 @@ closed ticket appears in no section.
   reports their PR merged; `held by a decision` tickets would be skipped
   by the decision rule; `missing a PR link` tickets are never considered
   by `close-merged` and need `link <id> --pr <ref>` or a manual `close`.
+- **Unplanned scope** is the one section that includes closed tickets,
+  because closed is where unplanned work ends up, and the one section
+  that is information, not a finding to fix: it is what "Tickets and task
+  references" disclosed instead of blocking. A ticket is unplanned scope
+  when it has an unplanned disposition and is in `merged` or closed, or
+  when it is closed with an ad hoc reason and neither a task reference
+  nor an unplanned disposition (closed before the disposition existed).
+  Its age is measured from the applied `ticket.unplanned`, or from the
+  `ticket.close` for an undisclosed close, which is reported with no
+  reason. A ticket later linked to a task leaves the section. `total`
+  counts every such ticket whatever its age; the list holds those less
+  than the window old, most recent first.
 - **Late arrivals** are what a running server observed since it started:
   events that `sync` delivered with a position before events already
   shown, and events removed from the fold in a resync (for example a
@@ -1288,13 +1770,14 @@ closed ticket appears in no section.
   `health --check` or the Health view's button runs it. A cache that
   differs is a finding, not a failure; fix it with `agentboard rebuild`.
 
-Stale claims and stuck tickets are listed longest first; every other
-ticket section is in ticket id order.
+Stale claims and stuck tickets are listed longest first and unplanned
+scope most recent first (then by id); every other ticket section is in
+ticket id order.
 
 ### The `health` command
 
 ```
-agentboard health [--stale-after <duration>] [--blocked-after <duration>] [--check] [--json]
+agentboard health [--stale-after <duration>] [--blocked-after <duration>] [--unplanned-within <duration>] [--check] [--json]
 ```
 
 A duration is `<n>m`, `<n>h` or `<n>d` (minutes, hours or days) with `<n>`
@@ -1328,24 +1811,48 @@ close-merged ready: 1
 close-merged held by decision: 0
 close-merged missing pr: 1
 01M3CCGMNHZ78NN5F74QME13B1  merged  reviewer-1  Index documents  no pr link
+unplanned scope: 0 in the last 7d (0 in all)
 cache check: not run
 ```
 
-`--check` adds the cache check. `--json` prints the report as one JSON
-document with the keys `now`, `thresholds` (in milliseconds),
-`staleClaims`, `stuckBlocked`, `unpromotedDecisions`, `closeMerged`
-(`ready`, `heldByDecision`, `missingPr`), `late` and `check`. Each finding
-carries the ticket's card (as the web page shows it) and, for stale and
-blocked tickets, the event its age was measured from (`since`, with its
-hash, kind, actor and clock) and the age in milliseconds (`idleMs`,
-`blockedMs`). An excerpt of the same board's report:
+The unplanned scope section comes after the close-merged ones, with the
+window in its heading. On a board where the ad hoc ticket of "Tickets and
+task references" was merged as unplanned two hours earlier, and another
+ad hoc ticket was closed from `blocked` with `--unplanned` three days
+earlier, it reads:
 
 ```
-$ agentboard health --stale-after 1m --blocked-after 1m --check --json | jq '{thresholds, staleClaims: [.staleClaims[] | {ticket: .ticket.shortId, assignee, idleMs}], stuckBlocked: [.stuckBlocked[] | {ticket: .ticket.shortId, blockedFrom, blockedMs}], missingPr: [.closeMerged.missingPr[].ticket.shortId], late, check}'
+unplanned scope: 2 in the last 7d (2 in all)
+01M38YRHC32109EYJ1TPDZPQ2N  merged  impl-1  [unplanned] Fix typo in footer  merged 2h ago, unplanned: production hotfix
+01M38YRHDJDH9E02WN42FFWFMT  blocked  -  [unplanned] [closed] Try a new parser  closed 3d ago, unplanned: abandoned: superseded
+```
+
+An ad hoc ticket closed before the disposition existed ends `closed 3d
+ago, no reason recorded (ad hoc: <reason>)`. `--unplanned-within 30d`
+widens the list; the count in parentheses is always all of it.
+
+`--check` adds the cache check. `--json` prints the report as one JSON
+document with the keys `now`, `thresholds` (in milliseconds:
+`staleAfter`, `blockedAfter`, `unplannedWithin`),
+`staleClaims`, `stuckBlocked`, `unpromotedDecisions`, `closeMerged`
+(`ready`, `heldByDecision`, `missingPr`), `unplannedScope` (`total`, and
+`tickets` within the window, each with the ticket's card, `adhoc` (the
+creation reason), `reason` (the unplanned reason, null for an undisclosed
+close), `outcome` (`merged` or `closed`), `since` and `ageMs`), `late`
+and `check`. Each finding
+carries the ticket's card (as the web page shows it) and, for stale,
+blocked and unplanned tickets, the event its age was measured from
+(`since`, with its hash, kind, actor and clock) and the age in
+milliseconds (`idleMs`, `blockedMs`, `ageMs`). An excerpt of the same
+board's report:
+
+```
+$ agentboard health --stale-after 1m --blocked-after 1m --check --json | jq '{thresholds, staleClaims: [.staleClaims[] | {ticket: .ticket.shortId, assignee, idleMs}], stuckBlocked: [.stuckBlocked[] | {ticket: .ticket.shortId, blockedFrom, blockedMs}], missingPr: [.closeMerged.missingPr[].ticket.shortId], unplannedScope: {total: .unplannedScope.total, tickets: [.unplannedScope.tickets[] | {ticket: .ticket.shortId, reason, outcome, ageMs}]}, late, check}'
 {
   "thresholds": {
     "staleAfter": 60000,
-    "blockedAfter": 60000
+    "blockedAfter": 60000,
+    "unplannedWithin": 604800000
   },
   "staleClaims": [
     {
@@ -1369,6 +1876,10 @@ $ agentboard health --stale-after 1m --blocked-after 1m --check --json | jq '{th
   "missingPr": [
     "01M3CCGMNH"
   ],
+  "unplannedScope": {
+    "total": 0,
+    "tickets": []
+  },
   "late": null,
   "check": {
     "ranAt": 1790343471569,
@@ -1378,10 +1889,10 @@ $ agentboard health --stale-after 1m --blocked-after 1m --check --json | jq '{th
 }
 ```
 
-`health` exits 0 whatever the report contains, a differing cache
-included: findings are data, so read the report (or `jq` the JSON) rather
-than the exit code. It exits 1 (`usage`) for an unknown flag or a
-malformed duration, 2 when there is no board, and 5 for an integrity
+`health` exits 0 whatever the report contains, a differing cache and
+unplanned scope included: findings are data, so read the report (or `jq`
+the JSON) rather than the exit code. It exits 1 (`usage`) for an unknown
+flag or a malformed duration, 2 when there is no board, and 5 for an integrity
 problem in the event log or cache, or when `--check` cannot take the
 write lock within the busy timeout. It needs no actor (`--as` is
 accepted and ignored). It reads ticket state from the cache and the file
@@ -1396,11 +1907,13 @@ orchestrator checklist of the agent guide says so too.
 ### Over MCP: `board_health`
 
 The MCP tool `board_health` is the same command. Its optional arguments
-are `stale-after` and `blocked-after` (duration strings) and `check` (a
-boolean), and it returns the document `health --json` prints: a call with
-`{"stale-after": "30m"}` returns what `agentboard health --stale-after 30m
---json` prints. A malformed duration is a tool error with `exitCode` 1 and
-`reason` `usage`.
+are `stale-after`, `blocked-after` and `unplanned-within` (duration
+strings) and `check` (a boolean), and it returns the document `health
+--json` prints: a call with `{"stale-after": "30m"}` returns what
+`agentboard health --stale-after 30m --json` prints, and one with
+`{"unplanned-within": "30d"}` lists the unplanned scope of the last 30
+days under `unplannedScope`. A malformed duration is a tool error with
+`exitCode` 1 and `reason` `usage`.
 
 ### In the browser
 
@@ -1409,10 +1922,12 @@ sections, computed in the browser from the board the page already holds,
 re-evaluated on every change and every 10 seconds, plus two things only
 the server knows:
 
-- **Thresholds.** Two inputs, `Stale after` and `Blocked after`, take the
-  same durations as the command and are kept in the URL
-  (`#/health?stale=30m&blocked=2d`). An invalid value is flagged and the
-  report keeps the last valid one.
+- **Thresholds.** Three inputs, `Stale after`, `Blocked after` and
+  `Unplanned within`, take the same durations as the command and are kept
+  in the URL (`#/health?stale=30m&blocked=2d&unplanned=30d`). An invalid
+  value is flagged and the report keeps the last valid one. The unplanned
+  scope section is styled as information, like the cache check when it
+  matches, not as a warning like stale claims and stuck tickets.
 - **Late arrivals**, from `GET /api/health`, with when each was observed.
 - **Run cache check**, a button that calls `GET /api/health/check`. The
   server runs one check at a time: a request that arrives while one runs
@@ -1497,8 +2012,14 @@ hint: another actor holds this ticket, so do not work on it: see who with 'agent
 ```
 
 A missing actor hints both `--as` and `AGENTBOARD_ACTOR`;
-`needs-task-link` hints `agentboard link <id> --task
-<source>:<ref>#<item> --as <actor>`; a close refused by the decision rule
+`needs-scope-disposition` hints both forms of the refused command,
+`agentboard move <id> merged --task <source>:<ref>#<item> --as <actor>`
+(or `--change <name> --group <n>`) and `agentboard move <id> merged
+--unplanned "<reason>" --as <actor>` (for `close`, with the decision flag
+you gave), ending with
+"do not create an issue or task only to satisfy this";
+`already-linked` names the task the ticket is linked to and the same
+command without `--unplanned`; a close refused by the decision rule
 hints `--decision-recorded-in <path>`. Every rejection reason has a hint,
 including those of exit codes 2, 3 and 5 (`board-not-found`, for example,
 hints `agentboard init`); only an unexpected failure has none.
@@ -1530,7 +2051,7 @@ argument and `agentboard mcp --as <actor>`.
 | 1 | usage error (including an unknown command or flag), missing actor, refused text or close disposition, `rebuild --check` found a difference, an `agents install` target was refused or nothing was detected, `agents check` found guidance that is not current, `serve` could not use its port (`port-in-use`) or was given an empty `--as` or both `--open` and `--no-open`, or `top` was not run in an interactive terminal (`not-a-tty`) |
 | 2 | board not found or unreadable |
 | 3 | sync problem that needs a human |
-| 4 | action rejected by board state: `invalid-transition`, `already-assigned`, `not-assignee`, `unknown-ticket`, `duplicate-create`, `needs-task-link`, `checklist-index` |
+| 4 | action rejected by board state: `invalid-transition`, `already-assigned`, `not-assignee`, `unknown-ticket`, `duplicate-create`, `needs-scope-disposition`, `already-linked`, `checklist-index` |
 | 5 | event log or cache integrity problem, or the cache still locked after the busy timeout and one retry |
 
 ## MCP server
@@ -1542,10 +2063,11 @@ underscores: `board_new`, `board_show`, `board_list`, `board_claim`,
 `board_link`, `board_checklist_tick`, `board_checklist_untick`,
 `board_close`, `board_inbox`, `board_import_change`,
 `board_close_merged` and `board_health`. `init`, `watch`, `serve`, `top`, `rebuild`, `sync`,
-`mcp`, `version`, `help`, `agents install` and `agents check` are not exposed:
-they are run by a human or an orchestrator in a shell (`agents install`
-and `agents check` write and read files in the caller's working tree,
-which a tool call must not do, and the guide reaches MCP clients as
+`remote`, `mcp`, `version`, `help`, `agents install` and `agents check` are
+not exposed: they are run by a human or an orchestrator in a shell (`init`,
+`sync` and `remote` run git against the host's configuration, `agents
+install` and `agents check` write and read files in the caller's working
+tree, which a tool call must not do, and the guide reaches MCP clients as
 described below instead of through `help`). Calling an unknown or excluded
 tool name returns a tool error with `exitCode` 1, `reason` `usage` and a
 hint to call `tools/list`.
@@ -1648,8 +2170,10 @@ as `entry-differs` unless `--force` is given, which replaces it.
   holds the work and its state in flight.
 - **Not where decisions live.** A `DECISION:` in a thread must be promoted
   to a spec delta or ADR before the ticket closes.
-- **Not a source of scope.** Tickets reference planned tasks; ad hoc
-  tickets must be linked to one before implementation starts.
+- **Not a source of scope.** Every ticket names the planned task it
+  delivers, or discloses that its work was unplanned before it is merged
+  or closed; unplanned scope is shown, with its reason, never blocked
+  (ADR 0013).
 - **Not a multi-user server.** It is local and offline; `sync` moves it
   between machines that take turns.
 

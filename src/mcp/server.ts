@@ -94,7 +94,7 @@ import {
   renderGuideSummary,
   type Role,
 } from '../guidance/guide.js';
-import type { HintContext } from '../guidance/hints.js';
+import { closeDecisionOf, type HintContext } from '../guidance/hints.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
 import { findBoard } from '../store/locate.js';
 import { VERSION } from '../version.js';
@@ -403,11 +403,14 @@ function mcpHintContext(options: McpServerOptions, name: string, args: unknown):
   const given = isObject(args) ? args : {};
   const id = nonEmpty(given.id);
   const actor = nonEmpty(given.as) ?? nonEmpty(options.actor) ?? nonEmpty(options.env[ACTOR_ENV]);
+  const command = findTool(name)?.command.name ?? null;
+  const closeDecision = command === 'close' ? closeDecisionOf(given) : undefined;
   return {
     surface: 'mcp',
-    command: findTool(name)?.command.name ?? null,
+    command,
     ...(id === undefined ? {} : { id }),
     ...(actor === undefined ? {} : { actor }),
+    ...(closeDecision === undefined ? {} : { closeDecision }),
   };
 }
 

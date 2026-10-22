@@ -7,6 +7,7 @@ import { STATUSES, type Status } from '../../events/schema.js';
 import { readTicket } from '../../store/cache.js';
 import {
   claimTicket,
+  closeTicket,
   commentTicket,
   handoffTicket,
   linkTicket,
@@ -117,21 +118,46 @@ describe('moveTicket: other rules', () => {
     );
   });
 
-  it('refuses an ad hoc ticket entering implementing with needs-task-link, until linked', () => {
+  it('scenario: an ad hoc ticket moves through the work statuses with no task link', () => {
     const { board } = setup();
     const t = create(board, { adhoc: 'hotfix' });
-    moveTicket(board, 'orch', { id: t.id, to: 'tests' });
+    let current = t;
+    for (const to of ['tests', 'implementing', 'review'] as const) {
+      current = moveTicket(board, 'orch', { id: t.id, to }).ticket;
+      expect(current.status).toBe(to);
+    }
+    expect(current.task).toBeNull();
+    expect(current.adhoc).toBe('hotfix');
+    expect(eventCount(board)).toBe(4);
+  });
+
+  it('refuses an undisposed ad hoc ticket entering merged with needs-scope-disposition, until linked', () => {
+    const { board } = setup();
+    const t = create(board, { adhoc: 'hotfix' });
+    for (const to of ['tests', 'implementing', 'review'] as const) {
+      moveTicket(board, 'orch', { id: t.id, to });
+    }
     const before = eventCount(board);
-    expectBoardError(
-      () => moveTicket(board, 'orch', { id: t.id, to: 'implementing' }),
+    const err = expectBoardError(
+      () => moveTicket(board, 'orch', { id: t.id, to: 'merged' }),
       4,
-      'needs-task-link',
+      'needs-scope-disposition',
     );
+    expect(err.message).toContain(t.id);
     expect(eventCount(board)).toBe(before);
+    expect(readTicket(board.db, t.id)?.status).toBe('review');
     linkTicket(board, 'orch', { id: t.id, target: { task: TASK } });
-    expect(moveTicket(board, 'orch', { id: t.id, to: 'implementing' }).ticket.status).toBe(
-      'implementing',
-    );
+    const merged = moveTicket(board, 'orch', { id: t.id, to: 'merged' }).ticket;
+    expect(merged.status).toBe('merged');
+    expect(merged.task).toEqual(TASK);
+    expect(merged.adhoc).toBeNull();
+  });
+
+  it('scenario: a planned ticket is moved to merged and closed with no disposition flag', () => {
+    const { board } = setup();
+    const t = ticketIn(board, 'review');
+    expect(moveTicket(board, 'orch', { id: t.id, to: 'merged' }).ticket.status).toBe('merged');
+    expect(closeTicket(board, 'orch', { id: t.id, noDecision: true }).ticket.closed).toBe(true);
   });
 
   it('accepts a prefix and refuses an unknown ticket with exit 4', () => {
@@ -329,15 +355,34 @@ describe('handoffTicket', () => {
     expect(readTicket(board.db, t.id)).toEqual(t);
   });
 
-  it('refuses taking an ad hoc ticket into implementing', () => {
+  it('takes an ad hoc ticket into implementing', () => {
     const { board } = setup();
     const t = create(board, { adhoc: 'why' });
     moveTicket(board, 'orch', { id: t.id, to: 'tests' });
+    const out = handoffTicket(board, 'orch', {
+      id: t.id,
+      to: 'i',
+      status: 'implementing',
+      note: 'n',
+    });
+    expect(out.ticket).toMatchObject({ status: 'implementing', assignee: 'i', task: null });
+  });
+
+  it('refuses taking an undisposed ad hoc ticket into merged with needs-scope-disposition', () => {
+    const { board } = setup();
+    const t = create(board, { adhoc: 'why' });
+    for (const to of ['tests', 'implementing', 'review'] as const) {
+      moveTicket(board, 'orch', { id: t.id, to });
+    }
+    const before = readTicket(board.db, t.id);
+    const count = eventCount(board);
     expectBoardError(
-      () => handoffTicket(board, 'orch', { id: t.id, to: 'i', status: 'implementing', note: 'n' }),
+      () => handoffTicket(board, 'orch', { id: t.id, to: 'm', status: 'merged', note: 'n' }),
       4,
-      'needs-task-link',
+      'needs-scope-disposition',
     );
+    expect(eventCount(board)).toBe(count);
+    expect(readTicket(board.db, t.id)).toEqual(before);
   });
 
   it('refuses an empty to or note with exit 1', () => {

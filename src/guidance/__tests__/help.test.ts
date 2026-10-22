@@ -88,9 +88,11 @@ const BOARDLESS = new Set(['init', 'agents install', 'agents check', 'version', 
 /**
  * Commands that locate a board but cannot exit 5: `mcp` locates the board
  * once at start-up (exit 2 without one) and then reports every failure as
- * a tool error, never as its own exit code (src/mcp/server.ts, `serveMcp`).
+ * a tool error, never as its own exit code (src/mcp/server.ts, `serveMcp`);
+ * `remote` never opens the board (board-cli: it exits 0 whenever a board
+ * exists and puts problems in its output).
  */
-const NO_INTEGRITY_EXIT = new Set(['mcp']);
+const NO_INTEGRITY_EXIT = new Set(['mcp', 'remote']);
 
 /** Commands that take a ticket id. */
 const ID_COMMANDS = COMMANDS.filter((c) => c.positionals.some((p) => p.name === 'id'));
@@ -135,7 +137,7 @@ describe('the help data of record in the registry', () => {
       awareness: ['inbox', 'watch', 'serve', 'top', 'health'],
       planning: ['import-change', 'close-merged'],
       maintenance: ['rebuild', 'sync'],
-      setup: ['init', 'mcp', 'agents install', 'agents check', 'version', 'help'],
+      setup: ['init', 'remote', 'mcp', 'agents install', 'agents check', 'version', 'help'],
     });
     expect(COMMAND_GROUPS).toEqual(['lifecycle', 'awareness', 'planning', 'maintenance', 'setup']);
     expect(GROUP_TITLES).toEqual({
@@ -252,17 +254,34 @@ describe('the help data of record in the registry', () => {
     has('claim', 4, 'already-assigned');
     has('release', 4, 'not-assignee');
     has('move', 4, 'invalid-transition');
-    has('move', 4, 'needs-task-link');
     has('handoff', 4, 'invalid-transition');
     has('close', 1, 'no-disposition');
     has('close', 1, 'unpromoted-decision');
     has('close', 1, 'decision-path-missing');
+    // The scope disposition at merge and close (add-adhoc-ticket-lifecycle).
+    has('move', 4, 'needs-scope-disposition');
+    has('close', 4, 'needs-scope-disposition');
+    has('handoff', 4, 'needs-scope-disposition');
+    has('move', 4, 'already-linked');
+    has('close', 4, 'already-linked');
+    has('move', 1, 'malformed-task-ref');
+    has('close', 1, 'malformed-task-ref');
+    has('move', 1, 'secret-like');
+    has('close', 1, 'secret-like');
     has('new', 1, 'needs-task-or-adhoc');
     has('new', 1, 'secret-like');
     has('comment', 1, 'secret-like');
     has('handoff', 1, 'secret-like');
     has('checklist tick', 4, 'checklist-index');
     has('sync', 3, 'sync-conflict');
+    has('sync', 2, 'board-link-broken');
+    has('sync', 1, 'ambiguous-remote');
+    has('init', 1, 'ambiguous-remote');
+    has('init', 3, 'remote-unreachable');
+    has('init', 1, 'not-a-board');
+    has('init', 1, 'remote-mismatch');
+    has('init', 1, 'board-in-host');
+    has('init', 2, 'board-not-a-repository');
     has('inbox', 1, 'unknown-cursor');
     has('close-merged', 1, 'gh-missing');
     has('import-change', 1, 'tasks-not-found');
@@ -365,9 +384,12 @@ describe('synopsis', () => {
     ],
     [
       'close',
-      'agentboard close <id> (--decision-recorded-in <decision-recorded-in> | --no-decision) --as <actor> [--json]',
+      'agentboard close <id> [--allow-secret-like] (--decision-recorded-in <decision-recorded-in> | --no-decision) [--task <task> | --change <change> --group <group> | --unplanned <unplanned>] --as <actor> [--json]',
     ],
-    ['move', 'agentboard move <id> [<status>] --as <actor> [--json]'],
+    [
+      'move',
+      'agentboard move <id> [<status>] [--allow-secret-like] [--task <task> | --change <change> --group <group> | --unplanned <unplanned>] --as <actor> [--json]',
+    ],
     ['claim', 'agentboard claim <id> --as <actor> [--json]'],
     ['checklist tick', 'agentboard checklist tick <id> <index> --as <actor> [--json]'],
     ['inbox', 'agentboard inbox [--since <since>] [--peek] --as <actor> [--json]'],
@@ -500,7 +522,119 @@ describe('renderCommandHelp', () => {
       /^Exactly one of: --task \| --change with --group \| --pr \| --decision$/m,
     );
     expect(help(command('list'))).toMatch(/^At most one of: --task \| --change$/m);
+    expect(help(command('move'))).toMatch(
+      /^At most one of: --task \| --change with --group \| --unplanned$/m,
+    );
+    expect(help(command('close'))).toMatch(
+      /^At most one of: --task \| --change with --group \| --unplanned$/m,
+    );
     expect(help(command('claim'))).not.toMatch(/one of:/);
+  });
+
+  it.each(['move', 'close'])(
+    'scenario: %s has help for the disposition (add-adhoc-ticket-lifecycle task 2.1)',
+    (name) => {
+      const c = command(name);
+      const text = help(c);
+      const usage = text.split('\n')[0] ?? '';
+      for (const flag of ['--task <task>', '--change <change> --group <group>', '--unplanned <unplanned>']) {
+        expect(usage, flag).toContain(flag);
+      }
+      expect(text).toMatch(/^ {2}4 needs-scope-disposition {2,}\S/m);
+      expect(text).toMatch(/^ {2}4 already-linked {2,}\S/m);
+      expect(text).not.toContain('needs-task-link');
+      const withUnplanned = c.examples.filter((e) => e.command.includes('--unplanned'));
+      expect(withUnplanned.length).toBeGreaterThan(0);
+      for (const example of withUnplanned) {
+        const parsed = parseArgs(splitCommandLine(example.command).slice(1));
+        expect(parsed.command.name).toBe(name);
+        expect(typeof parsed.values.unplanned).toBe('string');
+        expect(parsed.values.unplanned).not.toBe('');
+      }
+      // The flags, in the order the MCP properties take them.
+      expect(c.flags.map((f) => f.name).slice(-5)).toEqual([
+        'task',
+        'change',
+        'group',
+        'unplanned',
+        'allow-secret-like',
+      ]);
+      expect(c.exclusive).toContainEqual(
+        expect.objectContaining({
+          alternatives: [['task'], ['change', 'group'], ['unplanned']],
+          required: false,
+          reason: 'usage',
+        }),
+      );
+    },
+  );
+
+  it('scenario: the help of new says an ad hoc ticket is worked normally and names the disposition (task 5.1)', () => {
+    const c = command('new');
+    const adhoc = c.flags.find((f) => f.name === 'adhoc');
+    expect(adhoc).toBeDefined();
+    // The --adhoc flag: the ticket is worked like any other.
+    expect(adhoc?.summary ?? '').toMatch(/\b(?:worked|work)\b[^.]*\b(?:normally|like any other)\b/i);
+    // The description: the disposition is given when it is merged or closed.
+    expect(c.description).toMatch(/ad hoc/i);
+    expect(c.description).toContain('--unplanned');
+    expect(c.description).toMatch(/merged or closed|merge or close|merging or closing/i);
+    for (const text of [c.description, adhoc?.summary ?? '', help(c)]) {
+      expect(text).not.toContain('needs-task-link');
+      expect(text).not.toMatch(/cannot enter/i);
+      expect(text).not.toMatch(/until (?:it is )?linked/i);
+    }
+    // An --adhoc example that parses with a non-empty reason.
+    const examples = c.examples.filter((e) => e.command.includes('--adhoc'));
+    expect(examples.length).toBeGreaterThan(0);
+    for (const example of examples) {
+      const parsed = parseArgs(splitCommandLine(example.command).slice(1));
+      expect(parsed.command.name).toBe('new');
+      expect(typeof parsed.values.adhoc).toBe('string');
+      expect(parsed.values.adhoc).not.toBe('');
+    }
+  });
+
+  it.each(['move', 'close'])(
+    'scenario: the description of %s names the scope disposition of an ad hoc ticket (task 5.1)',
+    (name) => {
+      const c = command(name);
+      expect(c.description).toMatch(/ad hoc/i);
+      expect(c.description).toMatch(/scope disposition/i);
+      expect(c.description).toContain('--task');
+      expect(c.description).toContain('--unplanned');
+      expect(c.description).toMatch(/needs-scope-disposition/);
+      for (const text of [c.description, help(c), ...c.examples.map((e) => e.summary)]) {
+        expect(text).not.toContain('needs-task-link');
+        expect(text).not.toMatch(/cannot enter/i);
+      }
+      // One example per disposition flag, each parsing to the command with
+      // a non-empty value (the --unplanned one is pinned above too).
+      for (const flag of ['task', 'unplanned']) {
+        const examples = c.examples.filter((e) => e.command.includes(`--${flag} `));
+        expect(examples.length, `${name} example with --${flag}`).toBeGreaterThan(0);
+        for (const example of examples) {
+          const parsed = parseArgs(splitCommandLine(example.command).slice(1));
+          expect(parsed.command.name).toBe(name);
+          expect(typeof parsed.values[flag]).toBe('string');
+          expect(parsed.values[flag]).not.toBe('');
+          expect(example.summary).toMatch(/^[\x20-\x7e]+$/);
+        }
+      }
+    },
+  );
+
+  it('handoff takes no disposition flag, so it lists needs-scope-disposition but not already-linked', () => {
+    // DECISION (test author, group 2): a command lists every exit code it
+    // can produce (`ExitCodeSpec`); a hand-off cannot write a
+    // `ticket.unplanned`, so it never produces `already-linked`.
+    const c = command('handoff');
+    expect(c.flags.map((f) => f.name)).toEqual(['to', 'status', 'note', 'allow-secret-like']);
+    expect(c.exitCodes).toContainEqual(
+      expect.objectContaining({ code: 4, reason: 'needs-scope-disposition' }),
+    );
+    expect(c.exitCodes).not.toContainEqual(expect.objectContaining({ reason: 'already-linked' }));
+    expect(help(c)).not.toContain('needs-task-link');
   });
 
   it("scenario: claim's help has --as, exit 4 already-assigned and an example", () => {

@@ -7,9 +7,10 @@
  * Already pinned elsewhere and not repeated here:
  * - "Ticket without a task is refused": tickets.test.ts
  *   (`needs-task-or-adhoc`) and cli/__tests__/parse.test.ts.
- * - "Ad hoc ticket cannot reach implementing": actions.test.ts and
- *   store/__tests__/transaction.test.ts (`needs-task-link`), and the fold
- *   rule in events/__tests__/fold.test.ts.
+ * - "Ad hoc ticket moves through the work statuses" and the scope
+ *   disposition at merge: actions.test.ts and
+ *   store/__tests__/transaction.test.ts (`needs-scope-disposition`), and
+ *   the fold rule in events/__tests__/fold-disposition.test.ts.
  * - The tick reminder text for a source without an adapter:
  *   reminder.test.ts and actions.test.ts.
  */

@@ -175,6 +175,7 @@ describe('sections', () => {
       'close-merged-ready',
       'close-merged-held',
       'close-merged-missing-pr',
+      'unplanned-scope',
       'late',
       'check',
     ]);
@@ -242,11 +243,255 @@ describe('sections', () => {
       'close-merged-ready',
       'close-merged-held',
       'close-merged-missing-pr',
+      'unplanned-scope',
     ]) {
       expect(findings(name), name).toEqual([]);
       expect(count(name), name).toBe('0');
       expect(section(name).querySelector('p.empty'), name).not.toBeNull();
     }
+  });
+});
+
+/**
+ * Ad hoc ticket T1 (`Hotfix one`, ad hoc `found in prod`) in `review` with
+ * no disposition, created and moved 30 hours ago.
+ */
+function adhocInReview(): FoldInput[] {
+  return [
+    E.create(T1, { title: 'Hotfix one', adhoc: 'found in prod' }, { wall: W0 }),
+    E.move(T1, 'tests', { wall: W0 + 1, actor: 'impl-1' }),
+    E.move(T1, 'implementing', { wall: W0 + 2, actor: 'impl-1' }),
+    E.move(T1, 'review', { wall: W0 + 3, actor: 'impl-1' }),
+  ];
+}
+
+/** `agentboard move T1 merged --unplanned "hotfix" --as orch` at `wall`: the disposition, then the move. */
+function mergeUnplanned(wall: number, reason = 'hotfix'): FoldInput[] {
+  return [
+    E.unplanned(T1, reason, { wall, actor: 'orch' }),
+    E.move(T1, 'merged', { wall: wall + 1, actor: 'orch' }),
+  ];
+}
+
+/** The text of the `.total` span of the unplanned scope heading. */
+function total(): string {
+  return one(section('unplanned-scope'), '.total').textContent?.trim() ?? '';
+}
+
+describe('unplanned scope (board-insights: "Unplanned scope in the Health view")', () => {
+  it('scenario: lists a ticket merged as unplanned from the CLI within 10 seconds, and a 1m window after a minute drops it from the list but not the total', async () => {
+    const base = adhocInReview();
+    const before = model(base);
+    const { api, clock } = await openHealth('#/health', before);
+    expect(findings('unplanned-scope')).toEqual([]);
+    expect(count('unplanned-scope')).toBe('0');
+    expect(total()).toBe('0 in all');
+    expect(section('unplanned-scope').querySelector('p.empty')).not.toBeNull();
+
+    // The CLI writes the two events; the stream delivers them.
+    const after = model([...base, ...mergeUnplanned(NOW)]);
+    const stream = await streamOf(api);
+    stream.append(appendOf(after, before.events.length));
+    await waitFor(() => {
+      expect(findings('unplanned-scope')).toEqual([T1]);
+    });
+    expect(count('unplanned-scope')).toBe('1');
+    expect(total()).toBe('1 in all');
+    const item = finding('unplanned-scope', T1);
+    expect(item.textContent).toContain('Hotfix one');
+    expect(one(item, '.reason').textContent).toBe('hotfix');
+    expect(item.textContent).toContain(`merged ${relativeTime(0)}`);
+    expect(one(item, 'a').getAttribute('href')).toBe(`#/ticket/${T1}`);
+    expect(section('unplanned-scope').querySelector('p.empty')).toBeNull();
+
+    // A minute later (the client refreshes `now` every 10 seconds).
+    await advance(clock, 70_000);
+    await waitFor(() => {
+      expect(finding('unplanned-scope', T1).textContent).toContain(`merged ${relativeTime(70_000)}`);
+    });
+    fireEvent.input(field('health-unplanned'), { target: { value: '1m' } });
+    await waitFor(() => {
+      expect(findings('unplanned-scope')).toEqual([]);
+    });
+    expect(count('unplanned-scope')).toBe('0');
+    expect(total()).toBe('1 in all');
+    expect(parseHash(window.location.hash)).toEqual({
+      view: 'health',
+      stale: null,
+      blocked: null,
+      unplanned: '1m',
+    });
+  });
+
+  it('shows a ticket closed before this change with no reason recorded and its ad hoc reason', async () => {
+    const m = model([
+      E.create(T2, { title: 'Old spike', adhoc: 'try the parser' }, { wall: W0 }),
+      E.move(T2, 'blocked', { wall: W0 + 1 }),
+      E.close(T2, { noDecision: true }, { wall: NOW - 3 * HOUR }),
+    ]);
+    await openHealth('#/health', m);
+    expect(findings('unplanned-scope')).toEqual([T2]);
+    expect(total()).toBe('1 in all');
+    const item = finding('unplanned-scope', T2);
+    expect(item.querySelector('.reason')).toBeNull();
+    expect(one(item, '.no-reason').textContent).toContain('no reason recorded');
+    expect(one(item, '.adhoc-reason').textContent).toBe('try the parser');
+    expect(item.textContent).toContain(`closed ${relativeTime(3 * HOUR)}`);
+    // Closed, so in no other section.
+    for (const name of ['stale-claims', 'stuck-blocked', 'unpromoted-decisions']) {
+      expect(findings(name), name).toEqual([]);
+    }
+  });
+
+  it('lists the most recent disposition first and counts the ones outside the window in the total', async () => {
+    const m = model([
+      ...adhocInReview(),
+      ...mergeUnplanned(NOW - 2 * HOUR, 'two hours'),
+      E.create(T2, { title: 'Newer', adhoc: 'x' }, { wall: W0 + 10 }),
+      E.move(T2, 'blocked', { wall: W0 + 11 }),
+      E.unplanned(T2, 'abandoned', { wall: NOW - 5 * MIN, actor: 'orch' }),
+      E.close(T2, { noDecision: true }, { wall: NOW - 5 * MIN + 1, actor: 'orch' }),
+      // Created and blocked before its disposition 10 days ago, so every
+      // event of T6 applies and it counts in the total outside the window.
+      E.create(T6, { title: 'Old', adhoc: 'y' }, { wall: NOW - 11 * 24 * HOUR }),
+      E.move(T6, 'blocked', { wall: NOW - 11 * 24 * HOUR + 1 }),
+      E.unplanned(T6, 'long ago', { wall: NOW - 10 * 24 * HOUR, actor: 'orch' }),
+      E.close(T6, { noDecision: true }, { wall: NOW - 10 * 24 * HOUR + 1, actor: 'orch' }),
+    ]);
+    expect(m.events.filter((e) => e.outcome !== 'applied')).toEqual([]);
+    await openHealth('#/health', m);
+    expect(findings('unplanned-scope')).toEqual([T2, T1]);
+    expect(count('unplanned-scope')).toBe('2');
+    expect(total()).toBe('3 in all');
+    expect(finding('unplanned-scope', T2).textContent).toContain(`closed ${relativeTime(5 * MIN)}`);
+    expect(finding('unplanned-scope', T1).textContent).toContain(`merged ${relativeTime(2 * HOUR)}`);
+  });
+
+  it('scenario "Information, not a failure": the section carries the info class and not the warning class of stale claims and stuck tickets', async () => {
+    await openHealth('#/health', model([...adhocInReview(), ...mergeUnplanned(NOW - HOUR)]));
+    expect(findings('unplanned-scope')).toEqual([T1]);
+    const unplanned = section('unplanned-scope');
+    expect(unplanned.classList.contains('health-section')).toBe(true);
+    expect(unplanned.classList.contains('info')).toBe(true);
+    expect(unplanned.classList.contains('warning')).toBe(false);
+    expect(one(unplanned, '.unplanned-note').textContent).toContain('not a failure');
+    // Those two are findings to act on, so they carry the warning styling.
+    cleanup();
+    await openHealth('#/health', model(inputs()));
+    for (const name of ['stale-claims', 'stuck-blocked']) {
+      expect(section(name).classList.contains('warning'), name).toBe(true);
+      expect(section(name).classList.contains('info'), name).toBe(false);
+    }
+    expect(section('unplanned-scope').classList.contains('warning')).toBe(false);
+  });
+
+  it('starts the third input from 7d, labelled, and restores it from the hash', async () => {
+    await openHealth();
+    expect(field('health-unplanned').value).toBe('7d');
+    expect(one(document, 'label[for="health-unplanned"]').textContent).toContain(
+      'Unplanned within',
+    );
+    expect(field('health-unplanned').getAttribute('aria-describedby')).toBe(
+      'health-duration-help',
+    );
+    cleanup();
+    await openHealth('#/health?unplanned=2d&stale=20m');
+    expect(field('health-unplanned').value).toBe('2d');
+    expect(field('health-stale').value).toBe('20m');
+    cleanup();
+    await openHealth('#/health?unplanned=bogus');
+    expect(field('health-unplanned').value).toBe('7d');
+  });
+
+  it('re-evaluates the report when the window changes, and keeps it in the URL hash', async () => {
+    await openHealth('#/health', model([...adhocInReview(), ...mergeUnplanned(NOW - 3 * HOUR)]));
+    expect(findings('unplanned-scope')).toEqual([T1]);
+    fireEvent.input(field('health-unplanned'), { target: { value: '2h' } });
+    await waitFor(() => {
+      expect(findings('unplanned-scope')).toEqual([]);
+    });
+    expect(total()).toBe('1 in all');
+    expect(parseHash(window.location.hash)).toEqual({
+      view: 'health',
+      stale: null,
+      blocked: null,
+      unplanned: '2h',
+    });
+    fireEvent.input(field('health-unplanned'), { target: { value: '4h' } });
+    await waitFor(() => {
+      expect(findings('unplanned-scope')).toEqual([T1]);
+    });
+    expect(parseHash(window.location.hash)).toMatchObject({ unplanned: '4h' });
+  });
+
+  it.each(['7days', '0d', '100000m', 'd', '-7d', '', '1.5d'])(
+    'flags the window %j as invalid and leaves the report and the hash unchanged',
+    async (text) => {
+      await openHealth(
+        '#/health?unplanned=2h',
+        model([...adhocInReview(), ...mergeUnplanned(NOW - HOUR)]),
+      );
+      expect(findings('unplanned-scope')).toEqual([T1]);
+      const before = window.location.hash;
+      fireEvent.input(field('health-unplanned'), { target: { value: text } });
+      await waitFor(() => {
+        expect(field('health-unplanned').getAttribute('aria-invalid')).toBe('true');
+      });
+      expect(field('health-unplanned').classList.contains('invalid')).toBe(true);
+      expect(findings('unplanned-scope')).toEqual([T1]);
+      expect(total()).toBe('1 in all');
+      expect(window.location.hash).toBe(before);
+      expect(field('health-stale').getAttribute('aria-invalid')).not.toBe('true');
+    },
+  );
+
+  it('keeps a merge outside the window out of the list on invalid input, rather than falling back to 7d', async () => {
+    // Merged 3 hours ago: outside a 2h window, inside the 7d default. A
+    // silent fallback to the default on bad input would list it.
+    await openHealth(
+      '#/health?unplanned=2h',
+      model([...adhocInReview(), ...mergeUnplanned(NOW - 3 * HOUR)]),
+    );
+    expect(findings('unplanned-scope')).toEqual([]);
+    expect(count('unplanned-scope')).toBe('0');
+    expect(total()).toBe('1 in all');
+    const before = window.location.hash;
+    for (const text of ['7days', '', '1.5d']) {
+      fireEvent.input(field('health-unplanned'), { target: { value: text } });
+      await waitFor(() => {
+        expect(field('health-unplanned').getAttribute('aria-invalid')).toBe('true');
+      });
+      expect(findings('unplanned-scope')).toEqual([]);
+      expect(count('unplanned-scope')).toBe('0');
+      expect(total()).toBe('1 in all');
+      expect(window.location.hash).toBe(before);
+    }
+    // Valid again, and wide enough: listed.
+    fireEvent.input(field('health-unplanned'), { target: { value: '4h' } });
+    await waitFor(() => {
+      expect(findings('unplanned-scope')).toEqual([T1]);
+    });
+    expect(field('health-unplanned').getAttribute('aria-invalid')).not.toBe('true');
+    expect(parseHash(window.location.hash)).toMatchObject({ unplanned: '4h' });
+  });
+
+  it('renders the reasons as text, never as markup', async () => {
+    const REASON = '<b>hot</b><img src=x onerror=alert(3)>';
+    const ADHOC = '<i>spike</i>';
+    const m = model([
+      ...adhocInReview(),
+      ...mergeUnplanned(NOW - HOUR, REASON),
+      E.create(T2, { title: 'Old', adhoc: ADHOC }, { wall: W0 + 10 }),
+      E.move(T2, 'blocked', { wall: W0 + 11 }),
+      E.close(T2, { noDecision: true }, { wall: NOW - 2 * HOUR }),
+    ]);
+    await openHealth('#/health', m);
+    expect(one(finding('unplanned-scope', T1), '.reason').textContent).toBe(REASON);
+    expect(one(finding('unplanned-scope', T2), '.adhoc-reason').textContent).toBe(ADHOC);
+    for (const tag of ['img', 'b', 'i']) {
+      expect(section('unplanned-scope').querySelector(tag), tag).toBeNull();
+    }
+    expect(styled(document.body)).toEqual([]);
   });
 });
 
@@ -273,6 +518,7 @@ describe('thresholds', () => {
       view: 'health',
       stale: '20m',
       blocked: null,
+      unplanned: null,
     });
     fireEvent.input(field('health-blocked'), { target: { value: '26h' } });
     await waitFor(() => {
@@ -282,6 +528,7 @@ describe('thresholds', () => {
       view: 'health',
       stale: '20m',
       blocked: '26h',
+      unplanned: null,
     });
   });
 

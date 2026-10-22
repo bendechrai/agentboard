@@ -14,6 +14,50 @@ import { isUlid } from './ulid.js';
 /** The schema version this code writes and folds. */
 export const SCHEMA_VERSION = 1;
 
+/**
+ * Clock skew tolerance of the lease rules, in milliseconds (board-events:
+ * "Claim leases", "Grants"). A lease that expires at `expiresAt` can be
+ * taken over, and makes a grant due, only from `expiresAt + LEASE_SKEW_MS`.
+ */
+export const LEASE_SKEW_MS = 60_000;
+
+/** Smallest `ttl` (claim lease, renew, queue join, grant), inclusive: 30 seconds. */
+export const TTL_MIN_MS = 30_000;
+
+/** Largest `ttl`, inclusive: 7 days. */
+export const TTL_MAX_MS = 604_800_000;
+
+/**
+ * Smallest grace (a claim lease's `grace`, the `lease.grace` setting) and
+ * window (a grant's `window`, the `queue.window` setting), inclusive: 30
+ * seconds.
+ */
+export const SETTING_MIN_MS = 30_000;
+
+/** Largest grace or window, inclusive: 10 minutes. */
+export const SETTING_MAX_MS = 600_000;
+
+/** Grace of a leased claim when `lease.grace` is missing or out of range: 2 minutes. */
+export const GRACE_DEFAULT_MS = 120_000;
+
+/** Window of a grant when `queue.window` is missing or out of range: 2 minutes. */
+export const WINDOW_DEFAULT_MS = 120_000;
+
+/** `board.meta` key of the grace given to a leased claim (board-events: "Board lease settings"). */
+export const LEASE_GRACE_KEY = 'lease.grace';
+
+/** `board.meta` key of the acceptance window given to a grant. */
+export const QUEUE_WINDOW_KEY = 'queue.window';
+
+/**
+ * The reserved system actor (board-events: "Reserved system actor"). It is
+ * the actor of every `ticket.grant` and of no other event.
+ */
+export const SYSTEM_ACTOR = 'agentboard';
+
+/** Pattern of an event hash: 64 lowercase hex characters. */
+export const EVENT_HASH_PATTERN = /^[0-9a-f]{64}$/;
+
 /** Ticket statuses, in board order. `merged` is terminal. */
 export const STATUSES = ['todo', 'tests', 'implementing', 'review', 'merged', 'blocked'] as const;
 
@@ -109,8 +153,89 @@ export interface TicketAssignBody {
   to: string;
 }
 
-/** `ticket.claim` and `ticket.release` carry an empty body `{}`. */
+/** `ticket.release` and `ticket.queue.leave` carry an empty body `{}`. */
 export type EmptyBody = Record<string, never>;
+
+/**
+ * The lease a `ticket.claim` asks for. All three are integer milliseconds:
+ * `ttl` in `TTL_MIN_MS`..`TTL_MAX_MS`, `grace` in
+ * `SETTING_MIN_MS`..`SETTING_MAX_MS`, and `expiresAt` exactly the event's
+ * `ts.wall + min(ttl, grace)`.
+ */
+export interface ClaimLease {
+  ttl: number;
+  grace: number;
+  expiresAt: number;
+}
+
+/**
+ * The lease generation a takeover claim replaces: the holder, the lease's
+ * `expiresAt` and the hash of the event that set the lease (64 lowercase
+ * hex characters).
+ */
+export interface LeaseRef {
+  /** Non-empty actor name. */
+  holder: string;
+  /** Non-negative safe integer. */
+  expiresAt: number;
+  /** Matches `EVENT_HASH_PATTERN`. */
+  event: string;
+}
+
+/**
+ * `ticket.claim`: the event's actor claims the ticket. Both fields are
+ * optional; a claim with neither has the empty body `{}`, byte for byte the
+ * claim written before leases existed.
+ */
+export interface TicketClaimBody {
+  lease?: ClaimLease;
+  supersedes?: LeaseRef;
+}
+
+/**
+ * `ticket.renew`: the assignee confirms or resets its lease. `ttl` in
+ * `TTL_MIN_MS`..`TTL_MAX_MS`; `expiresAt` exactly `ts.wall + ttl`.
+ */
+export interface TicketRenewBody {
+  ttl: number;
+  expiresAt: number;
+}
+
+/** `ticket.release.force`: an actor breaks `holder`'s hold, saying why. */
+export interface TicketReleaseForceBody {
+  /** Non-empty actor name of the holder being released. */
+  holder: string;
+  /** Non-empty. */
+  reason: string;
+}
+
+/** `ticket.queue.join`: the actor waits for the ticket, asking for a lease of `ttl`. */
+export interface TicketQueueJoinBody {
+  /** In `TTL_MIN_MS`..`TTL_MAX_MS`. */
+  ttl: number;
+}
+
+/**
+ * What made the ticket available for a grant: exactly one of `released`
+ * (the hash of the applied `ticket.release` or `ticket.release.force`) or
+ * `lease` (the lapsed lease).
+ */
+export type GrantAfter = { released: string } | { lease: LeaseRef };
+
+/**
+ * `ticket.grant`, written only by `SYSTEM_ACTOR`: the ticket passes to the
+ * head waiter `to`, with the `ttl` of its join and the acceptance `window`
+ * (in `SETTING_MIN_MS`..`SETTING_MAX_MS`).
+ */
+export interface TicketGrantBody {
+  /** Non-empty actor name. */
+  to: string;
+  /** In `TTL_MIN_MS`..`TTL_MAX_MS`. */
+  ttl: number;
+  /** In `SETTING_MIN_MS`..`SETTING_MAX_MS`. */
+  window: number;
+  after: GrantAfter;
+}
 
 /** `ticket.handoff`: assign, move and comment in one event. */
 export interface TicketHandoffBody {
@@ -133,6 +258,20 @@ export type TicketLinkBody = { task: TaskRef } | { pr: string | number } | { dec
  * `noDecision` (the literal `true`).
  */
 export type TicketCloseBody = { decision: string } | { noDecision: true };
+
+/**
+ * `ticket.unplanned` (board-events: "Unplanned disposition"): records that
+ * the ticket's scope was never planned. `reason` is a non-empty string and
+ * the only field; a missing or empty `reason` is malformed naming
+ * `body.reason`, and any other key is malformed naming `body.<key>`. A
+ * command writes it in the same transaction as, and before, the
+ * `ticket.move` to `merged` or the `ticket.close` it disposes of
+ * (board-cache: "One command, one transaction").
+ */
+export interface TicketUnplannedBody {
+  /** Non-empty: why the work was never planned. */
+  reason: string;
+}
 
 /** `ticket.checklist`: `index` any safe integer, range-checked by the fold. */
 export interface TicketChecklistBody {
@@ -178,11 +317,20 @@ export type TicketCreateEvent = TicketEnvelope<'ticket.create', TicketCreateBody
 export type TicketCommentEvent = TicketEnvelope<'ticket.comment', TicketCommentBody>;
 export type TicketMoveEvent = TicketEnvelope<'ticket.move', TicketMoveBody>;
 export type TicketAssignEvent = TicketEnvelope<'ticket.assign', TicketAssignBody>;
-export type TicketClaimEvent = TicketEnvelope<'ticket.claim', EmptyBody>;
+export type TicketClaimEvent = TicketEnvelope<'ticket.claim', TicketClaimBody>;
+export type TicketRenewEvent = TicketEnvelope<'ticket.renew', TicketRenewBody>;
 export type TicketReleaseEvent = TicketEnvelope<'ticket.release', EmptyBody>;
+export type TicketReleaseForceEvent = TicketEnvelope<
+  'ticket.release.force',
+  TicketReleaseForceBody
+>;
+export type TicketQueueJoinEvent = TicketEnvelope<'ticket.queue.join', TicketQueueJoinBody>;
+export type TicketQueueLeaveEvent = TicketEnvelope<'ticket.queue.leave', EmptyBody>;
+export type TicketGrantEvent = TicketEnvelope<'ticket.grant', TicketGrantBody>;
 export type TicketHandoffEvent = TicketEnvelope<'ticket.handoff', TicketHandoffBody>;
 export type TicketLinkEvent = TicketEnvelope<'ticket.link', TicketLinkBody>;
 export type TicketCloseEvent = TicketEnvelope<'ticket.close', TicketCloseBody>;
+export type TicketUnplannedEvent = TicketEnvelope<'ticket.unplanned', TicketUnplannedBody>;
 export type TicketChecklistEvent = TicketEnvelope<'ticket.checklist', TicketChecklistBody>;
 export type TicketChecklistAddEvent = TicketEnvelope<
   'ticket.checklist.add',
@@ -205,10 +353,16 @@ export type TicketEvent =
   | TicketMoveEvent
   | TicketAssignEvent
   | TicketClaimEvent
+  | TicketRenewEvent
   | TicketReleaseEvent
+  | TicketReleaseForceEvent
+  | TicketQueueJoinEvent
+  | TicketQueueLeaveEvent
+  | TicketGrantEvent
   | TicketHandoffEvent
   | TicketLinkEvent
   | TicketCloseEvent
+  | TicketUnplannedEvent
   | TicketChecklistEvent
   | TicketChecklistAddEvent;
 
@@ -222,10 +376,16 @@ export const KNOWN_KINDS = [
   'ticket.move',
   'ticket.assign',
   'ticket.claim',
+  'ticket.renew',
   'ticket.release',
+  'ticket.release.force',
+  'ticket.queue.join',
+  'ticket.queue.leave',
+  'ticket.grant',
   'ticket.handoff',
   'ticket.link',
   'ticket.close',
+  'ticket.unplanned',
   'ticket.checklist',
   'ticket.checklist.add',
   'board.meta',
@@ -318,7 +478,40 @@ export type ValidationResult =
  * - `ticket.comment`: `text` required non-empty string.
  * - `ticket.move`: `to` required, one of `STATUSES`.
  * - `ticket.assign`: `to` required non-empty string.
- * - `ticket.claim`, `ticket.release`: no keys.
+ * - `ticket.claim`: two optional keys.
+ *   - `lease`: not an object is `body.lease`. `ttl` missing, not a safe
+ *     integer or outside `TTL_MIN_MS`..`TTL_MAX_MS` is `body.lease.ttl`;
+ *     `grace` likewise outside `SETTING_MIN_MS`..`SETTING_MAX_MS` is
+ *     `body.lease.grace`; `expiresAt` missing or not a non-negative safe
+ *     integer is `body.lease.expiresAt`, and so is an `expiresAt` that is
+ *     not exactly `ts.wall + min(ttl, grace)`, a check made only when
+ *     `ttl`, `grace` and `ts.wall` are themselves valid (no cascade). Any
+ *     other key of the lease is `body.lease.<key>`.
+ *   - `supersedes`: not an object is `body.supersedes`; `holder` not a
+ *     non-empty string is `body.supersedes.holder`; `expiresAt` not a
+ *     non-negative safe integer is `body.supersedes.expiresAt`; `event` not
+ *     matching `EVENT_HASH_PATTERN` is `body.supersedes.event`; any other
+ *     key is `body.supersedes.<key>`. Missing parts are reported the same
+ *     way.
+ * - `ticket.renew`: `ttl` (safe integer in `TTL_MIN_MS`..`TTL_MAX_MS`,
+ *   else `body.ttl`) and `expiresAt` (non-negative safe integer, else
+ *   `body.expiresAt`), both required; an `expiresAt` that is not exactly
+ *   `ts.wall + ttl` is `body.expiresAt`, checked only when `ttl` and
+ *   `ts.wall` are valid.
+ * - `ticket.release`, `ticket.queue.leave`: no keys.
+ * - `ticket.release.force`: `holder` and `reason` non-empty strings, both
+ *   required.
+ * - `ticket.queue.join`: `ttl` required, as for `ticket.renew`.
+ * - `ticket.grant`: `to` non-empty string, `ttl` as for `ticket.renew`,
+ *   `window` a safe integer in `SETTING_MIN_MS`..`SETTING_MAX_MS` (else
+ *   `body.window`) and `after`, all required. `after` missing or not an
+ *   object is `body.after`; zero or both of `released` and `lease` is one
+ *   reason `body.after`; `released` not matching `EVENT_HASH_PATTERN` is
+ *   `body.after.released`; `lease` is checked like `supersedes` above under
+ *   `body.after.lease` (not an object: `body.after.lease`; parts:
+ *   `body.after.lease.holder`, `.expiresAt`, `.event`, other keys
+ *   `body.after.lease.<key>`); any other key of `after` is
+ *   `body.after.<key>`.
  * - `ticket.handoff`: `to` non-empty string, `status` one of `STATUSES`,
  *   `note` non-empty string; all required.
  * - `ticket.link`: exactly one of `task` (TaskRef, reported as for create),
@@ -327,6 +520,9 @@ export type ValidationResult =
  * - `ticket.close`: exactly one of `decision` (non-empty string) or
  *   `noDecision` (must be `true`, else `body.noDecision`); zero or both is
  *   one reason `body`.
+ * - `ticket.unplanned`: `reason` required non-empty string (missing, empty
+ *   or not a string: `body.reason`); any other key is `body.<key>`
+ *   (board-events: "Unplanned body is checked").
  * - `ticket.checklist`: `index` a safe integer (negative is well-formed
  *   here and rejected by the fold), `done` a boolean; both required.
  * - `ticket.checklist.add`: `items` required, an array (else `body.items`)
@@ -339,7 +535,13 @@ export type ValidationResult =
  * - `board.meta`: `key` non-empty string and `value` (any JSON value,
  *   including null) both required.
  *
- * Unknown kinds: only the envelope is checked, and `body` must be an object.
+ * Reserved actor (board-events: "Reserved system actor"): an event of any
+ * kind other than `ticket.grant`, known or unknown, whose `actor` is
+ * `SYSTEM_ACTOR`, and a `ticket.grant` whose valid `actor` is anything
+ * else, are malformed with one reason `actor`.
+ *
+ * Unknown kinds: only the envelope (including the reserved actor rule) is
+ * checked, and `body` must be an object.
  *
  * Every applicable reason is returned (a missing field yields exactly one
  * reason, not a cascade); order is unspecified.
@@ -366,11 +568,12 @@ export function validateEvent(value: unknown): ValidationResult {
     report('actor', 'must be a non-empty string');
   }
   checkTs(value.ts, actor, report);
+  checkReservedActor(kind, actor, report);
   const body = value.body;
   if (!isObject(body)) {
     report('body', 'must be a JSON object');
   } else if (kind !== null && isKnownKind(kind)) {
-    BODY_CHECKS[kind](body, report);
+    BODY_CHECKS[kind](body, report, validWall(value.ts));
   }
   reportExtraKeys(value, ENVELOPE_KEYS, '', report);
 
@@ -385,6 +588,27 @@ export function validateEvent(value: unknown): ValidationResult {
 
 type JsonRecord = Record<string, unknown>;
 type Report = (field: string, message: string) => void;
+
+/**
+ * The reserved actor rule: only `ticket.grant` may be written by
+ * `SYSTEM_ACTOR`, and a grant only by it. Checked only for a valid actor; a
+ * grant's actor is checked whatever the rest of the event holds.
+ */
+function checkReservedActor(kind: string | null, actor: string | null, report: Report): void {
+  if (actor === null) {
+    return;
+  }
+  if (kind === 'ticket.grant' && actor !== SYSTEM_ACTOR) {
+    report('actor', `a ticket.grant must be written by ${SYSTEM_ACTOR}`);
+  } else if (kind !== 'ticket.grant' && actor === SYSTEM_ACTOR) {
+    report('actor', `${SYSTEM_ACTOR} is reserved for ticket.grant`);
+  }
+}
+
+/** `ts.wall` when `ts` is an object with a valid wall, else null (no cascade). */
+function validWall(ts: unknown): number | null {
+  return isObject(ts) && isNonNegativeSafeInteger(ts.wall) ? (ts.wall as number) : null;
+}
 
 const ENVELOPE_KEYS = ['v', 'kind', 'ticket', 'actor', 'ts', 'body'];
 const TS_KEYS = ['wall', 'counter', 'actor'];
@@ -567,7 +791,95 @@ function fieldCheck(key: string, rule: FieldRule): (value: unknown, report: Repo
   };
 }
 
-const BODY_CHECKS: Record<KnownKind, (body: JsonRecord, report: Report) => void> = {
+/** True for a safe integer in `min`..`max` inclusive. */
+function inRange(min: number, max: number): FieldRule {
+  return (value) =>
+    Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max;
+}
+
+const isTtl = inRange(TTL_MIN_MS, TTL_MAX_MS);
+const isSetting = inRange(SETTING_MIN_MS, SETTING_MAX_MS);
+const isEventHash: FieldRule = (value) =>
+  typeof value === 'string' && EVENT_HASH_PATTERN.test(value);
+
+/**
+ * Checks a nested object at `path` against field rules, all required:
+ * reports `path` when it is not an object, `<path>.<key>` for a missing or
+ * invalid field and for any unlisted key. Returns the object when it is one.
+ */
+function checkNested(
+  value: unknown,
+  path: string,
+  rules: Record<string, FieldRule>,
+  report: Report,
+): JsonRecord | null {
+  if (!isObject(value)) {
+    report(path, 'must be a JSON object');
+    return null;
+  }
+  for (const [key, rule] of Object.entries(rules)) {
+    if (!Object.hasOwn(value, key) || !rule(value[key])) {
+      report(`${path}.${key}`, 'missing or invalid');
+    }
+  }
+  reportExtraKeys(value, Object.keys(rules), `${path}.`, report);
+  return value;
+}
+
+/** Checks a `LeaseRef` (a claim's `supersedes`, a grant's `after.lease`) at `path`. */
+function checkLeaseRef(value: unknown, path: string, report: Report): void {
+  checkNested(
+    value,
+    path,
+    { holder: nonEmptyString, expiresAt: isNonNegativeSafeInteger, event: isEventHash },
+    report,
+  );
+}
+
+/**
+ * Checks a claim's `lease` at `body.lease`, including `expiresAt = wall +
+ * min(ttl, grace)` when `ttl`, `grace` and `wall` are all valid.
+ */
+function checkClaimLease(value: unknown, wall: number | null, report: Report): void {
+  const lease = checkNested(
+    value,
+    'body.lease',
+    { ttl: isTtl, grace: isSetting, expiresAt: isNonNegativeSafeInteger },
+    report,
+  );
+  if (lease === null || wall === null || !isTtl(lease.ttl) || !isSetting(lease.grace)) {
+    return;
+  }
+  const expected = wall + Math.min(lease.ttl as number, lease.grace as number);
+  if (isNonNegativeSafeInteger(lease.expiresAt) && lease.expiresAt !== expected) {
+    report('body.lease.expiresAt', `must be ts.wall + min(ttl, grace) = ${String(expected)}`);
+  }
+}
+
+/** Checks a grant's `after`: exactly one of `released` (an event hash) or `lease`. */
+function checkGrantAfter(value: unknown, report: Report): void {
+  if (!isObject(value)) {
+    report('body.after', 'must be a JSON object');
+    return;
+  }
+  const hasReleased = Object.hasOwn(value, 'released');
+  const hasLease = Object.hasOwn(value, 'lease');
+  if (hasReleased === hasLease) {
+    report('body.after', 'must have exactly one of released, lease');
+  } else if (hasReleased) {
+    if (!isEventHash(value.released)) {
+      report('body.after.released', 'must be an event hash');
+    }
+  } else {
+    checkLeaseRef(value.lease, 'body.after.lease', report);
+  }
+  reportExtraKeys(value, ['released', 'lease'], 'body.after.', report);
+}
+
+/** A body check; `wall` is the event's valid `ts.wall`, or null. */
+type BodyCheck = (body: JsonRecord, report: Report, wall: number | null) => void;
+
+const BODY_CHECKS: Record<KnownKind, BodyCheck> = {
   'ticket.create': (body, report) => {
     checkFields(
       body,
@@ -599,11 +911,46 @@ const BODY_CHECKS: Record<KnownKind, (body: JsonRecord, report: Report) => void>
   'ticket.assign': (body, report) => {
     checkFields(body, { to: nonEmptyString }, {}, report);
   },
-  'ticket.claim': (body, report) => {
-    checkFields(body, {}, {}, report);
+  'ticket.claim': (body, report, wall) => {
+    if (Object.hasOwn(body, 'lease')) {
+      checkClaimLease(body.lease, wall, report);
+    }
+    if (Object.hasOwn(body, 'supersedes')) {
+      checkLeaseRef(body.supersedes, 'body.supersedes', report);
+    }
+    reportExtraKeys(body, ['lease', 'supersedes'], 'body.', report);
+  },
+  'ticket.renew': (body, report, wall) => {
+    checkFields(body, { ttl: isTtl, expiresAt: isNonNegativeSafeInteger }, {}, report);
+    if (wall !== null && isTtl(body.ttl) && isNonNegativeSafeInteger(body.expiresAt)) {
+      const expected = wall + (body.ttl as number);
+      if (body.expiresAt !== expected) {
+        report('body.expiresAt', `must be ts.wall + ttl = ${String(expected)}`);
+      }
+    }
   },
   'ticket.release': (body, report) => {
     checkFields(body, {}, {}, report);
+  },
+  'ticket.release.force': (body, report) => {
+    checkFields(body, { holder: nonEmptyString, reason: nonEmptyString }, {}, report);
+  },
+  'ticket.queue.join': (body, report) => {
+    checkFields(body, { ttl: isTtl }, {}, report);
+  },
+  'ticket.queue.leave': (body, report) => {
+    checkFields(body, {}, {}, report);
+  },
+  'ticket.grant': (body, report) => {
+    checkFields(
+      body,
+      { to: nonEmptyString, ttl: isTtl, window: isSetting, after: anyValue },
+      {},
+      report,
+    );
+    if (Object.hasOwn(body, 'after')) {
+      checkGrantAfter(body.after, report);
+    }
   },
   'ticket.handoff': (body, report) => {
     checkFields(body, { to: nonEmptyString, status: isStatus, note: nonEmptyString }, {}, report);
@@ -631,6 +978,9 @@ const BODY_CHECKS: Record<KnownKind, (body: JsonRecord, report: Report) => void>
       },
       report,
     );
+  },
+  'ticket.unplanned': (body, report) => {
+    checkFields(body, { reason: nonEmptyString }, {}, report);
   },
   'ticket.checklist': (body, report) => {
     checkFields(

@@ -1,8 +1,24 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
+import { canonicalDecode, canonicalEncode, sha256Hex } from '../canonical.js';
 import {
+  EVENT_HASH_PATTERN,
+  GRACE_DEFAULT_MS,
   KNOWN_KINDS,
+  LEASE_GRACE_KEY,
+  LEASE_SKEW_MS,
+  QUEUE_WINDOW_KEY,
   SCHEMA_VERSION,
+  SETTING_MAX_MS,
+  SETTING_MIN_MS,
+  SYSTEM_ACTOR,
+  TTL_MAX_MS,
+  TTL_MIN_MS,
+  WINDOW_DEFAULT_MS,
   STATUSES,
   TASK_SOURCE_PATTERN,
   formatTaskRef,
@@ -33,6 +49,22 @@ function ev(kind: string, body: unknown): Obj {
   }
   return base;
 }
+
+/** The same event written by `actor` (envelope and timestamp). */
+function asActor(value: Obj, actor: string): Obj {
+  const ts = value.ts as Obj;
+  return { ...value, actor, ts: { ...ts, actor } };
+}
+
+/** The actor that may write `kind`: the reserved actor for grants, else `impl`. */
+function actorFor(kind: string): string {
+  return kind === 'ticket.grant' ? 'agentboard' : 'impl';
+}
+
+const HASH_A = 'a'.repeat(64);
+const HASH_B = '0123456789abcdef'.repeat(4);
+
+const GRANT_BODY: Obj = { to: 'a', ttl: 1_800_000, window: 120_000, after: { released: HASH_A } };
 
 function without(obj: Obj, key: string): Obj {
   return Object.fromEntries(Object.entries(obj).filter(([k]) => k !== key));
@@ -70,7 +102,7 @@ describe('constants', () => {
     expect([...STATUSES]).toEqual(['todo', 'tests', 'implementing', 'review', 'merged', 'blocked']);
   });
 
-  it('lists the twelve known kinds', () => {
+  it('lists the eighteen known kinds', () => {
     expect([...KNOWN_KINDS].sort()).toEqual(
       [
         'board.meta',
@@ -81,10 +113,16 @@ describe('constants', () => {
         'ticket.close',
         'ticket.comment',
         'ticket.create',
+        'ticket.grant',
         'ticket.handoff',
         'ticket.link',
         'ticket.move',
+        'ticket.queue.join',
+        'ticket.queue.leave',
         'ticket.release',
+        'ticket.release.force',
+        'ticket.renew',
+        'ticket.unplanned',
       ].sort(),
     );
   });
@@ -187,6 +225,7 @@ describe('validateEvent: well-formed events of every kind', () => {
     ['ticket.link decision', ev('ticket.link', { decision: 'docs/adr/0002-x.md' })],
     ['ticket.close decision', ev('ticket.close', { decision: 'docs/adr/0002-x.md' })],
     ['ticket.close noDecision', ev('ticket.close', { noDecision: true })],
+    ['ticket.unplanned', ev('ticket.unplanned', { reason: 'production hotfix, no plan' })],
     ['ticket.checklist', ev('ticket.checklist', { index: 0, done: true })],
     ['ticket.checklist negative index', ev('ticket.checklist', { index: -1, done: false })],
     [
@@ -272,15 +311,22 @@ describe('validateEvent: unknown kinds', () => {
       ['ticket.handoff', { to: 'a', status: 'tests', note: 'n' }],
       ['ticket.link', { pr: 1 }],
       ['ticket.close', { noDecision: true }],
+      ['ticket.unplanned', { reason: 'hotfix' }],
       ['ticket.checklist', { index: 0, done: true }],
       ['ticket.checklist.add', { items: [{ text: 'a', done: false }] }],
+      ['ticket.renew', { ttl: 60_000, expiresAt: 61_000 }],
+      ['ticket.release.force', { holder: 'h', reason: 'gone' }],
+      ['ticket.queue.join', { ttl: 60_000 }],
+      ['ticket.queue.leave', {}],
+      ['ticket.grant', GRANT_BODY],
     ];
     expect(validBodies.map(([k]) => k).sort()).toEqual(
       KNOWN_KINDS.filter((k) => k !== 'board.meta').sort(),
     );
     for (const [kind, body] of validBodies) {
-      expect(validateEvent(ev(kind, body)).ok).toBe(true);
-      expectOnlyField(without(ev(kind, body), 'ticket'), 'ticket');
+      const value = asActor(ev(kind, body), actorFor(kind));
+      expect(validateEvent(value).ok).toBe(true);
+      expectOnlyField(without(value, 'ticket'), 'ticket');
     }
   });
 
@@ -600,6 +646,21 @@ describe('validateEvent: malformed bodies, one per required field and rule', () 
       ev('ticket.checklist.add', { items: [{ text: 'a', done: false }], at: 0 }),
       'body.at',
     ],
+    // ticket.unplanned (board-events: "Unplanned body is checked")
+    ['unplanned: missing reason', ev('ticket.unplanned', {}), 'body.reason'],
+    ['unplanned: empty reason', ev('ticket.unplanned', { reason: '' }), 'body.reason'],
+    ['unplanned: reason not a string', ev('ticket.unplanned', { reason: 7 }), 'body.reason'],
+    ['unplanned: reason null', ev('ticket.unplanned', { reason: null }), 'body.reason'],
+    [
+      'unplanned: extra body field',
+      ev('ticket.unplanned', { reason: 'hotfix', task: TASK }),
+      'body.task',
+    ],
+    [
+      'unplanned: a second unknown field',
+      ev('ticket.unplanned', { reason: 'hotfix', actor: 'orch' }),
+      'body.actor',
+    ],
     // board.meta
     ['meta: missing key', withBody('board.meta', meta, {}, ['key']), 'body.key'],
     ['meta: empty key', withBody('board.meta', meta, { key: '' }), 'body.key'],
@@ -613,7 +674,7 @@ describe('validateEvent: malformed bodies, one per required field and rule', () 
 
   it('rejects a non-object body for every known kind', () => {
     for (const kind of KNOWN_KINDS) {
-      expectOnlyField(ev(kind, null), 'body');
+      expectOnlyField(asActor(ev(kind, null), actorFor(kind)), 'body');
     }
   });
 
@@ -625,5 +686,456 @@ describe('validateEvent: malformed bodies, one per required field and rule', () 
       'body.status',
       'body.to',
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Leases, the queue, grants and the reserved actor (add-claim-leases,
+// board-events: "Event kinds", "Reserved system actor").
+
+const WALL = 1_000_000;
+
+/** A ticket event of `kind` written by `actor` at `wall`. */
+function at(kind: string, body: unknown, actor = 'impl', wall = WALL): Obj {
+  return { v: 1, kind, ticket: T1, actor, ts: { wall, counter: 0, actor }, body };
+}
+
+/** A well-formed claim lease at `WALL`: ttl 30m, grace 2m. */
+const LEASE: Obj = { ttl: 1_800_000, grace: 120_000, expiresAt: WALL + 120_000 };
+const SUPERSEDES: Obj = { holder: 'h', expiresAt: 900_000, event: HASH_A };
+
+const claimWith = (body: Obj): Obj => at('ticket.claim', body);
+const leaseWith = (patch: Obj, remove: string[] = []): Obj =>
+  claimWith({
+    lease: Object.fromEntries(
+      Object.entries({ ...LEASE, ...patch }).filter(([k]) => !remove.includes(k)),
+    ),
+  });
+const supersedesWith = (patch: Obj, remove: string[] = []): Obj =>
+  claimWith({
+    supersedes: Object.fromEntries(
+      Object.entries({ ...SUPERSEDES, ...patch }).filter(([k]) => !remove.includes(k)),
+    ),
+  });
+const renew = (body: Obj): Obj => at('ticket.renew', body);
+const grant = (body: Obj, actor = 'agentboard'): Obj => at('ticket.grant', body, actor);
+const grantWith = (patch: Obj, remove: string[] = []): Obj =>
+  grant(
+    Object.fromEntries(
+      Object.entries({ ...GRANT_BODY, ...patch }).filter(([k]) => !remove.includes(k)),
+    ),
+  );
+const afterLease = (patch: Obj, remove: string[] = []): Obj =>
+  grantWith({
+    after: {
+      lease: Object.fromEntries(
+        Object.entries({ ...SUPERSEDES, ...patch }).filter(([k]) => !remove.includes(k)),
+      ),
+    },
+  });
+
+describe('lease constants', () => {
+  it('match board-events and design.md', () => {
+    expect({
+      LEASE_SKEW_MS,
+      TTL_MIN_MS,
+      TTL_MAX_MS,
+      SETTING_MIN_MS,
+      SETTING_MAX_MS,
+      GRACE_DEFAULT_MS,
+      WINDOW_DEFAULT_MS,
+      LEASE_GRACE_KEY,
+      QUEUE_WINDOW_KEY,
+      SYSTEM_ACTOR,
+    }).toEqual({
+      LEASE_SKEW_MS: 60_000,
+      TTL_MIN_MS: 30_000,
+      TTL_MAX_MS: 604_800_000,
+      SETTING_MIN_MS: 30_000,
+      SETTING_MAX_MS: 600_000,
+      GRACE_DEFAULT_MS: 120_000,
+      WINDOW_DEFAULT_MS: 120_000,
+      LEASE_GRACE_KEY: 'lease.grace',
+      QUEUE_WINDOW_KEY: 'queue.window',
+      SYSTEM_ACTOR: 'agentboard',
+    });
+  });
+
+  it('EVENT_HASH_PATTERN accepts exactly 64 lowercase hex characters', () => {
+    expect(EVENT_HASH_PATTERN.test(HASH_A)).toBe(true);
+    expect(EVENT_HASH_PATTERN.test(HASH_B)).toBe(true);
+    expect(EVENT_HASH_PATTERN.test(HASH_A.toUpperCase())).toBe(false);
+    expect(EVENT_HASH_PATTERN.test('a'.repeat(63))).toBe(false);
+    expect(EVENT_HASH_PATTERN.test('a'.repeat(65))).toBe(false);
+    expect(EVENT_HASH_PATTERN.test(`${'a'.repeat(63)}g`)).toBe(false);
+  });
+});
+
+describe('validateEvent: well-formed lease, queue and grant events', () => {
+  const cases: [string, Obj][] = [
+    ['a leased claim, ttl above grace (expiresAt = wall + grace)', claimWith({ lease: LEASE })],
+    [
+      'a leased claim, ttl below grace (expiresAt = wall + ttl)',
+      claimWith({ lease: { ttl: 60_000, grace: 120_000, expiresAt: WALL + 60_000 } }),
+    ],
+    [
+      'a leased claim at the lower bounds',
+      claimWith({ lease: { ttl: 30_000, grace: 30_000, expiresAt: WALL + 30_000 } }),
+    ],
+    [
+      'a leased claim at the upper bounds',
+      claimWith({ lease: { ttl: 604_800_000, grace: 600_000, expiresAt: WALL + 600_000 } }),
+    ],
+    ['a claim with supersedes only', claimWith({ supersedes: SUPERSEDES })],
+    ['a takeover with its own lease', claimWith({ lease: LEASE, supersedes: SUPERSEDES })],
+    ['a renew', renew({ ttl: 1_800_000, expiresAt: WALL + 1_800_000 })],
+    ['a renew at the lowest ttl', renew({ ttl: 30_000, expiresAt: WALL + 30_000 })],
+    ['a renew at the highest ttl', renew({ ttl: 604_800_000, expiresAt: WALL + 604_800_000 })],
+    ['a forced release', at('ticket.release.force', { holder: 'h', reason: 'h crashed' })],
+    ['a queue join', at('ticket.queue.join', { ttl: 1_800_000 })],
+    ['a queue join at the lowest ttl', at('ticket.queue.join', { ttl: 30_000 })],
+    ['a queue join at the highest ttl', at('ticket.queue.join', { ttl: 604_800_000 })],
+    ['a queue leave', at('ticket.queue.leave', {})],
+    ['a grant after a release', grant(GRANT_BODY)],
+    ['a grant after a lapse', grantWith({ after: { lease: SUPERSEDES } })],
+    ['a grant at the lowest window', grantWith({ window: 30_000 })],
+    ['a grant at the highest window', grantWith({ window: 600_000 })],
+  ];
+
+  it.each(cases)('accepts %s as a known event, unchanged', (_name, value) => {
+    expect(validateEvent(value)).toEqual({ ok: true, known: true, event: value });
+  });
+
+  it('accepts a renew and a join whatever the ticket state (state is the fold job)', () => {
+    expect(validateEvent(at('ticket.renew', { ttl: 60_000, expiresAt: 60_000 }, 'x', 0)).ok).toBe(
+      true,
+    );
+  });
+});
+
+describe('validateEvent: malformed lease, queue and grant events', () => {
+  it('reports an inconsistent lease expiry naming lease.expiresAt (spec scenario)', () => {
+    // ts.wall 1000000, lease {ttl: 600000, grace: 120000, expiresAt: 1600000}.
+    expectOnlyField(
+      claimWith({ lease: { ttl: 600_000, grace: 120_000, expiresAt: 1_600_000 } }),
+      'body.lease.expiresAt',
+    );
+  });
+
+  it('reports a renew with ttl 1000 naming ttl (spec scenario)', () => {
+    expectOnlyField(renew({ ttl: 1000, expiresAt: WALL + 1000 }), 'body.ttl');
+  });
+
+  const cases: [string, Obj, string][] = [
+    // ticket.claim lease
+    ['claim: lease a string', claimWith({ lease: 'x' }), 'body.lease'],
+    ['claim: lease null', claimWith({ lease: null }), 'body.lease'],
+    ['claim: lease an array', claimWith({ lease: [LEASE] }), 'body.lease'],
+    ['claim: lease ttl missing (no cascade)', leaseWith({}, ['ttl']), 'body.lease.ttl'],
+    [
+      'claim: lease ttl 29999',
+      leaseWith({ ttl: 29_999, expiresAt: WALL + 29_999 }),
+      'body.lease.ttl',
+    ],
+    ['claim: lease ttl 604800001', leaseWith({ ttl: 604_800_001 }), 'body.lease.ttl'],
+    ['claim: lease ttl a string', leaseWith({ ttl: '1800000' }), 'body.lease.ttl'],
+    ['claim: lease ttl fractional', leaseWith({ ttl: 1_800_000.5 }), 'body.lease.ttl'],
+    ['claim: lease grace missing (no cascade)', leaseWith({}, ['grace']), 'body.lease.grace'],
+    [
+      'claim: lease grace 29999',
+      leaseWith({ grace: 29_999, expiresAt: WALL + 29_999 }),
+      'body.lease.grace',
+    ],
+    ['claim: lease grace 600001', leaseWith({ grace: 600_001 }), 'body.lease.grace'],
+    ['claim: lease expiresAt missing', leaseWith({}, ['expiresAt']), 'body.lease.expiresAt'],
+    [
+      'claim: lease expiresAt one ms late',
+      leaseWith({ expiresAt: WALL + 120_001 }),
+      'body.lease.expiresAt',
+    ],
+    [
+      'claim: lease expiresAt one ms early',
+      leaseWith({ expiresAt: WALL + 119_999 }),
+      'body.lease.expiresAt',
+    ],
+    [
+      'claim: lease expiresAt from ttl when grace is smaller',
+      leaseWith({ expiresAt: WALL + 1_800_000 }),
+      'body.lease.expiresAt',
+    ],
+    ['claim: lease expiresAt negative', leaseWith({ expiresAt: -1 }), 'body.lease.expiresAt'],
+    ['claim: lease expiresAt a string', leaseWith({ expiresAt: 'soon' }), 'body.lease.expiresAt'],
+    ['claim: extra field in lease', leaseWith({ confirmed: true }), 'body.lease.confirmed'],
+    // ticket.claim supersedes
+    ['claim: supersedes a string', claimWith({ supersedes: 'h' }), 'body.supersedes'],
+    ['claim: supersedes null', claimWith({ supersedes: null }), 'body.supersedes'],
+    ['claim: supersedes.holder missing', supersedesWith({}, ['holder']), 'body.supersedes.holder'],
+    ['claim: supersedes.holder empty', supersedesWith({ holder: '' }), 'body.supersedes.holder'],
+    [
+      'claim: supersedes.expiresAt missing',
+      supersedesWith({}, ['expiresAt']),
+      'body.supersedes.expiresAt',
+    ],
+    [
+      'claim: supersedes.expiresAt negative',
+      supersedesWith({ expiresAt: -1 }),
+      'body.supersedes.expiresAt',
+    ],
+    [
+      'claim: supersedes.expiresAt a string',
+      supersedesWith({ expiresAt: '900000' }),
+      'body.supersedes.expiresAt',
+    ],
+    ['claim: supersedes.event missing', supersedesWith({}, ['event']), 'body.supersedes.event'],
+    [
+      'claim: supersedes.event uppercase hex',
+      supersedesWith({ event: HASH_A.toUpperCase() }),
+      'body.supersedes.event',
+    ],
+    [
+      'claim: supersedes.event 63 characters',
+      supersedesWith({ event: 'a'.repeat(63) }),
+      'body.supersedes.event',
+    ],
+    [
+      'claim: supersedes.event 65 characters',
+      supersedesWith({ event: 'a'.repeat(65) }),
+      'body.supersedes.event',
+    ],
+    [
+      'claim: supersedes.event not hex',
+      supersedesWith({ event: `${'a'.repeat(63)}g` }),
+      'body.supersedes.event',
+    ],
+    [
+      'claim: supersedes.event a file name',
+      supersedesWith({ event: `${HASH_A}.json` }),
+      'body.supersedes.event',
+    ],
+    ['claim: extra field in supersedes', supersedesWith({ ttl: 1 }), 'body.supersedes.ttl'],
+    [
+      'claim: extra body field next to a lease',
+      claimWith({ lease: LEASE, wait: true }),
+      'body.wait',
+    ],
+    // ticket.renew
+    ['renew: ttl missing (no cascade)', renew({ expiresAt: WALL + 60_000 }), 'body.ttl'],
+    ['renew: ttl 29999', renew({ ttl: 29_999, expiresAt: WALL + 29_999 }), 'body.ttl'],
+    [
+      'renew: ttl 604800001',
+      renew({ ttl: 604_800_001, expiresAt: WALL + 604_800_001 }),
+      'body.ttl',
+    ],
+    ['renew: ttl a string', renew({ ttl: '60000', expiresAt: WALL + 60_000 }), 'body.ttl'],
+    ['renew: expiresAt missing', renew({ ttl: 60_000 }), 'body.expiresAt'],
+    [
+      'renew: expiresAt one ms late',
+      renew({ ttl: 60_000, expiresAt: WALL + 60_001 }),
+      'body.expiresAt',
+    ],
+    [
+      'renew: expiresAt one ms early',
+      renew({ ttl: 60_000, expiresAt: WALL + 59_999 }),
+      'body.expiresAt',
+    ],
+    [
+      'renew: extra body field',
+      renew({ ttl: 60_000, expiresAt: WALL + 60_000, grace: 1 }),
+      'body.grace',
+    ],
+    // ticket.release.force
+    ['force: holder missing', at('ticket.release.force', { reason: 'r' }), 'body.holder'],
+    ['force: holder empty', at('ticket.release.force', { holder: '', reason: 'r' }), 'body.holder'],
+    ['force: reason missing', at('ticket.release.force', { holder: 'h' }), 'body.reason'],
+    ['force: reason empty', at('ticket.release.force', { holder: 'h', reason: '' }), 'body.reason'],
+    [
+      'force: reason not a string',
+      at('ticket.release.force', { holder: 'h', reason: 5 }),
+      'body.reason',
+    ],
+    [
+      'force: extra body field',
+      at('ticket.release.force', { holder: 'h', reason: 'r', at: 1 }),
+      'body.at',
+    ],
+    // ticket.queue.join and ticket.queue.leave
+    ['join: ttl missing', at('ticket.queue.join', {}), 'body.ttl'],
+    ['join: ttl 29999', at('ticket.queue.join', { ttl: 29_999 }), 'body.ttl'],
+    ['join: ttl 604800001', at('ticket.queue.join', { ttl: 604_800_001 }), 'body.ttl'],
+    ['join: ttl a string', at('ticket.queue.join', { ttl: '30m' }), 'body.ttl'],
+    [
+      'join: extra body field',
+      at('ticket.queue.join', { ttl: 60_000, timeout: 1 }),
+      'body.timeout',
+    ],
+    ['leave: extra body field', at('ticket.queue.leave', { ttl: 60_000 }), 'body.ttl'],
+    // ticket.grant
+    ['grant: to missing', grantWith({}, ['to']), 'body.to'],
+    ['grant: to empty', grantWith({ to: '' }), 'body.to'],
+    ['grant: ttl missing', grantWith({}, ['ttl']), 'body.ttl'],
+    ['grant: ttl 29999', grantWith({ ttl: 29_999 }), 'body.ttl'],
+    ['grant: ttl 604800001', grantWith({ ttl: 604_800_001 }), 'body.ttl'],
+    ['grant: window missing', grantWith({}, ['window']), 'body.window'],
+    ['grant: window 29999', grantWith({ window: 29_999 }), 'body.window'],
+    ['grant: window 600001', grantWith({ window: 600_001 }), 'body.window'],
+    ['grant: after missing', grantWith({}, ['after']), 'body.after'],
+    ['grant: after a string', grantWith({ after: HASH_A }), 'body.after'],
+    ['grant: after empty (neither)', grantWith({ after: {} }), 'body.after'],
+    [
+      'grant: after with both released and lease',
+      grantWith({ after: { released: HASH_A, lease: SUPERSEDES } }),
+      'body.after',
+    ],
+    [
+      'grant: after.released uppercase',
+      grantWith({ after: { released: HASH_A.toUpperCase() } }),
+      'body.after.released',
+    ],
+    [
+      'grant: after.released too short',
+      grantWith({ after: { released: 'a'.repeat(63) } }),
+      'body.after.released',
+    ],
+    ['grant: after.lease a string', grantWith({ after: { lease: HASH_A } }), 'body.after.lease'],
+    ['grant: after.lease.holder missing', afterLease({}, ['holder']), 'body.after.lease.holder'],
+    ['grant: after.lease.holder empty', afterLease({ holder: '' }), 'body.after.lease.holder'],
+    [
+      'grant: after.lease.expiresAt negative',
+      afterLease({ expiresAt: -5 }),
+      'body.after.lease.expiresAt',
+    ],
+    [
+      'grant: after.lease.expiresAt missing',
+      afterLease({}, ['expiresAt']),
+      'body.after.lease.expiresAt',
+    ],
+    ['grant: after.lease.event bad', afterLease({ event: 'abc' }), 'body.after.lease.event'],
+    ['grant: after.lease.event missing', afterLease({}, ['event']), 'body.after.lease.event'],
+    ['grant: extra field in after.lease', afterLease({ ttl: 1 }), 'body.after.lease.ttl'],
+    [
+      'grant: extra field in after',
+      grantWith({ after: { released: HASH_A, by: 'h' } }),
+      'body.after.by',
+    ],
+    ['grant: extra body field', grantWith({ confirmed: false }), 'body.confirmed'],
+  ];
+
+  it.each(cases)('rejects %s', (_name, value, field) => {
+    expectOnlyField(value, field);
+  });
+
+  it('reports several lease problems together', () => {
+    const value = claimWith({
+      lease: { ttl: 1, grace: 1, expiresAt: 'x', extra: 1 },
+      supersedes: { holder: '', expiresAt: -1, event: 'x' },
+    });
+    expect(fields(validateEvent(value))).toEqual([
+      'body.lease.expiresAt',
+      'body.lease.extra',
+      'body.lease.grace',
+      'body.lease.ttl',
+      'body.supersedes.event',
+      'body.supersedes.expiresAt',
+      'body.supersedes.holder',
+    ]);
+  });
+
+  it('checks the lease expiry against the wall of this event, not another', () => {
+    const value = leaseWith({});
+    expect(validateEvent(value).ok).toBe(true);
+    const later = { ...value, ts: { wall: WALL + 1, counter: 0, actor: 'impl' } };
+    expectOnlyField(later, 'body.lease.expiresAt');
+    const counted = { ...value, ts: { wall: WALL, counter: 7, actor: 'impl' } };
+    expect(validateEvent(counted).ok).toBe(true);
+  });
+
+  it('does not check the lease expiry when ts.wall is itself invalid (no cascade)', () => {
+    const value = { ...leaseWith({}), ts: { wall: -1, counter: 0, actor: 'impl' } };
+    expectOnlyField(value, 'ts.wall');
+    const renewed = {
+      ...renew({ ttl: 60_000, expiresAt: WALL + 60_000 }),
+      ts: { counter: 0, actor: 'impl' },
+    };
+    expectOnlyField(renewed, 'ts.wall');
+  });
+});
+
+describe('validateEvent: the reserved actor', () => {
+  it('reports a grant forged by an agent as malformed naming actor (spec scenario)', () => {
+    expectOnlyField(grant(GRANT_BODY, 'impl'), 'actor');
+  });
+
+  it('accepts a grant written by agentboard', () => {
+    expect(validateEvent(grant(GRANT_BODY)).ok).toBe(true);
+  });
+
+  it.each([
+    ['ticket.comment', { text: 'hi' }],
+    ['ticket.claim', {}],
+    ['ticket.release', {}],
+    ['ticket.renew', { ttl: 60_000, expiresAt: WALL + 60_000 }],
+    ['ticket.release.force', { holder: 'h', reason: 'r' }],
+    ['ticket.queue.join', { ttl: 60_000 }],
+    ['ticket.queue.leave', {}],
+    ['ticket.estimate', { points: 3 }],
+  ])('reports %s written by agentboard as malformed naming actor', (kind, body) => {
+    expectOnlyField(at(kind, body, 'agentboard'), 'actor');
+  });
+
+  it('reports board.meta written by agentboard as malformed naming actor', () => {
+    const value = without(
+      at('board.meta', { key: 'queue.window', value: 300_000 }, 'agentboard'),
+      'ticket',
+    );
+    expectOnlyField(value, 'actor');
+  });
+
+  it('reports an unknown board-level kind written by agentboard as malformed naming actor', () => {
+    expectOnlyField(without(at('board.archive', {}, 'agentboard'), 'ticket'), 'actor');
+  });
+
+  it('is exact: a similar actor name is an ordinary actor', () => {
+    expect(validateEvent(at('ticket.comment', { text: 'hi' }, 'Agentboard')).ok).toBe(true);
+    expect(validateEvent(at('ticket.comment', { text: 'hi' }, 'agentboard-1')).ok).toBe(true);
+    expectOnlyField(grant(GRANT_BODY, 'agentboard-1'), 'actor');
+  });
+});
+
+// The golden plain claim (board-events: "Plain claim bytes are unchanged").
+// `fixtures/plain-claim.json` was written before leases existed, by the code
+// at commit ce7766d: `claimTicket(board, 'merger-1', { id: T1 }, { now: () =>
+// 1700000060000 })` on a temporary board whose only event was a
+// `ticket.create` of T1 by `orch` at wall 1700000000000; the file is the
+// claim's event file, copied byte for byte (no trailing newline).
+const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
+const PLAIN_CLAIM_HASH = 'fcee29059bbe23f90d5b51a2544714af61b8d1b0d985cbb105ab6f50f94aec64';
+
+describe('golden: a plain claim is unchanged by leases', () => {
+  const bytes = new Uint8Array(readFileSync(join(FIXTURES, 'plain-claim.json')));
+
+  it('the fixture is the claim file named by its hash', () => {
+    expect(sha256Hex(bytes)).toBe(PLAIN_CLAIM_HASH);
+  });
+
+  it('decodes to a well-formed known claim with the empty body', () => {
+    const result = validateEvent(canonicalDecode(bytes));
+    expect(result.ok && result.known).toBe(true);
+    if (result.ok) {
+      expect(result.event.kind).toBe('ticket.claim');
+      expect(result.event.body).toEqual({});
+    }
+  });
+
+  it('the same envelope built today encodes to the same bytes', () => {
+    const event = {
+      v: 1,
+      kind: 'ticket.claim',
+      ticket: T1,
+      actor: 'merger-1',
+      ts: { wall: 1_700_000_060_000, counter: 0, actor: 'merger-1' },
+      body: {},
+    };
+    expect(validateEvent(event)).toEqual({ ok: true, known: true, event });
+    expect(canonicalEncode(event)).toEqual(bytes);
   });
 });

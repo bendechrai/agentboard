@@ -111,7 +111,11 @@ export function newTicket(
     () => ({ ok: true, event: { kind: 'ticket.create', ticket: newUlid(), body } }),
     options,
   );
-  return { hash: result.hash, ticket: ticketOf(result.ticket) };
+  return {
+    hash: result.hash,
+    events: result.events.map((written) => written.hash),
+    ticket: ticketOf(result.ticket),
+  };
 }
 
 /** Result of `showTicket`; also the `show --json` document. */

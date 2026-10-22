@@ -48,6 +48,7 @@ describe('the command registry', () => {
       'health',
       'rebuild',
       'sync',
+      'remote',
       'import-change',
       'close-merged',
       'mcp',
@@ -102,11 +103,14 @@ describe('the command registry', () => {
     expect(ACTOR_FLAG).toMatchObject({ name: 'as', type: 'string', required: false });
   });
 
-  it('gives --allow-secret-like to new, comment and handoff only', () => {
+  it('gives --allow-secret-like to new, move, comment, handoff and close only', () => {
+    // move and close take it for their --unplanned reason (add-adhoc-ticket-lifecycle).
     expect(COMMANDS.filter((c) => c.flags.includes(ALLOW_SECRET_FLAG)).map((c) => c.name)).toEqual([
       'new',
+      'move',
       'comment',
       'handoff',
+      'close',
     ]);
     expect(ALLOW_SECRET_FLAG).toMatchObject({ name: 'allow-secret-like', type: 'boolean' });
   });
@@ -196,11 +200,20 @@ describe('the command registry', () => {
       ],
       exclusive: [[[['task'], ['change']], false]],
     });
-    expect(shape('move')).toMatchObject({
+    const disposition = [
+      ['task', 'string', false, false],
+      ['change', 'string', false, false],
+      ['group', 'string', false, false],
+      ['unplanned', 'string', false, false],
+      ['allow-secret-like', 'boolean', false, false],
+    ];
+    expect(shape('move')).toEqual({
       positionals: [
         ['id', 'string', true],
         ['status', 'string', false],
       ],
+      flags: disposition,
+      exclusive: [[[['task'], ['change', 'group'], ['unplanned']], false]],
     });
     expect(shape('comment')).toMatchObject({
       positionals: [
@@ -232,12 +245,17 @@ describe('the command registry', () => {
     expect(shape('close-merged')).toEqual({ positionals: [], flags: [], exclusive: [] });
     expect(command('import-change').operation).toBe('importChange');
     expect(command('close-merged').operation).toBe('closeMerged');
-    expect(shape('close')).toMatchObject({
+    expect(shape('close')).toEqual({
+      positionals: [['id', 'string', true]],
       flags: [
         ['decision-recorded-in', 'string', false, false],
         ['no-decision', 'boolean', false, false],
+        ...disposition,
       ],
-      exclusive: [[[['decision-recorded-in'], ['no-decision']], true]],
+      exclusive: [
+        [[['decision-recorded-in'], ['no-decision']], true],
+        [[['task'], ['change', 'group'], ['unplanned']], false],
+      ],
     });
     expect(shape('rebuild')).toEqual({
       positionals: [],

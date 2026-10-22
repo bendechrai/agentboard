@@ -42,6 +42,12 @@ describe('describeEvent (board-view-model: "Activity feed entries")', () => {
       'closed (decision docs/adr/0006-web.md)',
     ],
     ['close without decision', E.close(T1, { noDecision: true }), 'closed (no decision)'],
+    ['unplanned (ADR 0013)', E.unplanned(T1, 'hotfix'), 'recorded as unplanned: hotfix'],
+    [
+      'unplanned with a longer reason',
+      E.unplanned(T1, 'abandoned: superseded by the new parser'),
+      'recorded as unplanned: abandoned: superseded by the new parser',
+    ],
     ['checklist tick of index 0', E.check(T1, 0, true), 'checked 1'],
     ['checklist tick of index 2', E.check(T1, 2, true), 'checked 3'],
     ['checklist untick of index 0', E.check(T1, 0, false), 'unchecked 1'],
@@ -72,6 +78,16 @@ describe('describeEvent (board-view-model: "Activity feed entries")', () => {
       'created <img src=x onerror=alert(1)>',
     );
     expect(d(E.comment(T1, 'DECISION: use sessions'))).toBe('commented: DECISION: use sessions');
+    expect(d(E.unplanned(T1, '<script>alert(1)</script>'))).toBe(
+      'recorded as unplanned: <script>alert(1)</script>',
+    );
+  });
+
+  it('puts an unplanned reason on one line like every other text', () => {
+    expect(d(E.unplanned(T1, 'found in prod\nno task'))).toBe(
+      'recorded as unplanned: found in prod no task',
+    );
+    expect(d(E.unplanned(T1, 'a\r\nb\rc'))).toBe('recorded as unplanned: a b c');
   });
 
   it('replaces each line break with one space so the summary is one line', () => {

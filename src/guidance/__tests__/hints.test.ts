@@ -40,10 +40,16 @@ const PINNED: Readonly<Record<string, number>> = {
   'already-assigned': 4,
   'ambiguous-id': 1,
   'ambiguous-remote': 1,
+  // A host-model board whose link to the host is broken (add-board-sharing).
+  'board-link-broken': 2,
   'board-not-a-repository': 2,
+  // A host-model board whose worktree has a branch checked out (add-board-sharing group 3).
+  'board-on-branch': 3,
   'board-not-found': 2,
   // The refusals of the write actions.
   'body-too-large': 1,
+  // An existing board already shared through the host repository (add-board-sharing group 4).
+  'board-in-host': 1,
   busy: 5,
   'checklist-index': 4,
   'csrf-failed': 1,
@@ -53,8 +59,13 @@ const PINNED: Readonly<Record<string, number>> = {
   'forbidden-host': 1,
   'gh-missing': 1,
   'git-missing': 1,
+  // A host-model board on a git older than 2.32 (add-board-sharing group 3).
+  'git-too-old': 1,
+  // The fold rejections of leases, the queue and grants (add-claim-leases).
+  'holder-changed': 4,
   'id-too-short': 1,
   integrity: 5,
+  'invalid-queue': 4,
   'invalid-transition': 4,
   'malformed-event': 1,
   'malformed-task-ref': 1,
@@ -62,22 +73,35 @@ const PINNED: Readonly<Record<string, number>> = {
   'method-not-allowed': 1,
   'missing-actor': 1,
   'missing-status': 1,
-  'needs-task-link': 4,
+  // The scope disposition at merge and close (add-adhoc-ticket-lifecycle):
+  // `needs-task-link` is no longer a reason.
+  'needs-scope-disposition': 4,
+  'already-linked': 4,
   'needs-task-or-adhoc': 1,
   'no-cache': 5,
   'no-disposition': 1,
+  // init --into-host on a board not found through a git repository (add-board-sharing group 5).
+  'no-host-repository': 1,
   'no-targets': 1,
   'not-a-tty': 1,
+  // The repository given to init --remote has a branch without events/ (add-board-sharing group 4).
+  'not-a-board': 1,
   'not-assignee': 4,
   'not-found': 1,
   'path-outside-tree': 1,
   'port-in-use': 1,
+  queued: 4,
   'read-only': 1,
+  // The existing standalone board has a remote with another URL (add-board-sharing group 4).
+  'remote-mismatch': 1,
+  // The repository given to init --remote cannot be read (add-board-sharing group 4).
+  'remote-unreachable': 3,
   'schema-mismatch': 5,
   'secret-like': 1,
   'streaming-command': 1,
   'sync-conflict': 3,
   'sync-failed': 3,
+  'stale-grant': 4,
   'sync-in-progress': 3,
   'tasks-not-found': 1,
   'too-many-streams': 1,
@@ -86,6 +110,8 @@ const PINNED: Readonly<Record<string, number>> = {
   'unknown-ticket': 4,
   'unpromoted-decision': 1,
   'unsupported-source': 1,
+  // init --into-host on a standalone board with events not committed or not pushed (add-board-sharing group 5).
+  unsynced: 4,
   usage: 1,
 };
 
@@ -357,17 +383,21 @@ describe('hint contracts (CLI)', () => {
     expect(hint).toContain("'agentboard inbox --as <actor>'");
   });
 
+  it.each(['holder-changed', 'invalid-queue', 'stale-grant'])(
+    '%s hints show <id> (board-cli: "Lease and queue hints")',
+    (reason) => {
+      expect(cli(reason, 'release', { id: '01J9K3', actor: 'orch' })).toContain(
+        "'agentboard show 01J9K3'",
+      );
+      expect(cli(reason, null)).toContain("'agentboard show <id>'");
+    },
+  );
+
   it('scenario: missing actor names --as and AGENTBOARD_ACTOR, not the MCP server', () => {
     const hint = cli('missing-actor', 'comment', { id: '01J9K3' });
     expect(hint).toContain('--as <actor>');
     expect(hint).toContain('AGENTBOARD_ACTOR');
     expect(hint).not.toContain('agentboard mcp');
-  });
-
-  it('scenario: needs-task-link names link with a task reference', () => {
-    expect(cli('needs-task-link', 'move', { id: '01J9K3', actor: 'impl' })).toContain(
-      "'agentboard link 01J9K3 --task <source>:<ref>#<item> --as impl'",
-    );
   });
 
   it('scenario: the decision rule on close names --decision-recorded-in <path>', () => {
@@ -427,12 +457,36 @@ describe('hint contracts (CLI)', () => {
     ['git-missing', 'sync', ['PATH']],
     ['gh-missing', 'close-merged', ['PATH', 'gh auth login']],
     ['ambiguous-remote', 'sync', ['origin', "'agentboard sync'"]],
+    ['ambiguous-remote', 'init', ['origin', "'agentboard init'"]],
     ['board-not-found', 'list', ["'agentboard init'", 'AGENTBOARD_DIR']],
     ['board-not-a-repository', 'sync', ["'agentboard help sync'"]],
     ['sync-in-progress', 'sync', ["'agentboard sync'"]],
     ['detached-head', 'sync', ["'agentboard sync'"]],
+    ['board-on-branch', 'sync', ['switch --detach refs/agentboard/board', "'agentboard sync'"]],
+    ['git-too-old', 'sync', ['2.32', "'agentboard sync'"]],
     ['sync-conflict', 'sync', ['git rebase --continue', "'agentboard sync'"]],
     ['sync-failed', 'sync', ["'agentboard sync'"]],
+    // init --remote <url> (add-board-sharing group 4).
+    ['remote-unreachable', 'init', ['create', 'access', "'agentboard init --remote <url>'"]],
+    ['not-a-board', 'init', ['events', "'agentboard init --remote <url>'"]],
+    ['remote-mismatch', 'init', ['remote set-url', "'agentboard remote'"]],
+    ['board-in-host', 'init', ['refs/agentboard/board', "'agentboard remote'"]],
+    // init --into-host (add-board-sharing group 5).
+    ['unsynced', 'init', ["'agentboard sync'", "'agentboard init --into-host'"]],
+    ['no-host-repository', 'init', ['git repository', "'agentboard init --into-host'"]],
+    ['git-too-old', 'init', ['2.32', "'agentboard init --into-host'"]],
+    // A move stops on a rebase (step 3) or on a cherry-pick (the replay of
+    // an adopted worktree), so the init branch names both --continue commands.
+    [
+      'sync-in-progress',
+      'init',
+      ['git rebase --continue', 'git cherry-pick --continue', "'agentboard init --into-host'"],
+    ],
+    [
+      'sync-conflict',
+      'init',
+      ['git rebase --continue', 'git cherry-pick --continue', "'agentboard init --into-host'"],
+    ],
     ['integrity', 'show', ["'agentboard rebuild --check'"]],
     ['no-cache', 'rebuild', ["'agentboard rebuild'"]],
     ['schema-mismatch', 'rebuild', ["'agentboard rebuild'"]],
@@ -500,7 +554,7 @@ describe('hint contracts (CLI)', () => {
   });
 
   it('secret-like suggests --allow-secret-like only to a command that has it', () => {
-    for (const command of ['new', 'comment', 'handoff']) {
+    for (const command of ['new', 'comment', 'handoff', 'move', 'close']) {
       expect(cli('secret-like', command, { id: '01J9K3' }), command).toContain(
         '--allow-secret-like',
       );
@@ -539,18 +593,21 @@ describe('hint contracts (MCP)', () => {
     expect(hint).not.toContain("'agentboard inbox");
   });
 
+  it.each(['holder-changed', 'invalid-queue', 'stale-grant'])(
+    '%s hints board_show {id}',
+    (reason) => {
+      expect(mcp(reason, 'release', { id: '01J9K3', actor: 'orch' })).toContain(
+        'board_show {"id":"01J9K3"}',
+      );
+    },
+  );
+
   it('scenario: missing actor names the as argument and agentboard mcp --as, not AGENTBOARD_ACTOR', () => {
     const hint = mcp('missing-actor', 'comment', { id: '01J9K3' });
     expect(hint).toContain('as argument');
     expect(hint).toContain("'agentboard mcp --as <actor>'");
     expect(hint).not.toContain('AGENTBOARD_ACTOR');
     expect(hint).not.toBe(renderHint('missing-actor', ctx('cli', 'comment', { id: '01J9K3' })));
-  });
-
-  it('scenario: needs-task-link names board_link with a task reference', () => {
-    expect(mcp('needs-task-link', 'move', { id: '01J9K3', actor: 'impl' })).toContain(
-      'board_link {"id":"01J9K3","task":"<source>:<ref>#<item>","as":"impl"}',
-    );
   });
 
   it('scenario: the decision rule on close names board_close with decision-recorded-in', () => {
@@ -686,5 +743,246 @@ describe('hintFor', () => {
     expect(hintFor(new BoardError(5, null, 'odd'), context)).toBeNull();
     expect(hintFor(new Error('disk on fire'), context)).toBeNull();
     expect(hintFor('a string', context)).toBeNull();
+  });
+});
+
+describe('the hints of the board sharing reasons (add-board-sharing group 1)', () => {
+  it('board-link-broken names agentboard init as the repair, on both surfaces, in CLI form', () => {
+    for (const surface of SURFACES) {
+      for (const context of [ctx(surface, 'sync'), ctx(surface, null)]) {
+        const hint = renderHint('board-link-broken', context) ?? '';
+        expect(hint, surface).not.toBe('');
+        expect(cliSteps(hint).map((step) => parseStep(step).command)).toContain('init');
+        expect(toolSteps(hint)).toEqual([]);
+      }
+    }
+  });
+
+  it('board-on-branch names git -C .board switch --detach refs/agentboard/board, then sync (group 3)', () => {
+    for (const surface of SURFACES) {
+      for (const context of [ctx(surface, 'sync'), ctx(surface, null)]) {
+        const hint = renderHint('board-on-branch', context) ?? '';
+        expect(hint, surface).toContain('git -C .board switch --detach refs/agentboard/board');
+        expect(cliSteps(hint).map((step) => parseStep(step).command)).toContain('sync');
+        expect(toolSteps(hint)).toEqual([]);
+      }
+    }
+  });
+
+  it('git-too-old says the host model needs git 2.32 or later and to upgrade git (group 3)', () => {
+    for (const surface of SURFACES) {
+      for (const context of [ctx(surface, 'sync'), ctx(surface, 'init'), ctx(surface, null)]) {
+        const hint = renderHint('git-too-old', context) ?? '';
+        expect(hint, surface).toContain('2.32');
+        expect(hint).toMatch(/upgrade/i);
+        expect(toolSteps(hint)).toEqual([]);
+      }
+    }
+  });
+
+  it('ambiguous-remote says to set agentboard.remote, then sync', () => {
+    for (const surface of SURFACES) {
+      for (const context of [ctx(surface, 'sync'), ctx(surface, 'init'), ctx(surface, null)]) {
+        const hint = renderHint('ambiguous-remote', context) ?? '';
+        expect(hint, surface).toContain('git config agentboard.remote <name>');
+        expect(cliSteps(hint).map((step) => parseStep(step).command)).toContain('sync');
+      }
+    }
+  });
+});
+
+describe('the hints of the scope disposition (add-adhoc-ticket-lifecycle task 2.2)', () => {
+  const WARNING = 'do not create an issue or task only to satisfy this';
+  const MOVE_TASK = "'agentboard move 01J9K3 merged --task <source>:<ref>#<item> --as orch'";
+  const MOVE_UNPLANNED = '\'agentboard move 01J9K3 merged --unplanned "<reason>" --as orch\'';
+  const cli = (
+    reason: string,
+    command: string | null,
+    extra: Omit<HintContext, 'surface' | 'command'> = {},
+  ): string => renderHint(reason, { surface: 'cli', command, ...extra }) ?? '';
+  const mcp = (
+    reason: string,
+    command: string | null,
+    extra: Omit<HintContext, 'surface' | 'command'> = {},
+  ): string => renderHint(reason, { surface: 'mcp', command, ...extra }) ?? '';
+  const known = { id: '01J9K3', actor: 'orch' };
+
+  it('scenario: missing disposition hint from move names both forms, each parsing to move', () => {
+    const hint = cli('needs-scope-disposition', 'move', known);
+    expect(hint).toContain(MOVE_TASK);
+    expect(hint).toContain(MOVE_UNPLANNED);
+    expect(hint).toContain(WARNING);
+    expect(hint).toContain('--change <name> --group <n>');
+    expect(parseStep(MOVE_TASK.slice(1, -1))).toEqual({
+      command: 'move',
+      values: { id: '01J9K3', status: 'merged', task: '<source>:<ref>#<item>', as: 'orch' },
+    });
+    expect(parseStep(MOVE_UNPLANNED.slice(1, -1))).toEqual({
+      command: 'move',
+      values: { id: '01J9K3', status: 'merged', unplanned: '<reason>', as: 'orch' },
+    });
+    expect(cliSteps(hint).map((step) => parseStep(step).command)).toEqual(['move', 'move']);
+  });
+
+  it('a hand-off into merged points at move with both forms', () => {
+    const hint = cli('needs-scope-disposition', 'handoff', known);
+    expect(hint).toContain(MOVE_TASK);
+    expect(hint).toContain(MOVE_UNPLANNED);
+    expect(hint).toContain(WARNING);
+  });
+
+  it('with no known command, id or actor, the placeholders are used', () => {
+    const hint = cli('needs-scope-disposition', null);
+    expect(hint).toContain("'agentboard move <id> merged --task <source>:<ref>#<item> --as <actor>'");
+    expect(hint).toContain('\'agentboard move <id> merged --unplanned "<reason>" --as <actor>\'');
+  });
+
+  it('from close, repeats the decision flag the caller gave with each disposition', () => {
+    const noDecision = cli('needs-scope-disposition', 'close', {
+      ...known,
+      closeDecision: { flag: 'no-decision' },
+    });
+    const taskStep = 'agentboard close 01J9K3 --no-decision --task <source>:<ref>#<item> --as orch';
+    const unplannedStep = 'agentboard close 01J9K3 --no-decision --unplanned "<reason>" --as orch';
+    expect(noDecision).toContain(`'${taskStep}'`);
+    expect(noDecision).toContain(`'${unplannedStep}'`);
+    expect(noDecision).toContain(WARNING);
+    expect(parseStep(taskStep)).toEqual({
+      command: 'close',
+      values: { id: '01J9K3', 'no-decision': true, task: '<source>:<ref>#<item>', as: 'orch' },
+    });
+    expect(parseStep(unplannedStep)).toEqual({
+      command: 'close',
+      values: { id: '01J9K3', 'no-decision': true, unplanned: '<reason>', as: 'orch' },
+    });
+    expect(noDecision).not.toContain("'agentboard move");
+
+    const recorded = cli('needs-scope-disposition', 'close', {
+      ...known,
+      closeDecision: { flag: 'decision-recorded-in', path: 'docs/adr/0013.md' },
+    });
+    expect(recorded).toContain(
+      "'agentboard close 01J9K3 --decision-recorded-in docs/adr/0013.md --task <source>:<ref>#<item> --as orch'",
+    );
+    expect(recorded).toContain(
+      '\'agentboard close 01J9K3 --decision-recorded-in docs/adr/0013.md --unplanned "<reason>" --as orch\'',
+    );
+    for (const step of cliSteps(recorded)) {
+      expect(parseStep(step).values['decision-recorded-in']).toBe('docs/adr/0013.md');
+    }
+
+    // Unknown decision flag: the no-decision form, still parsing.
+    const unknown = cli('needs-scope-disposition', 'close', known);
+    expect(unknown).toContain(`'${taskStep}'`);
+    expect(unknown).toContain(`'${unplannedStep}'`);
+  });
+
+  it('over MCP, the forms are tool calls with the task and unplanned arguments', () => {
+    const move = mcp('needs-scope-disposition', 'move', known);
+    expect(move).toContain(
+      'board_move {"id":"01J9K3","status":"merged","task":"<source>:<ref>#<item>","as":"orch"}',
+    );
+    expect(move).toContain('board_move {"id":"01J9K3","status":"merged","unplanned":"<reason>","as":"orch"}');
+    expect(move).toContain(WARNING);
+    expect(cliSteps(move)).toEqual([]);
+    for (const { tool, args } of toolSteps(move)) {
+      const found = findTool(tool);
+      expect(found).toBeDefined();
+      if (found !== undefined) {
+        expect(() => toolArguments(found.command, args)).not.toThrow();
+      }
+    }
+    expect(mcp('needs-scope-disposition', 'handoff', known)).toContain('board_move {');
+    const close = mcp('needs-scope-disposition', 'close', {
+      ...known,
+      closeDecision: { flag: 'no-decision' },
+    });
+    expect(close).toContain(
+      'board_close {"id":"01J9K3","no-decision":true,"task":"<source>:<ref>#<item>","as":"orch"}',
+    );
+    expect(close).toContain(
+      'board_close {"id":"01J9K3","no-decision":true,"unplanned":"<reason>","as":"orch"}',
+    );
+    const recorded = mcp('needs-scope-disposition', 'close', {
+      ...known,
+      closeDecision: { flag: 'decision-recorded-in', path: 'docs/adr/0013.md' },
+    });
+    expect(recorded).toContain(
+      'board_close {"id":"01J9K3","decision-recorded-in":"docs/adr/0013.md","task":"<source>:<ref>#<item>","as":"orch"}',
+    );
+  });
+
+  it('already-linked hints the command without --unplanned, and show <id>', () => {
+    const move = cli('already-linked', 'move', known);
+    expect(move).toContain("'agentboard move 01J9K3 merged --as orch'");
+    expect(move).toContain("'agentboard show 01J9K3'");
+    expect(move).not.toContain('--unplanned "<reason>"');
+    expect(move).toContain('--unplanned');
+    const close = cli('already-linked', 'close', { ...known, closeDecision: { flag: 'no-decision' } });
+    expect(close).toContain("'agentboard close 01J9K3 --no-decision --as orch'");
+    expect(close).toContain("'agentboard show 01J9K3'");
+    const recorded = cli('already-linked', 'close', {
+      ...known,
+      closeDecision: { flag: 'decision-recorded-in', path: 'docs/adr/0013.md' },
+    });
+    expect(recorded).toContain(
+      "'agentboard close 01J9K3 --decision-recorded-in docs/adr/0013.md --as orch'",
+    );
+    expect(cli('already-linked', null)).toContain("'agentboard move <id> merged --as <actor>'");
+    for (const hint of [move, close, recorded]) {
+      for (const step of cliSteps(hint)) {
+        expect(() => parseStep(step), step).not.toThrow();
+      }
+    }
+  });
+
+  it('already-linked over MCP names the tool call without the unplanned argument', () => {
+    const move = mcp('already-linked', 'move', known);
+    expect(move).toContain('board_move {"id":"01J9K3","status":"merged","as":"orch"}');
+    expect(move).toContain('board_show {"id":"01J9K3"}');
+    expect(move).toContain('unplanned argument');
+    expect(
+      mcp('already-linked', 'close', { ...known, closeDecision: { flag: 'no-decision' } }),
+    ).toContain('board_close {"id":"01J9K3","no-decision":true,"as":"orch"}');
+  });
+
+  it('scenario: no reason without a hint (the two reasons are in the set, needs-task-link is not)', () => {
+    expect(HINT_REASONS).toContain('needs-scope-disposition');
+    expect(HINT_REASONS).toContain('already-linked');
+    expect(HINT_REASONS).not.toContain('needs-task-link');
+    expect(Object.keys(PINNED)).not.toContain('needs-task-link');
+    expect(scan().reasons.has('needs-task-link')).toBe(false);
+    expect(HINT_EXIT_CODES['needs-scope-disposition']).toBe(4);
+    expect(HINT_EXIT_CODES['already-linked']).toBe(4);
+  });
+});
+
+describe('the hints of the move into the host repository (add-board-sharing group 5)', () => {
+  it('unsynced says to sync first, then run init --into-host again, on both surfaces, in CLI form', () => {
+    for (const surface of SURFACES) {
+      for (const context of [ctx(surface, 'init'), ctx(surface, null)]) {
+        const hint = renderHint('unsynced', context) ?? '';
+        expect(hint, surface).not.toBe('');
+        const steps = cliSteps(hint).map((step) => parseStep(step));
+        expect(steps.map((step) => step.command)).toEqual(['sync', 'init']);
+        expect(steps[1]?.values['into-host']).toBe(true);
+        expect(toolSteps(hint)).toEqual([]);
+      }
+    }
+  });
+
+  it('no-host-repository names a git repository, AGENTBOARD_DIR and the main checkout, then init --into-host', () => {
+    for (const surface of SURFACES) {
+      for (const context of [ctx(surface, 'init'), ctx(surface, null)]) {
+        const hint = renderHint('no-host-repository', context) ?? '';
+        expect(hint, surface).toContain('git repository');
+        expect(hint).toContain('AGENTBOARD_DIR');
+        expect(hint).toMatch(/main checkout/);
+        const steps = cliSteps(hint).map((step) => parseStep(step));
+        expect(steps.map((step) => step.command)).toContain('init');
+        expect(steps.some((step) => step.values['into-host'] === true)).toBe(true);
+        expect(toolSteps(hint)).toEqual([]);
+      }
+    }
   });
 });

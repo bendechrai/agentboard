@@ -45,6 +45,13 @@ export interface Card {
   task: string | null;
   /** The ad hoc marker: true when the ticket has an ad hoc reason (`Ticket.adhoc` not null). */
   adhoc: boolean;
+  /**
+   * The unplanned marker: `{ reason }` from `Ticket.unplanned` when the
+   * ticket has an unplanned scope disposition, else null (ADR 0013;
+   * add-adhoc-ticket-lifecycle design.md section 8). `adhoc` stays true
+   * beside it, since the disposition keeps the creation reason.
+   */
+  unplanned: { reason: string } | null;
   /** A copy of the ticket's labels, in order. */
   labels: string[];
   /** Checklist progress: lines done and the total number of lines. */
@@ -126,6 +133,7 @@ export function ticketCard(ticket: Ticket, now: number): Card {
     assignee: ticket.assignee,
     task: ticket.task === null ? null : formatTaskRef(ticket.task),
     adhoc: ticket.adhoc !== null,
+    unplanned: ticket.unplanned === null ? null : { reason: ticket.unplanned.reason },
     labels: [...ticket.labels],
     checklist: {
       done: ticket.checklist.filter((item) => item.done).length,

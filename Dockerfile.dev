@@ -17,6 +17,78 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# GIT_VERSION, when set, is a git release built from source and installed
+# under /usr/local, ahead of the distro git on the PATH, so that `git` in
+# the container is exactly that release; the dev-git-floor service in
+# docker-compose.yml sets it to the oldest git the host model supports
+# (HOST_MODEL_GIT_FLOOR in src/board/git.ts), for `make check-git-floor`.
+# Empty (the default, used by dev and dev-floor) keeps the distro git.
+#
+# GIT_SHA256, when set, is the SHA-256 of git-${GIT_VERSION}.tar.xz, which
+# the download must match; empty, the tarball is checked against the
+# sha256sums.asc that kernel.org publishes beside the releases, which
+# catches a corrupt transfer but not a substituted mirror, so
+# docker-compose.yml pins the hash.
+ARG GIT_VERSION=""
+ARG GIT_SHA256=""
+
+# Builds git ${GIT_VERSION} from its release tarball on the kernel.org
+# mirror (https://mirrors.edge.kernel.org/pub/software/scm/git/) with
+# NO_TCLTK (no gitk or git-gui) and NO_GETTEXT (no translations), strips
+# the binaries and installs them under /usr/local, whose bin the node
+# image's PATH already puts before /usr/bin. The build dependencies (the
+# compiler, the headers, curl and xz) are purged afterwards together with
+# what apt installed for them, so the image stays close to the dev
+# image's size; the shared libraries the new git links against are marked
+# as wanted first so that the autoremove keeps them. The last two commands
+# fail the build unless the git on the PATH is the requested release from
+# /usr/local/bin. git 2.32.7 was the release used for the lifecycle
+# verification of design.md decision 3.
+RUN if [ -n "${GIT_VERSION}" ]; then \
+        set -eu; \
+        mirror="https://mirrors.edge.kernel.org/pub/software/scm/git"; \
+        tarball="git-${GIT_VERSION}.tar.xz"; \
+        apt-get update \
+        && apt-get install -y --no-install-recommends \
+            curl \
+            xz-utils \
+            gcc \
+            libc6-dev \
+            zlib1g-dev \
+            libcurl4-gnutls-dev \
+            libssl-dev \
+            libexpat1-dev \
+        && apt-mark manual libcurl3-gnutls libexpat1 libssl3 zlib1g >/dev/null \
+        && mkdir -p /usr/src/git-build \
+        && cd /usr/src/git-build \
+        && curl -fsSL -o "${tarball}" "${mirror}/${tarball}" \
+        && if [ -n "${GIT_SHA256}" ]; then \
+            expected="${GIT_SHA256}"; \
+        else \
+            expected="$(curl -fsSL "${mirror}/sha256sums.asc" \
+                | awk -v file="${tarball}" '$2 == file { print $1 }')"; \
+        fi \
+        && test -n "${expected}" \
+        && echo "${expected}  ${tarball}" | sha256sum -c - \
+        && tar -xJf "${tarball}" \
+        && make -C "git-${GIT_VERSION}" -j"$(nproc)" \
+            prefix=/usr/local NO_TCLTK=1 NO_GETTEXT=1 all strip install \
+        && cd / \
+        && rm -rf /usr/src/git-build \
+        && apt-get purge -y --auto-remove \
+            curl \
+            xz-utils \
+            gcc \
+            libc6-dev \
+            zlib1g-dev \
+            libcurl4-gnutls-dev \
+            libssl-dev \
+            libexpat1-dev \
+        && rm -rf /var/lib/apt/lists/* \
+        && test "$(git --version)" = "git version ${GIT_VERSION}" \
+        && test "$(command -v git)" = /usr/local/bin/git; \
+    fi
+
 # The node base image already has a `node` user and group at uid/gid 1000.
 # Rename whichever user holds ${UID} to `dev` instead of creating a second
 # one, which would fail on the duplicate id.

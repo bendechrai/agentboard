@@ -6,7 +6,45 @@
 
 SHELL := /bin/sh
 
-.PHONY: install build typecheck lint test check ascii validate-specs hooks check-in-docker check-floor dev-shell
+.PHONY: install build typecheck lint test check ascii validate-specs hooks check-in-docker check-floor check-git-floor test-sharing dev-shell
+
+# The oldest git the host model supports (HOST_MODEL_GIT_FLOOR in
+# src/board/git.ts), as <major>.<minor>. check-git-floor refuses to run the
+# tests on any other release line, and src/__tests__/git-floor.test.ts
+# checks that this value, the constant and the dev-git-floor image agree.
+GIT_FLOOR := 2.32
+
+# The test files that exercise board sharing (add-board-sharing): the git
+# layer and its version floor, model detection, host-model init, join and
+# repair, host-model sync, init --remote, init --into-host and the remote
+# command, in process, through the built CLI and as child processes.
+# check-git-floor runs exactly these on git $(GIT_FLOOR). Paths only, no
+# patterns: src/__tests__/git-floor.test.ts checks that every file listed
+# exists and that none of the sharing test files is missing from the list,
+# so the target cannot silently run nothing.
+SHARING_TESTS := \
+	src/board/__tests__/git.test.ts \
+	src/board/__tests__/model.test.ts \
+	src/board/__tests__/init.test.ts \
+	src/board/__tests__/host-init.test.ts \
+	src/board/__tests__/sync.test.ts \
+	src/board/__tests__/host-sync.test.ts \
+	src/board/__tests__/standalone-sync-fixture.test.ts \
+	src/board/__tests__/init-remote.test.ts \
+	src/board/__tests__/into-host.test.ts \
+	src/board/__tests__/remote.test.ts \
+	src/cli/__tests__/init-cli.test.ts \
+	src/cli/__tests__/sync-cli.test.ts \
+	src/cli/__tests__/host-sync-cli.test.ts \
+	src/cli/__tests__/init-remote-cli.test.ts \
+	src/cli/__tests__/into-host-cli.test.ts \
+	src/cli/__tests__/remote-cli.test.ts \
+	src/__tests__/host-sync-clones.test.ts \
+	src/__tests__/host-sync-crash.test.ts \
+	src/__tests__/host-sync-writers.test.ts \
+	src/__tests__/into-host-clones.test.ts \
+	src/__tests__/into-host-race.test.ts \
+	src/__tests__/git-floor.test.ts
 
 check: build typecheck lint test ascii validate-specs
 	@echo "make check: build, typecheck, lint, test, ascii and validate-specs all passed"
@@ -28,6 +66,26 @@ check-in-docker:
 check-floor:
 	docker compose run --rm --build dev-floor sh -c 'make install && make check'; \
 	status=$$?; docker compose down --volumes --remove-orphans >/dev/null 2>&1; exit $$status
+
+# Runs the sharing tests (SHARING_TESTS) on the oldest git the host model
+# supports, built from source in the dev-git-floor image (Dockerfile.dev
+# with GIT_VERSION set; docker-compose.yml) on the oldest supported Node,
+# so the declared git floor is actually tested and not only the distro git
+# of the dev image. Before the tests the container checks that the git on
+# its PATH is a $(GIT_FLOOR) release, so a build that silently kept the
+# distro git fails here instead of passing on a newer git. Run it for
+# changes that touch sharing (CONTRIBUTING.md, "Checks").
+check-git-floor:
+	docker compose run --rm --build dev-git-floor sh -c \
+		'v="$$(git --version)"; case "$$v" in "git version $(GIT_FLOOR)."*) ;; *) echo "check-git-floor: expected git $(GIT_FLOOR).x on the PATH, found: $$v" >&2; exit 1;; esac \
+		&& make install && make test-sharing'; \
+	status=$$?; docker compose down --volumes --remove-orphans >/dev/null 2>&1; exit $$status
+
+# Runs only the sharing tests, without coverage: the thresholds in
+# vitest.config.ts are for the whole suite, which make check runs. Usable
+# on the host too, with whatever git is installed.
+test-sharing:
+	npx vitest run $(SHARING_TESTS)
 
 # Points git at the repo-tracked hooks directory so pre-push runs the
 # fast local checks before every push. Run once per clone/worktree.

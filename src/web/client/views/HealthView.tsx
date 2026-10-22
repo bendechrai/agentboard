@@ -13,28 +13,36 @@
  *   `/api/health/check` on its own: only pressing the check button does
  *   (`runHealthCheck(conn)`).
  * - The report is `healthReport({ model, now, thresholds, late, check })`
- *   where `thresholds` are `parseDuration` of `route.stale` and
- *   `route.blocked` (`DEFAULT_THRESHOLDS` for null), `late` is the loaded
- *   list (null until loaded) and `check` the latest of the loaded check
- *   and the result of the button (null when neither).
+ *   where `thresholds` are `parseDuration` of `route.stale`,
+ *   `route.blocked` and `route.unplanned` (`DEFAULT_THRESHOLDS` for null),
+ *   `late` is the loaded list (null until loaded) and `check` the latest
+ *   of the loaded check and the result of the button (null when neither).
  *
  * DOM contract (relied on by the component tests):
  * - a form labelled `Health thresholds` with a text input `#health-stale`
- *   labelled `Stale after` and a text input `#health-blocked` labelled
- *   `Blocked after`, whose initial values are `route.stale ?? '2h'` and
- *   `route.blocked ?? '24h'`, and an element with class `duration-help`
- *   naming the accepted forms `<n>m`, `<n>h` and `<n>d`. On every `input`
- *   event: when `parseDuration` accepts the input's text, the input has no
- *   `aria-invalid="true"` and `navigate` is called with the health route
- *   carrying that text (`stale` or `blocked`); otherwise the input gets
- *   `aria-invalid="true"` and class `invalid`, `navigate` is not called,
- *   and the report is unchanged (it keeps the route's thresholds);
+ *   labelled `Stale after`, a text input `#health-blocked` labelled
+ *   `Blocked after` and a text input `#health-unplanned` labelled
+ *   `Unplanned within`, whose initial values are `route.stale ?? '2h'`,
+ *   `route.blocked ?? '24h'` and `route.unplanned ?? '7d'`, and an element
+ *   with class `duration-help` naming the accepted forms `<n>m`, `<n>h`
+ *   and `<n>d`. On every `input` event: when `parseDuration` accepts the
+ *   input's text, the input has no `aria-invalid="true"` and `navigate` is
+ *   called with the health route carrying that text (`stale`, `blocked`
+ *   or `unplanned`); otherwise the input gets `aria-invalid="true"` and
+ *   class `invalid`, `navigate` is not called, and the report is unchanged
+ *   (it keeps the route's thresholds);
  * - one `section` with class `health-section` per section, in this order,
  *   with `data-section` set to `stale-claims`, `stuck-blocked`,
  *   `unpromoted-decisions`, `close-merged-ready`, `close-merged-held`,
- *   `close-merged-missing-pr`, `late` and `check`. Every section but
- *   `check` has a heading holding a `span` with class `count` whose text
- *   is the number of its entries (`late`: 0 until loaded);
+ *   `close-merged-missing-pr`, `unplanned-scope`, `late` and `check`.
+ *   Every section but `check` has a heading holding a `span` with class
+ *   `count` whose text is the number of its entries (`late`: 0 until
+ *   loaded; `unplanned-scope`: the entries within the window);
+ * - severity classes (board-insights: "Information, not a failure"): the
+ *   `stale-claims` and `stuck-blocked` sections also carry the class
+ *   `warning` (the styling of findings that need attention); the
+ *   `unplanned-scope` section carries the class `info` and never
+ *   `warning`;
  * - in each ticket section, one `li` with class `finding` and
  *   `data-ticket="<full id>"` per finding in report order, holding the
  *   ticket's title (as text, inside a link to `#/ticket/<id>`) and short
@@ -47,7 +55,17 @@
  *   - `close-merged-ready` and `close-merged-held`: `PR <value>` for each
  *     `pr` link value;
  *   - `close-merged-missing-pr`: `no PR link`;
+ *   - `unplanned-scope`: `<outcome> <relativeTime(ageMs)>` (`merged 2h
+ *     ago`), then a `span` with class `reason` holding the unplanned
+ *     reason when `reason` is not null, else a `span` with class
+ *     `no-reason` whose text is `no reason recorded` followed by the ad
+ *     hoc reason in a `span` with class `adhoc-reason`;
  *   a ticket section with no finding holds a `p` with class `empty`;
+ * - the `unplanned-scope` heading also holds a `span` with class `total`
+ *   whose text is `<total> in all` (`unplannedScope.total`), and the
+ *   section holds a `p` with class `unplanned-note` saying that unplanned
+ *   scope is information, not a failure (its text includes `not a
+ *   failure`);
  * - before the three close-merged sections, a `p` with class
  *   `close-merged-note` whose text includes `Whether a pull request is
  *   merged is known only to close-merged`;
@@ -108,6 +126,7 @@ export interface HealthViewProps {
 /** The default texts of the threshold inputs. */
 const DEFAULT_STALE = '2h';
 const DEFAULT_BLOCKED = '24h';
+const DEFAULT_UNPLANNED = '7d';
 
 /** The message of a rejected request. */
 function messageOf(error: unknown): string {
@@ -190,9 +209,12 @@ export function HealthView(props: HealthViewProps): JSX.Element {
     blockedAfter:
       (route.blocked === null ? null : parseDuration(route.blocked)) ??
       DEFAULT_THRESHOLDS.blockedAfter,
+    unplannedWithin:
+      (route.unplanned === null ? null : parseDuration(route.unplanned)) ??
+      DEFAULT_THRESHOLDS.unplannedWithin,
   };
   const report = healthReport({ model, now, thresholds, late, check });
-  const { closeMerged } = report;
+  const { closeMerged, unplannedScope } = report;
 
   return (
     <div class="health-view">
@@ -213,6 +235,14 @@ export function HealthView(props: HealthViewProps): JSX.Element {
             navigate({ ...route, blocked });
           }}
         />
+        <DurationInput
+          id="health-unplanned"
+          label="Unplanned within"
+          initial={route.unplanned ?? DEFAULT_UNPLANNED}
+          onValid={(unplanned) => {
+            navigate({ ...route, unplanned });
+          }}
+        />
         <p id="health-duration-help" class="duration-help">
           Durations are written as &lt;n&gt;m, &lt;n&gt;h or &lt;n&gt;d (minutes, hours or days),
           with n from 1 to 99999.
@@ -222,6 +252,7 @@ export function HealthView(props: HealthViewProps): JSX.Element {
       <TicketSection
         name="stale-claims"
         title="Stale claims"
+        severity="warning"
         items={report.staleClaims.map((s) => ({
           card: s.ticket,
           detail: (
@@ -235,6 +266,7 @@ export function HealthView(props: HealthViewProps): JSX.Element {
       <TicketSection
         name="stuck-blocked"
         title="Stuck in blocked"
+        severity="warning"
         items={report.stuckBlocked.map((s) => ({
           card: s.ticket,
           detail: (
@@ -287,6 +319,35 @@ export function HealthView(props: HealthViewProps): JSX.Element {
         items={closeMerged.missingPr.map((c) => ({
           card: c.ticket,
           detail: <p class="finding-detail">no PR link</p>,
+        }))}
+      />
+      <TicketSection
+        name="unplanned-scope"
+        title="Unplanned scope"
+        severity="info"
+        heading={<span class="total">{`${String(unplannedScope.total)} in all`}</span>}
+        note={
+          <p class="unplanned-note">
+            Tickets merged or closed as unplanned scope, with their reasons. This is information,
+            not a failure: it is disclosed here so that it stays visible.
+          </p>
+        }
+        items={unplannedScope.tickets.map((u) => ({
+          card: u.ticket,
+          detail: (
+            <p class="finding-detail">
+              {`${u.outcome} ${relativeTime(u.ageMs)}`}{' '}
+              {u.reason !== null ? (
+                <span class="reason">{u.reason}</span>
+              ) : (
+                <span class="no-reason">
+                  {'no reason recorded (ad hoc: '}
+                  <span class="adhoc-reason">{u.adhoc ?? ''}</span>
+                  {')'}
+                </span>
+              )}
+            </p>
+          ),
         }))}
       />
 
@@ -408,18 +469,31 @@ interface TicketItem {
 interface TicketSectionProps {
   name: string;
   title: string;
+  /**
+   * The severity class: `warning` for findings to act on, `info` for a
+   * section that is information only, none for the rest.
+   */
+  severity?: 'warning' | 'info';
+  /** More heading content after the count (the unplanned scope total). */
+  heading?: JSX.Element;
+  /** A note between the heading and the findings. */
+  note?: JSX.Element;
   items: TicketItem[];
 }
 
 /** One ticket section of the report. */
 function TicketSection(props: TicketSectionProps): JSX.Element {
   const headingId = `health-${props.name}`;
+  const classes =
+    props.severity === undefined ? 'health-section' : `health-section ${props.severity}`;
   return (
-    <section class="health-section" data-section={props.name} aria-labelledby={headingId}>
+    <section class={classes} data-section={props.name} aria-labelledby={headingId}>
       <h2 id={headingId}>
         {props.title}
         <span class="count">{String(props.items.length)}</span>
+        {props.heading}
       </h2>
+      {props.note}
       {props.items.length === 0 ? (
         <p class="empty">Nothing here.</p>
       ) : (

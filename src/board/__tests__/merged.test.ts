@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Ticket } from '../../events/fold.js';
 import { openBoard, type Board } from '../../store/board.js';
-import { closeTicket, commentTicket, linkTicket } from '../actions.js';
+import { closeTicket, commentTicket, linkTicket, moveTicket } from '../actions.js';
 import {
   closeMerged,
   ghPrViewArgs,
@@ -22,7 +22,15 @@ import {
 } from '../merged.js';
 import { showTicket } from '../tickets.js';
 import { emptyPath, fakeGhOnPath, fakeRunner, ghCalls, missingRunner } from './gh-fake.js';
-import { cleanEnv, eventCount, expectBoardError, setup, tempDir, ticketIn } from './helpers.js';
+import {
+  cleanEnv,
+  create,
+  eventCount,
+  expectBoardError,
+  setup,
+  tempDir,
+  ticketIn,
+} from './helpers.js';
 
 /** A `merged` ticket with each of `prs` linked in order. */
 function mergedWithPr(board: Board, ...prs: (string | number)[]): Ticket {
@@ -389,5 +397,79 @@ describe('runGh (the default runner) against a fake gh on PATH', { timeout: 20_0
     const out = closeMerged(board, 'orch', { cwd: root, env: cleanEnv({ PATH: dir }) });
     expect(out.closed.map((c) => c.id)).toEqual([t.id]);
     expect(ghCalls(log)).toEqual(['pr view 7 --json state']);
+  });
+});
+
+describe('closeMerged: the scope disposition (add-adhoc-ticket-lifecycle task 2.1)', () => {
+  /** An ad hoc ticket merged with `--unplanned <reason>` and linked to PR `pr`. */
+  function unplannedMerged(board: Board, pr: number, reason = 'hotfix'): Ticket {
+    let ticket = create(board, { adhoc: 'seen in production' });
+    for (const to of ['tests', 'implementing', 'review'] as const) {
+      ticket = moveTicket(board, 'orch', { id: ticket.id, to }).ticket;
+    }
+    ticket = moveTicket(board, 'orch', {
+      id: ticket.id,
+      to: 'merged',
+      disposition: { unplanned: reason },
+    }).ticket;
+    return linkTicket(board, 'orch', { id: ticket.id, target: { pr } }).ticket;
+  }
+
+  /**
+   * A merged ticket with neither a task reference nor an unplanned
+   * disposition. The fold never produces one, so the state is made the
+   * only way it can arise: outside agentboard, here by editing the cache
+   * row of a planned merged ticket.
+   */
+  function undisposedMerged(board: Board, pr: number): Ticket {
+    const ticket = mergedWithPr(board, pr);
+    board.db
+      .prepare('UPDATE tickets SET task_source = NULL, task_ref = NULL, task_item = NULL WHERE id = ?')
+      .run(ticket.id);
+    const edited = current(board, ticket.id);
+    expect(edited).toMatchObject({ status: 'merged', task: null, unplanned: null, closed: false });
+    return edited;
+  }
+
+  it('scenario: an unplanned merged ticket closes normally, its disposition unchanged', () => {
+    const { board, root } = setup();
+    const t = unplannedMerged(board, 7);
+    const out = closeMerged(board, 'orch', where(root, fakeRunner({ '7': 'MERGED' }).gh));
+    expect(out.unmerged).toEqual([]);
+    expect(out.skipped).toEqual([]);
+    expect(out.closed.map((c) => [c.id, c.pr, c.disposition])).toEqual([
+      [t.id, 7, { noDecision: true }],
+    ]);
+    expect(current(board, t.id)).toMatchObject({
+      closed: true,
+      disposition: { noDecision: true },
+      unplanned: t.unplanned,
+      adhoc: 'seen in production',
+    });
+    expect(current(board, t.id).unplanned).not.toBeNull();
+  });
+
+  it('scenario: a merged ticket with no disposition is left open and listed with needs-scope-disposition', () => {
+    const { board, root } = setup();
+    const undisposed = undisposedMerged(board, 7);
+    const planned = mergedWithPr(board, 8);
+    const unplanned = unplannedMerged(board, 9);
+    const before = eventCount(board);
+    const out = closeMerged(
+      board,
+      'orch',
+      where(root, fakeRunner({ '7': 'MERGED', '8': 'MERGED', '9': 'MERGED' }).gh),
+    );
+    expect(out.skipped.map((s) => [s.id, s.pr, s.reason])).toEqual([
+      [undisposed.id, 7, 'needs-scope-disposition'],
+    ]);
+    expect(out.skipped[0]?.message).toContain(undisposed.id);
+    expect(out.skipped[0]?.ticket).toEqual(undisposed);
+    expect(out.unmerged).toEqual([]);
+    // The other candidates are still processed, in id order.
+    expect(out.closed.map((c) => c.id)).toEqual([planned.id, unplanned.id]);
+    expect(eventCount(board)).toBe(before + 2);
+    expect(current(board, undisposed.id)).toMatchObject({ closed: false, status: 'merged' });
+    expect(current(board, undisposed.id).unplanned).toBeNull();
   });
 });

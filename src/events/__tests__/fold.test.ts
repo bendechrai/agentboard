@@ -234,9 +234,13 @@ describe('fold: basics', () => {
         status: 'todo',
         blockedFrom: null,
         assignee: null,
+        lease: null,
+        queue: [],
+        available: null,
         labels: [],
         task: null,
         adhoc: null,
+        unplanned: null,
         checklist: [],
         comments: [],
         links: [],
@@ -679,43 +683,79 @@ describe('fold: merged is terminal', () => {
   });
 });
 
-describe('fold: needs-task-link', () => {
+// The scope disposition rules (`needs-scope-disposition`, `already-linked`,
+// `ticket.unplanned`) are in fold-disposition.test.ts. Here: no rule depends
+// on a task reference for any status but `merged` (board-events: "Fold
+// semantics"; board-openspec-integration: "Tickets reference tasks or are ad
+// hoc").
+describe('fold: ad hoc tickets move like any other', () => {
   const adhoc = (): FoldInput[] => [
     E.create(T1, { title: 'x', adhoc: 'hotfix' }),
     E.move(T1, 'tests'),
   ];
 
-  it('rejects moving an ad hoc ticket into implementing (spec scenario)', () => {
-    const setup = adhoc();
-    const mv = E.move(T1, 'implementing');
-    const result = fold([...setup, mv]);
-    expect(result.rejected).toEqual([
-      { hash: mv.hash, kind: 'ticket.move', ticket: T1, reason: 'needs-task-link' },
-    ]);
-    expect(ticketOf(result, T1).status).toBe('tests');
+  it('scenario: ad hoc ticket enters implementing from tests with no task reference', () => {
+    const result = fold([...adhoc(), E.move(T1, 'implementing')]);
+    expect(result.rejected).toEqual([]);
+    const t = ticketOf(result, T1);
+    expect(t.status).toBe('implementing');
+    expect(t.task).toBeNull();
+    expect(t.adhoc).toBe('hotfix');
   });
 
-  it('rejects a ticket with neither task nor adhoc the same way', () => {
-    const setup = [E.create(T1, { title: 'bare' }), E.move(T1, 'tests')];
-    const mv = E.move(T1, 'implementing');
-    const result = fold([...setup, mv]);
-    expect(result.rejected).toEqual([
-      { hash: mv.hash, kind: 'ticket.move', ticket: T1, reason: 'needs-task-link' },
+  it('a ticket with neither task nor adhoc enters implementing too', () => {
+    const result = fold([
+      E.create(T1, { title: 'bare' }),
+      E.move(T1, 'tests'),
+      E.move(T1, 'implementing'),
     ]);
+    expect(result.rejected).toEqual([]);
+    expect(ticketOf(result, T1).status).toBe('implementing');
   });
 
-  it('rejects a handoff into implementing with none of its effects', () => {
+  it('scenario: moves todo -> tests -> implementing -> review with no refusal', () => {
+    const result = fold([
+      E.create(T1, { title: 'x', adhoc: 'hotfix' }),
+      E.move(T1, 'tests'),
+      E.move(T1, 'implementing'),
+      E.move(T1, 'review'),
+    ]);
+    expect(result.rejected).toEqual([]);
+    const t = ticketOf(result, T1);
+    expect(t.status).toBe('review');
+    expect(t.task).toBeNull();
+    expect(t.adhoc).toBe('hotfix');
+    expect(t.version).toBe(4);
+  });
+
+  it('a handoff into implementing applies with all three effects', () => {
     const setup = adhoc();
-    const before = ticketOf(fold(setup), T1);
-    const h = E.handoff(T1, 'impl', 'implementing', 'go');
+    const h = E.handoff(T1, 'impl', 'implementing', 'go', { actor: 'orch' });
     const result = fold([...setup, h]);
-    expect(result.rejected).toEqual([
-      { hash: h.hash, kind: 'ticket.handoff', ticket: T1, reason: 'needs-task-link' },
-    ]);
-    expect(ticketOf(result, T1)).toEqual(before);
+    expect(result.rejected).toEqual([]);
+    const t = ticketOf(result, T1);
+    expect(t.status).toBe('implementing');
+    expect(t.assignee).toBe('impl');
+    expect(t.comments.map((c) => [c.actor, c.text])).toEqual([['orch', 'go']]);
   });
 
-  it('reports invalid-transition before needs-task-link', () => {
+  it('scenario: is blocked, returned and handed off into review', () => {
+    const result = fold([
+      ...adhoc(),
+      E.move(T1, 'implementing'),
+      E.claim(T1, { actor: 'impl-1' }),
+      E.move(T1, 'blocked', { actor: 'impl-1' }),
+      E.move(T1, 'implementing', { actor: 'impl-1' }),
+      E.handoff(T1, 'reviewer', 'review', 'done', { actor: 'impl-1' }),
+    ]);
+    expect(result.rejected).toEqual([]);
+    const t = ticketOf(result, T1);
+    expect(t.status).toBe('review');
+    expect(t.assignee).toBe('reviewer');
+    expect(t.task).toBeNull();
+  });
+
+  it('still reports invalid-transition for a move the state machine forbids', () => {
     const c = E.create(T1, { title: 'x', adhoc: 'hotfix' });
     const mv = E.move(T1, 'implementing');
     const result = fold([c, mv]);
@@ -724,7 +764,7 @@ describe('fold: needs-task-link', () => {
     ]);
   });
 
-  it('allows implementing once a task is linked, and clears adhoc', () => {
+  it('a task link still replaces the reference and clears adhoc', () => {
     const result = fold([...adhoc(), E.link(T1, { task: TASK }), E.move(T1, 'implementing')]);
     expect(result.rejected).toEqual([]);
     const t = ticketOf(result, T1);
@@ -733,13 +773,17 @@ describe('fold: needs-task-link', () => {
     expect(t.adhoc).toBeNull();
   });
 
-  it('does not apply to other statuses', () => {
+  it('never produces the reason needs-task-link', () => {
     const result = fold([
       E.create(T1, { title: 'x', adhoc: 'h' }),
       E.move(T1, 'blocked'),
       E.move(T1, 'todo'),
+      E.move(T1, 'tests'),
+      E.move(T1, 'implementing'),
+      E.move(T1, 'review'),
+      E.move(T1, 'merged'),
     ]);
-    expect(result.rejected).toEqual([]);
+    expect(result.rejected.map((r) => r.reason as string)).not.toContain('needs-task-link');
   });
 });
 

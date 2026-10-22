@@ -19,8 +19,8 @@
  *   - `#/ticket/<id>` (a ticket id or prefix, percent-encoded as
  *     `encodeURIComponent` encodes it);
  *   - `#/lanes`;
- *   - `#/health` with the optional query parameters `stale` and `blocked`
- *     (the health thresholds as duration texts, board-insights:
+ *   - `#/health` with the optional query parameters `stale`, `blocked` and
+ *     `unplanned` (the health thresholds as duration texts, board-insights:
  *     "Durations");
  *   - `#/replay` (no parameter: the replay position is not kept, since the
  *     frozen event list is taken anew whenever the view opens);
@@ -35,7 +35,7 @@
  *   filter. Unknown query parameters are ignored; for a parameter given
  *   more than once, other than `kind`, the first counts; an empty value
  *   counts as absent; `closed` is true only for the value `1`.
- * - A duration parameter (`stale`, `blocked`, `since`) counts only when
+ * - A duration parameter (`stale`, `blocked`, `unplanned`, `since`) counts only when
  *   `parseDuration` (`src/view/health.ts`) accepts it; any other value
  *   counts as absent (null), so a hand-edited hash never shows an invalid
  *   threshold.
@@ -90,6 +90,8 @@ export interface HealthRoute {
   stale: string | null;
   /** The `blockedAfter` threshold as a valid duration text, or null for the default (`24h`). */
   blocked: string | null;
+  /** The `unplannedWithin` window as a valid duration text, or null for the default (`7d`). */
+  unplanned: string | null;
 }
 
 /** The replay view. */
@@ -163,7 +165,12 @@ export function parseHash(hash: string): Route {
     return value !== null && parseDuration(value) !== null ? value : null;
   };
   if (path === 'health') {
-    return { view: 'health', stale: duration('stale'), blocked: duration('blocked') };
+    return {
+      view: 'health',
+      stale: duration('stale'),
+      blocked: duration('blocked'),
+      unplanned: duration('unplanned'),
+    };
   }
   if (path === 'replay') {
     return { view: 'replay' };
@@ -195,7 +202,7 @@ function decodeSafely(text: string): string | null {
  * values are non-empty (an empty `kinds` list comes back as null).
  * Parameters are written in this order and only when set: board `change`,
  * `assignee`, `closed=1`; feed `change`, `actor`, then one `kind` per
- * kind; health `stale`, `blocked`; graph `change`, `since`. A route with
+ * kind; health `stale`, `blocked`, `unplanned`; graph `change`, `since`. A route with
  * no parameter has no `?`: `#/board`, `#/feed`, `#/lanes`, `#/health`,
  * `#/replay`, `#/graph`, `#/ticket/<encodeURIComponent(id)>`. Pure.
  */
@@ -234,6 +241,9 @@ export function formatHash(route: Route): string {
       }
       if (route.blocked !== null) {
         query.append('blocked', route.blocked);
+      }
+      if (route.unplanned !== null) {
+        query.append('unplanned', route.unplanned);
       }
       break;
     case 'replay':

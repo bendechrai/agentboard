@@ -80,6 +80,15 @@ fail the `promotion source` check.
   container, and `make check-floor` runs them on the oldest supported Node.
   Run both for changes that touch the store, concurrency, process
   handling or the Node floor.
+- `make check-git-floor` runs the sharing tests (the `SHARING_TESTS` list
+  in the Makefile: the git layer, model detection, host-model `init`,
+  `sync`, `init --remote`, `init --into-host` and `remote`) on the oldest
+  supported Node with the oldest git the host model supports, git 2.32,
+  built from source in the container. Run it, with the two above, for
+  changes that touch sharing (anything under `src/board/` that runs git,
+  or the `init`, `sync` and `remote` commands). `make test-sharing` runs
+  the same tests on the host with whatever git is installed, without
+  coverage.
 - The pre-push hook runs the fast subset (`make build typecheck lint ascii
   validate-specs`). Tests are left to `make check` because they are
   slower.
@@ -89,14 +98,22 @@ fail the `promotion source` check.
 
 ## Releasing
 
-Releases are published to npm as `@bendechrai/agentboard` from `main`.
+Releases are published to npm as `@bendechrai/agentboard`, staged from
+`main` by `.github/workflows/release.yml` with npm trusted publishing.
 
 1. In a pull request into `staging`, bump the version in both
    `package.json` (`npm version <x.y.z> --no-git-tag-version`, which also
    updates `package-lock.json`) and `src/version.ts`. A test fails when the
    two differ.
 2. Promote `staging` to `main`.
-3. Publish from `main` and tag the release `v<x.y.z>`.
+3. Tag the merge on `main` and push the tag:
+   `git tag -a v<x.y.z> -m "agentboard <x.y.z>" origin/main && git push origin v<x.y.z>`.
+   The workflow checks that the tag matches both versions and is on `main`,
+   runs `make check`, and stages the release on npm. CI cannot make a
+   version live on its own.
+4. A maintainer approves the staged release with 2FA, on npmjs.com (Staged
+   Packages) or with `npm stage approve <id>`, then creates the GitHub
+   Release for the tag.
 
 Until 1.0, a minor version may change commands, flags and output; a patch
 version does not.
@@ -201,8 +218,20 @@ Run `make hooks` in each new worktree, and remove the worktree with
 This repository coordinates its own agents with agentboard:
 
 - `agentboard init` once per clone, at the root of the main checkout,
-  creates `.board/` (its own git repository, ignored by this one). Linked
-  worktrees find it on their own.
+  creates `.board/` (ignored by this repository); linked worktrees find
+  it on their own. This repository's own board is a standalone board (a
+  git repository of its own) and stays one: it is not moved into the host
+  repository with `init --into-host`, because that would publish
+  `refs/agentboard/board` with the public repository. In a project of
+  your own, `init` inside a git repository creates a host-model board
+  instead (README, "Set up a project").
+- This repository's board is kept in the private repository
+  `bendechrai/agentboard-board`. A maintainer's first clone runs
+  `agentboard init --remote https://github.com/bendechrai/agentboard-board.git`
+  (or the `git@github.com:bendechrai/agentboard-board.git` form when ssh
+  keys are set up), then `agentboard sync` to share events. Collaborators
+  without access to that repository keep a local standalone board from
+  plain `agentboard init`.
 - `agentboard import-change <name> --as orchestrator` creates one ticket
   per task group of a merged OpenSpec change; run it again when `tasks.md`
   gains lines.
