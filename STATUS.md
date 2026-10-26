@@ -89,12 +89,12 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
    lease, a fair waiting queue (`claim --wait`), an audited `release
    --force --reason`, board settings (`config`), mutex ticket guidance,
    and reconciling tickets when `import-change` is re-run. Groups 1
-   (lease, queue and grant fold, PR #69) and 2 (grant materialisation in
-   catch-up, PR #70) are merged, so the fold and the cache already carry
-   leases, queues and grants, with nothing on the command line yet.
-   Group 8 (re-import reconciliation) is approved by both reviewers in
-   PR #72 but conflicts with `staging` and needs a rebase before it
-   merges. Groups 3 to 7 are not started. Groups 1 to 5 are
+   (lease, queue and grant fold, PR #69), 2 (grant materialisation in
+   catch-up, PR #70) and 8 (re-import reconciliation, PR #72) are
+   merged, so the fold and the cache already carry leases, queues and
+   grants, with nothing on the command line yet, and `import-change`
+   reconciles tickets with a revised tasks file (cache schema version
+   5). Groups 3 to 7 are not started. Groups 1 to 5 are
    concurrency-critical, so they get a second reviewer (see
    CONTRIBUTING.md, "Three roles per task group").
 
