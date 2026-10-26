@@ -127,4 +127,4 @@ three marked entries, or install with an explicit `--target` list.
   in a follow-up if the schema is documented.
 - Whether Codex reads `AGENTS.md` is confirmed in the sandbox suite; if it does
   not, the `codex` target only prints its command and the spec changes.
-- An ADR (0015) recording decisions 2 and 3 is planned in task group 1.
+- An ADR (0016) recording decisions 2 and 3 is planned in task group 1.
