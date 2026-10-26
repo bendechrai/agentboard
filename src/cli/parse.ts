@@ -75,7 +75,10 @@ export interface ParsedCommand {
  * - `integer` values must match `^-?[0-9]+$` and be safe integers; the
  *   value is the number. Repeatable flags produce string arrays.
  * - A positional with `choices` (`config set <key>`) must be one of them;
- *   any other value is a usage error naming it and listing every choice.
+ *   any other value is a usage error listing every choice, exactly
+ *   `<command> takes <<name>> as one of <choice>, <choice>`, which never
+ *   repeats the value (a token pasted there must not land in a terminal
+ *   or a log).
  * - A CLI-only flag (`ArgSpec.cliOnly`) is parsed like any other flag.
  * - Then each of the command's exclusive groups is checked as documented
  *   on `ExclusiveGroup` (a missing required group throws with the group's

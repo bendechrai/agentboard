@@ -22,14 +22,14 @@ import {
   parseTimeout,
   parseTtl,
 } from '../leases.js';
-import { expectBoardError } from './helpers.js';
+import { SAMPLES, expectBoardError } from './helpers.js';
 
-const TTL_MESSAGE = (text: string): string =>
-  `invalid --ttl ${text}: a ttl is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 30s to 7d`;
-const TIMEOUT_MESSAGE = (text: string): string =>
-  `invalid --timeout ${text}: a timeout is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 1s to 1d`;
-// The refused value is never repeated: a token pasted as a value must not
-// land in a terminal or a log (review round 2 ruling).
+// No refusal repeats the refused text: a token pasted as a duration must
+// not land in a terminal or a log (review round 2 and 3 rulings).
+const TTL_MESSAGE =
+  'invalid --ttl: a ttl is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 30s to 7d';
+const TIMEOUT_MESSAGE =
+  'invalid --timeout: a timeout is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 1s to 1d';
 const SETTING_MESSAGE =
   'invalid value: a setting is <n>s or <n>m with <n> of 1 to 5 digits, from 30s to 10m';
 
@@ -78,14 +78,16 @@ describe('parseTtl', () => {
     '2h30m',
   ])('refuses %j with exit 1 usage naming the form and the 30s to 7d range', (text) => {
     const err = expectBoardError(() => parseTtl(text), 1, 'usage');
-    expect(err.message).toBe(TTL_MESSAGE(text));
+    expect(err.message).toBe(TTL_MESSAGE);
   });
 
-  it('passes the refused text through asciiText', () => {
+  it('never repeats the refused text, even a token-shaped one or one with non-ASCII characters', () => {
+    const token = SAMPLES['github-token'];
+    const err = expectBoardError(() => parseTtl(token), 1, 'usage');
+    expect(err.message).toBe(TTL_MESSAGE);
+    expect(err.message).not.toContain(token);
     const odd = `5${String.fromCharCode(0xe9)}`;
-    const err = expectBoardError(() => parseTtl(odd), 1, 'usage');
-    expect(err.message).toMatch(/^[\x20-\x7e]+$/);
-    expect(err.message).toContain('5\\u00E9');
+    expect(expectBoardError(() => parseTtl(odd), 1, 'usage').message).toBe(TTL_MESSAGE);
   });
 });
 
@@ -111,9 +113,16 @@ describe('parseTimeout', () => {
     'refuses %j with exit 1 usage naming the form and the 1s to 1d range',
     (text) => {
       const err = expectBoardError(() => parseTimeout(text), 1, 'usage');
-      expect(err.message).toBe(TIMEOUT_MESSAGE(text));
+      expect(err.message).toBe(TIMEOUT_MESSAGE);
     },
   );
+
+  it('never repeats the refused text, even a token-shaped one', () => {
+    const token = SAMPLES['github-token'];
+    const err = expectBoardError(() => parseTimeout(token), 1, 'usage');
+    expect(err.message).toBe(TIMEOUT_MESSAGE);
+    expect(err.message).not.toContain(token);
+  });
 });
 
 describe('parseSetting', () => {

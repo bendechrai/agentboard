@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { expectBoardError } from '../../board/__tests__/helpers.js';
+import { SAMPLES, expectBoardError } from '../../board/__tests__/helpers.js';
 import { synopsis } from '../../guidance/help.js';
 import { splitCommandLine } from '../../guidance/__tests__/command-line.js';
 import { tempDir } from '../../store/__tests__/helpers.js';
@@ -222,16 +222,25 @@ describe('parsing the lease commands', () => {
     );
   });
 
-  it('a config key not among the choices is refused, naming it and listing both keys', () => {
+  it('a config key not among the choices is refused listing both keys, never repeating the key given', () => {
+    // A token pasted as the key must not land in a terminal or a log
+    // (review round 3 ruling), so the message names only the choices.
     const err = expectBoardError(
       () => parseArgs(['config', 'set', 'columns', 'x', '--as', 'orch']),
       1,
       'usage',
     );
-    expect(err.message).toContain('columns');
-    expect(err.message).toContain('lease.grace');
-    expect(err.message).toContain('queue.window');
-    expectBoardError(() => parseArgs(['config', 'get', 'lease']), 1, 'usage');
+    expect(err.message).toBe('config set takes <key> as one of lease.grace, queue.window');
+    const token = SAMPLES['github-token'];
+    const tokenErr = expectBoardError(
+      () => parseArgs(['config', 'set', token, '5m', '--as', 'orch']),
+      1,
+      'usage',
+    );
+    expect(tokenErr.message).toBe('config set takes <key> as one of lease.grace, queue.window');
+    expect(tokenErr.message).not.toContain(token);
+    const getErr = expectBoardError(() => parseArgs(['config', 'get', 'lease']), 1, 'usage');
+    expect(getErr.message).toBe('config get takes <key> as one of lease.grace, queue.window');
     expect(parseArgs(['config', 'get', 'queue.window']).values).toEqual({ key: 'queue.window' });
     expect(parseArgs(['config', 'get']).values).toEqual({});
     expect(parseArgs(['config', 'set', 'lease.grace', '90s']).values).toEqual({

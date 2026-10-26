@@ -43,8 +43,9 @@ export const TIMEOUT_MIN_MS = 1_000;
  * and `8d` (out of range), `0m`, `m` (no digits), `-1m`, `10min`, `1.5h`,
  * `30S`, ` 30s`, `100000s` (six digits) and the empty string. The message
  * is exactly
- * `invalid --ttl <text>: a ttl is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 30s to 7d`
- * with `<text>` passed through `asciiText`.
+ * `invalid --ttl: a ttl is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 30s to 7d`,
+ * never repeating the text (a token pasted as a ttl must not land in a
+ * terminal or a log).
  *
  * Pure.
  */
@@ -103,8 +104,8 @@ function parseDuration(text: string, form: DurationForm): number {
  * inclusive. So `1s`, `30s`, `10m` and `1d` are accepted, and `0s`, `2d`,
  * `25h`, `10min`, `m` and `-1m` are refused with `BoardError(1, 'usage')`
  * whose message is exactly
- * `invalid --timeout <text>: a timeout is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 1s to 1d`.
- * Pure.
+ * `invalid --timeout: a timeout is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 1s to 1d`,
+ * never repeating the text. Pure.
  */
 export function parseTimeout(text: string): number {
   return parseDuration(text, {

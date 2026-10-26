@@ -312,7 +312,7 @@ describe('scenario: malformed ttl', () => {
       const b = board();
       const out = refused(b, ['claim', b.id, '--as', 'a', '--ttl', ttl], 1, 'usage');
       expect(out.stderr).toContain(
-        `invalid --ttl ${ttl}: a ttl is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 30s to 7d`,
+        'invalid --ttl: a ttl is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 30s to 7d',
       );
     },
   );
@@ -369,8 +369,9 @@ describe('the --wait arguments on the command line', () => {
         1,
         'usage',
       );
-      expect(out.stderr).toContain(`invalid --timeout ${timeout}:`);
-      expect(out.stderr).toContain('from 1s to 1d');
+      expect(out.stderr).toContain(
+        'invalid --timeout: a timeout is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 1s to 1d',
+      );
     },
   );
 });
@@ -655,5 +656,50 @@ describe('review round 2: secret-looking text', () => {
     expect(doc.stdout).not.toContain(token);
     expect(doc.stderr).not.toContain(token);
     expect(out.stderr).toContain('a setting is <n>s or <n>m');
+  });
+});
+
+describe('review round 3: refusals never repeat the refused input', () => {
+  // A token pasted as a key, a ttl or a timeout must not land in a
+  // terminal or a log, in human or --json output.
+  const token = SAMPLES['github-token'];
+
+  function neverRepeated(b: Board, args: readonly string[], message: string): void {
+    const out = refused(b, [...args], 1, 'usage');
+    expect(out.stderr).toContain(message);
+    expect(out.stdout).not.toContain(token);
+    expect(out.stderr).not.toContain(token);
+    const doc = run([...args, '--json'], b.root);
+    expect(doc.code, doc.stderr).toBe(1);
+    expect(doc.stdout).not.toContain(token);
+    expect(doc.stderr).not.toContain(token);
+  }
+
+  it('config set with a token-shaped key names only the choices', () => {
+    const b = board();
+    neverRepeated(
+      b,
+      ['config', 'set', token, '5m', '--as', 'orchestrator'],
+      'config set takes <key> as one of lease.grace, queue.window',
+    );
+  });
+
+  it('claim and renew with a token-shaped --ttl name only the form', () => {
+    const b = board();
+    const message =
+      'invalid --ttl: a ttl is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 30s to 7d';
+    neverRepeated(b, ['claim', b.id, '--as', 'a', '--ttl', token], message);
+    ok(run(['claim', b.id, '--as', 'a', '--ttl', '30m'], b.root));
+    neverRepeated(b, ['renew', b.id, '--as', 'a', '--ttl', token], message);
+  });
+
+  it('claim --wait with a token-shaped --timeout names only the form', () => {
+    const b = board();
+    ok(run(['claim', b.id, '--as', 'merger-1', '--ttl', '30m'], b.root));
+    neverRepeated(
+      b,
+      ['claim', b.id, '--as', 'a', '--ttl', '30m', '--wait', '--timeout', token],
+      'invalid --timeout: a timeout is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 1s to 1d',
+    );
   });
 });
