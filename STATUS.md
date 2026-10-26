@@ -70,8 +70,8 @@ tested and documented in README.md.
   no opener and no referrer; images never loaded, shown as links labelled
   with the alt text; nesting deeper than 32 levels and descriptions
   longer than 16384 characters fall back to text. ADR 0015 (amends ADR
-  0006). The change `add-description-markdown` is complete and awaiting
-  archive.
+  0006). Archived as
+  `openspec/changes/archive/2026-10-26-add-description-markdown`.
 
 Released as `@bendechrai/agentboard` 0.2.0 on npm (tag `v0.2.0`), with the
 landing site in `docs/` served at https://bendechrai.github.io/agentboard/.
