@@ -76,11 +76,17 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
 1. `add-description-markdown` (proposed, in `openspec/changes/`): render a
    ticket's description as Markdown in the web app, into elements only,
    never HTML.
-2. `add-claim-leases` (proposed, in `openspec/changes/`): grace leases
-   confirmed by `renew` (`claim --ttl`), takeover of a lapsed lease, a
-   fair waiting queue (`claim --wait`), an audited `release --force
-   --reason`, board settings (`config`), mutex ticket guidance, and
-   reconciling tickets when `import-change` is re-run. Groups 1 to 5 are
+2. `add-claim-leases` (in progress, in `openspec/changes/`): grace
+   leases confirmed by `renew` (`claim --ttl`), takeover of a lapsed
+   lease, a fair waiting queue (`claim --wait`), an audited `release
+   --force --reason`, board settings (`config`), mutex ticket guidance,
+   and reconciling tickets when `import-change` is re-run. Groups 1
+   (lease, queue and grant fold, PR #69) and 2 (grant materialisation in
+   catch-up, PR #70) are merged, so the fold and the cache already carry
+   leases, queues and grants, with nothing on the command line yet.
+   Group 8 (re-import reconciliation) is approved by both reviewers in
+   PR #72 but conflicts with `staging` and needs a rebase before it
+   merges. Groups 3 to 7 are not started. Groups 1 to 5 are
    concurrency-critical, so they get a second reviewer (see
    CONTRIBUTING.md, "Three roles per task group").
 
@@ -100,10 +106,3 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
   `remote`, `init --remote | --into-host` and the scope disposition
   flags, and takes the next free `GUIDANCE_VERSION` and ADR number after
   `add-claim-leases`.
-- `src/board/__tests__/into-host.test.ts` ("Migration refused with
-  unpushed commits") flaked once on the Node 26 CI job of PR #83: the
-  `.board` snapshot held 42 entries against 41 expected, most likely a
-  transient file (lock, journal or temp) caught by the snapshot helper;
-  it passed on rerun and on the other Node lines. Ticket
-  01M54J9C8VWG6V6E751JHHVW66 on this repository's board tracks making
-  the helper ignore transients or settling before the snapshot.
