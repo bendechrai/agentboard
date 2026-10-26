@@ -54,8 +54,8 @@ export function parseTtl(text: string): number {
     units: 'smhd',
     min: TTL_MIN_MS,
     max: TTL_MAX_MS,
-    message: (given) =>
-      `invalid --ttl ${given}: a ttl is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 30s to 7d`,
+    message:
+      'invalid --ttl: a ttl is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 30s to 7d',
   });
 }
 
@@ -67,8 +67,8 @@ interface DurationForm {
   min: number;
   /** The largest accepted value, in milliseconds. */
   max: number;
-  /** The usage message for a refused text (already through `asciiText`). */
-  message: (given: string) => string;
+  /** The usage message for a refused text; it never includes the text. */
+  message: string;
 }
 
 /** Milliseconds per unit letter. */
@@ -88,11 +88,11 @@ function parseDuration(text: string, form: DurationForm): number {
   const match = /^([0-9]{1,5})([a-z])$/.exec(text);
   const unit = match?.[2] ?? '';
   if (match === null || !form.units.includes(unit)) {
-    throw new BoardError(1, 'usage', form.message(asciiText(text)));
+    throw new BoardError(1, 'usage', form.message);
   }
   const ms = Number(match[1]) * (UNIT_MS[unit] ?? 0);
   if (ms < form.min || ms > form.max) {
-    throw new BoardError(1, 'usage', form.message(asciiText(text)));
+    throw new BoardError(1, 'usage', form.message);
   }
   return ms;
 }
@@ -112,8 +112,8 @@ export function parseTimeout(text: string): number {
     units: 'smhd',
     min: TIMEOUT_MIN_MS,
     max: TIMEOUT_MAX_MS,
-    message: (given) =>
-      `invalid --timeout ${given}: a timeout is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 1s to 1d`,
+    message:
+      'invalid --timeout: a timeout is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 1s to 1d',
   });
 }
 
@@ -134,7 +134,7 @@ export function parseSetting(text: string): number {
     max: SETTING_MAX_MS,
     // The value is never repeated: a token pasted as a value must not land
     // in a terminal or a log.
-    message: () =>
+    message:
       'invalid value: a setting is <n>s or <n>m with <n> of 1 to 5 digits, from 30s to 10m',
   });
 }

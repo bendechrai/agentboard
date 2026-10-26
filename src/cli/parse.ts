@@ -185,9 +185,7 @@ export function parseArgs(
       return;
     }
     if (spec.choices !== undefined && !spec.choices.includes(raw)) {
-      throw usage(
-        `${command.name} takes <${spec.name}> as one of ${spec.choices.join(', ')}, not ${asciiText(raw)}`,
-      );
+      throw usage(`${command.name} takes <${spec.name}> as one of ${spec.choices.join(', ')}`);
     }
     values[spec.name] = spec.type === 'integer' ? parseInteger(spec.name, raw) : raw;
   });
