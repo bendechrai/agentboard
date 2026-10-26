@@ -44,7 +44,15 @@ content is text children, for links an `href` that passed the URL check,
 and a fixed vocabulary of attributes whose values are fields of the syntax
 tree rather than input text: `data-lang` (the info string's first word, as
 text), `checked`, `start` and `data-align`. A node type outside the list
-(including `html`) is rendered as the plain text of its source.
+(including `html`) is rendered as the plain text of its source. The
+renderer is bounded: a description longer than `MAX_MARKDOWN_LENGTH`
+(16384 characters) is not parsed and is shown as plain text, and a
+container nested deeper than `MAX_MARKDOWN_DEPTH` (32, counted over block
+quotes, lists, list items, tables, rows, cells, emphasis, strong,
+strikethrough, links, paragraphs and headings) is shown as its source
+text with no children mapped, so neither the renderer nor Preact recurses
+without bound. A link or image inside a rendered link is its text or
+label, never a nested `a`.
 
 Alternatives considered:
 - *A Markdown-to-HTML library plus a sanitizer (DOMPurify) and
@@ -140,12 +148,21 @@ A test scans every module under `src/web/client/` for
 
 ## Risks / Trade-offs
 
-- [A parser bug throws on some input] -> The renderer catches a parse
-  error and falls back to showing the description as plain text, as
-  today.
-- [Very large descriptions are slow to parse] -> Parsing happens only when
-  the detail view renders that ticket, and is memoised on the description
-  text, so live updates to other tickets do not re-parse it.
+- [A parser bug throws on some input] -> The renderer catches any error
+  from parsing or from mapping the tree and falls back to showing the
+  description as plain text, as today.
+- [Deep nesting overflows the stack] -> A few kilobytes of nested block
+  quotes or emphasis would overflow the renderer's or Preact's recursion
+  and throw past the fallback. The depth cap `MAX_MARKDOWN_DEPTH` renders
+  anything nested deeper as source text, so the vnode tree stays shallow,
+  and the definition walk keeps its own stack.
+- [Very large descriptions are slow to parse] -> micromark's time is
+  super-linear on emphasis-heavy input (16 kB of `_a*` takes seconds) and a
+  description has no length limit, so a description longer than
+  `MAX_MARKDOWN_LENGTH` is not parsed and is shown as plain text. Below
+  the cap, parsing happens only when the detail view renders that ticket,
+  and is memoised on the description text, so live updates to other
+  tickets do not re-parse it.
 - [Bundle size grows by about 80 kB] -> The page is served from loopback,
   so size affects only the first load from a local disk; acceptable.
 - [A future change adds `innerHTML` for convenience] -> The guard test

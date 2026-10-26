@@ -72,8 +72,11 @@ export function parseMarkdown(source: string): Root {
 /** The protocols a description link may have. */
 const ALLOWED_PROTOCOLS: ReadonlySet<string> = new Set(['http:', 'https:', 'mailto:']);
 
-/** An `http:` or `https:` scheme followed by `//`, as written, in any letter case. */
-const HTTP_WITH_AUTHORITY = /^https?:\/\//i;
+/**
+ * How an allowed URL must start, as written, in any letter case: an `http:`
+ * or `https:` scheme followed by `//`, or `mailto:`.
+ */
+const ALLOWED_START = /^(https?:\/\/|mailto:)/i;
 
 /**
  * Whether `url` may be the `href` of a link in a description: true exactly
@@ -81,23 +84,24 @@ const HTTP_WITH_AUTHORITY = /^https?:\/\//i;
  * `http:`, `https:` or `mailto:`. Relative, protocol-relative and
  * fragment-only URLs fail to parse without a base and so are refused, as
  * are malformed URLs and every other scheme (`javascript:`, `data:`,
- * `vbscript:`, `file:` and the rest, in any letter case). An `http:` or
- * `https:` URL must also have `//` right after its scheme as written: a
- * browser resolves an `href` such as `http:/api/session` or `http:api`
- * against the page's own origin, although the parser without a base reads
- * it as absolute with host `api`.
+ * `vbscript:`, `file:` and the rest, in any letter case). The URL as
+ * written must also start with the scheme itself (no leading whitespace or
+ * control characters, which the parser would strip) and an `http:` or
+ * `https:` scheme must be followed by `//`: a browser resolves an `href`
+ * such as `http:/api/session` or `http:api` against the page's own origin,
+ * although the parser without a base reads it as absolute with host `api`.
  */
 export function isAllowedUrl(url: string): boolean {
+  if (!ALLOWED_START.test(url)) {
+    return false;
+  }
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
     return false;
   }
-  if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) {
-    return false;
-  }
-  return parsed.protocol === 'mailto:' || HTTP_WITH_AUTHORITY.test(url);
+  return ALLOWED_PROTOCOLS.has(parsed.protocol);
 }
 
 /**
@@ -114,11 +118,31 @@ export function headingTag(depth: number): DescriptionHeading {
 
 /** What every node of one description is rendered with. */
 interface Context {
-  /** The description, for the source text of nodes outside the allow-list. */
+  /** The description, for the source text of nodes outside the allow-list or past the depth cap. */
   source: string;
   /** The tree's `definition` nodes by identifier, collected before rendering. */
   definitions: ReadonlyMap<string, Definition>;
+  /** The number of counted containers (`COUNTED_TYPES`) among the ancestors of the node rendered. */
+  depth: number;
+  /** Whether an `a` is open above the node rendered, so no link or image may render another. */
+  inLink: boolean;
 }
+
+/** The node types that count toward `MAX_MARKDOWN_DEPTH`. */
+const COUNTED_TYPES: ReadonlySet<string> = new Set([
+  'blockquote',
+  'list',
+  'listItem',
+  'table',
+  'tableRow',
+  'tableCell',
+  'emphasis',
+  'strong',
+  'delete',
+  'link',
+  'paragraph',
+  'heading',
+]);
 
 /**
  * Renders the description `source` as a Preact tree. `parse` defaults to
@@ -178,54 +202,85 @@ interface Context {
  *   node without position offsets renders nothing.
  */
 export function renderMarkdown(source: string, parse: MarkdownParser = parseMarkdown): VNode {
-  let root: Root;
+  if (source.length > MAX_MARKDOWN_LENGTH) {
+    return <>{source}</>;
+  }
+  let children: ComponentChildren[];
   try {
-    root = parse(source);
+    const root = parse(source);
+    const context: Context = {
+      source,
+      definitions: collectDefinitions(root),
+      depth: 0,
+      inLink: false,
+    };
+    children = renderChildren(root, context);
   } catch {
     return <>{source}</>;
   }
-  const context: Context = { source, definitions: collectDefinitions(root) };
-  return <>{renderChildren(root, context)}</>;
+  return <>{children}</>;
 }
 
-/** Every `definition` node of the tree, by identifier; the first one of an identifier wins. */
+/**
+ * Every `definition` node of the tree, by identifier; the first one of an
+ * identifier wins. The walk keeps its own stack, so a tree of any depth is
+ * visited without recursion.
+ */
 function collectDefinitions(root: Root): ReadonlyMap<string, Definition> {
   const definitions = new Map<string, Definition>();
-  const visit = (node: Nodes): void => {
+  const pending: Nodes[] = [root];
+  for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
     if (node.type === 'definition') {
       if (!definitions.has(node.identifier)) {
         definitions.set(node.identifier, node);
       }
-      return;
-    }
-    if ('children' in node) {
-      for (const child of node.children) {
-        visit(child);
+    } else if ('children' in node) {
+      // Pushed in reverse so the children are visited in source order.
+      for (let i = node.children.length - 1; i >= 0; i -= 1) {
+        const child = node.children[i];
+        if (child !== undefined) {
+          pending.push(child);
+        }
       }
     }
-  };
-  visit(root);
+  }
   return definitions;
 }
 
-/** The rendered children of `parent`, in order. */
+/**
+ * The context for the children of `node`, or null when `node` is a counted
+ * container past `MAX_MARKDOWN_DEPTH` and so renders as its source text.
+ */
+function enter(node: Nodes, context: Context): Context | null {
+  if (!COUNTED_TYPES.has(node.type)) {
+    return context;
+  }
+  const depth = context.depth + 1;
+  return depth > MAX_MARKDOWN_DEPTH ? null : { ...context, depth };
+}
+
+/** The rendered children of `parent`, in order, under `context` (the context for the children). */
 function renderChildren(parent: Parents, context: Context): ComponentChildren[] {
   return parent.children.map((child) => renderNode(child, parent, context));
 }
 
 /** One node of the tree as Preact children, following the allow-list of `renderMarkdown`. */
 function renderNode(node: Nodes, parent: Parents, context: Context): ComponentChildren {
+  const inner = enter(node, context);
+  if (inner === null) {
+    return sourceText(node, context);
+  }
   switch (node.type) {
     case 'paragraph':
-      return <p>{renderChildren(node, context)}</p>;
+      return <p>{renderChildren(node, inner)}</p>;
     case 'heading':
-      return createElement(headingTag(node.depth), null, renderChildren(node, context));
+      return createElement(headingTag(node.depth), null, renderChildren(node, inner));
     case 'thematicBreak':
       return <hr />;
     case 'blockquote':
-      return <blockquote>{renderChildren(node, context)}</blockquote>;
+      return <blockquote>{renderChildren(node, inner)}</blockquote>;
     case 'list':
-      return renderList(node, context);
+      return renderList(node, inner);
     case 'code':
       return (
         <pre>
@@ -239,30 +294,31 @@ function renderNode(node: Nodes, parent: Parents, context: Context): ComponentCh
     case 'inlineCode':
       return <code>{node.value}</code>;
     case 'emphasis':
-      return <em>{renderChildren(node, context)}</em>;
+      return <em>{renderChildren(node, inner)}</em>;
     case 'strong':
-      return <strong>{renderChildren(node, context)}</strong>;
+      return <strong>{renderChildren(node, inner)}</strong>;
     case 'delete':
-      return <del>{renderChildren(node, context)}</del>;
+      return <del>{renderChildren(node, inner)}</del>;
     case 'break':
       return <br />;
     case 'text':
       return node.value;
     case 'table':
-      return renderTable(node, context);
+      return renderTable(node, inner);
     case 'link':
-      return renderLink(node.url, renderChildren(node, context));
+      return renderLink(node.url, node, inner);
     case 'linkReference': {
       const definition = context.definitions.get(node.identifier);
-      const children = renderChildren(node, context);
-      return definition === undefined ? children : renderLink(definition.url, children);
+      return definition === undefined
+        ? renderChildren(node, inner)
+        : renderLink(definition.url, node, inner);
     }
     case 'image':
-      return renderImage(node.url, node.alt ?? '');
+      return renderImage(node.url, node.alt ?? '', context);
     case 'imageReference': {
       const definition = context.definitions.get(node.identifier);
       const alt = node.alt ?? '';
-      return definition === undefined ? alt : renderImage(definition.url, alt);
+      return definition === undefined ? alt : renderImage(definition.url, alt, context);
     }
     case 'definition':
       return null;
@@ -287,11 +343,19 @@ function renderList(list: List, context: Context): ComponentChildren {
 }
 
 function renderListItem(item: ListItem, tight: boolean, context: Context): ComponentChildren {
-  const content = item.children.flatMap((child) =>
-    tight && child.type === 'paragraph'
-      ? renderChildren(child, context)
-      : [renderNode(child, item, context)],
-  );
+  const inner = enter(item, context);
+  if (inner === null) {
+    return sourceText(item, context);
+  }
+  const content = item.children.flatMap((child) => {
+    if (tight && child.type === 'paragraph') {
+      // The paragraph's content goes straight into the `li`, but the
+      // paragraph still counts toward the depth cap.
+      const paragraph = enter(child, inner);
+      return paragraph === null ? [sourceText(child, inner)] : renderChildren(child, paragraph);
+    }
+    return [renderNode(child, item, inner)];
+  });
   const checked = item.checked;
   if (typeof checked === 'boolean') {
     return (
@@ -307,14 +371,23 @@ function renderListItem(item: ListItem, tight: boolean, context: Context): Compo
 function renderTable(table: Table, context: Context): ComponentChildren {
   const align: readonly AlignType[] = table.align ?? [];
   const [head, ...body] = table.children;
-  const cells = (row: TableRow, tag: 'th' | 'td'): ComponentChildren[] =>
-    row.children.map((cell, column) => {
+  const cells = (row: TableRow, tag: 'th' | 'td'): ComponentChildren[] => {
+    const inRow = enter(row, context);
+    if (inRow === null) {
+      return [sourceText(row, context)];
+    }
+    return row.children.map((cell, column) => {
+      const inCell = enter(cell, inRow);
+      if (inCell === null) {
+        return sourceText(cell, inRow);
+      }
       const alignment = align[column] ?? null;
-      const children = renderChildren(cell, context);
+      const children = renderChildren(cell, inCell);
       return alignment === null
         ? createElement(tag, null, children)
         : createElement(tag, { 'data-align': alignment }, children);
     });
+  };
   return (
     <table>
       {head === undefined ? null : (
@@ -333,22 +406,28 @@ function renderTable(table: Table, context: Context): ComponentChildren {
   );
 }
 
-/** An `a` to `url` around `children` when the URL is allowed; otherwise the children alone. */
-function renderLink(url: string, children: ComponentChildren): ComponentChildren {
-  if (!isAllowedUrl(url)) {
-    return children;
+/**
+ * An `a` to `url` around the rendered children of `node` when the URL is
+ * allowed and no `a` is open above; otherwise the children alone.
+ */
+function renderLink(url: string, node: Parents, context: Context): ComponentChildren {
+  if (context.inLink || !isAllowedUrl(url)) {
+    return renderChildren(node, context);
   }
   return (
     <a href={url} target="_blank" rel="noopener noreferrer">
-      {children}
+      {renderChildren(node, { ...context, inLink: true })}
     </a>
   );
 }
 
-/** An image as a link to `url` labelled with `alt` (or the URL), never an `img`. */
-function renderImage(url: string, alt: string): ComponentChildren {
+/**
+ * An image as a link to `url` labelled with `alt` (or the URL), never an
+ * `img`; the label alone when the URL is refused or an `a` is open above.
+ */
+function renderImage(url: string, alt: string, context: Context): ComponentChildren {
   const label = alt === '' ? url : alt;
-  if (!isAllowedUrl(url)) {
+  if (context.inLink || !isAllowedUrl(url)) {
     return label;
   }
   return (
@@ -358,16 +437,24 @@ function renderImage(url: string, alt: string): ComponentChildren {
   );
 }
 
-/**
- * A node outside the allow-list as the text of its source: a `p` under the
- * root or a `blockquote`, bare text elsewhere, nothing without a position.
- */
-function renderSourceText(node: Nodes, parent: Parents, context: Context): ComponentChildren {
+/** The source text of `node` by its position offsets, or null without them. */
+function sourceText(node: Nodes, context: Context): string | null {
   const start = node.position?.start.offset;
   const end = node.position?.end.offset;
   if (start === undefined || end === undefined) {
     return null;
   }
-  const text = context.source.slice(start, end);
+  return context.source.slice(start, end);
+}
+
+/**
+ * A node outside the allow-list as the text of its source: a `p` under the
+ * root or a `blockquote`, bare text elsewhere, nothing without a position.
+ */
+function renderSourceText(node: Nodes, parent: Parents, context: Context): ComponentChildren {
+  const text = sourceText(node, context);
+  if (text === null) {
+    return null;
+  }
   return parent.type === 'root' || parent.type === 'blockquote' ? <p>{text}</p> : text;
 }
