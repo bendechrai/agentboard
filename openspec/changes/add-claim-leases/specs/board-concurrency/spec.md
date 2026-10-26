@@ -11,7 +11,7 @@ takeover events naming the same lease, whatever their timestamps and read
 order.
 
 #### Scenario: Ten concurrent takeovers
-- **WHEN** `holder` claimed T1 with `--ttl 30m` and never renewed, the children's clocks are advanced past the claimable time, and ten child processes run `claim T1 --as agent-<n>` started within the same millisecond
+- **WHEN** `holder` claimed T1 with `--ttl 30m` and never renewed, the children's clocks are advanced past the claimable time, and ten child processes run `claim T1 --ttl 30m --as agent-<n>` started within the same millisecond
 - **THEN** one exits 0, nine exit 4, `show T1` reports a single assignee other than `holder`, and `rebuild --check` reports no divergence
 
 #### Scenario: Property: one effective takeover per lease
@@ -50,7 +50,7 @@ the ticket SHALL pass to the next waiter, or become claimable when there
 are none, without impersonating the holder and without any other action.
 
 #### Scenario: Holder killed while holding the lock
-- **WHEN** a child process claims T1 with `--ttl 30m`, renews, and is killed with SIGKILL, and a second actor runs `claim T1` first before and then after the claimable time (the child clocks are advanced by the test harness)
+- **WHEN** a child process claims T1 with `--ttl 30m`, renews, and is killed with SIGKILL, and a second actor runs `claim T1 --ttl 30m` first before and then after the claimable time (the child clocks are advanced by the test harness)
 - **THEN** the first attempt exits 4 `already-assigned` naming the dead holder and the second exits 0 with a takeover naming its lease
 
 #### Scenario: Waiter killed while waiting

@@ -217,9 +217,12 @@ actor with no waiters SHALL be written as a takeover, with `supersedes`
 filled from the current lease, only when the new event's `ts.wall` and the
 local clock both read at least the lease's `expiresAt` plus 60000;
 otherwise it SHALL be refused without writing. Callers SHALL NOT supply
-`supersedes`. A successful `claim --ttl` SHALL print that the lease must
-be confirmed with `agentboard renew <id>` before the grace period ends,
-and when.
+`supersedes`. A takeover SHALL carry its own lease: a claim without
+`--ttl` that would otherwise be written as a takeover SHALL exit 1 with
+reason `usage` naming `--ttl` and write nothing, so a holder that took a
+lock over and then crashed loses it like any other. A successful `claim
+--ttl` SHALL print that the lease must be confirmed with `agentboard
+renew <id>` before the grace period ends, and when.
 
 `show` SHALL display a ticket's lease (expiry as an ISO 8601 UTC time,
 requested ttl, `grace` while unconfirmed, and state), its queue in order
@@ -245,8 +248,12 @@ state SHALL never be stored in the cache.
 - **THEN** it exits 0, the renew's ttl is 1800000, and `list` shows `merger-1+30m`
 
 #### Scenario: Takeover of a claimable lease
-- **WHEN** `merger-1` claimed T1 with `--ttl 30m` and never renewed, 181 seconds have passed, the queue is empty and `claim T1 --as merger-2` runs
+- **WHEN** `merger-1` claimed T1 with `--ttl 30m` and never renewed, 181 seconds have passed, the queue is empty and `claim T1 --as merger-2 --ttl 30m` runs
 - **THEN** it exits 0, T1 is assigned to `merger-2`, and the claim's `supersedes` names `merger-1`, the grace expiry and the claim that set it
+
+#### Scenario: Takeover needs a ttl
+- **WHEN** the lease `merger-1` holds on T1 is claimable, the queue is empty and `claim T1 --as merger-2` runs without `--ttl`
+- **THEN** it exits 1 with reason `usage` naming `--ttl`, no event is written, and T1 stays assigned to `merger-1`
 
 #### Scenario: Expired but not yet claimable
 - **WHEN** a lease expired 20 seconds ago and another actor runs `claim`

@@ -117,6 +117,11 @@ events arrive in. Two racing takeovers name the same lease; the earlier
 in fold order applies and the later no longer matches, which is the
 existing earlier-claim-wins rule.
 
+The command requires `--ttl` on a takeover (exit 1 `usage` without it).
+The fold accepts a takeover without its own lease, but a hold taken over
+without one never lapses, so a recovering actor that crashed in turn
+would leave exactly the stuck lock leases exist to remove.
+
 ### Command-time validation matches the fold
 For `claim`, `renew`, `release --force` and the queue commands the hybrid
 timestamp is built before validation (both under the same write lock, so
