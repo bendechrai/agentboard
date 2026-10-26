@@ -517,7 +517,9 @@ describe('renderMarkdown on deep and long input', () => {
     () => {
       const deep = fc
         .tuple(
-          fc.constantFrom('> ', '- ', '*', '[', '> - ', '1. ', '~~', '> *'),
+          // Units that nest as containers. A run of `~~` is not one: from three
+          // tildes on it opens a code fence, so it is left out.
+          fc.constantFrom('> ', '- ', '*', '[', '> - ', '1. ', '> *'),
           fc.integer({ min: MAX_MARKDOWN_DEPTH, max: 1500 }),
         )
         .map(([unit, n]) => {

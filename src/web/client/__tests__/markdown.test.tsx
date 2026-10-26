@@ -975,6 +975,11 @@ function recording(inner: MarkdownParser = parseMarkdown): {
   };
 }
 
+// Parsing the deepest inputs below takes seconds under coverage with
+// parallel workers (micromark's cost, not the renderer's), beyond vitest's
+// 5 second default.
+const DEEP_PARSE_MS = 60_000;
+
 describe('the depth cap', () => {
   it('is 32', () => {
     expect(MAX_MARKDOWN_DEPTH).toBe(32);
@@ -1025,11 +1030,15 @@ describe('the depth cap', () => {
     expect(root.textContent).toContain('- > - **_a_**');
   });
 
-  it('renders deep emphasis without throwing, capped, keeping the text', () => {
-    const root = md('*'.repeat(3000) + 'a' + '*'.repeat(3000));
-    expect(elementDepth(root)).toBeLessThanOrEqual(MAX_MARKDOWN_DEPTH);
-    expect(root.textContent).toContain('a');
-  });
+  it(
+    'renders deep emphasis without throwing, capped, keeping the text',
+    () => {
+      const root = md('*'.repeat(3000) + 'a' + '*'.repeat(3000));
+      expect(elementDepth(root)).toBeLessThanOrEqual(MAX_MARKDOWN_DEPTH);
+      expect(root.textContent).toContain('a');
+    },
+    DEEP_PARSE_MS,
+  );
 
   for (const [name, source] of [
     ['1500 block quotes', '> '.repeat(1500) + 'a'],
@@ -1039,14 +1048,18 @@ describe('the depth cap', () => {
     ['2000 nested link brackets', '['.repeat(2000) + 'a' + '](https://example.com)'.repeat(2000)],
     ['a mix 1000 levels deep', '> - *'.repeat(1000) + 'a'],
   ] as const) {
-    it(`returns a tree and renders it into a DOM without throwing: ${name}`, () => {
-      // A throw from renderMarkdown or from Preact's render fails the test.
-      const tree = renderMarkdown(source);
-      const root = document.createElement('div');
-      render(tree, root);
-      expect(elementDepth(root)).toBeLessThanOrEqual(MAX_MARKDOWN_DEPTH + 2);
-      expect(root.textContent).toContain('a');
-    });
+    it(
+      `returns a tree and renders it into a DOM without throwing: ${name}`,
+      () => {
+        // A throw from renderMarkdown or from Preact's render fails the test.
+        const tree = renderMarkdown(source);
+        const root = document.createElement('div');
+        render(tree, root);
+        expect(elementDepth(root)).toBeLessThanOrEqual(MAX_MARKDOWN_DEPTH + 2);
+        expect(root.textContent).toContain('a');
+      },
+      DEEP_PARSE_MS,
+    );
   }
 });
 
