@@ -63,7 +63,12 @@ until the holder's first `renew`.
 ttl`. The fold applies it only when its actor is the assignee (otherwise
 `not-assignee`); it sets (not extends) the lease and marks it confirmed.
 The CLI fills `ttl` from the lease's requested ttl when `--ttl` is not
-given, so the first action of real work is simply `renew <id>`. A renew
+given, so the first action of real work is simply `renew <id>`. The
+command checks the assignee before anything else about the ticket: a
+non-assignee gets `not-assignee` with or without `--ttl` and with or
+without a lease, because a former holder whose lock was force-released
+must learn that it lost it; only the assignee of a ticket with no lease
+and no `--ttl` gets `usage`. A renew
 after expiry is still accepted when nothing has taken over before it in
 fold order.
 

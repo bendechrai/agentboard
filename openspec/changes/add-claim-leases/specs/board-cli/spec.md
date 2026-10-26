@@ -205,12 +205,18 @@ tools over MCP").
 of the two. `renew <id> --as <actor> [--ttl <duration>]` SHALL write a
 `ticket.renew` with the given ttl, or the lease's requested ttl when
 `--ttl` is omitted, and an `expiresAt` equal to its `ts.wall` plus that
-ttl, only when the actor is the assignee; otherwise it SHALL exit 4 with
-reason `not-assignee`. `renew` without `--ttl` on a ticket with no lease
-SHALL exit 1 with reason `usage`. A ttl SHALL be 1 to 5 ASCII digits
+ttl, only when the actor is the assignee. `renew` SHALL check the
+assignee first: an actor that is not the ticket's assignee SHALL exit 4
+with reason `not-assignee` and write nothing, whether or not `--ttl` is
+given and whether or not the ticket has a lease, so a former holder whose
+lock was force-released or handed to another actor learns that it lost
+the lock. Only `renew` by the assignee without `--ttl` on a ticket with no
+lease SHALL exit 1 with reason `usage`. A ttl SHALL be 1 to 5 ASCII digits
 followed by `s`, `m`, `h` or `d`, between 30 seconds and 7 days
 inclusive; any other value SHALL exit 1 with reason `usage` naming the
-form. The command SHALL build the event's hybrid timestamp before
+form without repeating the value given, exactly `invalid --ttl: a ttl is
+<n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 30s to 7d`, so
+a token pasted as a ttl never lands in a terminal or a log. The command SHALL build the event's hybrid timestamp before
 validating, inside the same transaction, and SHALL validate with the
 fold's rules against that timestamp. A claim on a ticket held by another
 actor with no waiters SHALL be written as a takeover, with `supersedes`
@@ -224,7 +230,10 @@ lock over and then crashed loses it like any other. A successful `claim
 --ttl` SHALL print that the lease must be confirmed with `agentboard
 renew <id>` before the grace period ends, and when.
 
-`show` SHALL display a ticket's lease (expiry as an ISO 8601 UTC time,
+`show` SHALL read only applied event files: a rejected file and a file not
+yet folded SHALL NOT appear in its lease, queue, grant, takeover or forced
+release lines, in human or `--json` output. `show` SHALL display a
+ticket's lease (expiry as an ISO 8601 UTC time,
 requested ttl, `grace` while unconfirmed, and state), its queue in order
 with each waiter's join time, a pending or applied grant (to whom and the
 time by which it must be accepted), and for a takeover both the previous
@@ -263,9 +272,21 @@ state SHALL never be stored in the cache.
 - **WHEN** `merger-2` runs `renew T1` on a ticket held by `merger-1`
 - **THEN** it exits 4 with reason `not-assignee` and no event is written
 
+#### Scenario: Renew after the lock was force-released
+- **WHEN** `merger-1` held T1 with `--ttl 30m`, `orchestrator` ran `release T1 --force --reason stalled` with no waiters, and `merger-1` runs `renew T1`, then `renew T1 --ttl 30m`
+- **THEN** both exit 4 with reason `not-assignee`, not 1 `usage`, no event is written, and the hint says the lock was lost and names `agentboard show T1`
+
+#### Scenario: Renew by the assignee without a lease
+- **WHEN** `impl` claimed T1 without `--ttl` and runs `renew T1 --as impl`
+- **THEN** it exits 1 with reason `usage` and no event is written
+
 #### Scenario: Malformed ttl
 - **WHEN** `claim T1 --as a --ttl 10min` or `claim T1 --as a --ttl 5s` runs
 - **THEN** the command exits 1 with reason `usage` naming the duration form and the 30s to 7d range
+
+#### Scenario: A refused ttl is not repeated
+- **WHEN** `claim T1 --as a --ttl <token>` runs with a token-shaped value, with and without `--json`
+- **THEN** it exits 1 with reason `usage`, and the token appears nowhere in stdout or stderr
 
 ### Requirement: Waiting on the command line
 `claim <id> --as <actor> --ttl <duration> --wait --timeout <duration>`
@@ -282,7 +303,10 @@ exit 4 with reason `wait-timeout`; on SIGINT or SIGTERM it SHALL write
 When its join is rejected because the ticket became free with no waiters,
 it SHALL claim instead. `--wait` SHALL require `--ttl` and, on the CLI,
 `--timeout` (1 to 5 digits and `s`, `m`, `h` or `d`, at most 1 day);
-otherwise it SHALL exit 1 with reason `usage`. `unqueue <id> --as
+otherwise it SHALL exit 1 with reason `usage`. A refused `--timeout` SHALL
+name the form without repeating the value given, exactly `invalid
+--timeout: a timeout is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5
+digits, from 1s to 1d`. `unqueue <id> --as
 <actor>` SHALL write `ticket.queue.leave`, and SHALL exit 4 with reason
 `invalid-queue` when the actor is not queued.
 
@@ -310,7 +334,9 @@ reason, when the ticket is assigned to an actor other than the caller.
 and `--force` by the assignee itself SHALL exit 1 with reason `usage`
 and write nothing. `--force` on an unassigned ticket SHALL exit 4 with
 reason `not-assignee`. The reason SHALL be refused like comment text when
-it matches a secret pattern (see "No secrets on the board"). Forced
+it matches a secret pattern (see "No secrets on the board"), and that
+check SHALL run before the board is opened, so a secret-like reason is
+refused with exit 1 even where no board is found. Forced
 release SHALL NOT be restricted to a configured set of actors. `show`
 SHALL display a forced release with its actor, the previous holder and the
 reason.
@@ -323,6 +349,10 @@ reason.
 - **WHEN** `release T1 --as orchestrator --force` runs
 - **THEN** it exits 1 with reason `usage` and no event is written
 
+#### Scenario: Secret-like reason without a board
+- **WHEN** `release T1 --as orchestrator --force --reason "gone <token>"` runs with a token-shaped reason where no board is found
+- **THEN** it exits 1 with reason `secret-like`, not 2, and the token does not appear in its output
+
 #### Scenario: Force by the holder
 - **WHEN** `merger-1` holds T1 and runs `release T1 --as merger-1 --force --reason x`
 - **THEN** it exits 1 with reason `usage` and names plain `release`
@@ -332,7 +362,12 @@ reason.
 for the keys `lease.grace` and `queue.window`, with the value given as a
 duration (1 to 5 digits and `s` or `m`, between 30 seconds and 10
 minutes) and stored in milliseconds; any other key or value SHALL exit 1
-with reason `usage`. `config get [<key>]` SHALL print the effective value
+with reason `usage`. The refusal SHALL never repeat the key or value
+given, so a token pasted there never lands in a terminal or a log: an
+unknown key is refused with exactly `config set takes <key> as one of
+lease.grace, queue.window` (`config get` likewise), and a refused value
+with exactly `invalid value: a setting is <n>s or <n>m with <n> of 1 to 5
+digits, from 30s to 10m`. `config get [<key>]` SHALL print the effective value
 of one or both keys, marking defaults. `config` SHALL NOT be an MCP tool.
 
 #### Scenario: Set the acceptance window
@@ -342,6 +377,10 @@ of one or both keys, marking defaults. `config` SHALL NOT be an MCP tool.
 #### Scenario: Unknown key
 - **WHEN** `config set columns x --as orchestrator` runs
 - **THEN** it exits 1 with reason `usage` listing the two keys
+
+#### Scenario: A refused setting is not repeated
+- **WHEN** `config set queue.window <token> --as orchestrator` or `config set <token> 5m --as orchestrator` runs with a token-shaped argument, with and without `--json`
+- **THEN** it exits 1 with reason `usage`, nothing is written, and the token appears nowhere in stdout or stderr
 
 ### Requirement: Due grants are written during catch-up
 Every command that catches up (every command except `rebuild` and
