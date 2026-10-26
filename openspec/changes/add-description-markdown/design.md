@@ -40,9 +40,19 @@ extensions (`micromark-extension-gfm` with `mdast-util-gfm`), and the
 resulting syntax tree is mapped to Preact elements by a small pure
 renderer, `src/web/client/markdown.tsx`. The renderer handles an explicit
 allow-list of node types; each produces fixed elements whose only dynamic
-content is text children and, for links, an `href` that passed the URL
-check. A node type outside the list (including `html`) is rendered as the
-plain text of its source.
+content is text children, for links an `href` that passed the URL check,
+and a fixed vocabulary of attributes whose values are fields of the syntax
+tree rather than input text: `data-lang` (the info string's first word, as
+text), `checked`, `start` and `data-align`. A node type outside the list
+(including `html`) is rendered as the plain text of its source. The
+renderer is bounded: a description longer than `MAX_MARKDOWN_LENGTH`
+(16384 characters) is not parsed and is shown as plain text, and a
+container nested deeper than `MAX_MARKDOWN_DEPTH` (32, counted over block
+quotes, lists, list items, tables, rows, cells, emphasis, strong,
+strikethrough, links, paragraphs and headings) is shown as its source
+text with no children mapped, so neither the renderer nor Preact recurses
+without bound. A link or image inside a rendered link is its text or
+label, never a nested `a`.
 
 Alternatives considered:
 - *A Markdown-to-HTML library plus a sanitizer (DOMPurify) and
@@ -66,7 +76,10 @@ like Preact.
 The GFM extensions used are tables, task list items, strikethrough and
 autolink literals. Footnotes are left out: they need cross-references and
 generated ids in the page for little value in a ticket description, so
-`[^1]` stays text.
+`[^1]` stays text. The umbrella packages `micromark-extension-gfm` and
+`mdast-util-gfm` still parse footnote syntax, so `footnoteReference` and
+`footnoteDefinition` nodes are outside the allow-list and render as their
+source text.
 
 ### Link references are resolved by the renderer
 
@@ -80,7 +93,14 @@ check. An unresolved reference is its text. Definitions render nothing.
 A URL is linked only when `new URL(url)` succeeds without a base and its
 `protocol` is `http:`, `https:` or `mailto:`. Relative URLs fail to parse
 without a base and so render as text, which also keeps a description from
-pointing at the server's own API or changing the app's hash route.
+pointing at the server's own API or changing the app's hash route. An
+`http:` or `https:` URL must also have `//` right after its scheme as
+written, because a browser resolves an `href` such as `http:/api/session`
+or `http:api` against the page's own origin (a same-origin link) even
+though the parser without a base reads it as absolute with host `api`.
+A URL with whitespace or control characters before its scheme (such as
+` mailto:a@b.co`) is refused, although `new URL` strips them, so the
+`href` written to the page is always the URL exactly as it was checked.
 Allowed links get `target="_blank"` and `rel="noopener noreferrer"`. The
 page's `Referrer-Policy: no-referrer` already applies; `rel` repeats it on
 the element.
@@ -131,12 +151,21 @@ A test scans every module under `src/web/client/` for
 
 ## Risks / Trade-offs
 
-- [A parser bug throws on some input] -> The renderer catches a parse
-  error and falls back to showing the description as plain text, as
-  today.
-- [Very large descriptions are slow to parse] -> Parsing happens only when
-  the detail view renders that ticket, and is memoised on the description
-  text, so live updates to other tickets do not re-parse it.
+- [A parser bug throws on some input] -> The renderer catches any error
+  from parsing or from mapping the tree and falls back to showing the
+  description as plain text, as today.
+- [Deep nesting overflows the stack] -> A few kilobytes of nested block
+  quotes or emphasis would overflow the renderer's or Preact's recursion
+  and throw past the fallback. The depth cap `MAX_MARKDOWN_DEPTH` renders
+  anything nested deeper as source text, so the vnode tree stays shallow,
+  and the definition walk keeps its own stack.
+- [Very large descriptions are slow to parse] -> micromark's time is
+  super-linear on emphasis-heavy input (16 kB of `_a*` takes seconds) and a
+  description has no length limit, so a description longer than
+  `MAX_MARKDOWN_LENGTH` is not parsed and is shown as plain text. Below
+  the cap, parsing happens only when the detail view renders that ticket,
+  and is memoised on the description text, so live updates to other
+  tickets do not re-parse it.
 - [Bundle size grows by about 80 kB] -> The page is served from loopback,
   so size affects only the first load from a local disk; acceptable.
 - [A future change adds `innerHTML` for convenience] -> The guard test

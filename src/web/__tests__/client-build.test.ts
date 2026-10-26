@@ -121,6 +121,22 @@ describe('dist/web', () => {
     expect(js).not.toContain('not implemented');
   });
 
+  it('bundles the Markdown renderer of the ticket detail, so the URL scan covers it', () => {
+    const js = readFileSync(join(DIST_WEB, 'app.js'), 'utf8');
+    // Strings only the description renderer (src/web/client/markdown.tsx)
+    // and its parser (mdast-util-from-markdown, micromark) produce.
+    for (const marker of [
+      'noopener noreferrer',
+      'image-link',
+      'data-lang',
+      'data-align',
+      'linkReference',
+      'thematicBreak',
+    ]) {
+      expect(js, marker).toContain(marker);
+    }
+  });
+
   it('contains no http:// or https:// URL naming a host (scenario "No external requests")', () => {
     for (const name of builtFiles()) {
       expect(externalUrls(readFileSync(join(DIST_WEB, name), 'utf8')), name).toEqual([]);
@@ -215,7 +231,14 @@ describe('package', () => {
     ]);
     expect(pkg.peerDependencies).toBeUndefined();
     expect(pkg.optionalDependencies).toBeUndefined();
-    for (const name of ['preact', '@testing-library/preact', 'happy-dom']) {
+    for (const name of [
+      'preact',
+      '@testing-library/preact',
+      'happy-dom',
+      'mdast-util-from-markdown',
+      'micromark-extension-gfm',
+      'mdast-util-gfm',
+    ]) {
       expect(pkg.devDependencies?.[name], name).toBeDefined();
     }
   }, 60_000);
