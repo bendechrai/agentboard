@@ -24,6 +24,7 @@ import {
   type Ticket,
   type TicketLink,
   type UnknownReport,
+  type UnplannedDisposition,
   type Waiter,
 } from '../events/fold.js';
 import { dueGrants } from '../events/grants.js';
@@ -250,6 +251,15 @@ function toWaiter(row: Row): Waiter {
   };
 }
 
+/**
+ * `Ticket.unplanned` from the `unplanned` column: null, or the canonical
+ * JSON of an `UnplannedDisposition` that `saveTicket` wrote.
+ */
+function toUnplanned(row: Row): UnplannedDisposition | null {
+  const json = nullableText(row, 'unplanned');
+  return json === null ? null : (JSON.parse(json) as UnplannedDisposition);
+}
+
 /** Canonical JSON text of a value, as stored in JSON columns. */
 export function jsonText(value: unknown): string {
   return new TextDecoder().decode(canonicalEncode(value));
@@ -288,6 +298,7 @@ function toTicket(row: Row, comments: Row[], links: Row[], waiters: Row[]): Tick
     task:
       source === null ? null : { source, ref: text(row, 'task_ref'), item: text(row, 'task_item') },
     adhoc: nullableText(row, 'adhoc'),
+    unplanned: toUnplanned(row),
     checklist: JSON.parse(text(row, 'checklist')) as ChecklistItem[],
     comments: comments.map((c) => ({
       actor: text(c, 'actor'),
@@ -390,9 +401,9 @@ function saveTicket(db: DatabaseSync, ticket: Ticket, stored: Stored | null): vo
     db,
     `INSERT INTO tickets (id, title, description, status, blocked_from, assignee, lease_ttl,
        lease_expires_at, lease_event, lease_confirmed, available_at, available_event, version,
-       updated_at, created_by, created_at, task_source, task_ref, task_item, adhoc, labels,
-       closed, superseded, decision, checklist)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       updated_at, created_by, created_at, task_source, task_ref, task_item, adhoc, unplanned,
+       labels, closed, superseded, decision, checklist)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (id) DO UPDATE SET
        title = excluded.title, description = excluded.description, status = excluded.status,
        blocked_from = excluded.blocked_from, assignee = excluded.assignee,
@@ -402,8 +413,8 @@ function saveTicket(db: DatabaseSync, ticket: Ticket, stored: Stored | null): vo
        version = excluded.version, updated_at = excluded.updated_at,
        created_by = excluded.created_by, created_at = excluded.created_at,
        task_source = excluded.task_source, task_ref = excluded.task_ref,
-       task_item = excluded.task_item, adhoc = excluded.adhoc, labels = excluded.labels,
-       closed = excluded.closed, superseded = excluded.superseded,
+       task_item = excluded.task_item, adhoc = excluded.adhoc, unplanned = excluded.unplanned,
+       labels = excluded.labels, closed = excluded.closed, superseded = excluded.superseded,
        decision = excluded.decision, checklist = excluded.checklist`,
   ).run(
     ticket.id,
@@ -426,6 +437,7 @@ function saveTicket(db: DatabaseSync, ticket: Ticket, stored: Stored | null): vo
     ticket.task?.ref ?? null,
     ticket.task?.item ?? null,
     ticket.adhoc,
+    ticket.unplanned === null ? null : jsonText(ticket.unplanned),
     jsonText(ticket.labels),
     ticket.closed ? 1 : 0,
     ticket.superseded,

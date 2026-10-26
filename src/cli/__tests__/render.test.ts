@@ -22,6 +22,7 @@ function ticket(extra: Partial<Ticket> = {}): Ticket {
     labels: [],
     task: { source: 'openspec', ref: 'add-board-core', item: '3' },
     adhoc: null,
+    unplanned: null,
     checklist: [],
     comments: [],
     links: [],

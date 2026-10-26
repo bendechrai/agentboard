@@ -287,7 +287,7 @@
       <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="5" width="28" height="22" rx="6" fill="#1f1b16"/><rect x="6" y="9" width="5.5" height="7" rx="1.5" fill="#f1c977"/><rect x="13.25" y="9" width="5.5" height="11" rx="1.5" fill="#86c9b9"/><rect x="20.5" y="9" width="5.5" height="5" rx="1.5" fill="#e2552d"/><rect x="20.5" y="16" width="5.5" height="7" rx="1.5" fill="#a6d38f"/></svg>
       agentboard
     </a>
-    <span class="pill" id="version">v0.1</span>
+    <span class="pill" id="version">v0.2</span>
     <span class="spacer"></span>
     <a class="link" href="#how">How it works</a>
     <a class="link" href="#live">See it live</a>
@@ -338,7 +338,7 @@
         <div class="card" style="--lane: var(--tests)">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div>
           <h3>Local and offline</h3>
-          <p>The board lives in <code class="i">.board/</code> next to your code. A SQLite cache makes reads fast and can be deleted at any time. <code class="i">agentboard sync</code> shares boards between machines over plain git.</p>
+          <p>The board lives in <code class="i">.board/</code> next to your code, its history under a hidden ref in your project's own repository: no branch, no CI, nothing a plain clone sees. A SQLite cache makes reads fast and can be deleted at any time. <code class="i">agentboard sync</code> shares the board over your existing remote, and <code class="i">init</code> in a second clone joins it. For a private board beside a public project, <code class="i">init --remote &lt;url&gt;</code> keeps it in a repository of its own instead; <code class="i">init --into-host</code> moves such a board into your project's repository, history and all, and refuses rather than lose an event. <code class="i">agentboard remote</code> shows which way a board is shared.</p>
         </div>
         <div class="card" style="--lane: var(--review)">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01"/></svg></div>
@@ -381,7 +381,7 @@
           <h3><span class="n">3</span>Everyone sees one board</h3>
           <p>The same state, through whichever door suits the reader.</p>
           <div class="views">
-            <span>agentboard list</span><span>inbox / watch</span><span>MCP tools</span><span>serve (web)</span><span>top (terminal)</span><span>health</span><span>sync (git)</span>
+            <span>agentboard list</span><span>inbox / watch</span><span>MCP tools</span><span>serve (web)</span><span>top (terminal)</span><span>health</span><span>sync / remote (git)</span>
           </div>
         </div>
       </div>
@@ -453,16 +453,21 @@ created 01M3XX79966NQY9JJ7PHPNTP9Q  todo  -  Search box (`web/search-box`)</span
 stuck in blocked: 0</span>
 <span class="y">unpromoted decisions: 1</span>
 <span class="o">01M3XX798BVCEVQXXWP9ZFGJ9B  todo  test-author-2  Query parser (`search/query`)  1 open decision, no decision link</span>
-<span class="o">close-merged ready: 0</span></pre>
+<span class="o">close-merged ready: 0
+close-merged held by decision: 0
+close-merged missing pr: 0
+unplanned scope: 1 in the last 7d (1 in all)
+01M3XX79B4K7QH2RZD5NW0TC3E  merged  impl-1  [unplanned] [closed] Fix flaky CI cache  merged 2h ago, unplanned: production hotfix</span></pre>
       </div>
       <div>
         <div class="kicker">Plans in, decisions out</div>
         <h2>Pairs with OpenSpec.</h2>
-        <p class="sub">Import a change and get one ticket per task group, with its checklist. Decisions made in comments have to be promoted to a spec or an ADR before a ticket can close, so nothing important stays buried in a chat.</p>
+        <p class="sub">Import a change and get one ticket per task group, with its checklist; work outside the plan gets a ticket too. Decisions made in comments have to be promoted to a spec or an ADR before a ticket can close, so nothing important stays buried in a chat.</p>
         <ul class="list">
           <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg><span><b>Re-import safely</b> when tasks.md grows: new lines are appended, nothing is duplicated.</span></li>
           <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg><span><b>close-merged</b> closes tickets whose pull request has landed.</span></li>
           <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg><span><b>health</b> finds stale claims, long-blocked tickets and decisions nobody wrote down.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg><span><b>Unplanned work is disclosed, not blocked.</b> <code class="i">new --adhoc "&lt;reason&gt;"</code> creates a ticket no plan asked for, and it moves through every status like any other. Merging or closing it needs its scope: the task it turned out to deliver, or <code class="i">--unplanned "&lt;reason&gt;"</code>. <code class="i">list</code> and <code class="i">show</code> mark it <code class="i">[unplanned]</code>, and <code class="i">health</code> reports it as unplanned scope.</span></li>
         </ul>
       </div>
     </div>
@@ -476,8 +481,10 @@ stuck in blocked: 0</span>
       <div class="steps">
         <div>
           <h3>Create the board</h3>
-          <p>At the root of your project. The board is its own git repository inside <code class="i">.board/</code>, ignored by yours.</p>
-          <div class="term"><pre><span class="p">$ </span>npx @bendechrai/agentboard init</pre></div>
+          <p>At the root of your project. The board becomes a worktree inside <code class="i">.board/</code>, ignored by your project, with its history on a hidden ref of your repository. Run it in a second clone to join the same board.</p>
+          <div class="term"><pre><span class="p">$ </span>npx @bendechrai/agentboard init
+<span class="c"># or keep the board in a private repository of its own</span>
+<span class="p">$ </span>npx @bendechrai/agentboard init --remote &lt;url&gt;</pre></div>
         </div>
         <div>
           <h3>Teach your agents</h3>

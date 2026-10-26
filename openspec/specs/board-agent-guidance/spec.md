@@ -57,7 +57,7 @@ a lone `--` SHALL request help for the command named before them.
 - **THEN** it exits 1, names `clam`, and suggests `claim`
 
 ### Requirement: Agent guide
-`agentboard help agents` SHALL print a plain ASCII guide of at most 150
+`agentboard help agents` SHALL print a plain ASCII guide of at most 180
 lines, stamped with the package version, containing these sections: what
 the board is and is not (not a secret store, not the record of completion);
 the actor rule; finding work (`inbox`, `list`); claiming before starting;
@@ -65,12 +65,19 @@ handing off and moving to `blocked` with a comment; the `DECISION:`
 convention and why `close` needs a decision disposition; how tickets map to
 planning tasks, including the OpenSpec flow (`import-change` after
 proposing, claim the group's ticket before applying, tick `tasks.md` in the
-implementing PR); and using the MCP tools instead of the shell when they
+implementing PR) and ad hoc tickets (worked like any other ticket; the task
+link or the unplanned disposition is given by whoever merges or closes the
+ticket, with `--task` or `--unplanned` on `move <id> merged` or `close`; never
+create an issue, task file or task reference only to satisfy a move); and
+using the MCP tools instead of the shell when they
 are available. `agentboard help agents --role <role>` SHALL print the guide
 followed by a checklist for that role, where role is one of
-`orchestrator`, `test-author`, `implementer` or `reviewer`. Every line of
+`orchestrator`, `test-author`, `implementer` or `reviewer`; the
+orchestrator checklist SHALL say to give the scope disposition of an ad hoc
+ticket when merging or closing it. Every line of
 guide output that begins with `agentboard ` SHALL parse successfully
-against the command registry.
+against the command registry. The guide SHALL NOT say that an ad hoc
+ticket cannot enter `implementing`.
 
 #### Scenario: Guide examples are valid commands
 - **WHEN** every line beginning with `agentboard ` is extracted from the output of `help agents` and of `help agents --role` for each role and parsed against the registry
@@ -80,12 +87,20 @@ against the command registry.
 - **WHEN** `agentboard help agents --role tester` runs
 - **THEN** it exits 1 and lists the four valid roles
 
+#### Scenario: Guide explains ad hoc tickets
+- **WHEN** `agentboard help agents` runs
+- **THEN** its tickets and planning tasks section says an ad hoc ticket is worked normally, shows a `move <id> merged` line with `--unplanned` that parses, names `--task`, says never to create an issue, task file or task reference only to move a ticket, lists `needs-scope-disposition` and `already-linked` among the exit 4 reasons, does not contain `needs-task-link`, and every output (with and without `--role`) is at most 180 lines
+
 ### Requirement: Error hints
 Every exit 1 and exit 4 refusal SHALL include a hint naming a command that
 moves the caller forward: for example `already-assigned` hints
 `agentboard show <id>` and `agentboard inbox --as <actor>`; a missing actor
-hints both `--as` and `AGENTBOARD_ACTOR`; `needs-task-link` hints
-`agentboard link <id> --task <source>:<ref>#<item> --as <actor>`; a close
+hints both `--as` and `AGENTBOARD_ACTOR`; `needs-scope-disposition` hints
+the refused command (`move <id> merged`, or `close <id>` with the
+disposition flags it was given) with `--task <source>:<ref>#<item>` and
+with `--unplanned "<reason>"`, and says not to create an issue or task
+only to satisfy it; `already-linked` hints the command without
+`--unplanned`; a close
 refused by the decision rule hints `--decision-recorded-in <path>`. The CLI
 SHALL print the hint on stderr on a line beginning `hint: `. MCP tool errors
 SHALL carry it as a `hint` field alongside `exitCode`, `reason` and
@@ -97,7 +112,11 @@ SHALL carry it as a `hint` field alongside `exitCode`, `reason` and
 
 #### Scenario: No reason without a hint
 - **WHEN** the set of rejection reasons is enumerated from the source
-- **THEN** each has a non-empty hint template
+- **THEN** each has a non-empty hint template, and `needs-scope-disposition` and `already-linked` are in the set
+
+#### Scenario: Missing disposition hint
+- **WHEN** `agentboard move T1 merged --as orch` is refused with `needs-scope-disposition`
+- **THEN** stderr has a `hint: ` line containing `agentboard move T1 merged --task <source>:<ref>#<item> --as orch` and `agentboard move T1 merged --unplanned "<reason>" --as orch`, each of which parses against the registry
 
 ### Requirement: Installing guidance into a host project
 `agentboard agents install [--target <t>]... [--mcp-command <executable>]
@@ -121,7 +140,10 @@ where `<t>` is one of:
 The `claude` and `agents-md` text SHALL state the rules an agent must never
 break (always pass an actor; claim before working; hand off or block with a
 comment before stopping; never mark completion on the board instead of in
-the tasks file; promote `DECISION:` comments before closing) and SHALL
+the tasks file; promote `DECISION:` comments before closing; never create
+an issue, task file or task reference only to move a ticket, but work an
+ad hoc ticket normally and give its task link or unplanned disposition
+when merging or closing it) and SHALL
 direct the agent to `agentboard help agents` for everything else. With no
 `--target`, the command SHALL select `claude` when `.claude/` exists,
 `agents-md` when `AGENTS.md` exists and `openspec` when
@@ -137,7 +159,7 @@ output with a line suggesting `agentboard agents install`.
 
 #### Scenario: Install the Claude skill
 - **WHEN** `agentboard agents install --target claude` runs in a project with no `.claude/skills/agentboard`
-- **THEN** `.claude/skills/agentboard/SKILL.md` exists with frontmatter name `agentboard`, the five rules, the text `agentboard help agents`, and the guidance version marker
+- **THEN** `.claude/skills/agentboard/SKILL.md` exists with frontmatter name `agentboard`, the six rules, the text `agentboard help agents`, and the guidance version marker
 
 #### Scenario: Auto-detection
 - **WHEN** `agentboard agents install` runs in a project that has `.claude/` and `openspec/config.yaml` but no `AGENTS.md`
@@ -150,6 +172,10 @@ output with a line suggesting `agentboard agents install`.
 #### Scenario: Local MCP command
 - **WHEN** `agentboard agents install --mcp-command agentboard` runs in a project with no `.mcp.json`
 - **THEN** `.mcp.json` contains `mcpServers.agentboard` equal to `{"command": "agentboard", "args": ["mcp"]}` and the output names `mcp-json` as selected by `--mcp-command`
+
+#### Scenario: Installed guidance covers ad hoc tickets
+- **WHEN** `agentboard agents install --target claude --target agents-md` runs with guidance version 2
+- **THEN** `SKILL.md` and the `AGENTS.md` block each state the ad hoc rule, contain no text saying an ad hoc ticket cannot enter `implementing`, carry the guidance version marker `v2`, and `agents check` reports installations of guidance version 1 as `stale`
 
 ### Requirement: Installed guidance never clobbers user content
 Each target SHALL own only its marked region: the whole of `SKILL.md` only

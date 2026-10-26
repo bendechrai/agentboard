@@ -221,6 +221,9 @@ function ticketLines(model: BoardModel, t: Ticket): LogicalLine[] {
   } else {
     lines.push(plain(t.adhoc === null ? 'task: -' : `task: adhoc: ${t.adhoc}`));
   }
+  if (t.unplanned !== null) {
+    lines.push(plain(`unplanned: ${t.unplanned.reason} (by ${t.unplanned.actor})`));
+  }
   lines.push(plain(t.labels.length === 0 ? 'labels: -' : `labels: ${t.labels.join(', ')}`));
   lines.push(plain(`description: ${t.description ?? '-'}`));
   if (t.checklist.length === 0) {
@@ -293,7 +296,10 @@ function detailRows(model: BoardModel, ticketId: string, columns: number): Detai
  *    when `t.blockedFrom` is not null
  * 4. `assignee: <t.assignee>`, or `assignee: -` when null
  * 5. `task: <formatTaskRef(t.task)>`; when `t.task` is null, `task:
- *    adhoc: <t.adhoc>` when `t.adhoc` is not null, else `task: -`
+ *    adhoc: <t.adhoc>` when `t.adhoc` is not null, else `task: -`;
+ *    then, only when `t.unplanned` is not null, `unplanned:
+ *    <t.unplanned.reason> (by <t.unplanned.actor>)` (the line
+ *    `agentboard show` prints; ADR 0013)
  * 6. `labels: <labels joined with ", ">`, or `labels: -` when none
  * 7. `description: <t.description>`, or `description: -` when null
  * 8. `checklist: -` when the checklist is empty; otherwise

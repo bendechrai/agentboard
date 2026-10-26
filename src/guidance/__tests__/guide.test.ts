@@ -2,14 +2,19 @@
  * The agent guide (board-agent-guidance: "Agent guide"; add-agent-guidance
  * add-agent-guidance design.md: "The guide is code, tested against the registry"): the drift
  * guard (every `agentboard ` line of every guide output parses with the real
- * parser), the format (ASCII, at most 150 lines, version stamp, every
+ * parser), the format (ASCII, at most 180 lines, version stamp, every
  * required section in order), the content each section and each role
  * checklist must carry, agreement with README.md, and `help agents [--role
  * <role>]` through the CLI, in process and built.
+ *
+ * Ad hoc tickets (add-adhoc-ticket-lifecycle, task 5.1; ADR 0013): the
+ * scenario "Guide explains ad hoc tickets", the orchestrator checklist
+ * line, and the search of `src/` (tests excepted) for the removed
+ * `needs-task-link` (task 5.2).
  */
 
-import { readFileSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -165,11 +170,12 @@ describe('the drift guard', () => {
 });
 
 describe('the format', () => {
-  it.each(OUTPUTS)('%s is ASCII, at most 150 lines, and ends with one newline', (name) => {
+  it.each(OUTPUTS)('%s is ASCII, at most 180 lines, and ends with one newline', (name) => {
     const text = output(name);
     const lines = linesOf(text);
     expect(lines.length).toBeLessThanOrEqual(GUIDE_MAX_LINES);
-    expect(GUIDE_MAX_LINES).toBe(150);
+    // board-agent-guidance "Agent guide" (add-adhoc-ticket-lifecycle): 180.
+    expect(GUIDE_MAX_LINES).toBe(180);
     for (const line of lines) {
       expect(line, JSON.stringify(line)).toMatch(ASCII_LINE);
     }
@@ -279,7 +285,8 @@ describe('the sections', () => {
     for (const fragment of [
       '<source>:<ref>#<item>',
       '--adhoc',
-      'needs-task-link',
+      '--task',
+      '--unplanned',
       'tasks.md',
       'close-merged',
     ]) {
@@ -287,8 +294,48 @@ describe('the sections', () => {
     }
     const used = parsedLines(text);
     expect(used.map((p) => p.command)).toEqual(expect.arrayContaining(['import-change', 'claim']));
+    // A ticket linked before merge needs nothing more, so `link --task` stays taught here.
     expect(used.some((p) => p.command === 'link' && typeof p.values.task === 'string')).toBe(true);
     expect(used.some((p) => p.command === 'new' && typeof p.values.change === 'string')).toBe(true);
+    expect(used.some((p) => p.command === 'new' && typeof p.values.adhoc === 'string')).toBe(true);
+  });
+
+  it('scenario: the guide explains ad hoc tickets (add-adhoc-ticket-lifecycle task 5.1)', () => {
+    const text = section('Tickets and planning tasks');
+    // Worked like any other ticket: the words sit in one sentence.
+    expect(text).toMatch(/ad hoc ticket[^.]*\b(?:like any other|normally)\b/i);
+    // The disposition is given by whoever merges or closes the ticket, on
+    // `move <id> merged` or `close`, with either flag.
+    expect(text).toMatch(/\bmerge[sd]?\b/);
+    expect(text).toMatch(/\bclose[sd]?\b/);
+    const moves = parsedLines(text).filter((p) => p.command === 'move');
+    const merge = moves.find(
+      (p) =>
+        p.values.status === 'merged' &&
+        typeof p.values.unplanned === 'string' &&
+        p.values.unplanned !== '',
+    );
+    expect(merge, 'a move <id> merged --unplanned line').toBeDefined();
+    expect(typeof merge?.values.as).toBe('string');
+    expect(text).toContain('--task');
+    // Never create an artifact only to satisfy a move.
+    expect(text).toMatch(/never create an issue, task file or task reference/i);
+    // The removed gate.
+    expect(text).not.toContain('needs-task-link');
+    expect(text).not.toMatch(/cannot enter implementing/i);
+    expect(text).not.toMatch(/until (?:it is )?linked/i);
+    // The exit 4 reasons of the disposition.
+    const exit4 = guideExitCodes().get(4) ?? '';
+    expect(exit4).toContain('needs-scope-disposition');
+    expect(exit4).toContain('already-linked');
+    expect(exit4).not.toContain('needs-task-link');
+    // Every output, with and without --role, is at most 180 lines and free
+    // of the old gate.
+    for (const [name, out] of outputs()) {
+      expect(linesOf(out).length, name).toBeLessThanOrEqual(180);
+      expect(out, name).not.toContain('needs-task-link');
+      expect(out, name).not.toMatch(/cannot enter implementing/i);
+    }
   });
 
   it('using the MCP tools: tool names, the as argument, the server default, what is not a tool', () => {
@@ -419,6 +466,29 @@ describe('the role checklists', () => {
     expect(out.slice(0, -1).split('\n').length).toBeLessThanOrEqual(GUIDE_MAX_LINES);
   });
 
+  it('orchestrator: gives the scope disposition of an ad hoc ticket when merging or closing it (task 5.1)', () => {
+    const text = renderRoleChecklist('orchestrator');
+    // One line of the checklist names the disposition for ad hoc tickets
+    // (board-agent-guidance "Agent guide"; design.md section 9).
+    const line = text
+      .split('\n')
+      .find((l) => /ad hoc/i.test(l) && l.includes('--task') && l.includes('--unplanned'));
+    expect(line, 'a line naming ad hoc, --task and --unplanned').toBeDefined();
+    expect(line ?? '').toMatch(ASCII_LINE);
+    // The line is in the step about merging and closing after a pull
+    // request merges, after the health step and at or before the close.
+    const lines = text.split('\n');
+    const at = lines.indexOf(line ?? '');
+    const health = lines.findIndex((l) => l.trimStart().startsWith('agentboard health'));
+    const close = lines.findIndex((l) => l.trimStart().startsWith('agentboard close'));
+    expect(at).toBeGreaterThan(health);
+    expect(at).toBeLessThan(close);
+    expect(text).not.toContain('needs-task-link');
+    // The orchestrator output is the longest and stays within the cap.
+    const out = renderGuide(VERSION) + text;
+    expect(linesOf(out).length).toBeLessThanOrEqual(GUIDE_MAX_LINES);
+  });
+
   it('test-author: claim, move to tests, hand off to implementing', () => {
     const lines = roleLines('test-author');
     expect(lines.map((p) => p.command)).toContain('claim');
@@ -443,6 +513,45 @@ describe('the role checklists', () => {
       true,
     );
     expect(lines.some((p) => p.command === 'link' && typeof p.values.pr === 'string')).toBe(true);
+  });
+});
+
+describe('the removed gate (add-adhoc-ticket-lifecycle task 5.2)', () => {
+  const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+  /** Every file under `dir`, skipping test directories (`__tests__`). */
+  function sourceFiles(dir: string): string[] {
+    const out: string[] = [];
+    for (const name of readdirSync(dir)) {
+      if (name === '__tests__') {
+        continue;
+      }
+      const path = join(dir, name);
+      if (statSync(path).isDirectory()) {
+        out.push(...sourceFiles(path));
+      } else {
+        out.push(path);
+      }
+    }
+    return out;
+  }
+
+  it('no source file outside the tests names needs-task-link', () => {
+    const files = sourceFiles(SRC);
+    expect(files.length).toBeGreaterThan(50);
+    expect(files.some((f) => f.endsWith('guide.ts'))).toBe(true);
+    expect(files.some((f) => f.includes('__tests__'))).toBe(false);
+    const offenders = files
+      .filter((f) => readFileSync(f, 'utf8').includes('needs-task-link'))
+      .map((f) => relative(SRC, f));
+    expect(offenders).toEqual([]);
+  });
+
+  it('no source file outside the tests says an ad hoc ticket cannot enter implementing', () => {
+    const offenders = sourceFiles(SRC)
+      .filter((f) => /cannot enter implementing/i.test(readFileSync(f, 'utf8')))
+      .map((f) => relative(SRC, f));
+    expect(offenders).toEqual([]);
   });
 });
 

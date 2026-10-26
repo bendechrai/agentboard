@@ -100,6 +100,9 @@ export const E = {
   close(ticket: string, body: TicketCloseBody, o: Opts = {}): FoldInput {
     return input({ v: 1, kind: 'ticket.close', ticket, ...stamp(o), body });
   },
+  unplanned(ticket: string, reason: string, o: Opts = {}): FoldInput {
+    return input({ v: 1, kind: 'ticket.unplanned', ticket, ...stamp(o), body: { reason } });
+  },
   check(ticket: string, index: number, done: boolean, o: Opts = {}): FoldInput {
     return input({ v: 1, kind: 'ticket.checklist', ticket, ...stamp(o), body: { index, done } });
   },

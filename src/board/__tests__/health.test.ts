@@ -41,6 +41,7 @@ import {
 const NOW = 1_800_000_000_000;
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
 
 /** The wall `hours` hours before `NOW`. */
 function ago(hours: number): number {
@@ -371,6 +372,7 @@ describe('boardHealth', () => {
     expect(report.thresholds).toEqual({
       staleAfter: 30 * MINUTE,
       blockedAfter: DEFAULT_THRESHOLDS.blockedAfter,
+      unplannedWithin: DEFAULT_THRESHOLDS.unplannedWithin,
     });
     expect(plain(report)).toEqual(expected(board, report.thresholds));
     const other = { blockedAfter: 31 * HOUR };
@@ -378,7 +380,16 @@ describe('boardHealth', () => {
     expect(report2.thresholds).toEqual({
       staleAfter: DEFAULT_THRESHOLDS.staleAfter,
       blockedAfter: 31 * HOUR,
+      unplannedWithin: DEFAULT_THRESHOLDS.unplannedWithin,
     });
+    const window = { unplannedWithin: 30 * 24 * HOUR };
+    const report3 = boardHealth(board, { now: NOW, thresholds: window });
+    expect(report3.thresholds).toEqual({
+      staleAfter: DEFAULT_THRESHOLDS.staleAfter,
+      blockedAfter: DEFAULT_THRESHOLDS.blockedAfter,
+      unplannedWithin: 30 * 24 * HOUR,
+    });
+    expect(plain(report3)).toEqual(expected(board, report3.thresholds));
     // Blocked for 30 hours: not stuck at 31.
     expect(report2.stuckBlocked).toEqual([]);
     expect(plain(report2)).toEqual(expected(board, report2.thresholds));
@@ -386,7 +397,7 @@ describe('boardHealth', () => {
 
   it('applies thresholds as given: a 12 hour stale threshold leaves the 9.75 hour claim out', () => {
     const { board } = fixture();
-    const thresholds = { staleAfter: 12 * HOUR, blockedAfter: 24 * HOUR };
+    const thresholds = { staleAfter: 12 * HOUR, blockedAfter: 24 * HOUR, unplannedWithin: DAY };
     const report = boardHealth(board, { now: NOW, thresholds });
     expect(report.staleClaims).toEqual([]);
     expect(plain(report)).toEqual(expected(board, thresholds));
@@ -412,6 +423,7 @@ describe('boardHealth', () => {
       stuckBlocked: [],
       unpromotedDecisions: [],
       closeMerged: { ready: [], heldByDecision: [], missingPr: [] },
+      unplannedScope: { total: 0, tickets: [] },
       late: null,
       check: null,
     });

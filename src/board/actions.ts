@@ -15,8 +15,8 @@
  * - relies on the fold's own rules (through `runCommand`) for the state
  *   machine and assignment checks, so a refusal is exit 4 with the fold
  *   rejection reason (`invalid-transition`, `already-assigned`,
- *   `not-assignee`, `checklist-index`, `needs-task-link`) and writes
- *   nothing;
+ *   `not-assignee`, `checklist-index`, `needs-scope-disposition`,
+ *   `already-linked`) and writes nothing;
  * - throws `BoardError(1, 'missing-actor')` when `actor` is empty.
  */
 
@@ -25,14 +25,20 @@ import { dirname } from 'node:path';
 
 import { openDecisions } from '../events/decisions.js';
 import type { Ticket } from '../events/fold.js';
-import type { TaskRef, Status } from '../events/schema.js';
+import { type TaskRef, type Status } from '../events/schema.js';
 import { asciiText } from './text.js';
 import type { Board } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
-import { runCommand, type ProposedEvent } from '../store/transaction.js';
+import {
+  alreadyLinkedMessage,
+  runCommand,
+  type ProposedEvent,
+  type ProposedEvents,
+} from '../store/transaction.js';
 import { requireActor, resolveTicket, ticketOf } from './lookup.js';
 import { treePath, type TreePathOptions } from './paths.js';
 import { taskReminder, type TaskReminder } from './reminder.js';
+import { taskRefFromArgs, type TaskArgs } from './resolve.js';
 import { refuseSecretLike } from './secrets.js';
 import type { WriteOptions, WriteOutcome } from './types.js';
 
@@ -53,14 +59,34 @@ function writeTicketEvent(
   build: (ticket: Ticket) => ProposedEvent,
   options: WriteOptions | undefined,
 ): WriteOutcome {
+  return writeTicketEvents(board, actor, id, (ticket) => [build(ticket)], options);
+}
+
+/**
+ * As `writeTicketEvent`, for a command that writes one or two events in
+ * one transaction (a scope disposition and then its move or close):
+ * `runCommand` folds them in memory in order, so a refusal of either
+ * writes nothing.
+ */
+function writeTicketEvents(
+  board: Board,
+  actor: string,
+  id: string,
+  build: (ticket: Ticket) => ProposedEvents,
+  options: WriteOptions | undefined,
+): WriteOutcome {
   requireActor(actor);
   const result = runCommand(
     board,
     actor,
-    () => ({ ok: true, event: build(resolveTicket(board.db, id)) }),
+    () => ({ ok: true, events: build(resolveTicket(board.db, id)) }),
     options,
   );
-  return { hash: result.hash, ticket: ticketOf(result.ticket) };
+  return {
+    hash: result.hash,
+    events: result.events.map((written) => written.hash),
+    ticket: ticketOf(result.ticket),
+  };
 }
 
 /**
@@ -107,7 +133,7 @@ export function claimTicket(
     );
   } catch (error) {
     if (error instanceof AlreadyHeld) {
-      return { hash: null, ticket: error.ticket };
+      return { hash: null, events: [], ticket: error.ticket };
     }
     throw error;
   }
@@ -134,24 +160,192 @@ export function releaseTicket(
 }
 
 /**
- * `move`: writes `ticket.move` with an explicit target.
+ * The scope disposition a `move <id> merged` or a `close` gives on the
+ * same command (board-cli: "Scope disposition on the command line";
+ * board-openspec-integration: "Scope disposition at merge and close"; ADR
+ * 0013): the planned task the work delivered (`--task`, or `--change` with
+ * `--group`, parsed by `taskRefFromArgs`) or the reason it was never
+ * planned (`--unplanned <reason>`, non-empty).
+ */
+export type ScopeDisposition = { task: TaskRef } | { unplanned: string };
+
+/**
+ * The disposition flags of `move` and `close` as given on the command
+ * line: the task arguments of `link` (`TaskArgs`), `--unplanned` and
+ * `--allow-secret-like`.
+ */
+export interface DispositionArgs extends TaskArgs {
+  unplanned?: string | undefined;
+  /** Skips the secret-pattern refusal of the unplanned reason. */
+  allowSecretLike?: boolean | undefined;
+}
+
+/**
+ * Turns the disposition flags of `move` or `close` into a
+ * `ScopeDisposition`, or undefined when none of `task`, `change`, `group`
+ * and `unplanned` is given. Needs no board: the registry `run` of `move`
+ * and `close` calls it before `ctx.board()`, so every refusal below is
+ * exit 1 before the board is opened (design.md section 5), and writes
+ * nothing.
+ *
+ * - `task`, `change` and `group`: exactly `taskRefFromArgs`, with its
+ *   reasons and messages (`malformed-task-ref` showing
+ *   `<source>:<ref>#<item>` exactly as `link` does; `usage` for `--change`
+ *   without `--group` and the reverse).
+ * - `unplanned` together with any of the task arguments: `BoardError(1,
+ *   'usage')` whose message names both `--task` (or `--change`) and
+ *   `--unplanned`. (The parser's exclusive group refuses this first on the
+ *   CLI and over MCP; the check here covers library callers.)
+ * - `unplanned` empty: `BoardError(1, 'usage')` saying the unplanned
+ *   reason must not be empty.
+ * - `unplanned` matching a secret pattern: `refuseSecretLike([unplanned],
+ *   allowSecretLike === true)` (exit 1 `secret-like`, naming the pattern
+ *   and never the text) unless `allowSecretLike`.
+ *
+ * Pure apart from the thrown refusals.
+ */
+export function scopeDispositionFromArgs(args: DispositionArgs): ScopeDisposition | undefined {
+  const { unplanned } = args;
+  const taskGiven =
+    args.task !== undefined || args.change !== undefined || args.group !== undefined;
+  if (unplanned !== undefined && taskGiven) {
+    throw new BoardError(
+      1,
+      'usage',
+      'give at most one scope disposition: --task (or --change with --group), or --unplanned',
+    );
+  }
+  const task = taskRefFromArgs(args);
+  if (task !== undefined) {
+    return { task };
+  }
+  if (unplanned === undefined) {
+    return undefined;
+  }
+  checkUnplannedReason(unplanned, args.allowSecretLike);
+  return { unplanned };
+}
+
+/**
+ * The checks on an unplanned reason that need no board: empty is
+ * `BoardError(1, 'usage')`, and a reason matching a secret pattern is
+ * refused by `refuseSecretLike` (exit 1 `secret-like`) unless
+ * `allowSecretLike`.
+ */
+function checkUnplannedReason(reason: string, allowSecretLike: boolean | undefined): void {
+  if (reason === '') {
+    throw new BoardError(1, 'usage', 'the unplanned reason must not be empty');
+  }
+  refuseSecretLike([reason], allowSecretLike === true);
+}
+
+/**
+ * The checks on a disposition that need no board (see `moveTicket` and
+ * `closeTicket`): a task reference needs none; an unplanned reason goes
+ * through `checkUnplannedReason`.
+ */
+function checkDisposition(
+  disposition: ScopeDisposition,
+  allowSecretLike: boolean | undefined,
+): void {
+  if ('unplanned' in disposition) {
+    checkUnplannedReason(disposition.unplanned, allowSecretLike);
+  }
+}
+
+/**
+ * The event a disposition writes before its move or close: the
+ * `ticket.link` exactly as `linkTicket` writes it, or the
+ * `ticket.unplanned` with the reason.
+ */
+function dispositionEvent(ticket: Ticket, disposition: ScopeDisposition): ProposedEvent {
+  return 'task' in disposition
+    ? { kind: 'ticket.link', ticket: ticket.id, body: { task: { ...disposition.task } } }
+    : { kind: 'ticket.unplanned', ticket: ticket.id, body: { reason: disposition.unplanned } };
+}
+
+/** Whether `ticket` has a scope disposition: a task reference or an unplanned disposition. */
+function disposed(ticket: Ticket): boolean {
+  return ticket.task !== null || ticket.unplanned !== null;
+}
+
+/** Input of `moveTicket`. */
+export interface MoveInput {
+  id: string;
+  /** Target status; omitted only to return a blocked ticket to its origin. */
+  to?: Status | undefined;
+  /**
+   * The scope disposition written before the move, in the same
+   * transaction (see `moveTicket`). Accepted only with `to` equal to
+   * `merged`.
+   */
+  disposition?: ScopeDisposition | undefined;
+  /** Skips the secret-pattern refusal of an unplanned reason. */
+  allowSecretLike?: boolean | undefined;
+}
+
+/**
+ * `move`: writes `ticket.move` with an explicit target, preceded, when a
+ * scope disposition is given, by its `ticket.link` or `ticket.unplanned`
+ * in the same transaction (board-cli: "Scope disposition on the command
+ * line"; board-cache: "One command, one transaction").
  *
  * - `to` given: that target. The state machine decides (exit 4
  *   `invalid-transition`, including a move to the current status and every
- *   move out of `merged`; exit 4 `needs-task-link` for a ticket without a
- *   task reference entering `implementing`).
+ *   move out of `merged`; exit 4 `needs-scope-disposition` for a ticket
+ *   with neither a task reference nor an unplanned disposition entering
+ *   `merged`; an ad hoc ticket enters `implementing` like any other).
  * - `to` omitted on a `blocked` ticket: the remembered origin
  *   (`blockedFrom`); the event still names it.
  * - `to` omitted on any other ticket: `BoardError(1, 'missing-status')`
  *   saying a target status is required unless the ticket is blocked.
+ *
+ * With `disposition` (design.md sections 4 to 6):
+ * - `to` is not `merged` (any other status, or omitted, including the
+ *   target-less return from `blocked`): `BoardError(1, 'usage')` saying a
+ *   disposition applies only to a move to `merged`; nothing is written and
+ *   the ticket is not read. The registry `run` makes this check before
+ *   `ctx.board()`, so on the CLI it is refused before the board is opened.
+ * - `{ unplanned }`: empty is `BoardError(1, 'usage')`; secret-looking is
+ *   refused with `refuseSecretLike` (exit 1 `secret-like`) unless
+ *   `allowSecretLike`; both before the ticket is read. Otherwise the
+ *   operation proposes `[ticket.unplanned {reason}, ticket.move {to:
+ *   'merged'}]`.
+ * - `{ task }`: the operation proposes `[ticket.link {task}, ticket.move
+ *   {to: 'merged'}]`, the link exactly as `linkTicket` writes it (so a
+ *   ticket already linked gets its reference replaced, and its ad hoc
+ *   reason and unplanned disposition cleared).
+ * - The two events are folded in memory in that order by `runCommand`, so
+ *   the fold's own order applies: `already-linked` (an unplanned reason on
+ *   a ticket with a task reference) comes before `invalid-transition`, and
+ *   `invalid-transition` before `needs-scope-disposition`. Any refusal
+ *   writes neither event, not even a temporary file.
+ * - On success `WriteOutcome.events` lists the disposition's hash then the
+ *   move's, `hash` is the move's, and `ticket` is the ticket after both.
+ *
+ * Without `disposition` nothing changes: a ticket linked earlier with
+ * `link`, or given an unplanned disposition earlier, enters `merged` with
+ * no flag, and a planned ticket is unaffected.
  */
 export function moveTicket(
   board: Board,
   actor: string,
-  input: { id: string; to?: Status | undefined },
+  input: MoveInput,
   options?: WriteOptions,
 ): WriteOutcome {
-  return writeTicketEvent(
+  requireActor(actor);
+  const { disposition } = input;
+  if (disposition !== undefined) {
+    if (input.to !== 'merged') {
+      throw new BoardError(
+        1,
+        'usage',
+        'a scope disposition (--task, --change with --group, or --unplanned) applies only to a move to merged',
+      );
+    }
+    checkDisposition(disposition, input.allowSecretLike);
+  }
+  return writeTicketEvents(
     board,
     actor,
     input.id,
@@ -164,7 +358,8 @@ export function moveTicket(
           `a target status is required: ticket ${ticket.id} is ${ticket.status}, not blocked`,
         );
       }
-      return { kind: 'ticket.move', ticket: ticket.id, body: { to } };
+      const move: ProposedEvent = { kind: 'ticket.move', ticket: ticket.id, body: { to } };
+      return disposition === undefined ? [move] : [dispositionEvent(ticket, disposition), move];
     },
     options,
   );
@@ -320,12 +515,32 @@ export function setChecklistItem(
   return { ...outcome, reminder };
 }
 
-/** How a ticket is closed: `--decision-recorded-in <path>` or `--no-decision`. */
-export type CloseInput =
-  ({ id: string; decisionRecordedIn: string } & TreePathOptions) | { id: string; noDecision: true };
+/**
+ * The scope disposition part of `CloseInput`: optional on every close,
+ * needed by an undisposed ticket (see `closeTicket`).
+ */
+export interface CloseScope {
+  /** Written before the `ticket.close`, in the same transaction. */
+  disposition?: ScopeDisposition | undefined;
+  /** Skips the secret-pattern refusal of an unplanned reason. */
+  allowSecretLike?: boolean | undefined;
+}
 
 /**
- * `close`: writes `ticket.close` with the disposition.
+ * How a ticket is closed: the decision disposition (`--decision-recorded-in
+ * <path>` or `--no-decision`) and, optionally, the scope disposition.
+ */
+export type CloseInput = (
+  ({ id: string; decisionRecordedIn: string } & TreePathOptions) | { id: string; noDecision: true }
+) &
+  CloseScope;
+
+/**
+ * `close`: writes `ticket.close` with the decision disposition, preceded,
+ * when a scope disposition is given, by its `ticket.link` or
+ * `ticket.unplanned` in the same transaction (board-cli: "Scope
+ * disposition on the command line"; board-openspec-integration: "Scope
+ * disposition at merge and close").
  *
  * - `decisionRecordedIn`: resolved with `treePath` (`cwd`, `env`); outside
  *   the working tree is `BoardError(1, 'path-outside-tree')`; the
@@ -341,14 +556,43 @@ export type CloseInput =
  *   the same actor).
  * - The fold refuses a close unless the ticket is in `merged` or `blocked`
  *   and not already closed: exit 4 `invalid-transition`.
+ * - The scope disposition is the CLI's check, not the fold's (design.md
+ *   section 5): a ticket with neither a task reference nor an unplanned
+ *   disposition, closed without `disposition`, is `BoardError(4,
+ *   'needs-scope-disposition')` naming the ticket, in any closable status
+ *   (`blocked`, and `merged` for a ticket that got there outside
+ *   agentboard); nothing is written. A ticket linked earlier, or given an
+ *   unplanned disposition earlier, needs nothing more; a planned ticket is
+ *   unaffected.
+ * - `disposition: { task }`: the operation proposes `[ticket.link {task},
+ *   ticket.close]`, the link as `linkTicket` writes it. `disposition: {
+ *   unplanned }`: empty is `BoardError(1, 'usage')` and secret-looking is
+ *   refused with `refuseSecretLike` unless `allowSecretLike`, both before
+ *   the ticket is read; otherwise `[ticket.unplanned {reason},
+ *   ticket.close]`. A `ticket.unplanned` on a ticket with a task reference
+ *   is `BoardError(4, 'already-linked')` with the message `runCommand`
+ *   gives the fold's rejection (naming the reference), thrown before the
+ *   decision guard; nothing is written. On success `WriteOutcome.events`
+ *   lists the disposition's hash then the close's, and `hash` is the
+ *   close's.
  *
- * Check order: usage errors (neither or both
- * dispositions, at the parser) first; then the path checks
+ * Check order (design.md sections 5 and 6): usage errors (neither or both
+ * decision dispositions and both scope dispositions, at the parser; a
+ * malformed task reference, an empty or secret-like unplanned reason,
+ * before the board is opened) first; then the path checks
  * (`path-outside-tree`, then `decision-path-missing`); then closability
  * (exit 4 `invalid-transition` for a ticket not in `merged` or `blocked`,
- * or already closed); only then, for a closable ticket, the decision guard
- * (exit 1 `unpromoted-decision`). So `--no-decision` on a `todo` ticket
- * with an open `DECISION:` comment is exit 4 `invalid-transition`.
+ * or already closed: only the `ticket.close` is proposed, so this holds
+ * whatever disposition was given); then the scope disposition (exit 4
+ * `needs-scope-disposition`, or `already-linked` for an unplanned reason on
+ * a linked ticket); only then, for a closable and disposed ticket, the
+ * decision guard (exit 1 `unpromoted-decision`). So `--no-decision` on a
+ * `todo` ticket with an open `DECISION:` comment is exit 4
+ * `invalid-transition`, and on an undisposed `blocked` ticket with an open
+ * `DECISION:` comment it is exit 4 `needs-scope-disposition`, becoming
+ * exit 1 `unpromoted-decision` once `--unplanned` is given; on a linked
+ * `blocked` ticket with an open `DECISION:` comment, `--unplanned` is exit
+ * 4 `already-linked`.
  */
 export function closeTicket(
   board: Board,
@@ -357,6 +601,10 @@ export function closeTicket(
   options?: WriteOptions,
 ): WriteOutcome {
   requireActor(actor);
+  const { disposition } = input;
+  if (disposition !== undefined) {
+    checkDisposition(disposition, input.allowSecretLike);
+  }
   let body: { decision: string } | { noDecision: true } = { noDecision: true };
   if ('decisionRecordedIn' in input) {
     const path = treePath(input.decisionRecordedIn, input);
@@ -369,16 +617,41 @@ export function closeTicket(
     }
     body = { decision: path.recorded };
   }
-  return writeTicketEvent(
+  return writeTicketEvents(
     board,
     actor,
     input.id,
     (ticket) => {
       // A ticket that cannot be closed is left to the fold's own
-      // invalid-transition refusal, which comes before the decision guard.
+      // invalid-transition refusal, which comes before the scope
+      // disposition and the decision guard.
       const closable =
         !ticket.closed && (ticket.status === 'merged' || ticket.status === 'blocked');
-      const open = closable && 'noDecision' in body ? openDecisions(ticket.comments) : [];
+      const close: ProposedEvent = { kind: 'ticket.close', ticket: ticket.id, body };
+      if (!closable) {
+        // Only the close is proposed, so the refusal is invalid-transition
+        // whatever disposition was given (design.md section 6).
+        return [close];
+      }
+      if (disposition === undefined && !disposed(ticket)) {
+        throw new BoardError(
+          4,
+          'needs-scope-disposition',
+          `ticket ${ticket.id} cannot be closed: needs-scope-disposition (it has neither a ` +
+            'task reference nor an unplanned disposition; give --task or --unplanned)',
+        );
+      }
+      if (disposition !== undefined && 'unplanned' in disposition && ticket.task !== null) {
+        // The fold's own refusal of the ticket.unplanned, raised here so it
+        // comes before the decision guard, with the message runCommand
+        // gives that rejection.
+        throw new BoardError(
+          4,
+          'already-linked',
+          alreadyLinkedMessage('ticket.unplanned', ticket.id, ticket.task),
+        );
+      }
+      const open = 'noDecision' in body ? openDecisions(ticket.comments) : [];
       if (open.length > 0) {
         const quoted = open.map((c) => `  ${asciiText(c.actor)}: "${asciiText(c.text)}"`);
         throw new BoardError(
@@ -393,7 +666,7 @@ export function closeTicket(
           ].join('\n'),
         );
       }
-      return { kind: 'ticket.close', ticket: ticket.id, body };
+      return disposition === undefined ? [close] : [dispositionEvent(ticket, disposition), close];
     },
     options,
   );

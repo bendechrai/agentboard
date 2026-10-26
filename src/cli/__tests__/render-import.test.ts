@@ -31,6 +31,7 @@ function ticket(extra: Partial<Ticket> = {}): Ticket {
     labels: [],
     task: { source: 'openspec', ref: 'add-x', item: '3' },
     adhoc: null,
+    unplanned: null,
     checklist: [],
     comments: [],
     links: [],
@@ -93,6 +94,21 @@ describe('the superseded marker', () => {
     expect(renderListLine(ticket({ superseded: 'gone', task: null, adhoc: 'x' }))).toBe(
       `${ID}  todo  -  [adhoc] [superseded] Build the CLI`,
     );
+    // The scope marker comes first ([unplanned] in place of [adhoc]), then
+    // [closed], then [superseded].
+    expect(
+      renderListLine(
+        ticket({
+          superseded: 'gone',
+          task: null,
+          adhoc: 'x',
+          unplanned: { reason: 'hotfix', actor: 'merger', ts: TS },
+          closed: true,
+          status: 'merged',
+          disposition: { noDecision: true },
+        }),
+      ),
+    ).toBe(`${ID}  merged  -  [unplanned] [closed] [superseded] Build the CLI`);
   });
 
   it('show: a superseded line after closed, only when superseded', () => {

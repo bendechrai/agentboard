@@ -33,6 +33,8 @@
  *   task_ref     TEXT,            --   (no task) or all non-null
  *   task_item    TEXT,
  *   adhoc        TEXT,
+ *   unplanned    TEXT,            -- Ticket.unplanned as canonical JSON
+ *                                 --   {"actor","reason","ts"}; null without one
  *   labels       TEXT NOT NULL,   -- JSON array of strings
  *   closed       INTEGER NOT NULL,
  *   superseded   TEXT,            -- Ticket.superseded: the supersede reason,
@@ -146,13 +148,15 @@ import type { CorruptFile, MalformedFile, WriteHooks } from './eventfile.js';
 export const CACHE_FILE = 'cache.sqlite';
 
 /**
- * Version of the cache schema above, stored in `meta.schema_version`: 4,
- * the version with the lease and queue columns, the `waiters` table, the
- * `grant_watermark` row (version 3), and the `superseded` column and the
- * per-line `removed` flag of the checklist (board-cache: "Cache schema"), so
- * an older cache, including one of version 3, is rebuilt on first open.
+ * Version of the cache schema above, stored in `meta.schema_version`: 5,
+ * the version with the `tickets.unplanned` column, the `tickets.superseded`
+ * column and the per-line `removed` flag of the checklist (board-cache:
+ * "Cache schema", scenario "Cache from an earlier schema is rebuilt"), so a
+ * cache of version 4 or older (version 3: lease and queue columns,
+ * `waiters`, `grant_watermark`) is dropped and rebuilt from the event files
+ * on first open.
  */
-export const CACHE_SCHEMA_VERSION = 4;
+export const CACHE_SCHEMA_VERSION = 5;
 
 /** Minimum busy timeout on every connection, in milliseconds. */
 export const BUSY_TIMEOUT_MS = 5000;
@@ -374,6 +378,7 @@ CREATE TABLE tickets (
   task_ref     TEXT,
   task_item    TEXT,
   adhoc        TEXT,
+  unplanned    TEXT,
   labels       TEXT NOT NULL,
   closed       INTEGER NOT NULL,
   superseded   TEXT,

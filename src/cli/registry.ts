@@ -15,14 +15,19 @@ import {
   linkTicket,
   moveTicket,
   releaseTicket,
+  scopeDispositionFromArgs,
   setChecklistItem,
+  type DispositionArgs,
   type LinkTarget,
 } from '../board/actions.js';
 import { importChange, parseImportTarget } from '../board/import.js';
 import { readInbox } from '../board/inbox.js';
 import { initBoard } from '../board/init.js';
+import { initBoardWithRemote } from '../board/init-remote.js';
+import { moveBoardIntoHost } from '../board/into-host.js';
 import { boardHealth } from '../board/health.js';
 import { closeMerged } from '../board/merged.js';
+import { remoteReport, renderRemote } from '../board/remote.js';
 import { syncBoard } from '../board/sync.js';
 import { TASK_RULE } from '../board/text.js';
 import { parseTaskFilter, taskRefFromArgs, type TaskFilter } from '../board/resolve.js';
@@ -177,12 +182,49 @@ const SERVE_OPEN_GROUP: ExclusiveGroup = {
   message: 'serve takes at most one of --open and --no-open',
 };
 
-/** The dispositions of `close`. */
+/** The decision dispositions of `close`. */
 const CLOSE_GROUP: ExclusiveGroup = {
   alternatives: [['decision-recorded-in'], ['no-decision']],
   required: true,
   reason: 'no-disposition',
   message: CLOSE_RULE,
+};
+
+/**
+ * `--unplanned <reason>`, the unplanned scope disposition of `move` and
+ * `close` (board-cli: "Scope disposition on the command line").
+ */
+export const UNPLANNED_FLAG: ArgSpec = flag(
+  'unplanned',
+  'string',
+  'Record the work as unplanned scope, with the reason it was never planned',
+);
+
+/**
+ * The disposition flags of `move` and `close`, in this order: `--task`,
+ * `--change`, `--group` (`TASK_FLAGS`), `--unplanned` and
+ * `--allow-secret-like` (which only affects `--unplanned`). The MCP
+ * properties `task`, `change`, `group`, `unplanned` and
+ * `allow-secret-like` of `board_move` and `board_close` come from here.
+ */
+export const DISPOSITION_FLAGS: readonly ArgSpec[] = [
+  ...TASK_FLAGS,
+  UNPLANNED_FLAG,
+  ALLOW_SECRET_FLAG,
+];
+
+/**
+ * The scope dispositions of `move` and `close`: at most one of `--task`,
+ * `--change` with `--group`, or `--unplanned` (board-cli: "Scope
+ * disposition on the command line", scenario "Both dispositions are a usage
+ * error"). Not required: a ticket that has a task reference or an
+ * unplanned disposition already needs none.
+ */
+export const DISPOSITION_GROUP: ExclusiveGroup = {
+  alternatives: [['task'], ['change', 'group'], ['unplanned']],
+  required: false,
+  reason: 'usage',
+  message: 'give at most one of --task, --change with --group, or --unplanned',
 };
 
 /** Exit code entries shared by many commands (see `ExitCodeSpec`). */
@@ -232,10 +274,23 @@ const EXIT_TRANSITION: ExitCodeSpec = {
   reason: 'invalid-transition',
   meaning: 'The status machine does not permit this move from the current status',
 };
-const EXIT_TASK_LINK: ExitCodeSpec = {
+/**
+ * A ticket with neither a task reference nor an unplanned disposition
+ * entering `merged` (`move`, `handoff`) or being closed (`close`) without
+ * `--task` or `--unplanned` (board-openspec-integration: "Scope
+ * disposition at merge and close").
+ */
+const EXIT_SCOPE_DISPOSITION: ExitCodeSpec = {
   code: 4,
-  reason: 'needs-task-link',
-  meaning: 'A ticket without a task reference cannot enter implementing; link one first',
+  reason: 'needs-scope-disposition',
+  meaning:
+    'The ticket has no task reference and no unplanned disposition: give --task or --unplanned',
+};
+/** `--unplanned` on a ticket that has a task reference (`move`, `close`). */
+const EXIT_ALREADY_LINKED: ExitCodeSpec = {
+  code: 4,
+  reason: 'already-linked',
+  meaning: 'The ticket already has a task reference, so --unplanned does not apply',
 };
 const EXIT_INTEGRITY: ExitCodeSpec = {
   code: 5,
@@ -319,6 +374,20 @@ function linkTarget(values: ArgValues): LinkTarget {
     throw new BoardError(1, 'usage', LINK_GROUP.message);
   }
   return { task };
+}
+
+/**
+ * The scope disposition flags of `move` and `close` (`DISPOSITION_FLAGS`),
+ * as `scopeDispositionFromArgs` takes them.
+ */
+function dispositionArgs(values: ArgValues): DispositionArgs {
+  return {
+    task: str(values, 'task'),
+    change: str(values, 'change'),
+    group: str(values, 'group'),
+    unplanned: str(values, 'unplanned'),
+    allowSecretLike: bool(values, 'allow-secret-like'),
+  };
 }
 
 /** The task filter of `list` (`--task`, or `--change` as `openspec:<name>`). */
@@ -416,24 +485,27 @@ function noCacheOutput(cachePath: string): CommandOutput {
 
 /**
  * `health [--stale-after <duration>] [--blocked-after <duration>]
- * [--check]` (board-insights: "Health command", "Durations").
+ * [--unplanned-within <duration>] [--check]` (board-insights: "Health
+ * command", "Durations").
  *
- * First, before the board is located or opened, each of `--stale-after`
- * and `--blocked-after` that is given is parsed with `parseDuration`
- * (`src/view/health.ts`); a value it refuses is `BoardError(1, 'usage')`
- * whose message names the flag, the value given (through `asciiText`) and
- * the accepted forms, for example:
+ * First, before the board is located or opened, each of `--stale-after`,
+ * `--blocked-after` and `--unplanned-within` that is given is parsed, in
+ * that order, with `parseDuration` (`src/view/health.ts`); a value it
+ * refuses is `BoardError(1, 'usage')` whose message names the flag, the
+ * value given (through `asciiText`) and the accepted forms, for example:
  * `invalid --stale-after 2hours: a duration is <n>m, <n>h or <n>d with <n> a positive integer of at most 5 digits (for example 30m, 2h or 1d)`.
- * When both are invalid, `--stale-after` is reported. So a malformed
- * duration exits 1 even where there is no board.
+ * When several are invalid, the first in that order is reported. So a
+ * malformed duration exits 1 even where there is no board.
  *
  * Then `boardHealth(ctx.board(), { thresholds, check })`, with only the
- * given thresholds (the others default), `check` from `--check`, `now`
- * and the event cache left to their defaults. The board is opened as any
- * read command opens it (with catch-up). The output is
+ * given thresholds (the others default; `--unplanned-within` is
+ * `thresholds.unplannedWithin`), `check` from `--check`, `now` and the
+ * event cache left to their defaults. The board is opened as any read
+ * command opens it (with catch-up). The output is
  * `{ json: report, text: renderHealth(report) }`, with no `exitCode` and no
- * warnings, whatever the report contains (a cache that differs included):
- * findings are data. Needs no actor (`--as` is accepted and ignored).
+ * warnings, whatever the report contains (a cache that differs and
+ * unplanned scope included): findings are data. Needs no actor (`--as` is
+ * accepted and ignored).
  */
 function runHealth(ctx: RunContext, values: ArgValues): CommandOutput {
   const thresholds: Partial<HealthThresholds> = {};
@@ -444,6 +516,10 @@ function runHealth(ctx: RunContext, values: ArgValues): CommandOutput {
   const blockedAfter = durationFlag(values, 'blocked-after');
   if (blockedAfter !== undefined) {
     thresholds.blockedAfter = blockedAfter;
+  }
+  const unplannedWithin = durationFlag(values, 'unplanned-within');
+  if (unplannedWithin !== undefined) {
+    thresholds.unplannedWithin = unplannedWithin;
   }
   const report = boardHealth(ctx.board(), { thresholds, check: bool(values, 'check') });
   return { json: report, text: renderHealth(report) };
@@ -494,7 +570,15 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *
  * `run` of each command calls the named operation and returns its result
  * as the `--json` document, with this human rendering:
- * - `init`: `InitResult`; text: its `message`.
+ * - `init`: `InitResult`; text: its `message`; `warnings`: the result's
+ *   `warnings`, printed to stderr by `runCli`. With `--remote <url>`:
+ *   `initBoardWithRemote(url, ...)` and its `InitRemoteResult` (the same
+ *   ten keys plus `action`, `remoteUrl` and `sync`), rendered the same
+ *   way; an empty `--remote` value is a usage error. With `--into-host`:
+ *   `moveBoardIntoHost(...)` and its `IntoHostResult` (the same ten keys
+ *   plus `action`, `keptAt`, `oldRemoteUrl` and `sync`), rendered the same
+ *   way; `--remote` with `--into-host` is a usage error (the exclusive
+ *   group).
  * - `new`: `WriteOutcome`; text: `created <full id>` then the `list` line.
  * - `show`: `ShowResult` (`--raw`: `RawEvent[]`); text: `renderShow`
  *   (`--raw`: each raw event's `text` on its own line).
@@ -611,36 +695,167 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  * safe integer), otherwise the string; `close --decision-recorded-in` and
  * `link --decision` pass `ctx.cwd` and `ctx.env` so the path is resolved
  * and recorded by `treePath`.
+ *
+ * The scope disposition of `move` and `close` (`DISPOSITION_FLAGS`,
+ * `DISPOSITION_GROUP`; board-cli: "Scope disposition on the command
+ * line"): `run` builds it with `scopeDispositionFromArgs` from `--task`,
+ * `--change`, `--group`, `--unplanned` and `--allow-secret-like`, and for
+ * `move` refuses a disposition whose target is not `merged` (`BoardError(1,
+ * 'usage')` saying a disposition applies only to a move to `merged`, the
+ * omitted target included), both BEFORE calling `ctx.board()`: so a usage
+ * error, a malformed task reference, an empty or secret-like reason exit 1
+ * before the board is opened and even where there is no board. Then
+ * `moveTicket` or `closeTicket` is called with `disposition` and
+ * `allowSecretLike`; `close-merged` passes no disposition (a merged ticket
+ * without one is skipped and listed, see `closeMerged`).
  */
 export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'init',
     summary: 'Create the board for this project',
     description:
-      'Creates the board for the project containing the current directory: a .board directory that is a git repository of its own, ignored by the host project. Running it again on an existing board changes nothing. Needs git; needs no actor.',
+      'Creates the board for the project containing the current directory: a .board directory that is a git repository of its own, ignored by the host project. Running it again on an existing board changes nothing. With --remote <url> the board is a standalone board shared through the repository at <url>, kept out of the host repository (for a public project, or a git host that refuses custom refs): an existing board there is cloned, an empty repository receives the new board on the first sync, a missing local path is created as a bare repository first, and a standalone board without a remote gets <url> as origin and is synced. With --into-host an existing standalone board is moved into the host repository (its history becomes refs/agentboard/board and .board a worktree of the host), keeping every commit; it refuses while the board has events that are not committed or not pushed, keeps the old repository under the host .git directory, runs sync, and can be run again after an interruption. --remote and --into-host are mutually exclusive. Needs git; needs no actor.',
     group: 'setup',
-    examples: [{ command: 'agentboard init', summary: 'Create the board for this project' }],
+    examples: [
+      { command: 'agentboard init', summary: 'Create the board for this project' },
+      {
+        command: 'agentboard init --remote git@example.com:me/board.git',
+        summary: 'Keep the board in a repository of its own, shared through that URL',
+      },
+      {
+        command: 'agentboard init --remote ../boards/project.git',
+        summary: 'Share the board through a local bare repository, created when it is missing',
+      },
+      {
+        command: 'agentboard init --into-host',
+        summary: 'Move an existing standalone board into the host repository, keeping its history',
+      },
+    ],
     exitCodes: [
-      { code: 0, meaning: 'The board was created, or already existed' },
+      { code: 0, meaning: 'The board was created, already existed, or was moved into the host repository' },
       EXIT_USAGE,
       { code: 1, reason: 'git-missing', meaning: 'git could not be run' },
+      {
+        code: 1,
+        reason: 'git-too-old',
+        meaning:
+          'With --into-host: a board in the host repository needs git 2.32 or later; nothing changed',
+      },
+      {
+        code: 1,
+        reason: 'no-host-repository',
+        meaning:
+          'With --into-host: the board was not found through a git repository (outside one, or with AGENTBOARD_DIR set); nothing changed',
+      },
+      {
+        code: 1,
+        reason: 'ambiguous-remote',
+        meaning:
+          'The host repository has several remotes and none is origin or the upstream of its branch; nothing was created',
+      },
+      {
+        code: 1,
+        reason: 'not-a-board',
+        meaning:
+          'The repository at --remote <url> has a branch without an events/ directory; nothing was created',
+      },
+      {
+        code: 1,
+        reason: 'remote-mismatch',
+        meaning: 'The existing standalone board already has a remote with another URL; nothing changed',
+      },
+      {
+        code: 1,
+        reason: 'board-in-host',
+        meaning:
+          'The existing board is in the host repository (refs/agentboard/board), so --remote does not apply; nothing changed',
+      },
+      {
+        code: 2,
+        reason: 'board-not-a-repository',
+        meaning:
+          'With --remote: .board exists but is not a board (a directory with other content, a file, a dangling link); move it aside; nothing was created',
+      },
+      {
+        code: 3,
+        reason: 'remote-unreachable',
+        meaning:
+          'The repository at --remote <url> cannot be read: create an empty repository there and check your access; nothing was created',
+      },
+      {
+        code: 3,
+        reason: 'sync-failed',
+        meaning:
+          'The sync that --remote or --into-host runs failed (the remote rejected the push, or is unreachable); the board and its remote are kept, and a move stays done. With --into-host also: the standalone remote cannot be reached, or the ref update in the host repository lost a race; nothing was moved',
+      },
+      {
+        code: 3,
+        reason: 'sync-conflict',
+        meaning:
+          'The sync that --remote or --into-host runs stopped on a conflict, left in the board repository for a human; with --into-host also a conflict while integrating the host board ref, left in the temporary worktree the message names (resolve, git add, git rebase --continue there, then init --into-host again), the old board untouched',
+      },
+      {
+        code: 3,
+        reason: 'sync-in-progress',
+        meaning:
+          'With --into-host: a rebase or merge is in progress in the standalone board repository, or the rebase of an earlier move is still stopped in its temporary worktree (finish it there, then run init --into-host again); nothing changed',
+      },
+      {
+        code: 3,
+        reason: 'detached-head',
+        meaning:
+          'With --into-host: the standalone board repository has a detached HEAD; nothing changed',
+      },
+      {
+        code: 4,
+        reason: 'unsynced',
+        meaning:
+          'With --into-host: the standalone board has an event file that is not committed, or its branch has commits its remote does not; run agentboard sync first; nothing changed',
+      },
       EXIT_INTEGRITY,
     ],
     positionals: [],
-    flags: [],
-    exclusive: [],
+    flags: [
+      flag(
+        'remote',
+        'string',
+        'URL or local path of the repository that holds the board (keeps the board out of the host repository)',
+      ),
+      flag(
+        'into-host',
+        'boolean',
+        'Move the existing standalone board into the host repository, keeping its history',
+      ),
+    ],
+    exclusive: [
+      {
+        alternatives: [['remote'], ['into-host']],
+        required: false,
+        reason: 'usage',
+        message: 'init takes --remote <url> or --into-host, not both',
+      },
+    ],
     writes: false,
     operation: 'initBoard',
-    run: (ctx) => {
-      const result = initBoard({ cwd: ctx.cwd, env: ctx.env });
-      return { json: result, text: `${result.message}\n${INIT_SUGGESTION}\n` };
+    run: (ctx, values) => {
+      const url = str(values, 'remote');
+      const result = bool(values, 'into-host')
+        ? moveBoardIntoHost({ cwd: ctx.cwd, env: ctx.env })
+        : url === undefined
+          ? initBoard({ cwd: ctx.cwd, env: ctx.env })
+          : initBoardWithRemote(url, { cwd: ctx.cwd, env: ctx.env });
+      return {
+        json: result,
+        text: `${result.message}\n${INIT_SUGGESTION}\n`,
+        warnings: result.warnings,
+      };
     },
   },
   {
     name: 'new',
     summary: 'Create a ticket',
     description:
-      'Creates a ticket in todo, unassigned. Every ticket names the planning task it implements (--task, or --change with --group for an OpenSpec task group) or says why it has none (--adhoc). Checklist lines become the ticket checklist. Text that looks like a secret is refused unless --allow-secret-like is given.',
+      'Creates a ticket in todo, unassigned. Every ticket names the planning task it implements (--task, or --change with --group for an OpenSpec task group) or says why it has none (--adhoc). An ad hoc ticket is worked normally; its task link or unplanned disposition (--task or --unplanned on move or close) is given when it is merged or closed. Checklist lines become the ticket checklist. Text that looks like a secret is refused unless --allow-secret-like is given.',
     group: 'lifecycle',
     examples: [
       {
@@ -649,7 +864,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       },
       {
         command: 'agentboard new "Fix flaky test" --adhoc "found in CI" --label ci --as orch',
-        summary: 'Create a ticket that implements no planning task',
+        summary: 'Create an ad hoc ticket, worked like any other until it is merged or closed',
       },
     ],
     exitCodes: [
@@ -671,7 +886,11 @@ export const COMMANDS: readonly CommandSpec[] = [
       flag('description', 'string', 'Longer description'),
       flag('label', 'string', 'Label (repeatable)', { repeatable: true }),
       ...TASK_FLAGS,
-      flag('adhoc', 'string', 'Reason the ticket has no task reference'),
+      flag(
+        'adhoc',
+        'string',
+        'Reason the ticket has no task reference; it is worked like any other ticket',
+      ),
       flag('checklist', 'string', 'Checklist line (repeatable)', { repeatable: true }),
       ALLOW_SECRET_FLAG,
     ],
@@ -828,13 +1047,21 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'move',
     summary: 'Move a ticket to another status (a blocked ticket returns to its origin)',
     description:
-      'Moves a ticket to another status: todo, tests, implementing, review, merged or blocked. Permitted moves: todo to tests, tests to implementing, implementing to review, review back to implementing or tests, review to merged, any open status to blocked. A blocked ticket moved with no status returns to the status it was blocked from. merged is terminal.',
+      'Moves a ticket to another status: todo, tests, implementing, review, merged or blocked. Permitted moves: todo to tests, tests to implementing, implementing to review, review back to implementing or tests, review to merged, any open status to blocked. A blocked ticket moved with no status returns to the status it was blocked from. merged is terminal. An ad hoc ticket moves like any other, but a move to merged needs its scope disposition on the same command when it has none yet: --task (or --change with --group) links the task it delivered, --unplanned records that the work was never planned; without one the move exits 4 with needs-scope-disposition. Never create an issue, task file or task reference only to satisfy it.',
     group: 'lifecycle',
     examples: [
       { command: 'agentboard move 01J9K3 blocked --as impl', summary: 'Block ticket 01J9K3' },
       {
         command: 'agentboard move 01J9K3 --as impl',
         summary: 'Return a blocked ticket to the status it was blocked from',
+      },
+      {
+        command: 'agentboard move 01J9K3 merged --unplanned "production hotfix" --as orch',
+        summary: 'Merge an ad hoc ticket, recording that its work was never planned',
+      },
+      {
+        command: 'agentboard move 01J9K3 merged --task openspec:add-parser#2 --as orch',
+        summary: 'Merge an ad hoc ticket, linking the planned task it turned out to deliver',
       },
     ],
     exitCodes: [
@@ -848,23 +1075,39 @@ export const COMMANDS: readonly CommandSpec[] = [
       },
       EXIT_ID_SHORT,
       EXIT_ID_AMBIGUOUS,
+      EXIT_SECRET,
+      EXIT_TASK_REF,
       EXIT_NO_BOARD,
       EXIT_TRANSITION,
-      EXIT_TASK_LINK,
+      EXIT_SCOPE_DISPOSITION,
+      EXIT_ALREADY_LINKED,
       EXIT_UNKNOWN_TICKET,
       EXIT_INTEGRITY,
     ],
     positionals: [ID, positional('status', 'string', 'Target status', false)],
-    flags: [],
-    exclusive: [],
+    flags: [...DISPOSITION_FLAGS],
+    exclusive: [DISPOSITION_GROUP],
     writes: true,
     operation: 'moveTicket',
     run: (ctx, values) => {
-      const to = str(values, 'status');
+      const given = str(values, 'status');
+      const to = given === undefined ? undefined : status(given);
+      // The disposition and its target are checked before the board is
+      // opened, so a usage error exits 1 even where there is no board.
+      const disposition = scopeDispositionFromArgs(dispositionArgs(values));
+      if (disposition !== undefined && to !== 'merged') {
+        throw new BoardError(
+          1,
+          'usage',
+          'a scope disposition (--task, --change with --group, or --unplanned) applies only to a move to merged',
+        );
+      }
       return written(
         moveTicket(ctx.board(), actorOf(ctx), {
           id: req(values, 'id'),
-          to: to === undefined ? undefined : status(to),
+          to,
+          disposition,
+          allowSecretLike: bool(values, 'allow-secret-like'),
         }),
       );
     },
@@ -932,7 +1175,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       EXIT_SECRET,
       EXIT_NO_BOARD,
       EXIT_TRANSITION,
-      EXIT_TASK_LINK,
+      EXIT_SCOPE_DISPOSITION,
       EXIT_UNKNOWN_TICKET,
       EXIT_INTEGRITY,
     ],
@@ -1077,7 +1320,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'close',
     summary: 'Close a merged or blocked ticket with a decision disposition',
     description:
-      'Closes a merged or blocked ticket. A decision made in a ticket must be recorded in a spec delta or ADR: name that file with --decision-recorded-in (it must exist inside the working tree), or declare that the ticket made no decision with --no-decision, which is refused while the ticket has an unretracted DECISION: comment.',
+      'Closes a merged or blocked ticket. A decision made in a ticket must be recorded in a spec delta or ADR: name that file with --decision-recorded-in (it must exist inside the working tree), or declare that the ticket made no decision with --no-decision, which is refused while the ticket has an unretracted DECISION: comment. An ad hoc ticket that has no task link also needs its scope disposition on the same command: --task (or --change with --group) links the task it delivered, --unplanned records that the work was never planned; without one the close exits 4 with needs-scope-disposition. Never create an issue, task file or task reference only to satisfy it.',
     group: 'lifecycle',
     examples: [
       {
@@ -1087,6 +1330,14 @@ export const COMMANDS: readonly CommandSpec[] = [
       {
         command: 'agentboard close 01J9K3 --no-decision --as orch',
         summary: 'Close ticket 01J9K3, which made no decision',
+      },
+      {
+        command: 'agentboard close 01J9K3 --no-decision --unplanned "abandoned: superseded" --as orch',
+        summary: 'Close a blocked ad hoc ticket, recording why its work was never planned',
+      },
+      {
+        command: 'agentboard close 01J9K3 --no-decision --task openspec:add-parser#2 --as orch',
+        summary: 'Close a blocked ad hoc ticket, linking the planned task it belongs to',
       },
     ],
     exitCodes: [
@@ -1115,12 +1366,16 @@ export const COMMANDS: readonly CommandSpec[] = [
       },
       EXIT_ID_SHORT,
       EXIT_ID_AMBIGUOUS,
+      EXIT_SECRET,
+      EXIT_TASK_REF,
       EXIT_NO_BOARD,
       {
         code: 4,
         reason: 'invalid-transition',
         meaning: 'The ticket is not merged or blocked, or is already closed',
       },
+      EXIT_SCOPE_DISPOSITION,
+      EXIT_ALREADY_LINKED,
       EXIT_UNKNOWN_TICKET,
       EXIT_INTEGRITY,
     ],
@@ -1128,20 +1383,26 @@ export const COMMANDS: readonly CommandSpec[] = [
     flags: [
       flag('decision-recorded-in', 'string', 'Spec delta, ADR or tasks file recording decisions'),
       flag('no-decision', 'boolean', 'The ticket made no decision that needs recording'),
+      ...DISPOSITION_FLAGS,
     ],
-    exclusive: [CLOSE_GROUP],
+    exclusive: [CLOSE_GROUP, DISPOSITION_GROUP],
     writes: true,
     operation: 'closeTicket',
     run: (ctx, values) => {
       const id = req(values, 'id');
       const path = str(values, 'decision-recorded-in');
+      // Checked before the board is opened (see the note above COMMANDS).
+      const scope = {
+        disposition: scopeDispositionFromArgs(dispositionArgs(values)),
+        allowSecretLike: bool(values, 'allow-secret-like'),
+      };
       return written(
         closeTicket(
           ctx.board(),
           actorOf(ctx),
           path === undefined
-            ? { id, noDecision: true }
-            : { id, decisionRecordedIn: path, cwd: ctx.cwd, env: ctx.env },
+            ? { id, noDecision: true, ...scope }
+            : { id, decisionRecordedIn: path, cwd: ctx.cwd, env: ctx.env, ...scope },
         ),
       );
     },
@@ -1351,9 +1612,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'health',
     summary:
-      'Report stale claims, long-blocked tickets, unpromoted decisions and close-merged candidates',
+      'Report stale claims, long-blocked tickets, unpromoted decisions, close-merged candidates and unplanned scope',
     description:
-      "Prints the board's health report, section by section with counts: claims whose assignee has been idle for at least --stale-after (default 2h), tickets blocked for at least --blocked-after (default 24h) with the status they were blocked from and their latest comment, open tickets with a DECISION: comment and no decision link, and the tickets in merged as close-merged would see them (ready, held by an open decision, or missing a pr link; whether a pull request is merged is known only to close-merged). Durations are <n>m, <n>h or <n>d. --check also compares the cache with the event log as rebuild --check does, which briefly pauses writers. Writes nothing and needs no actor. It exits 0 whatever it finds, so read the report (or --json) rather than the exit code. Run it before archiving a change and when choosing what to dispatch.",
+      "Prints the board's health report, section by section with counts: claims whose assignee has been idle for at least --stale-after (default 2h), tickets blocked for at least --blocked-after (default 24h) with the status they were blocked from and their latest comment, open tickets with a DECISION: comment and no decision link, the tickets in merged as close-merged would see them (ready, held by an open decision, or missing a pr link; whether a pull request is merged is known only to close-merged), and the unplanned scope: tickets merged or closed as unplanned (and ad hoc tickets closed with no disposition) with their reasons, those disposed of within --unplanned-within (default 7d) listed and all of them counted. Unplanned scope is information, not a finding to fix. Durations are <n>m, <n>h or <n>d. --check also compares the cache with the event log as rebuild --check does, which briefly pauses writers. Writes nothing and needs no actor. It exits 0 whatever it finds, so read the report (or --json) rather than the exit code. Run it before archiving a change and when choosing what to dispatch.",
     group: 'awareness',
     examples: [
       {
@@ -1363,6 +1624,10 @@ export const COMMANDS: readonly CommandSpec[] = [
       {
         command: 'agentboard health --stale-after 30m --blocked-after 2d',
         summary: 'Flag claims idle for 30 minutes and tickets blocked for 2 days',
+      },
+      {
+        command: 'agentboard health --unplanned-within 30d',
+        summary: 'List the unplanned scope of the last 30 days',
       },
       {
         command: 'agentboard health --check --json',
@@ -1391,6 +1656,11 @@ export const COMMANDS: readonly CommandSpec[] = [
         'blocked-after',
         'string',
         'A ticket is stuck when blocked this long: <n>m, <n>h or <n>d (default 24h)',
+      ),
+      flag(
+        'unplanned-within',
+        'string',
+        'List the unplanned scope disposed of within this long: <n>m, <n>h or <n>d (default 7d); the total counts all of it',
       ),
       flag(
         'check',
@@ -1438,33 +1708,56 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'sync',
-    summary: "Commit new events, pull with rebase from the board's remote and push",
+    summary: "Commit new events, integrate the board's history from its remote and push",
     description:
-      'Shares the board with other clones: commits new event files in the board repository, pulls with rebase from its remote and pushes. Event files never conflict with each other; a problem that needs a human (a conflict, a rebase in progress, a detached HEAD, an unreachable remote) exits 3. Needs no actor.',
+      "Shares the board with other clones: commits new event files (only its own paths, as the fixed identity agentboard <agentboard@localhost>), integrates the board's history from its remote with a rebase and pushes, retrying once when the remote moved in between, then folds the events that arrived. For a board in the host repository (host model) the history is the ref refs/agentboard/board: sync makes it equal to the worktree's HEAD, fetches it from the host's remote into the worktree's own FETCH_HEAD, rebases onto it, pushes HEAD:refs/agentboard/board without force and never creates or moves a branch; the host's git hooks do not run. For a standalone board (.board as a repository of its own) it pulls with rebase and pushes its branch. The remote is chosen in the repository that holds the history: the one named by git config agentboard.remote, else the upstream of the branch (the host's main checkout's branch for the host model), else origin, else the only remote. Event files never conflict with each other; a problem that needs a human (a conflict, a rebase in progress, a standalone board on a detached HEAD, a host-model board worktree on a branch, an unreachable remote) exits 3; a host-model board on a git older than 2.32 exits 1. Needs no actor.",
     group: 'maintenance',
-    examples: [{ command: 'agentboard sync', summary: "Commit, pull and push the board's events" }],
+    examples: [
+      { command: 'agentboard sync', summary: "Commit, integrate and push the board's events" },
+    ],
     exitCodes: [
       EXIT_OK,
       EXIT_USAGE,
       { code: 1, reason: 'git-missing', meaning: 'git could not be run' },
       {
         code: 1,
+        reason: 'git-too-old',
+        meaning: 'The board is in the host repository, which needs git 2.32 or later',
+      },
+      {
+        code: 1,
         reason: 'ambiguous-remote',
-        meaning: 'The board repository has several remotes and no upstream or origin',
+        meaning:
+          'The repository has several remotes and none is agentboard.remote, the upstream or origin',
       },
       EXIT_NO_BOARD,
       {
         code: 2,
         reason: 'board-not-a-repository',
-        meaning: 'The board directory is not the top of its own git repository',
+        meaning: 'The board directory is not the top of its own git repository or worktree',
+      },
+      {
+        code: 2,
+        reason: 'board-link-broken',
+        meaning: 'The board is a worktree whose link to the host repository is broken',
       },
       {
         code: 3,
         reason: 'sync-in-progress',
-        meaning: 'A rebase is in progress in the board repository',
+        meaning: 'A rebase is in progress in the board repository or worktree',
       },
-      { code: 3, reason: 'detached-head', meaning: 'The board repository has a detached HEAD' },
-      { code: 3, reason: 'sync-conflict', meaning: 'The pull stopped on a conflict' },
+      {
+        code: 3,
+        reason: 'detached-head',
+        meaning: 'The standalone board repository has a detached HEAD',
+      },
+      {
+        code: 3,
+        reason: 'board-on-branch',
+        meaning:
+          'The host-model board worktree has a branch checked out instead of a detached HEAD',
+      },
+      { code: 3, reason: 'sync-conflict', meaning: 'The rebase stopped on a conflict' },
       {
         code: 3,
         reason: 'sync-failed',
@@ -1480,6 +1773,39 @@ export const COMMANDS: readonly CommandSpec[] = [
     run: (ctx) => {
       const result = syncBoard(ctx.board(), { env: ctx.env });
       return { json: result, text: `${result.message}\n`, warnings: result.warnings };
+    },
+  },
+  {
+    name: 'remote',
+    summary:
+      'Show how the board is shared: its model, where its history lives and the remote sync uses',
+    description:
+      'Prints how the board is shared: the board directory; its model (host, when the board is a worktree of the host repository with its history under refs/agentboard/board; standalone, when .board is a repository of its own; broken host link; or not a repository); where the history lives; the remote sync would use with its URL and the rule that chose it (agentboard.remote, the upstream of the branch, origin, or the only remote), or that there is none or the choice is ambiguous; and every remote with its URL. A broken link or an ambiguous choice comes with how to fix it (agentboard init, or git config agentboard.remote <name>). It is read-only, never contacts the network and never changes anything, so it is safe to run when something is wrong: it exits 0 whenever a board exists and puts problems in its output. Needs no actor.',
+    group: 'setup',
+    examples: [
+      {
+        command: 'agentboard remote',
+        summary: 'Show the model, the history and the remote sync would use',
+      },
+      {
+        command: 'agentboard remote --json',
+        summary:
+          'The same, as one JSON document with dir, model, gitDir, ref, branch, head, remote, remotes and problems',
+      },
+    ],
+    exitCodes: [
+      { code: 0, meaning: 'The board exists; problems, if any, are in the output' },
+      EXIT_USAGE,
+      EXIT_NO_BOARD,
+    ],
+    positionals: [],
+    flags: [],
+    exclusive: [],
+    writes: false,
+    operation: 'remoteReport',
+    run: (ctx) => {
+      const report = remoteReport(ctx.boardDir(), { env: ctx.env });
+      return { json: report, text: renderRemote(report) };
     },
   },
   {
@@ -1600,7 +1926,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'mcp',
     summary: 'Serve the board as MCP tools over stdio',
     description:
-      'Serves the board as MCP tools over stdio, one tool per board command (not init, watch, serve, top, rebuild, sync, mcp, version, help or the agents commands), for agents that prefer tools to the shell. Runs until the client disconnects or the process gets SIGINT or SIGTERM. --as sets the default actor for tool calls that pass no as of their own, before AGENTBOARD_ACTOR. Nothing but protocol messages is written to stdout. It exits 2 when no board is found from this directory.',
+      'Serves the board as MCP tools over stdio, one tool per board command (not init, watch, serve, top, rebuild, sync, remote, mcp, version, help or the agents commands), for agents that prefer tools to the shell. Runs until the client disconnects or the process gets SIGINT or SIGTERM. --as sets the default actor for tool calls that pass no as of their own, before AGENTBOARD_ACTOR. Nothing but protocol messages is written to stdout. It exits 2 when no board is found from this directory.',
     group: 'setup',
     examples: [
       { command: 'agentboard mcp', summary: 'Serve the board over MCP on stdio' },

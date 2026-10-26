@@ -100,32 +100,32 @@ function foldedRow(board: Board, hash: string): Row {
   return board.db.prepare('SELECT folded, reason FROM folded WHERE hash = ?').get(hash) as Row;
 }
 
-describe('cache schema version 4', () => {
-  it('is 4, with a superseded column on tickets', () => {
-    expect(CACHE_SCHEMA_VERSION).toBe(4);
+describe('cache schema version 5', () => {
+  it('is 5, with a superseded column on tickets', () => {
+    expect(CACHE_SCHEMA_VERSION).toBe(5);
     const board = openB(tempBoard());
     const columns = (board.db.prepare('PRAGMA table_info(tickets)').all() as Row[]).map(
       (c) => c.name,
     );
     expect(columns).toContain('superseded');
     expect(board.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: '4',
+      value: '5',
     });
   });
 
-  it('rebuilds a version 3 cache from the events before the command proceeds', () => {
+  it('rebuilds a version 4 cache from the events before the command proceeds', () => {
     const dir = tempBoard();
     const events = join(dir, 'events');
     seed(events);
     openB(dir).close();
     open.pop();
     const old = new DatabaseSync(join(dir, CACHE_FILE));
-    old.exec("UPDATE meta SET value = '3' WHERE key = 'schema_version'");
+    old.exec("UPDATE meta SET value = '4' WHERE key = 'schema_version'");
     old.exec("UPDATE tickets SET superseded = NULL, checklist = '[]'");
     old.close();
     const board = openB(dir);
     expect(board.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: '4',
+      value: '5',
     });
     expect(readTicket(board.db, T2)?.superseded).toBe('group removed from tasks.md');
     expect(readTicket(board.db, T1)?.checklist).toHaveLength(3);

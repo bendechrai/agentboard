@@ -31,9 +31,13 @@
  *   even when registry commands start with `agents` (`agents install`,
  *   `agents check`), whose help stays reachable as
  *   `help agents install` (see `helpOutput`).
- * - The 150-line cap applies to every output: `help agents` and
- *   `help agents --role <role>` for each role (guide plus checklist), so
- *   the guide itself must leave room for the longest checklist.
+ * - The `GUIDE_MAX_LINES` cap (180 lines) applies to every output: `help
+ *   agents` and `help agents --role <role>` for each role (guide plus
+ *   checklist), so the guide itself must leave room for the longest
+ *   checklist.
+ * - No output names the task-link refusal ADR 0013 removed (the tests
+ *   search `src/` for its reason name) or says that an ad hoc ticket
+ *   cannot enter `implementing`.
  * - `help agents --json` prints `AgentsHelpDocument`.
  *
  * All output is plain ASCII (printable characters and newlines only, no
@@ -52,8 +56,11 @@ export const ROLES = ['orchestrator', 'test-author', 'implementer', 'reviewer'] 
 /** One of `ROLES`. */
 export type Role = (typeof ROLES)[number];
 
-/** The most lines any guide output may have (`help agents`, with or without `--role`). */
-export const GUIDE_MAX_LINES = 150;
+/**
+ * The most lines any guide output may have (`help agents`, with or without
+ * `--role`): board-agent-guidance "Agent guide" says at most 180.
+ */
+export const GUIDE_MAX_LINES = 180;
 
 /**
  * The section headings of the guide, in order. Each appears in the guide
@@ -68,7 +75,9 @@ export const GUIDE_MAX_LINES = 150;
  *    It is not a secret store (text that looks like a secret is refused;
  *    `--allow-secret-like` only for false positives), not the record of
  *    completion (`tasks.md` checkboxes, ticked in the implementing PR,
- *    are), not where decisions live, and not a source of scope.
+ *    are), not where decisions live, and not a source of scope (a ticket
+ *    names its planned task, or discloses that its work was unplanned
+ *    before it is merged or closed; ADR 0013).
  * 2. `The actor rule`: every writing command, and `inbox` and `watch`,
  *    needs an actor, `--as <actor>` or else `AGENTBOARD_ACTOR`; the actor
  *    is never inferred from the OS user (those two words appear); every
@@ -99,13 +108,24 @@ export const GUIDE_MAX_LINES = 150;
  *    `spec delta` and `ADR` appear.
  * 7. `Tickets and planning tasks`: every ticket names its task
  *    (`--task <source>:<ref>#<item>`, or `--change <name> --group <n>` for
- *    OpenSpec, or `--adhoc <reason>`); an ad hoc ticket cannot enter
- *    `implementing` until linked (`needs-task-link`); the OpenSpec flow:
- *    `import-change` after proposing a change (and again when its
- *    `tasks.md` grows), claim the group's ticket before applying, tick
- *    `tasks.md` in the implementing PR (`checklist tick` only reminds),
- *    `close-merged` after merge. Command lines: `new` with `--change` and
- *    `--group`, `link` with `--task`, `import-change` and `claim`.
+ *    OpenSpec, or `--adhoc <reason>`); an ad hoc ticket is worked like any
+ *    other ticket (the words `ad hoc` and `like any other` or `normally`
+ *    appear in one sentence); whoever merges or closes it gives its scope,
+ *    the task it delivers or why it was never planned, with `--task` or
+ *    `--unplanned` on `move <id> merged` or `close` (a command line
+ *    `agentboard move <id> merged --unplanned "<reason>" --as <actor>`; the
+ *    text `--task` appears; `close` takes the same flags); the sentence
+ *    `never create an issue, task file or task reference` only to move a
+ *    ticket appears (ADR 0013; design.md section 9 of
+ *    add-adhoc-ticket-lifecycle). It never says an ad hoc ticket cannot
+ *    enter `implementing` and never names the removed refusal. Then the
+ *    OpenSpec flow: `import-change` after proposing a change (and again
+ *    when its `tasks.md` grows), claim the group's ticket before applying,
+ *    tick `tasks.md` in the implementing PR (`checklist tick` only
+ *    reminds), `close-merged` after merge. Command lines: `new` with
+ *    `--change` and `--group`, `new` with `--adhoc`, `move <id> merged`
+ *    with `--unplanned`, `link` with `--task` (a ticket linked earlier
+ *    needs nothing more at merge), `import-change` and `claim`.
  * 8. `Using the MCP tools`: when the board's MCP server is connected, use
  *    its tools instead of the shell: one tool per command named `board_`
  *    plus the command with spaces and hyphens as underscores (for example
@@ -114,8 +134,8 @@ export const GUIDE_MAX_LINES = 150;
  *    line), defaulting to the server's actor (a command line
  *    `agentboard mcp --as <actor>`), then its `AGENTBOARD_ACTOR`; errors
  *    carry `exitCode`, `reason`, `message` and `hint`; `init`, `watch`,
- *    `serve`, `top`, `rebuild`, `sync`, `mcp`, `version`, `help`, `agents
- *    install` and `agents check` are not tools. It names
+ *    `serve`, `top`, `rebuild`, `sync`, `remote`, `mcp`, `version`, `help`,
+ *    `agents install` and `agents check` are not tools. It names
  *    at least `board_claim`, `board_inbox`, `board_handoff` and
  *    `board_checklist_tick`.
  * 9. `Exit codes and hints`: one line per exit code 0 to 5, each written
@@ -125,8 +145,9 @@ export const GUIDE_MAX_LINES = 150;
  *    found; 3 sync problem that needs a human; 4 rejected by board state,
  *    listing every exit 4 reason the registry declares
  *    (`invalid-transition`, `already-assigned`, `not-assignee`,
- *    `unknown-ticket`, `needs-task-link`, `checklist-index`,
- *    `reconcile-blocked`, `reconcile-ambiguous`); 5 integrity
+ *    `unknown-ticket`, `needs-scope-disposition`, `already-linked`,
+ *    `checklist-index`, `reconcile-blocked`, `reconcile-ambiguous`,
+ *    `unsynced`); 5 integrity
  *    problem or cache busy. Then: every refusal prints a `hint: ` line on
  *    stderr (the `hint` field over MCP) naming what to run next, and a
  *    command line `agentboard help <command>` shows any command's
@@ -186,7 +207,10 @@ export function renderGuide(version: string): string {
  *   what to dispatch and before archiving a change; `agentboard
  *   close-merged` and
  *   `agentboard close` with a decision disposition after merge, promoting
- *   `DECISION:` comments first (the text `DECISION:` appears).
+ *   `DECISION:` comments first (the text `DECISION:` appears); one line
+ *   saying to give the scope disposition of an ad hoc ticket when merging
+ *   or closing it (the words `ad hoc`, `--task` and `--unplanned` appear;
+ *   board-agent-guidance "Agent guide").
  * - `test-author`: claim, move to `tests`, write failing tests and stubs,
  *   hand off to the implementer with `--status implementing`.
  * - `implementer`: claim (or accept the handoff), make the tests pass
@@ -305,6 +329,11 @@ export const GUIDE_SUMMARY_MAX_CHARS = 2000;
  *   `hint`, and the hint names what to do next.
  * - Role checklists: the text `agentboard://guide/<role>` names the
  *   checklist resources, with the four roles.
+ * - It never names the task-link refusal ADR 0013 removed and never says
+ *   an ad hoc ticket cannot enter `implementing`. It need not
+ *   state the ad hoc rule: the guide and the installed text do, and the
+ *   `needs-scope-disposition` hint names both flags when a call is
+ *   refused.
  *
  * Pure.
  */
@@ -342,7 +371,8 @@ const GUIDE_BODY: readonly string[] = [
   '- not the record of completion: the checkboxes in tasks.md, ticked in the',
   '  pull request that does the work, are;',
   '- not where decisions live: they belong in a spec delta or an ADR;',
-  '- not a source of scope: every ticket names the planned task it delivers.',
+  '- not a source of scope: every ticket names the planned task it delivers,',
+  '  or discloses that its work was unplanned before it is merged or closed.',
   '',
   'The actor rule',
   'Every command that writes, and inbox and watch (which keep a cursor per',
@@ -409,8 +439,14 @@ const GUIDE_BODY: readonly string[] = [
   'for openspec:<name>#<n>. Work that is not planned says why with --adhoc:',
   '  agentboard new "<title>" --change <change> --group <n> --as <actor>',
   '  agentboard new "<title>" --adhoc "<reason>" --as <actor>',
-  'An ad hoc ticket cannot enter implementing (exit 4, needs-task-link) until',
-  'it is linked to a task:',
+  'An ad hoc ticket is worked like any other: tests, implementing, review,',
+  'blocking and hand-offs all apply. Whoever merges or closes it gives its',
+  'scope on that command: the task it delivers (--task, or --change with',
+  '--group) or why it was never planned (--unplanned); close takes the same',
+  'flags. Without one the command exits 4 with needs-scope-disposition:',
+  '  agentboard move <id> merged --unplanned "<reason>" --as <actor>',
+  'Never create an issue, task file or task reference only to move a ticket.',
+  'A ticket linked earlier needs nothing more at merge or close:',
   '  agentboard link <id> --task <source>:<ref>#<item> --as <actor>',
   'The OpenSpec flow: after a change is proposed, import it, which creates one',
   'ticket per task group; run it again whenever its tasks.md gains lines (no',
@@ -435,16 +471,16 @@ const GUIDE_BODY: readonly string[] = [
   "server's own actor, set when it was started as",
   '  agentboard mcp --as <actor>',
   "and then the server's AGENTBOARD_ACTOR. A failed call returns exitCode,",
-  'reason, message and hint. init, watch, serve, top, rebuild, sync, mcp,',
-  'version, help, agents install and agents check are not tools; run those',
-  'in a shell.',
+  'reason, message and hint. init, watch, serve, top, rebuild, sync, remote,',
+  'mcp, version, help, agents install and agents check are not tools; run',
+  'those in a shell.',
   '',
   'Exit codes and hints',
   '  0  success',
   '  1  usage error, missing actor, refused text or close disposition, or rebuild --check found a difference',
   '  2  board not found or unreadable',
   '  3  sync problem that needs a human',
-  '  4  rejected by board state: invalid-transition, already-assigned, not-assignee, unknown-ticket, duplicate-create, needs-task-link, checklist-index, reconcile-blocked, reconcile-ambiguous',
+  '  4  rejected by board state: invalid-transition, already-assigned, not-assignee, unknown-ticket, duplicate-create, needs-scope-disposition, already-linked, checklist-index, reconcile-blocked, reconcile-ambiguous, unsynced (init --into-host on a board with events not committed or not pushed)',
   '  5  event log or cache integrity problem, or the cache is busy',
   'Every refusal also prints a line starting with hint: on stderr (the hint',
   'field over MCP) naming what to run next. For the arguments of a command:',
@@ -506,8 +542,11 @@ const CHECKLISTS: Readonly<Record<Role, readonly string[]>> = {
     '  agentboard health',
     '6. After a pull request merges, move its ticket to merged. Promote every',
     '   DECISION: comment to a spec delta or ADR first, then close the ticket,',
-    '   with close-merged (for tickets with a pr link) or by hand:',
+    '   with close-merged (for tickets with a pr link) or by hand.',
+    '   An ad hoc ticket takes --task <source>:<ref>#<item> or --unplanned',
+    '   "<reason>" on that move or close; never invent a reference for it:',
     '  agentboard move <id> merged --as <actor>',
+    '  agentboard move <id> merged --unplanned "<reason>" --as <actor>',
     '  agentboard close-merged --as <actor>',
     '  agentboard close <id> --decision-recorded-in <path> --as <actor>',
   ],

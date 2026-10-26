@@ -38,8 +38,13 @@ import { asciiText } from './text.js';
  *   `openspec:a/b#1`), `path` and `line` are null and the message is
  *   exactly `no tasks-file reminder is available: <ref> does not name a
  *   tasks file of source <source>` (both through `asciiText`); the tick
- *   itself has already succeeded. For an ad hoc ticket it says the ticket
- *   has no task reference, so there is no tasks file.
+ *   itself has already succeeded. For an ad hoc ticket (`task` null,
+ *   whether or not `unplanned` is set) it says the ticket has no task
+ *   reference, so there is no tasks file, and that its task link or
+ *   unplanned disposition is given when it is merged or closed, naming
+ *   `--task` and `--unplanned` (add-adhoc-ticket-lifecycle design.md
+ *   section 9; ADR 0013). It never names the task-link refusal that ADR
+ *   removed.
  */
 export interface TaskReminder {
   source: string | null;
@@ -66,7 +71,10 @@ export function taskReminder(hostRoot: string, ticket: Ticket, index: number): T
       source: null,
       path: null,
       line: null,
-      message: 'this ticket has no task reference (ad hoc), so there is no tasks file to update',
+      message:
+        'this ticket has no task reference (ad hoc), so there is no tasks file to update; ' +
+        'its task link or unplanned disposition (--task or --unplanned) is given when it is ' +
+        'merged or closed',
     };
   }
   const adapter = sourceAdapter(task.source);

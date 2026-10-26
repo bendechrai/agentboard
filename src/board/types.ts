@@ -26,10 +26,16 @@ export type WriteOptions = CommandOptions;
  *   `null` when the operation succeeded without writing an event (the only
  *   such case is a `claim` retried by the actor that already
  *   holds the ticket).
+ * - `events`: the hashes of every event the operation wrote, in write
+ *   order: `[hash]` for a single-event command, `[]` when `hash` is null,
+ *   and the disposition's hash followed by the move's or close's for a
+ *   `move merged` or `close` given a scope disposition (board-cache: "One
+ *   command, one transaction"); `hash` is always the last entry.
  * - `ticket`: the ticket after the operation, exactly as `readTicket`
  *   returns it (the folded `Ticket`, timestamps as `Hlc` objects).
  */
 export interface WriteOutcome {
   hash: string | null;
+  events: string[];
   ticket: Ticket;
 }

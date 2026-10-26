@@ -5,12 +5,20 @@
  * repository on local disk.
  */
 
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
 import { git, gitRepo, tempDir } from '../../board/__tests__/helpers.js';
+import {
+  commitHostEvent,
+  hostBoard,
+  refs,
+  snapshotDir,
+  standaloneBoard,
+  worktrees,
+} from '../../board/__tests__/sharing-helpers.js';
 import {
   bareRemote,
   cloneMachine,
@@ -21,6 +29,7 @@ import {
   treeEvents,
   unmerged,
 } from '../../board/__tests__/sync-helpers.js';
+import { P, T1, ev } from '../../store/__tests__/helpers.js';
 import { oneJson, spawnCli, written, type Run } from './cli-helpers.js';
 
 // Every test spawns the CLI and git several times; keep well clear of the 5 s default.
@@ -74,8 +83,11 @@ describe('agentboard sync (built CLI)', () => {
         'dir',
         'hostTracked',
         'message',
+        'model',
         'pulled',
         'pushed',
+        'ref',
+        'refCommit',
         'refolded',
         'remote',
         'upstreamSet',
@@ -85,6 +97,10 @@ describe('agentboard sync (built CLI)', () => {
     expect(doc).toMatchObject({
       commit: revParse(dir),
       committedEvents: 1,
+      model: 'standalone',
+      ref: null,
+      refCommit: null,
+      branch: 'main',
       remote: null,
       pulled: false,
       pushed: false,
@@ -188,7 +204,7 @@ describe('agentboard sync (built CLI)', () => {
     writeFileSync(join(host, '.board', 'notes.txt'), 'tracked by mistake\n');
     git(host, 'add', '.board/notes.txt');
     git(host, 'commit', '-q', '-m', 'track board by mistake');
-    expect(spawnCli(['init'], host, env).code).toBe(0);
+    standaloneBoard(host);
     newTicket(host, env, 'one');
 
     const out = sync(host, env);
@@ -204,5 +220,43 @@ describe('agentboard sync (built CLI)', () => {
     expect(json.code).toBe(0);
     expect(json.stderr).toContain('.board/notes.txt');
     expect(oneJson(json)).toMatchObject({ hostTracked: ['.board/notes.txt'] });
+  });
+});
+
+describe('agentboard sync on a broken host link (built CLI; board-events "Board model detection")', () => {
+  it('scenario: a stale host-model board copied into a fresh clone exits 2 board-link-broken, changing nothing', () => {
+    const env = syncEnv();
+    const remote = bareRemote();
+    const a = hostBoard(env);
+    git(a.root, 'remote', 'add', 'origin', remote);
+    git(a.root, 'push', '-q', 'origin', 'main');
+    commitHostEvent(a.dir, ev(P.create(T1, 'Stale'), 'orch', 1000), env);
+    const cRoot = join(tempDir(), 'clone-c');
+    git(tempDir(), 'clone', '-q', remote, cRoot);
+    const cDir = join(cRoot, '.board');
+    cpSync(a.dir, cDir, { recursive: true });
+    const snapshot = (): unknown[] => [
+      refs(a.root),
+      worktrees(a.root),
+      snapshotDir(a.dir),
+      refs(cRoot),
+      worktrees(cRoot),
+      snapshotDir(cDir),
+    ];
+    const before = snapshot();
+
+    const out = sync(cRoot, env);
+    expect(out.code).toBe(2);
+    expect(out.stdout).toBe('');
+    expect(out.stderr).toContain(cDir);
+    expect(out.stderr).toContain('agentboard init');
+    expect(out.stderr).toMatch(/^hint: /m);
+
+    const json = sync(cRoot, env, true);
+    expect(json.code).toBe(2);
+    expect(oneJson(json)).toMatchObject({ error: { exitCode: 2, reason: 'board-link-broken' } });
+    expect(snapshot()).toEqual(before);
+    expect(git(cRoot, 'for-each-ref', 'refs/agentboard/')).toBe('');
+    expect(git(cRoot, 'status', '--porcelain')).toBe('');
   });
 });

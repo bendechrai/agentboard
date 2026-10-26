@@ -6,12 +6,13 @@
  */
 
 import { ImportRefusedError, type ImportResult } from '../board/import.js';
+import { MoveSyncFailure } from '../board/into-host.js';
 import { openBoard, type Board } from '../store/board.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
 import type { WriteHooks } from '../store/eventfile.js';
 import { pauseHooks } from '../store/transaction.js';
 import { findBoard } from '../store/locate.js';
-import { hintFor, type HintContext } from '../guidance/hints.js';
+import { closeDecisionOf, hintFor, type HintContext } from '../guidance/hints.js';
 import { ACTOR_ENV, parseArgs, resolveActor, type ParsedCommand } from './parse.js';
 import { COMMANDS } from './registry.js';
 import type { TerminalIo } from '../tui/terminal.js';
@@ -78,6 +79,13 @@ export interface ErrorDocument {
      * candidates for an ambiguous one. Absent for every other error.
      */
     result?: ImportResult;
+    /**
+     * The kept old repository of a completed `init --into-host` whose
+     * final `sync` failed (`MoveSyncFailure` in `src/board/into-host.ts`),
+     * and the old remote's URL; present exactly when the error is one.
+     */
+    keptAt?: string | null;
+    oldRemoteUrl?: string | null;
   };
 }
 
@@ -94,17 +102,23 @@ export function exitCodeFor(error: unknown): Exclude<ExitCode, 0> {
  * `BoardError` reason (null for other errors), the error message and
  * `hintFor(error, context)`. `context` defaults to
  * `{ surface: 'cli', command: null }` (placeholders for the id and actor).
- * An `ImportRefusedError` adds its `result`. Pure.
+ * A `MoveSyncFailure` adds its `keptAt` and `oldRemoteUrl`, and an
+ * `ImportRefusedError` its `result`. Pure.
  */
 export function errorDocument(error: unknown, context?: HintContext): ErrorDocument {
+  const base: ErrorDocument['error'] = {
+    exitCode: exitCodeFor(error),
+    reason: error instanceof BoardError ? error.reason : null,
+    message: error instanceof Error ? error.message : String(error),
+    hint: hintFor(error, context ?? { surface: 'cli', command: null }),
+  };
   return {
-    error: {
-      exitCode: exitCodeFor(error),
-      reason: error instanceof BoardError ? error.reason : null,
-      message: error instanceof Error ? error.message : String(error),
-      hint: hintFor(error, context ?? { surface: 'cli', command: null }),
-      ...(error instanceof ImportRefusedError ? { result: error.result } : {}),
-    },
+    error:
+      error instanceof MoveSyncFailure
+        ? { ...base, keptAt: error.keptAt, oldRemoteUrl: error.oldRemoteUrl }
+        : error instanceof ImportRefusedError
+          ? { ...base, result: error.result }
+          : base,
   };
 }
 
@@ -299,11 +313,14 @@ function cliHintContext(io: CliIo, parsed: ParsedCommand | null): HintContext {
   if (parsed !== null) {
     const id = nonEmpty(parsed.values.id);
     const actor = nonEmpty(parsed.values.as) ?? fromEnv;
+    const closeDecision =
+      parsed.command.name === 'close' ? closeDecisionOf(parsed.values) : undefined;
     return {
       surface: 'cli',
       command: parsed.command.name,
       ...(id === undefined ? {} : { id }),
       ...(actor === undefined ? {} : { actor }),
+      ...(closeDecision === undefined ? {} : { closeDecision }),
     };
   }
   const actor = argvActor(io.argv) ?? fromEnv;

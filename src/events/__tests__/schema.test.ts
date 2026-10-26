@@ -114,7 +114,7 @@ describe('constants', () => {
     expect([...STATUSES]).toEqual(['todo', 'tests', 'implementing', 'review', 'merged', 'blocked']);
   });
 
-  it('lists the twenty known kinds', () => {
+  it('lists the twenty-one known kinds', () => {
     expect([...KNOWN_KINDS].sort()).toEqual(
       [
         'board.meta',
@@ -137,6 +137,7 @@ describe('constants', () => {
         'ticket.renew',
         'ticket.renumber',
         'ticket.supersede',
+        'ticket.unplanned',
       ].sort(),
     );
   });
@@ -239,6 +240,7 @@ describe('validateEvent: well-formed events of every kind', () => {
     ['ticket.link decision', ev('ticket.link', { decision: 'docs/adr/0002-x.md' })],
     ['ticket.close decision', ev('ticket.close', { decision: 'docs/adr/0002-x.md' })],
     ['ticket.close noDecision', ev('ticket.close', { noDecision: true })],
+    ['ticket.unplanned', ev('ticket.unplanned', { reason: 'production hotfix, no plan' })],
     ['ticket.checklist', ev('ticket.checklist', { index: 0, done: true })],
     ['ticket.checklist negative index', ev('ticket.checklist', { index: -1, done: false })],
     [
@@ -324,6 +326,7 @@ describe('validateEvent: unknown kinds', () => {
       ['ticket.handoff', { to: 'a', status: 'tests', note: 'n' }],
       ['ticket.link', { pr: 1 }],
       ['ticket.close', { noDecision: true }],
+      ['ticket.unplanned', { reason: 'hotfix' }],
       ['ticket.checklist', { index: 0, done: true }],
       ['ticket.checklist.add', { items: [{ text: 'a', done: false }] }],
       ['ticket.renew', { ttl: 60_000, expiresAt: 61_000 }],
@@ -660,6 +663,21 @@ describe('validateEvent: malformed bodies, one per required field and rule', () 
       'checklist.add: extra body field',
       ev('ticket.checklist.add', { items: [{ text: 'a', done: false }], at: 0 }),
       'body.at',
+    ],
+    // ticket.unplanned (board-events: "Unplanned body is checked")
+    ['unplanned: missing reason', ev('ticket.unplanned', {}), 'body.reason'],
+    ['unplanned: empty reason', ev('ticket.unplanned', { reason: '' }), 'body.reason'],
+    ['unplanned: reason not a string', ev('ticket.unplanned', { reason: 7 }), 'body.reason'],
+    ['unplanned: reason null', ev('ticket.unplanned', { reason: null }), 'body.reason'],
+    [
+      'unplanned: extra body field',
+      ev('ticket.unplanned', { reason: 'hotfix', task: TASK }),
+      'body.task',
+    ],
+    [
+      'unplanned: a second unknown field',
+      ev('ticket.unplanned', { reason: 'hotfix', actor: 'orch' }),
+      'body.actor',
     ],
     // board.meta
     ['meta: missing key', withBody('board.meta', meta, {}, ['key']), 'body.key'],

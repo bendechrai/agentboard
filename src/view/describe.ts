@@ -58,6 +58,9 @@ function describeClose(body: TicketCloseBody): string {
  *   in text form, as `formatTaskRef`), `linked pr <pr>` (a PR number in
  *   decimal, or the string as given) or `linked decision <path>`
  * - `ticket.close`: `closed (decision <path>)` or `closed (no decision)`
+ * - `ticket.unplanned`: `recorded as unplanned: <reason>` (ADR 0013;
+ *   board-view-model: "Activity feed entries", scenario "Unplanned
+ *   summary"), the reason on one line like every other text
  * - `ticket.checklist`: `checked <n>` when `done` is true, `unchecked <n>`
  *   otherwise, where `<n>` is the 1-based line number (`index + 1`)
  * - `ticket.checklist.add`: `added <k> checklist line(s)`, with `<k>` the
@@ -113,6 +116,8 @@ export function describeEvent(event: BoardEvent | UnknownKindEvent): string {
       return `renumbered from group ${oneLine(event.body.from)} to ${oneLine(event.body.to)}`;
     case 'ticket.supersede':
       return `superseded: ${oneLine(event.body.reason)}`;
+    case 'ticket.unplanned':
+      return `recorded as unplanned: ${oneLine(event.body.reason)}`;
     case 'ticket.renew':
     case 'ticket.release.force':
     case 'ticket.queue.join':

@@ -33,8 +33,47 @@ tested and documented in README.md.
 - **Insights** (`board-insights`): `agentboard health`, the
   `board_health` MCP tool, and the Health, Replay and Graph views of the
   web app.
+- **Board sharing** (`board-cli`, `board-concurrency`): in a git project
+  the board's history lives in the host repository under the hidden ref
+  `refs/agentboard/board`, with `.board/` as a locked worktree, so a
+  second clone joins with `agentboard init` alone; `sync` fetches, rebases
+  and pushes that ref; `init --remote <url>` keeps a board in a separate
+  repository; `init --into-host` moves an existing standalone board in
+  with its history, refusing whenever an event could be lost and resuming
+  after an interruption; `agentboard remote` shows how a board is shared.
+  The host model needs git 2.32 or later, checked by `make
+  check-git-floor`, and the walkthrough
+  `src/__tests__/walkthroughs/board-sharing.sh` runs the README examples
+  end to end. ADR 0012. Archived as
+  `openspec/changes/archive/2026-10-17-add-board-sharing`.
+- **Ad hoc ticket lifecycle** (`board-openspec-integration`,
+  `board-events`, `board-cache`, `board-cli`, `board-insights`,
+  `board-view-model`, `board-web-actions`, `board-agent-guidance`): an
+  ad hoc ticket moves
+  through every status like any other; moving it to `merged` or closing
+  it needs a scope disposition on the same command (`--task <ref>`, or
+  `--unplanned <reason>`, recorded as a `ticket.unplanned` event before
+  the move or close in one transaction), refused otherwise with
+  `needs-scope-disposition` (and `--unplanned` on a linked ticket with
+  `already-linked`). `health`, `board_health` and the web Health view
+  list unplanned scope as information (`--unplanned-within`, default 7
+  days); `list`, `show` and the web cards mark it `[unplanned]`. The
+  walkthrough `src/__tests__/walkthroughs/adhoc-lifecycle.sh` runs the
+  README example end to end. ADR 0013 (amends ADR 0004). Archived as
+  `openspec/changes/archive/2026-10-17-add-adhoc-ticket-lifecycle`.
+- **Markdown descriptions** (`board-web`): the ticket detail view of the
+  web app renders a ticket's description as Markdown (CommonMark plus GFM
+  tables, task lists, strikethrough and autolink literals), parsed to a
+  syntax tree and rendered into elements from an allow-list, never as an
+  HTML string, with a guard test over the client source; links only for
+  absolute `http:`, `https:` and `mailto:` URLs, opened in a new tab with
+  no opener and no referrer; images never loaded, shown as links labelled
+  with the alt text; nesting deeper than 32 levels and descriptions
+  longer than 16384 characters fall back to text. ADR 0015 (amends ADR
+  0006). Archived as
+  `openspec/changes/archive/2026-10-26-add-description-markdown`.
 
-Released as `@bendechrai/agentboard` 0.1.0 on npm (tag `v0.1.0`), with the
+Released as `@bendechrai/agentboard` 0.2.0 on npm (tag `v0.2.0`), with the
 landing site in `docs/` served at https://bendechrai.github.io/agentboard/.
 Later releases are staged by `.github/workflows/release.yml` (see
 CONTRIBUTING.md, "Releasing").
@@ -45,17 +84,33 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
 
 ## What is next
 
-1. `add-description-markdown` (proposed, in `openspec/changes/`): render a
-   ticket's description as Markdown in the web app, into elements only,
-   never HTML.
-2. `add-claim-leases` (proposed, in `openspec/changes/`): grace leases
-   confirmed by `renew` (`claim --ttl`), takeover of a lapsed lease, a
-   fair waiting queue (`claim --wait`), an audited `release --force
-   --reason`, board settings (`config`), mutex ticket guidance, and
-   reconciling tickets when `import-change` is re-run. Groups 1 to 5 are
+1. `add-claim-leases` (in progress, in `openspec/changes/`): grace
+   leases confirmed by `renew` (`claim --ttl`), takeover of a lapsed
+   lease, a fair waiting queue (`claim --wait`), an audited `release
+   --force --reason`, board settings (`config`), mutex ticket guidance,
+   and reconciling tickets when `import-change` is re-run. Groups 1
+   (lease, queue and grant fold, PR #69) and 2 (grant materialisation in
+   catch-up, PR #70) are merged, so the fold and the cache already carry
+   leases, queues and grants, with nothing on the command line yet.
+   Group 8 (re-import reconciliation) is approved by both reviewers in
+   PR #72 but conflicts with `staging` and needs a rebase before it
+   merges. Groups 3 to 7 are not started. Groups 1 to 5 are
    concurrency-critical, so they get a second reviewer (see
    CONTRIBUTING.md, "Three roles per task group").
 
 ## Known gaps
 
-None open.
+- `add-claim-leases` was re-synced with the main specs when the ad hoc
+  ticket lifecycle was archived (its tasks.md says which requirements):
+  its guidance group takes `GUIDANCE_VERSION` 3 and its ADR is 0014. Its
+  "Agent guide" keeps the 180-line limit the lifecycle set, which the
+  mutex recipe must now fit beside the ad hoc text (the orchestrator
+  output is 159 lines today).
+- The draft branch `openspec/add-harness-integration` (not merged)
+  predates both archives: before it is proposed it re-syncs board-cli
+  "Command surface", "Exit codes" and "MCP server" and board-agent-guidance
+  "Installing guidance into a host project" (six rules, guidance version
+  2) and "Checking installed guidance" with the main specs, keeping
+  `remote`, `init --remote | --into-host` and the scope disposition
+  flags, and takes the next free `GUIDANCE_VERSION` and ADR number after
+  `add-claim-leases`.

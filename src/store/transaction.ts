@@ -8,8 +8,8 @@ import { writeSync } from 'node:fs';
 
 import { canonicalHash } from '../events/canonical.js';
 import type { ApplyOutcome, BoardState, FoldInput, Ticket } from '../events/fold.js';
-import { nextHlc } from '../events/hlc.js';
-import { validateEvent, type BoardEvent } from '../events/schema.js';
+import { nextHlc, type Hlc } from '../events/hlc.js';
+import { formatTaskRef, validateEvent, type BoardEvent, type TaskRef } from '../events/schema.js';
 import type { Board } from './board.js';
 import { readState, readTicket, type CatchUpReport } from './cache.js';
 import {
@@ -34,7 +34,19 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
 export type ProposedEvent = DistributiveOmit<BoardEvent, 'v' | 'actor' | 'ts'>;
 
 /**
- * An operation's answer: the event to write, or a refusal.
+ * An ordered list of one or two events an operation asks to write in one
+ * transaction (board-cache: "One command, one transaction"): for a `move
+ * merged` or `close` given a scope disposition, the `ticket.unplanned` or
+ * `ticket.link` first and then the `ticket.move` or `ticket.close`. The
+ * tuple type is the whole contract on length: there is no runtime check
+ * for a longer list.
+ */
+export type ProposedEvents = readonly [ProposedEvent] | readonly [ProposedEvent, ProposedEvent];
+
+/**
+ * An operation's answer: the event to write, an ordered list of one or two
+ * events to write together (`events`; a one-element list behaves exactly
+ * as `event`), or a refusal.
  *
  * A refusal carries the exit code class (1 usage, 4 rejected by board
  * state, 5 integrity), a reason token (for exit 4, a fold rejection reason
@@ -43,6 +55,7 @@ export type ProposedEvent = DistributiveOmit<BoardEvent, 'v' | 'actor' | 'ts'>;
  */
 export type Decision =
   | { ok: true; event: ProposedEvent }
+  | { ok: true; events: ProposedEvents }
   | { ok: false; exitCode: 1 | 4 | 5; reason: string; message: string };
 
 /**
@@ -77,17 +90,35 @@ export interface CommandOptions {
   env?: Readonly<Record<string, string | undefined>>;
 }
 
-/** Result of a successful `runCommand`. */
-export interface CommandResult {
+/** One event file a command wrote. */
+export interface WrittenEvent {
   /** Hash (file name without `.json`) of the written event. */
   hash: string;
   /** Absolute path of the written event file. */
   path: string;
   /** The event as written: `canonicalEncode(event)` is the file's bytes. */
   event: BoardEvent;
+}
+
+/**
+ * Result of a successful `runCommand`. `hash`, `path` and `event` describe
+ * the last event written (the only one for a single-event command), so a
+ * caller that knows nothing of two-event commands keeps working; `events`
+ * lists every event written, in write order (one or two entries, the last
+ * equal to `hash`, `path` and `event`).
+ */
+export interface CommandResult {
+  /** Hash (file name without `.json`) of the last written event. */
+  hash: string;
+  /** Absolute path of the last written event file. */
+  path: string;
+  /** The last event as written: `canonicalEncode(event)` is the file's bytes. */
+  event: BoardEvent;
+  /** Every event written by this command, in write order. */
+  events: WrittenEvent[];
   /**
-   * The event's ticket after the event was applied (`readTicket`), or null
-   * for `board.meta`.
+   * The last event's ticket after every event was applied (`readTicket`),
+   * or null for `board.meta`.
    */
   ticket: Ticket | null;
   /** Report of the catch-up run at the start of the transaction. */
@@ -133,6 +164,30 @@ export interface CommandResult {
  *    applied, and updates `last_position`.
  * 7. Commits.
  *
+ * Two events (board-cache: "One command, one transaction"; design.md
+ * section 4). When the operation answers with `events` of length two, steps
+ * 3 to 6 run for each in order against one fold session: the first event
+ * gets `nextHlc(latest, t, actor)` and the second `nextHlc(<first ts>, t,
+ * actor)` (the same `t`: `now` is still called exactly once), so the
+ * second always sorts after the first; each is validated by `validateEvent`
+ * and then folded in memory against the state the earlier one leaves. A
+ * malformed event (either one) is `BoardError(1, 'malformed-event')`; a
+ * fold rejection of either is `BoardError(4, <that event's reason>)`, for
+ * example `already-linked` from a `ticket.unplanned` on a linked ticket
+ * before the move is even looked at, or `invalid-transition` from the
+ * close of a ticket in `implementing` after its `ticket.link` was accepted
+ * in memory. Any refusal refuses the whole command: no file of either event
+ * is written, not even a temporary one, and no row changes (board-cache:
+ * "Second event refused"). Only once both are accepted are the files
+ * written, first then second, each with `writeEventFile` and the `existed`
+ * check of step 5; then the rows of both are applied, both are recorded in
+ * `folded`, `last_position` is the second, and one commit follows. A crash
+ * after the first rename and before the second leaves the disposition
+ * without its move or close, which the next catch-up folds as a valid
+ * state (board-cache: "Crash between the disposition and the move"); the
+ * reverse cannot happen. `CommandResult.events` lists both, and `hash`,
+ * `path` and `event` are the second's.
+ *
  * If steps 2 to 4 refuse, the command's own event is never written (no file,
  * not even a temporary one, and no row of its own), and the transaction is
  * committed with only what step 1 did: a grant catch-up wrote is a derived
@@ -177,42 +232,76 @@ export function runCommand(
       }
       throw error;
     }
-    const { event, input, session, outcome } = decided;
+    const { session, events: accepted } = decided;
 
-    // 5. Write the event file (atomic), then 6. apply to rows and 7. commit.
-    const written = writeEventFile(board.eventsDir, event, hooks);
-    if (written.existed) {
-      // Catch-up recorded every file and ts sorts after all of them, so the
-      // file can only have been dropped out of band since: never fold it here.
-      throw new BoardError(
-        5,
-        'integrity',
-        `event file ${written.path} appeared while the command ran; nothing was written`,
-      );
+    // 5. Write the event files (atomic), in order. Every event was accepted
+    // in memory before the first file is written, so a refusal never
+    // leaves a file behind.
+    const write = (event: BoardEvent, before: readonly WrittenEvent[]): WrittenEvent => {
+      const written = writeEventFile(board.eventsDir, event, hooks);
+      if (written.existed) {
+        // Catch-up recorded every file and ts sorts after all of them, so the
+        // file can only have been dropped out of band since: never fold it here.
+        // An earlier event of the same command is already on disk and is folded
+        // by the next catch-up, so the message names it.
+        const left =
+          before.length === 0
+            ? 'nothing was written'
+            : `${before.map((w) => w.path).join(', ')} was written and is folded by the next command`;
+        throw new BoardError(
+          5,
+          'integrity',
+          `event file ${written.path} appeared while the command ran; ${left}`,
+        );
+      }
+      return { hash: written.hash, path: written.path, event };
+    };
+    const [firstAccepted, ...moreAccepted] = accepted;
+    let last = write(firstAccepted.event, []);
+    const events = [last];
+    for (const next of moreAccepted) {
+      last = write(next.event, events);
+      events.push(last);
     }
-    commitOwnEvent(db, session, input, outcome);
-    const ticket = event.kind === 'board.meta' ? null : readTicket(db, event.ticket);
+
+    // 6. Apply to rows (the session holds the state after every event; the
+    // first flush writes it and each event is recorded in turn, so the last
+    // position is the last event's), then 7. commit.
+    for (const { input, outcome } of accepted) {
+      commitOwnEvent(db, session, input, outcome);
+    }
+    const ticket = last.event.kind === 'board.meta' ? null : readTicket(db, last.event.ticket);
     db.exec('COMMIT');
-    return { hash: written.hash, path: written.path, event, ticket, catchUp };
+    return { hash: last.hash, path: last.path, event: last.event, events, ticket, catchUp };
   } catch (error) {
     rollback(db);
     throw error;
   }
 }
 
-/** The command's event, validated and applied in memory by steps 2 to 4. */
-interface Decided {
+/** One of the command's events, validated and applied in memory by steps 3 and 4. */
+interface Accepted {
   event: BoardEvent;
   input: FoldInput;
-  session: FoldSession;
   outcome: ApplyOutcome;
 }
 
 /**
+ * The command's events in write order, validated and applied in memory by
+ * steps 2 to 4 against one fold session.
+ */
+interface Decided {
+  session: FoldSession;
+  events: readonly [Accepted, ...Accepted[]];
+}
+
+/**
  * Steps 2 to 4 of `runCommand`: the operation decides against the
- * caught-up state, the event is built later than every folded event and
- * validated with the fold's own rules. Writes nothing (the fold session
- * only applies the event in memory); a refusal is a `BoardError`.
+ * caught-up state, then each proposed event in order is built later than
+ * every folded event and than the one before it, and validated with the
+ * fold's own rules against the state the earlier events leave. Writes
+ * nothing (the fold session only applies the events in memory); a refusal
+ * of any event is a `BoardError`.
  */
 function decide(board: Board, actor: string, operation: Operation, t: number): Decided {
   const { db } = board;
@@ -224,10 +313,26 @@ function decide(board: Board, actor: string, operation: Operation, t: number): D
   if (!decision.ok) {
     throw new BoardError(decision.exitCode, decision.reason, decision.message);
   }
+  const proposed: ProposedEvents = 'events' in decision ? decision.events : [decision.event];
+  const [firstProposed, ...moreProposed] = proposed;
+  const session = new FoldSession(db);
+  let ts = nextHlc(readLastPosition(db)?.ts ?? null, t, actor);
+  const first = accept(session, build(firstProposed, actor, ts));
+  const more: Accepted[] = [];
+  for (const next of moreProposed) {
+    ts = nextHlc(ts, t, actor);
+    more.push(accept(session, build(next, actor, ts)));
+  }
+  return { session, events: [first, ...more] };
+}
 
-  // 3. Build the event, later than every folded event.
-  const ts = nextHlc(readLastPosition(db)?.ts ?? null, t, actor);
-  const built = { v: 1, ...decision.event, actor, ts };
+/**
+ * Step 3: the full event of a proposed one, with `v` 1, the actor and
+ * `ts`, or `BoardError(1, 'malformed-event')` naming the offending fields
+ * or the unknown kind.
+ */
+function build(proposed: ProposedEvent, actor: string, ts: Hlc): BoardEvent {
+  const built = { v: 1, ...proposed, actor, ts };
   const validated = validateEvent(built);
   if (!validated.ok) {
     const fields = validated.reasons.map((r) => `${r.field}: ${r.message}`).join('; ');
@@ -236,22 +341,41 @@ function decide(board: Board, actor: string, operation: Operation, t: number): D
   if (!validated.known) {
     throw new BoardError(1, 'malformed-event', `unknown event kind ${built.kind}`);
   }
-  const event = validated.event;
+  return validated.event;
+}
 
-  // 4. Validate against the current state with the fold's own rules.
+/**
+ * The message of a `BoardError(4, 'already-linked')`: the fold's refusal of
+ * `kind` (a `ticket.unplanned`) on `ticket`, naming the task reference
+ * `task` it already has. Shared with `closeTicket` (`src/board/actions.ts`),
+ * which raises the same refusal before its decision guard.
+ */
+export function alreadyLinkedMessage(kind: string, ticket: string, task: TaskRef): string {
+  return `${kind} on ticket ${ticket} refused: already-linked (it is linked to ${formatTaskRef(task)})`;
+}
+
+/**
+ * Step 4: applies `event` to `session` in memory with the fold's own rules,
+ * or throws `BoardError(4, <fold rejection reason>)`; the message of
+ * `already-assigned` names the current assignee and that of
+ * `already-linked` the task reference the ticket already has.
+ */
+function accept(session: FoldSession, event: BoardEvent): Accepted {
   const input = { hash: canonicalHash(event), event };
-  const session = new FoldSession(db);
-  const holder = event.kind === 'board.meta' ? null : session.ticket(event.ticket)?.assignee;
+  const before = event.kind === 'board.meta' ? null : session.ticket(event.ticket);
   const outcome = session.apply(input);
   if (outcome.status === 'rejected') {
     const { reason, ticket, kind } = outcome.rejected;
+    const task = before?.task ?? null;
     const message =
       reason === 'already-assigned'
-        ? `ticket ${ticket} is already assigned to ${String(holder)}`
-        : `${kind} on ticket ${ticket} refused: ${reason}`;
+        ? `ticket ${ticket} is already assigned to ${String(before?.assignee)}`
+        : reason === 'already-linked' && task !== null
+          ? alreadyLinkedMessage(kind, ticket, task)
+          : `${kind} on ticket ${ticket} refused: ${reason}`;
     throw new BoardError(4, reason, message);
   }
-  return { event, input, session, outcome };
+  return { event, input, outcome };
 }
 
 /**

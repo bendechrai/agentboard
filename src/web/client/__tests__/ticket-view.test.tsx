@@ -130,7 +130,12 @@ describe('ticket detail', () => {
     expect(field('Task')).toBe('openspec:add-board-web#1');
     expect(field('Labels')).toBe('auth, backend');
     expect(field('Created by')).toBe('orch');
-    expect(field('Description')).toBe('Store sessions server side');
+    // The description is a section of its own after the fields (board-web:
+    // "Description rendered as Markdown"), not a field.
+    expect(field('Description')).toBeNull();
+    expect(detail().querySelector('section.description p')?.textContent).toBe(
+      'Store sessions server side',
+    );
   });
 
   it('shows the checklist, the links and the disposition', async () => {
@@ -209,6 +214,7 @@ describe('ticket detail', () => {
     expect(field('Assignee')).toBe('none');
     expect(field('Blocked from')).toBeNull();
     expect(field('Description')).toBeNull();
+    expect(detail().querySelector('section.description')).toBeNull();
     expect(detail().querySelector('.disposition')).toBeNull();
     expect(all(detail(), 'ul.checklist li')).toEqual([]);
   });

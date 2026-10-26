@@ -1,11 +1,16 @@
 /**
  * The installed guidance text (board-agent-guidance: "Installing guidance
  * into a host project"; add-agent-guidance design.md: "Installed text is a
- * pointer, not a copy"): the skill frontmatter and marker, the five rules
+ * pointer, not a copy"): the skill frontmatter and marker, the six rules
  * and the pointer to `agentboard help agents` in both the skill and the
  * AGENTS.md block, the OpenSpec entries, the manual lines and the MCP entry.
  * Every `agentboard ...` command the text shows parses against the registry,
  * so the installed text cannot drift from the CLI.
+ *
+ * The sixth rule and guidance version 2 are add-adhoc-ticket-lifecycle
+ * task 5.2 (ADR 0013): work an ad hoc ticket normally, give its task link
+ * or unplanned disposition when merging or closing it, never create an
+ * issue, task file or task reference only to move a ticket.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -53,6 +58,13 @@ describe('the guidance version', () => {
     expect(GUIDANCE_VERSION).toBeGreaterThan(0);
   });
 
+  it('is one higher than before the ad hoc rule was added (task 5.2)', () => {
+    // The text shipped at version 1; the sixth rule raises it by one
+    // (design.md section 9: 2 unless add-claim-leases lands its guidance
+    // first, in which case this pin moves to 3).
+    expect(GUIDANCE_VERSION).toBe(2);
+  });
+
   it('marks the skill and the AGENTS.md block as the design fixes', () => {
     expect(skillMarker(3)).toBe('<!-- agentboard-guidance: v3 -->');
     expect(blockStart(3)).toBe('<!-- agentboard:start v3 -->');
@@ -62,16 +74,16 @@ describe('the guidance version', () => {
   });
 });
 
-describe('the five rules', () => {
-  it('are five single ASCII lines', () => {
-    expect(GUIDANCE_RULES).toHaveLength(5);
+describe('the six rules', () => {
+  it('are six single ASCII lines', () => {
+    expect(GUIDANCE_RULES).toHaveLength(6);
     for (const rule of GUIDANCE_RULES) {
       expect(rule).toMatch(/^[\x20-\x7e]+$/);
     }
   });
 
   it('state the rules an agent must never break, in order', () => {
-    const [actor, claim, stop, completion, decision] = GUIDANCE_RULES;
+    const [actor, claim, stop, completion, decision, adhoc] = GUIDANCE_RULES;
     expect(actor).toContain('--as <you>');
     expect(actor).toContain('AGENTBOARD_ACTOR');
     expect(claim).toContain('agentboard claim <id> --as <you>');
@@ -82,11 +94,40 @@ describe('the five rules', () => {
     expect(completion).toMatch(/not the record of completion/);
     expect(decision).toContain('DECISION:');
     expect(decision).toContain('--decision-recorded-in');
+    expect(adhoc).toMatch(/ad hoc/);
   });
 
   it('tell MCP users about the as argument and mcp --as', () => {
     expect(GUIDANCE_RULES[0]).toContain('`as`');
     expect(GUIDANCE_RULES[0]).toContain('`agentboard mcp --as <you>`');
+  });
+
+  it('scenario: the sixth rule is the ad hoc rule (add-adhoc-ticket-lifecycle task 5.2)', () => {
+    const rule = GUIDANCE_RULES[5] ?? '';
+    // Never create an artifact only to move a ticket.
+    expect(rule).toMatch(/never create an issue, task file or task reference/i);
+    // Work the ticket normally; the disposition comes at merge or close.
+    expect(rule).toMatch(/ad hoc ticket[^.]*\b(?:normally|like any other)\b/i);
+    expect(rule).toMatch(/merg/);
+    expect(rule).toMatch(/clos/);
+    expect(rule).toContain('--task');
+    expect(rule).toContain('--unplanned');
+    // The command is shown in backticks so the drift guard parses it.
+    const commands = backtickedCommands(rule);
+    const merge = commands.find((c) => c.includes(' merged') && c.includes('--unplanned'));
+    expect(merge, 'a backticked move <id> merged --unplanned command').toBeDefined();
+    const words = splitCommandLine(merge ?? '');
+    const parsed = parseArgs(words.slice(1));
+    expect(parsed.command.name).toBe('move');
+    expect(parsed.values.status).toBe('merged');
+    expect(typeof parsed.values.unplanned).toBe('string');
+    expect(typeof parsed.values.as).toBe('string');
+    for (const line of commands) {
+      parses(line);
+    }
+    // The removed gate.
+    expect(rule).not.toContain('needs-task-link');
+    expect(rule).not.toMatch(/cannot enter/i);
   });
 });
 
@@ -117,11 +158,21 @@ describe('the Claude Code skill', () => {
     expect(SKILL_DESCRIPTION.length).toBeLessThanOrEqual(1024);
   });
 
-  it('contains the five rules, numbered, and the pointer to agentboard help agents', () => {
+  it('contains the six rules, numbered, and the pointer to agentboard help agents', () => {
+    expect(GUIDANCE_RULES).toHaveLength(6);
     GUIDANCE_RULES.forEach((rule, index) => {
       expect(lines).toContain(`${String(index + 1)}. ${rule}`);
     });
+    expect(lines.some((l) => l.startsWith('6. ') && l.includes('--unplanned'))).toBe(true);
     expect(skill).toContain('`agentboard help agents`');
+  });
+
+  it('states the ad hoc rule and nothing of the removed gate (task 5.2)', () => {
+    expect(skill).toMatch(/ad hoc/);
+    expect(skill).toContain('--unplanned');
+    expect(skill).toContain('--task');
+    expect(skill).not.toContain('needs-task-link');
+    expect(skill).not.toMatch(/cannot enter/i);
   });
 
   it('is short, plain ASCII and ends with exactly one newline', () => {
@@ -154,11 +205,20 @@ describe('the AGENTS.md block', () => {
     expect(lines.filter((l) => l.includes('agentboard:end'))).toHaveLength(1);
   });
 
-  it('contains the five rules and the pointer to agentboard help agents', () => {
+  it('contains the six rules and the pointer to agentboard help agents', () => {
+    expect(GUIDANCE_RULES).toHaveLength(6);
     GUIDANCE_RULES.forEach((rule, index) => {
       expect(lines).toContain(`${String(index + 1)}. ${rule}`);
     });
     expect(block).toContain('`agentboard help agents`');
+  });
+
+  it('states the ad hoc rule and nothing of the removed gate (task 5.2)', () => {
+    expect(block).toMatch(/ad hoc/);
+    expect(block).toContain('--unplanned');
+    expect(block).toContain('--task');
+    expect(block).not.toContain('needs-task-link');
+    expect(block).not.toMatch(/cannot enter/i);
   });
 
   it('says when to use the board', () => {

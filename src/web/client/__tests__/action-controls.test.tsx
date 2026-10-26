@@ -21,7 +21,7 @@ import { STATUSES, type Status } from '../../../events/schema.js';
 import type { BoardModel } from '../../../view/types.js';
 import { App } from '../App.js';
 import type { Session } from '../api.js';
-import { handoffStatuses, moveTargets } from '../views/ActionControls.js';
+import { handoffStatuses, moveTargets, needsScopeDisposition } from '../views/ActionControls.js';
 import {
   E,
   FakeApi,
@@ -1135,5 +1135,338 @@ describe('moveTargets and handoffStatuses', () => {
       'blocked',
       'implementing',
     ]);
+  });
+});
+
+/*
+ * The scope disposition (board-web-actions: "Action controls in the web
+ * app", scenario "Merge an ad hoc ticket from the browser"; ADR 0013): the
+ * move control asks for it when `merged` is chosen for an undisposed ticket,
+ * the close form asks for it for an undisposed ticket, the body carries
+ * `task` or `unplanned`, a refusal keeps the entries, and a disposed ticket
+ * is never asked.
+ */
+
+/** Ad hoc (`found in prod`), in review, no disposition. */
+const ADHOC_REVIEW = '01G0000000ACTAV9WEVGEMMVRZ';
+/** Ad hoc (`spike`), blocked from tests, no disposition. */
+const ADHOC_BLOCKED = '01H0000000ACTAV9WEVGEMMVRZ';
+/** Ad hoc, blocked from tests, with the unplanned disposition `parked`. */
+const UNPLANNED_BLOCKED = '01J0000000ACTAV9WEVGEMMVRZ';
+
+/** The fixture plus the three ad hoc tickets above. */
+function scopeInputs(): ReturnType<typeof E.create>[] {
+  return [
+    ...inputs(),
+    E.create(ADHOC_REVIEW, { title: 'Hotfix one', adhoc: 'found in prod' }, { actor: 'orch', wall: WALL + 60 }),
+    E.move(ADHOC_REVIEW, 'tests', { actor: 'impl-1', wall: WALL + 61 }),
+    E.move(ADHOC_REVIEW, 'implementing', { actor: 'impl-1', wall: WALL + 62 }),
+    E.move(ADHOC_REVIEW, 'review', { actor: 'impl-1', wall: WALL + 63 }),
+    E.create(ADHOC_BLOCKED, { title: 'Spike', adhoc: 'spike' }, { actor: 'orch', wall: WALL + 70 }),
+    E.move(ADHOC_BLOCKED, 'tests', { actor: 'orch', wall: WALL + 71 }),
+    E.move(ADHOC_BLOCKED, 'blocked', { actor: 'orch', wall: WALL + 72 }),
+    E.create(UNPLANNED_BLOCKED, { title: 'Parked', adhoc: 'spike' }, { actor: 'orch', wall: WALL + 80 }),
+    E.move(UNPLANNED_BLOCKED, 'tests', { actor: 'orch', wall: WALL + 81 }),
+    E.move(UNPLANNED_BLOCKED, 'blocked', { actor: 'orch', wall: WALL + 82 }),
+    E.unplanned(UNPLANNED_BLOCKED, 'parked', { actor: 'orch', wall: WALL + 83 }),
+  ];
+}
+
+/** The ticket `id` after `extra` events are folded on top of the scope fixture. */
+function afterScope(id: string, ...extra: ReturnType<typeof E.create>[]): Ticket {
+  return ticketOf(model([...scopeInputs(), ...extra]), id);
+}
+
+/** The scope `select` and value `input` of the control `name`, or null for each when absent. */
+function scopeFields(name: 'move' | 'close'): {
+  scope: HTMLSelectElement | null;
+  value: HTMLInputElement | null;
+} {
+  return {
+    scope: control(name).querySelector<HTMLSelectElement>(`#action-${name}-scope`),
+    value: control(name).querySelector<HTMLInputElement>(`#action-${name}-scope-value`),
+  };
+}
+
+/** The label text of the element `id`, or null. */
+function labelOf(id: string): string | null {
+  return document.querySelector(`label[for="${id}"]`)?.textContent?.trim() ?? null;
+}
+
+describe('needsScopeDisposition', () => {
+  const m = model(scopeInputs());
+
+  it('is true for a ticket with neither a task reference nor an unplanned disposition', () => {
+    expect(needsScopeDisposition(ticketOf(m, ADHOC_REVIEW))).toBe(true);
+    expect(needsScopeDisposition(ticketOf(m, ADHOC_BLOCKED))).toBe(true);
+    const bare = model([E.create(T1, { title: 'neither' }, { wall: WALL })]);
+    expect(needsScopeDisposition(ticketOf(bare, T1))).toBe(true);
+  });
+
+  it('is false for a linked ticket, a disposed one, and an ad hoc ticket linked later', () => {
+    expect(needsScopeDisposition(ticketOf(m, T1))).toBe(false);
+    expect(needsScopeDisposition(ticketOf(m, T3))).toBe(false);
+    expect(needsScopeDisposition(ticketOf(m, UNPLANNED_BLOCKED))).toBe(false);
+    const linked = model([
+      E.create(T1, { title: 'x', adhoc: 'spike' }, { wall: WALL }),
+      E.link(T1, { task: TASK }, { wall: WALL + 1 }),
+    ]);
+    expect(needsScopeDisposition(ticketOf(linked, T1))).toBe(false);
+  });
+});
+
+describe('the move control and the scope disposition', () => {
+  it('offers no scope field until merged is chosen, then the scope select and the value input, labelled', async () => {
+    await openTicket(ADHOC_REVIEW, WRITABLE, scopeInputs());
+    expect(options('#action-move-status')).toEqual(['tests', 'implementing', 'merged', 'blocked']);
+    expect(el<HTMLSelectElement>('#action-move-status').value).toBe('tests');
+    expect(scopeFields('move')).toEqual({ scope: null, value: null });
+
+    setValue('#action-move-status', 'merged');
+    const { scope, value } = scopeFields('move');
+    expect(scope).not.toBeNull();
+    expect(value).not.toBeNull();
+    expect(options('#action-move-scope')).toEqual(['unplanned', 'task']);
+    expect(all(el('#action-move-scope'), 'option').map((o) => o.textContent)).toEqual([
+      'unplanned reason',
+      'task reference',
+    ]);
+    expect(scope?.value).toBe('unplanned');
+    expect(value?.type).toBe('text');
+    expect(value?.value).toBe('');
+    expect(labelOf('action-move-scope')).toBe('Scope');
+    expect(labelOf('action-move-scope-value')).toBe('Value');
+    expect(all(control('move'), '[style]')).toEqual([]);
+
+    setValue('#action-move-status', 'implementing');
+    expect(scopeFields('move')).toEqual({ scope: null, value: null });
+  });
+
+  it('scenario Merge an ad hoc ticket from the browser: posts status merged with the unplanned reason, and shows the merged ticket', async () => {
+    const { api } = await openTicket(ADHOC_REVIEW, WRITABLE, scopeInputs());
+    const merged = afterScope(
+      ADHOC_REVIEW,
+      E.unplanned(ADHOC_REVIEW, 'hotfix', { actor: 'ben', wall: WALL + 500 }),
+      E.move(ADHOC_REVIEW, 'merged', { actor: 'ben', wall: WALL + 501 }),
+    );
+    api.onAction = () => ({ status: 200, body: { hash: HASH, events: [HASH, HASH], ticket: merged } });
+    setValue('#action-move-status', 'merged');
+    setValue('#action-move-scope-value', 'hotfix');
+    submit('move');
+    const request = await posted(api, 'move');
+    expect(request.body).toEqual({ id: ADHOC_REVIEW, status: 'merged', unplanned: 'hotfix' });
+    expect(request.method).toBe('POST');
+    expect(request.headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
+    expect(request.headers.get('content-type')).toBe('application/json');
+    await waitFor(() => {
+      expect(field('Status')).toBe('merged');
+    });
+    expect(field('Unplanned')).toBe('hotfix (by ben)');
+    expect(field('Task')).toBe('ad hoc: found in prod');
+    expect(refusal('move')).toBeNull();
+    // Merged offers nothing more, and the disposed ticket is never asked again.
+    expect(options('#action-move-status')).toEqual([]);
+    expect(scopeFields('move')).toEqual({ scope: null, value: null });
+    expect(scopeFields('close')).toEqual({ scope: null, value: null });
+  });
+
+  it('posts a task reference when that scope is chosen', async () => {
+    const { api } = await openTicket(ADHOC_REVIEW, WRITABLE, scopeInputs());
+    setValue('#action-move-status', 'merged');
+    setValue('#action-move-scope', 'task');
+    setValue('#action-move-scope-value', 'openspec:add-board-web#2');
+    submit('move');
+    expect((await posted(api, 'move')).body).toEqual({
+      id: ADHOC_REVIEW,
+      status: 'merged',
+      task: 'openspec:add-board-web#2',
+    });
+  });
+
+  it('posts the value as entered, an empty reason included (the server decides)', async () => {
+    const { api } = await openTicket(ADHOC_REVIEW, WRITABLE, scopeInputs());
+    setValue('#action-move-status', 'merged');
+    submit('move');
+    expect((await posted(api, 'move')).body).toEqual({ id: ADHOC_REVIEW, status: 'merged', unplanned: '' });
+  });
+
+  it('posts only the status for another target, whatever was typed for merged', async () => {
+    const { api } = await openTicket(ADHOC_REVIEW, WRITABLE, scopeInputs());
+    setValue('#action-move-status', 'merged');
+    setValue('#action-move-scope-value', 'hotfix');
+    setValue('#action-move-status', 'blocked');
+    submit('move');
+    expect((await posted(api, 'move')).body).toEqual({ id: ADHOC_REVIEW, status: 'blocked' });
+  });
+
+  it('never asks a linked ticket, and posts only the status for its merge', async () => {
+    const { api } = await openTicket(T5, WRITABLE, scopeInputs());
+    setValue('#action-move-status', 'merged');
+    expect(scopeFields('move')).toEqual({ scope: null, value: null });
+    submit('move');
+    expect((await posted(api, 'move')).body).toEqual({ id: T5, status: 'merged' });
+  });
+
+  it('keeps the chosen scope and the value beside the refusal, with its message and hint', async () => {
+    const { api } = await openTicket(ADHOC_REVIEW, WRITABLE, scopeInputs());
+    const MESSAGE = 'the unplanned reason looks like a secret (pem-private-key)';
+    const HINT = `agentboard move ${ADHOC_REVIEW} merged --unplanned <reason> --allow-secret-like --as ben`;
+    api.onAction = () => ({ status: 400, body: errorDoc('secret-like', MESSAGE, HINT) });
+    setValue('#action-move-status', 'merged');
+    setValue('#action-move-scope', 'task');
+    setValue('#action-move-scope-value', 'typed value');
+    submit('move');
+    await posted(api, 'move');
+    await waitFor(() => {
+      expect(refusal('move')).not.toBeNull();
+    });
+    expect(refusal('move')?.querySelector('.refusal-message')?.textContent).toBe(MESSAGE);
+    expect(refusal('move')?.querySelector('.refusal-hint')?.textContent).toBe(HINT);
+    expect(el<HTMLSelectElement>('#action-move-status').value).toBe('merged');
+    expect(el<HTMLSelectElement>('#action-move-scope').value).toBe('task');
+    expect(el<HTMLInputElement>('#action-move-scope-value').value).toBe('typed value');
+    expect(field('Status')).toBe('review');
+    for (const name of WRITE_CONTROLS.filter((n) => n !== 'move')) {
+      expect(refusal(name), name).toBeNull();
+    }
+  });
+
+  it('shows the needs-scope-disposition refusal of a stale page beside the move control', async () => {
+    const { api } = await openTicket(ADHOC_REVIEW, WRITABLE, scopeInputs());
+    const HINT = `agentboard move ${ADHOC_REVIEW} merged --unplanned "<reason>" --as ben`;
+    api.onAction = () => ({
+      status: 409,
+      body: { error: { exitCode: 4, reason: 'needs-scope-disposition', message: 'no disposition', hint: HINT } },
+    });
+    setValue('#action-move-status', 'merged');
+    setValue('#action-move-scope-value', 'hotfix');
+    submit('move');
+    await posted(api, 'move');
+    await waitFor(() => {
+      expect(refusal('move')?.querySelector('.refusal-hint')?.textContent).toBe(HINT);
+    });
+    expect(el<HTMLInputElement>('#action-move-scope-value').value).toBe('hotfix');
+  });
+
+  it('keeps the scope entries when the stream reloads the detail', async () => {
+    const { api, snapshot } = await openTicket(ADHOC_REVIEW, WRITABLE, scopeInputs());
+    setValue('#action-move-status', 'merged');
+    setValue('#action-move-scope-value', 'half typed');
+    const extra = E.comment(ADHOC_REVIEW, 'still here', { actor: 'impl-1', wall: WALL + 900 });
+    const after = withDigest(model([...scopeInputs(), extra]), '2');
+    api.board = after;
+    (await streamOf(api)).append(appendOf(after, snapshot.events.length));
+    await waitFor(() => {
+      expect(detail().querySelector(`li.message[data-hash="${extra.hash}"]`)).not.toBeNull();
+    });
+    expect(el<HTMLSelectElement>('#action-move-status').value).toBe('merged');
+    expect(el<HTMLInputElement>('#action-move-scope-value').value).toBe('half typed');
+  });
+});
+
+describe('the close form and the scope disposition', () => {
+  it('asks an undisposed ticket for the scope beside the decision disposition, labelled', async () => {
+    await openTicket(ADHOC_BLOCKED, WRITABLE, scopeInputs());
+    const { scope, value } = scopeFields('close');
+    expect(scope).not.toBeNull();
+    expect(value).not.toBeNull();
+    expect(options('#action-close-scope')).toEqual(['unplanned', 'task']);
+    expect(all(el('#action-close-scope'), 'option').map((o) => o.textContent)).toEqual([
+      'unplanned reason',
+      'task reference',
+    ]);
+    expect(scope?.value).toBe('unplanned');
+    expect(value?.type).toBe('text');
+    expect(labelOf('action-close-scope')).toBe('Scope');
+    expect(labelOf('action-close-scope-value')).toBe('Value');
+    expect(el<HTMLInputElement>('#action-close-decision').checked).toBe(true);
+    expect(all(control('close'), '[style]')).toEqual([]);
+  });
+
+  it('posts no-decision with the unplanned reason, and applies the closed ticket', async () => {
+    const { api } = await openTicket(ADHOC_BLOCKED, WRITABLE, scopeInputs());
+    const closed = afterScope(
+      ADHOC_BLOCKED,
+      E.unplanned(ADHOC_BLOCKED, 'abandoned: superseded', { actor: 'ben', wall: WALL + 500 }),
+      E.close(ADHOC_BLOCKED, { noDecision: true }, { actor: 'ben', wall: WALL + 501 }),
+    );
+    api.onAction = () => ({ status: 200, body: { hash: HASH, events: [HASH, HASH], ticket: closed } });
+    click(el('#action-close-none'));
+    setValue('#action-close-scope-value', 'abandoned: superseded');
+    submit('close');
+    expect((await posted(api, 'close')).body).toEqual({
+      id: ADHOC_BLOCKED,
+      'no-decision': true,
+      unplanned: 'abandoned: superseded',
+    });
+    await waitFor(() => {
+      expect(detail().querySelector('.disposition')?.textContent).toContain('closed (no decision)');
+    });
+    expect(field('Unplanned')).toBe('abandoned: superseded (by ben)');
+    expect(scopeFields('close')).toEqual({ scope: null, value: null });
+  });
+
+  it('posts the decision path with a task reference when that scope is chosen', async () => {
+    const { api } = await openTicket(ADHOC_BLOCKED, WRITABLE, scopeInputs());
+    setValue('#action-close-path', 'docs/adr/0013.md');
+    setValue('#action-close-scope', 'task');
+    setValue('#action-close-scope-value', 'openspec:add-board-web#2');
+    submit('close');
+    expect((await posted(api, 'close')).body).toEqual({
+      id: ADHOC_BLOCKED,
+      'decision-recorded-in': 'docs/adr/0013.md',
+      task: 'openspec:add-board-web#2',
+    });
+  });
+
+  it('never asks a linked ticket or a disposed one, and adds nothing to their bodies', async () => {
+    const { api } = await openTicket(T2, WRITABLE, scopeInputs());
+    expect(scopeFields('close')).toEqual({ scope: null, value: null });
+    click(el('#action-close-none'));
+    submit('close');
+    expect((await posted(api, 'close')).body).toEqual({ id: T2, 'no-decision': true });
+    cleanup();
+    const second = await openTicket(UNPLANNED_BLOCKED, WRITABLE, scopeInputs());
+    expect(field('Unplanned')).toBe('parked (by orch)');
+    expect(scopeFields('close')).toEqual({ scope: null, value: null });
+    click(el('#action-close-none'));
+    submit('close');
+    expect((await posted(second.api, 'close')).body).toEqual({
+      id: UNPLANNED_BLOCKED,
+      'no-decision': true,
+    });
+  });
+
+  it('keeps the scope entries and the decision entries beside a refusal', async () => {
+    const { api } = await openTicket(ADHOC_BLOCKED, WRITABLE, scopeInputs());
+    const HINT = `agentboard close ${ADHOC_BLOCKED} --no-decision --unplanned "<reason>" --as ben`;
+    api.onAction = () => ({
+      status: 409,
+      body: { error: { exitCode: 4, reason: 'needs-scope-disposition', message: 'no disposition', hint: HINT } },
+    });
+    click(el('#action-close-none'));
+    setValue('#action-close-scope', 'task');
+    setValue('#action-close-scope-value', 'openspec:x#1');
+    submit('close');
+    await posted(api, 'close');
+    await waitFor(() => {
+      expect(refusal('close')?.querySelector('.refusal-hint')?.textContent).toBe(HINT);
+    });
+    expect(el<HTMLInputElement>('#action-close-none').checked).toBe(true);
+    expect(el<HTMLSelectElement>('#action-close-scope').value).toBe('task');
+    expect(el<HTMLInputElement>('#action-close-scope-value').value).toBe('openspec:x#1');
+    expect(detail().querySelector('.disposition')).toBeNull();
+  });
+});
+
+describe('the scope fields on a read-only page', () => {
+  it('shows no scope select or input for an undisposed ticket', async () => {
+    await openTicket(ADHOC_REVIEW, SESSION, scopeInputs());
+    expect(all(detail(), 'form, input, textarea, select, button')).toEqual([]);
+    expect(document.querySelector('#action-move-scope')).toBeNull();
+    expect(document.querySelector('#action-close-scope')).toBeNull();
+    cleanup();
+    await openTicket(ADHOC_BLOCKED, SESSION, scopeInputs());
+    expect(all(detail(), 'form, input, textarea, select, button')).toEqual([]);
   });
 });

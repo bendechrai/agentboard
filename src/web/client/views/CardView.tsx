@@ -3,6 +3,15 @@
  * "Board views"; board-view-model: "Board columns and cards"). See
  * `BoardView` for its DOM contract: an `article` with class `card`,
  * `data-ticket`, and the classes `changed` and `closed`.
+ *
+ * The scope marker in the second `p.card-meta` (ADR 0013; board-view-model
+ * "Board columns and cards", scenario "Unplanned card"): with a task
+ * reference, `span.task` holding the reference text; otherwise, when
+ * `card.unplanned` is not null, `span.task.unplanned` with the text
+ * `unplanned` followed by `span.unplanned-reason` holding the reason as
+ * text (the card never shows `ad hoc` then, whatever `card.adhoc`);
+ * otherwise, when `card.adhoc` is true, `span.task.adhoc` with the text
+ * `ad hoc`; otherwise no marker.
  * Every text from the board is rendered as text, never as markup.
  */
 
@@ -38,6 +47,11 @@ export function CardView({ card }: CardViewProps): JSX.Element {
       <p class="card-meta">
         {card.task !== null ? (
           <span class="task">{card.task}</span>
+        ) : card.unplanned !== null ? (
+          <>
+            <span class="task unplanned">unplanned</span>
+            <span class="unplanned-reason">{card.unplanned.reason}</span>
+          </>
         ) : card.adhoc ? (
           <span class="task adhoc">ad hoc</span>
         ) : null}

@@ -177,6 +177,14 @@ export interface CloseMergedResult {
  *   ticket has open `DECISION:` comments (`openDecisions`), in which case
  *   it is skipped with reason `unpromoted-decision` and the guard's
  *   message, and left open.
+ * - `close-merged` never gives a scope disposition (board-openspec-
+ *   integration: "Close merged"): a candidate with neither a task
+ *   reference nor an unplanned disposition (only possible for a merged
+ *   state written outside agentboard) is left open and listed in `skipped`
+ *   with reason `needs-scope-disposition` and the message of the
+ *   `closeTicket` refusal; the other candidates are still processed. A
+ *   ticket merged with `--unplanned` closes normally, its unplanned
+ *   disposition unchanged.
  * Each close is its own command transaction (`runCommand` through
  * `closeTicket`) with `actor` and `options`, run against the state at that
  * moment, which may differ from the listing (another process may have

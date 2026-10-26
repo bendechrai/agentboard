@@ -4,7 +4,7 @@
  * add-agent-guidance design.md: "Installed text is a pointer, not a copy",
  * "Ownership markers").
  *
- * The installed text is deliberately thin: when to use the board, the five
+ * The installed text is deliberately thin: when to use the board, the six
  * rules an agent must never break, and a pointer to `agentboard help
  * agents`, which the running CLI prints and which therefore never goes
  * stale. Every artifact carries `GUIDANCE_VERSION`, which `agents check`
@@ -17,20 +17,32 @@
 /**
  * The guidance format version: an integer bumped only when any text in
  * this module changes (not on every package release). Written into every
- * installed artifact's marker and compared by `agents check`.
+ * installed artifact's marker and compared by `agents check`. Version 2
+ * adds the ad hoc rule (add-adhoc-ticket-lifecycle), so `agents check`
+ * reports a version 1 installation `stale`.
  */
-export const GUIDANCE_VERSION = 1;
+export const GUIDANCE_VERSION = 2;
 
 /** The command every installed artifact points to for the full guide. */
 export const GUIDE_COMMAND = 'agentboard help agents';
 
 /**
- * The five rules an agent must never break (board-agent-guidance:
+ * The six rules an agent must never break (board-agent-guidance:
  * "Installing guidance into a host project"), in this order: always pass
  * an actor (including the MCP `as` argument and `mcp --as`); claim before
  * working; hand off or block with a comment before stopping; never mark
  * completion on the board instead of in the tasks file; promote
- * `DECISION:` comments before closing. Each is one line of Markdown.
+ * `DECISION:` comments before closing; never create an issue, task file or
+ * task reference only to move a ticket, but work an ad hoc ticket normally
+ * and give its task link or unplanned disposition when merging or closing
+ * it (ADR 0013). Each is one line of Markdown.
+ *
+ * The sixth rule names both flags (`--task` and `--unplanned`), says the
+ * words `ad hoc`, and shows the command in backticks, so the drift guard
+ * parses it: `agentboard move <id> merged --unplanned "<reason>" --as
+ * <you>`. It never says an ad hoc ticket cannot enter `implementing` and
+ * never names the task-link refusal ADR 0013 removed (the guide tests
+ * search `src/` for that reason name).
  */
 export const GUIDANCE_RULES: readonly string[] = [
   'Always pass an actor: `--as <you>` on every command, or set `AGENTBOARD_ACTOR`. Over MCP, pass `as` on every tool call, or start the server with `agentboard mcp --as <you>`.',
@@ -38,6 +50,7 @@ export const GUIDANCE_RULES: readonly string[] = [
   'Before you stop, hand the ticket off or block it with a comment: `agentboard handoff <id> --to <next> --status <status> --note "<what is done>" --as <you>`, or `agentboard comment <id> "<why>" --as <you>` and then `agentboard move <id> blocked --as <you>`.',
   'Never mark completion on the board instead of in the tasks file: tick the task in `tasks.md` (or your planning source) in the implementing pull request. The board is not the record of completion.',
   'Promote every `DECISION:` comment to a spec delta or ADR before the ticket is closed, and close it with `--decision-recorded-in <path>`.',
+  'Never create an issue, task file or task reference only to move a ticket. Work an ad hoc ticket normally and give its scope when you merge or close it: `agentboard move <id> merged --unplanned "<reason>" --as <you>` records that its work was never planned, or `agentboard move <id> merged --task <source>:<ref>#<item> --as <you>` links the task it delivered; `close` takes the same flags.',
 ];
 
 /** Paragraph shared by the skill and the AGENTS.md block: what the board is and when to use it. */

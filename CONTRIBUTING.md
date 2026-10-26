@@ -80,6 +80,15 @@ fail the `promotion source` check.
   container, and `make check-floor` runs them on the oldest supported Node.
   Run both for changes that touch the store, concurrency, process
   handling or the Node floor.
+- `make check-git-floor` runs the sharing tests (the `SHARING_TESTS` list
+  in the Makefile: the git layer, model detection, host-model `init`,
+  `sync`, `init --remote`, `init --into-host` and `remote`) on the oldest
+  supported Node with the oldest git the host model supports, git 2.32,
+  built from source in the container. Run it, with the two above, for
+  changes that touch sharing (anything under `src/board/` that runs git,
+  or the `init`, `sync` and `remote` commands). `make test-sharing` runs
+  the same tests on the host with whatever git is installed, without
+  coverage.
 - The pre-push hook runs the fast subset (`make build typecheck lint ascii
   validate-specs`). Tests are left to `make check` because they are
   slower.
@@ -209,8 +218,20 @@ Run `make hooks` in each new worktree, and remove the worktree with
 This repository coordinates its own agents with agentboard:
 
 - `agentboard init` once per clone, at the root of the main checkout,
-  creates `.board/` (its own git repository, ignored by this one). Linked
-  worktrees find it on their own.
+  creates `.board/` (ignored by this repository); linked worktrees find
+  it on their own. This repository's own board is a standalone board (a
+  git repository of its own) and stays one: it is not moved into the host
+  repository with `init --into-host`, because that would publish
+  `refs/agentboard/board` with the public repository. In a project of
+  your own, `init` inside a git repository creates a host-model board
+  instead (README, "Set up a project").
+- This repository's board is kept in the private repository
+  `bendechrai/agentboard-board`. A maintainer's first clone runs
+  `agentboard init --remote https://github.com/bendechrai/agentboard-board.git`
+  (or the `git@github.com:bendechrai/agentboard-board.git` form when ssh
+  keys are set up), then `agentboard sync` to share events. Collaborators
+  without access to that repository keep a local standalone board from
+  plain `agentboard init`.
 - `agentboard import-change <name> --as orchestrator` creates one ticket
   per task group of a merged OpenSpec change; run it again when `tasks.md`
   gains lines.

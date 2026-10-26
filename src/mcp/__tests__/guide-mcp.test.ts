@@ -138,6 +138,9 @@ function expectInstructions(instructions: string | undefined): void {
     expect(() => parseLine(line), line).not.toThrow();
   }
   expect(unservedTools(text)).toEqual([]);
+  // The refusal ADR 0013 removed (add-adhoc-ticket-lifecycle task 5.1).
+  expect(text).not.toContain('needs-task-link');
+  expect(text).not.toMatch(/cannot enter implementing/i);
 }
 
 describe('guide over MCP, in process', () => {

@@ -4,7 +4,9 @@ Date: 2026-09-23
 
 ## Status
 
-Accepted
+Accepted. Amended by ADR 0012: the board's git history may live in the
+host repository under `refs/agentboard/board` instead of a repository of
+its own.
 
 ## Context
 

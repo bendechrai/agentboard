@@ -27,8 +27,9 @@ export interface BoardHealthOptions {
   /**
    * The thresholds, in milliseconds. A threshold left out (or the whole
    * object left out) is its `DEFAULT_THRESHOLDS` value: `staleAfter` 2
-   * hours, `blockedAfter` 24 hours. The CLI parses `--stale-after` and
-   * `--blocked-after` with `parseDuration` and passes only those given.
+   * hours, `blockedAfter` 24 hours, `unplannedWithin` 7 days. The CLI
+   * parses `--stale-after`, `--blocked-after` and `--unplanned-within` with
+   * `parseDuration` and passes only those given.
    */
   readonly thresholds?: Partial<HealthThresholds>;
   /**
@@ -58,8 +59,8 @@ export interface BoardHealthOptions {
  * - ticket state (tickets, comments, links) from the cache, and
  * - event bodies only from the event files of applied events (the
  *   `folded` rows with `folded = 1`, of any ticket, closed or open; the
- *   cache has no event-to-ticket index, so the files of closed tickets'
- *   events may be read and are then ignored), through `options.cache`. It
+ *   files of closed tickets' events are read too, and `unplannedScope`
+ *   uses their `ticket.close`), through `options.cache`. It
  *   never reads the file of a rejected, unknown-kind or malformed event,
  *   and never reads any file twice (the cache keeps what it read).
  *
@@ -74,9 +75,10 @@ export interface BoardHealthOptions {
  *
  * The result deep-equals `healthReport({ model, now, thresholds })` where
  * `model` is the board's tickets and its well-formed events with their
- * outcomes in fold order (as `loadSnapshot` gives them; events of closed
- * tickets may be left out, since no check looks at them), `now` and
- * `thresholds` as resolved from `options`, with:
+ * outcomes in fold order (as `loadSnapshot` gives them, closed tickets and
+ * their events included: `unplannedScope` measures an undisclosed close
+ * from its `ticket.close`), `now` and `thresholds` as resolved from
+ * `options`, with:
  * - `late`: always null (a one-shot command cannot observe arrival order);
  * - `check`: null unless `options.check`; then, after the snapshot has
  *   been committed, `checkCache(board)` runs (it takes the write lock for
@@ -96,6 +98,7 @@ export function boardHealth(board: Board, options?: BoardHealthOptions): HealthR
   const thresholds: HealthThresholds = {
     staleAfter: options?.thresholds?.staleAfter ?? DEFAULT_THRESHOLDS.staleAfter,
     blockedAfter: options?.thresholds?.blockedAfter ?? DEFAULT_THRESHOLDS.blockedAfter,
+    unplannedWithin: options?.thresholds?.unplannedWithin ?? DEFAULT_THRESHOLDS.unplannedWithin,
   };
   const model = loadApplied(board, options?.cache ?? createEventCache());
   let check: HealthCheck | null = null;

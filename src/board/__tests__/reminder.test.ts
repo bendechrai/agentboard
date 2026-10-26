@@ -107,6 +107,36 @@ describe('taskReminder for other tickets', () => {
     expect(r).toMatchObject({ source: null, path: null, line: null });
     expect(r.message).toMatch(/no task reference/);
   });
+
+  it('scenario: the ad hoc reminder says the disposition is given at merge or close (add-adhoc-ticket-lifecycle task 5.2)', () => {
+    const r = taskReminder(hostWithTasks(), ticket(null, 'hotfix'), 0);
+    expect(r).toMatchObject({ source: null, path: null, line: null });
+    // One ASCII line, no trailing space.
+    expect(r.message).toMatch(/^[\x20-\x7e]*[\x21-\x7e]$/);
+    expect(r.message).toMatch(/no task reference/);
+    expect(r.message).toMatch(/ad hoc/);
+    // Its task link or unplanned disposition comes when it is merged or closed.
+    expect(r.message).toContain('--task');
+    expect(r.message).toContain('--unplanned');
+    expect(r.message).toMatch(/merged or closed|merge or close|merging or closing/);
+    // Never the removed gate.
+    expect(r.message).not.toContain('needs-task-link');
+    expect(r.message).not.toMatch(/cannot enter/i);
+    expect(r.message).not.toMatch(/until (?:it is )?linked/i);
+  });
+
+  it('gives the same reminder for an ad hoc ticket that already has an unplanned disposition', () => {
+    const undisposed = taskReminder(hostWithTasks(), ticket(null, 'hotfix'), 0);
+    const disposed = taskReminder(
+      hostWithTasks(),
+      {
+        ...ticket(null, 'hotfix'),
+        unplanned: { reason: 'x', actor: 'orch', ts: { wall: 1, counter: 0, actor: 'orch' } },
+      },
+      0,
+    );
+    expect(disposed).toEqual(undisposed);
+  });
 });
 
 describe('checklist tick reminder (scenario: tick reminds about tasks.md)', () => {
@@ -121,6 +151,21 @@ describe('checklist tick reminder (scenario: tick reminds about tasks.md)', () =
     expect(out.hash).not.toBeNull();
     expect(out.reminder).toMatchObject({ source: 'openspec', path: null, line: null });
     expect(out.reminder?.message).toContain('no tasks-file reminder is available');
+  });
+
+  it('ticks an ad hoc ticket with the disposition reminder in the document (task 5.2)', () => {
+    const { board } = setup();
+    const t = create(board, { adhoc: 'found in CI', checklist: ['a', 'b'] });
+    expect(t.task).toBeNull();
+    const out = setChecklistItem(board, 'impl', { id: t.id, index: 0, done: true });
+    expect(out.ticket.checklist.map((c) => c.done)).toEqual([true, false]);
+    expect(out.hash).not.toBeNull();
+    expect(out.reminder).toMatchObject({ source: null, path: null, line: null });
+    const message = out.reminder?.message ?? '';
+    expect(message).toMatch(/no task reference/);
+    expect(message).toContain('--task');
+    expect(message).toContain('--unplanned');
+    expect(message).not.toContain('needs-task-link');
   });
 
   it("uses the board's parent as the host project root", () => {
