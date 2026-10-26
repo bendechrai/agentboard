@@ -1235,7 +1235,7 @@ literally, as the text the author wrote. What that means in practice:
   origin.
 - **Task lists.** A task list item shows a checkbox that cannot be changed.
 - **Headings and code.** Headings are shifted down three levels (`#` is an
-  `h4`, `####` and deeper an `h6`) so they sit under the view's own
+  `h4`, `###` and deeper an `h6`) so they sit under the view's own
   headings, and a code block keeps the first word of its info string as a
   `data-lang` attribute, without syntax highlighting.
 - **Limits.** Anything nested deeper than 32 levels (block quotes, lists,
@@ -1327,8 +1327,9 @@ What it does not protect against:
   admits only the server's own script and is unchanged by Markdown
   descriptions: a description is interpreted as Markdown into elements
   from an allow-list of node types (see "Markdown descriptions"), and no
-  HTML string is ever built or inserted into the page. A test scans every
-  module under `src/web/client/` for `dangerouslySetInnerHTML`,
+  HTML string is ever built or inserted into the page. A test
+  (`src/web/__tests__/client-source.test.ts`) scans every module under
+  `src/web/client/` for `dangerouslySetInnerHTML`,
   `innerHTML`, `outerHTML`, `insertAdjacentHTML` and `document.write` and
   fails on any match, so this does not rest on review alone. Every other
   board text is shown as text, and the token handling is unchanged, so

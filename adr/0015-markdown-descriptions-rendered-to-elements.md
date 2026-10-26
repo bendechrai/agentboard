@@ -53,7 +53,7 @@ write access to the board's repository.
   a link to its URL under the same rule, labelled with its alt text or,
   when that is empty, the URL. Link and image references are resolved
   through the tree's `definition` nodes and then follow the same rules.
-- Headings are shifted three levels (`#` is `h4`, `####` and deeper `h6`)
+- Headings are shifted three levels (`#` is `h4`, `###` and deeper `h6`)
   under the detail view's own `h2` and `h3`; task list items carry a
   disabled checkbox; code blocks render as `pre > code` with the info
   string's first word as `data-lang`.
@@ -80,7 +80,7 @@ write access to the board's repository.
 
 Rendering from a syntax tree keeps the guarantee by construction rather
 than by filtering: there is no HTML string at any point, so there is
-nothing to sanitise and nothing a sanitizer could miss. The allow-list is
+nothing to sanitise and nothing a sanitiser could miss. The allow-list is
 closed, every attribute value is either a tree field or a URL that passed
 the rule, and the guard test turns the rule into a failing build rather
 than a review note. Refusing every URL that does not parse as absolute
@@ -116,9 +116,9 @@ precisely typed, which is what makes a closed allow-list checkable.
 
 ## Alternatives considered
 
-**A Markdown-to-HTML library plus a sanitizer (DOMPurify) and
+**A Markdown-to-HTML library plus a sanitiser (DOMPurify) and
 `dangerouslySetInnerHTML`.** Rejected: correctness would depend on the
-sanitizer's configuration and on every future change keeping it in place,
+sanitiser's configuration and on every future change keeping it in place,
 and it reintroduces an HTML string into the page through `innerHTML`,
 which ADR 0006 rules out and which the guard test exists to catch.
 
