@@ -154,7 +154,8 @@ describe('input schemas', () => {
       const c = t.command;
       expect(Object.keys(t.inputSchema.properties), t.name).toEqual([
         ...c.positionals.map((a) => a.name),
-        ...c.flags.map((a) => a.name),
+        // A CLI-only flag (claim --timeout) has no property.
+        ...c.flags.filter((a) => a.cliOnly !== true).map((a) => a.name),
         'as',
       ]);
       expect(t.inputSchema.properties, t.name).not.toHaveProperty('json');
@@ -166,7 +167,8 @@ describe('input schemas', () => {
 
   it('maps argument types, with repeatable flags as string arrays', () => {
     for (const t of toolDefinitions()) {
-      for (const arg of [...t.command.positionals, ...t.command.flags]) {
+      const flags = t.command.flags.filter((a) => a.cliOnly !== true);
+      for (const arg of [...t.command.positionals, ...flags]) {
         const prop = t.inputSchema.properties[arg.name];
         const expected = arg.repeatable
           ? { type: 'array', items: { type: 'string' }, description: arg.summary }

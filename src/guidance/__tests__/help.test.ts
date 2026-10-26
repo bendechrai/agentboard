@@ -64,7 +64,8 @@ function lines(text: string): string[] {
 /** The form of an argument in help: `<id>`, `--closed`, `--to <to>`, `--as <actor>`. */
 function form(arg: ArgSpec, positional: boolean): string {
   if (positional) {
-    return `<${arg.name}>`;
+    // A positional with choices is written with them (config set <lease.grace|queue.window>).
+    return `<${arg.choices === undefined ? arg.name : arg.choices.join('|')}>`;
   }
   if (arg.type === 'boolean') {
     return `--${arg.name}`;
