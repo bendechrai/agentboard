@@ -27,7 +27,7 @@ const STATUS = join(ROOT, 'STATUS.md');
 const ADR_DIR = join(ROOT, 'adr');
 const ADR_INDEX = join(ADR_DIR, 'README.md');
 const ADR_0006 = join(ADR_DIR, '0006-local-web-server-security-model.md');
-const TASKS = join(ROOT, 'openspec', 'changes', 'add-description-markdown', 'tasks.md');
+const TASKS = join(ROOT, 'openspec', 'changes', 'archive', '2026-10-26-add-description-markdown', 'tasks.md');
 const SELF = fileURLToPath(import.meta.url);
 
 /** The headings every ADR with alternatives shares (0001 to 0010, 0012, 0013), in order. */
