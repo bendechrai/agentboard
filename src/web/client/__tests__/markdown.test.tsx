@@ -1040,6 +1040,29 @@ describe('the depth cap', () => {
     DEEP_PARSE_MS,
   );
 
+  it(
+    'renders 1200 levels of emphasis-only nesting into a DOM without throwing, capped',
+    () => {
+      // `*x _x *x ... a ... x_ x*`: a chain of emphasis nodes alone, which
+      // runs of one delimiter never produce.
+      const open: string[] = [];
+      const close: string[] = [];
+      for (let i = 0; i < 1200; i++) {
+        const d = i % 2 === 0 ? '*' : '_';
+        open.push(`${d}x `);
+        close.unshift(` x${d}`);
+      }
+      const source = open.join('') + 'a' + close.join('');
+      const tree = renderMarkdown(source);
+      const root = document.createElement('div');
+      render(tree, root);
+      expect(root.querySelectorAll('em')).toHaveLength(MAX_MARKDOWN_DEPTH - 1);
+      expect(elementDepth(root)).toBe(MAX_MARKDOWN_DEPTH);
+      expect(root.textContent).toContain(' a ');
+    },
+    DEEP_PARSE_MS,
+  );
+
   for (const [name, source] of [
     ['1500 block quotes', '> '.repeat(1500) + 'a'],
     ['5000 block quotes', '> '.repeat(5000) + 'a'],

@@ -473,6 +473,22 @@ describe('isAllowedUrl on arbitrary input', () => {
   });
 });
 
+/**
+ * `n` levels of inline nesting alternating the two delimiters of `pair`:
+ * `*x _x *x ... a ... x_ x*` for `['*', '_']` (emphasis only) and the same
+ * with `**` and `__` (strong only).
+ */
+function nestedInline(pair: readonly [string, string], n: number): string {
+  const open: string[] = [];
+  const close: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const d = pair[i % 2] ?? '';
+    open.push(`${d}x `);
+    close.unshift(` x${d}`);
+  }
+  return open.join('') + 'a' + close.join('');
+}
+
 /** The deepest element nesting under `root` (a child of `root` is depth 1). */
 function elementDepth(root: Element): number {
   let deepest = 0;
@@ -515,7 +531,7 @@ describe('renderMarkdown on deep and long input', () => {
   it(
     'renders input nested far beyond the depth cap into a DOM without throwing, capped',
     () => {
-      const deep = fc
+      const repeated = fc
         .tuple(
           // Units that nest as containers. A run of `~~` is not one: from three
           // tildes on it opens a code fence, so it is left out.
@@ -527,6 +543,15 @@ describe('renderMarkdown on deep and long input', () => {
             unit === '*' ? '*'.repeat(n) : unit === '[' ? '](https://example.com)'.repeat(n) : '';
           return unit.repeat(n) + 'a' + close;
         });
+      // Emphasis-only and strong-only chains: runs of `*` alone parse as
+      // strong with at most one emphasis, so these alternate the delimiters.
+      const inline = fc
+        .tuple(
+          fc.constantFrom<[string, string]>(['*', '_'], ['**', '__']),
+          fc.integer({ min: MAX_MARKDOWN_DEPTH, max: 1500 }),
+        )
+        .map(([pair, n]) => nestedInline(pair, n));
+      const deep = fc.oneof(repeated, inline);
       fc.assert(
         fc.property(deep, (source) => {
           // A throw from renderMarkdown or from Preact's render fails the property.

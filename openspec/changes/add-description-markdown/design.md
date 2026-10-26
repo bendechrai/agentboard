@@ -98,6 +98,9 @@ pointing at the server's own API or changing the app's hash route. An
 written, because a browser resolves an `href` such as `http:/api/session`
 or `http:api` against the page's own origin (a same-origin link) even
 though the parser without a base reads it as absolute with host `api`.
+A URL with whitespace or control characters before its scheme (such as
+` mailto:a@b.co`) is refused, although `new URL` strips them, so the
+`href` written to the page is always the URL exactly as it was checked.
 Allowed links get `target="_blank"` and `rel="noopener noreferrer"`. The
 page's `Referrer-Policy: no-referrer` already applies; `rel` repeats it on
 the element.
