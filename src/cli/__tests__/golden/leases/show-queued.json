@@ -1,0 +1,83 @@
+{
+  "ticket": {
+    "id": "01MB0000000000000000000006",
+    "title": "Queued lock",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": "merger-1",
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": {
+      "ttl": 1800000,
+      "expiresAt": 1793017700000,
+      "event": "0e41d5763dda22b313b7c4452f81bdaf37366528166fe8d58a62843336ece98e",
+      "confirmed": true,
+      "state": "live",
+      "claimableAt": 1793017760000
+    },
+    "queue": [
+      {
+        "actor": "merger-2",
+        "ttl": 1800000,
+        "event": "9a3a6b5a2b84e9f29718a88308643c0c0c768fd8f4b02a514c6f004b33b33fd4",
+        "joined": {
+          "wall": 1793015910000,
+          "counter": 0,
+          "actor": "merger-2"
+        }
+      },
+      {
+        "actor": "merger-3",
+        "ttl": 600000,
+        "event": "5f2303626b85d5a224b906c7ce50bb1955e7e6485138fe8553f04fb358654977",
+        "joined": {
+          "wall": 1793015920000,
+          "counter": 0,
+          "actor": "merger-3"
+        }
+      },
+      {
+        "actor": "merger-4",
+        "ttl": 3600000,
+        "event": "9b8c15b520f2da7824de4fd3dfa69f5a4f9f4a8f393339105d6e8b0ea00d6d2f",
+        "joined": {
+          "wall": 1793015930000,
+          "counter": 0,
+          "actor": "merger-4"
+        }
+      }
+    ],
+    "available": {
+      "at": 1793017760000,
+      "event": "0e41d5763dda22b313b7c4452f81bdaf37366528166fe8d58a62843336ece98e"
+    },
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012405000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 6,
+    "updatedAt": {
+      "wall": 1793015930000,
+      "counter": 0,
+      "actor": "merger-4"
+    }
+  },
+  "events": 6,
+  "unknown": [],
+  "nextGrant": {
+    "to": "merger-2",
+    "at": 1793017760001,
+    "acceptBy": 1793017880001
+  }
+}

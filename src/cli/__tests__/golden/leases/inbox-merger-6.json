@@ -1,0 +1,894 @@
+{
+  "actor": "merger-6",
+  "entries": [
+    {
+      "hash": "8785c204c2bd4ff2c789a284a1d54623d09a9b02831fcb1e40cdbf25db6c9b50",
+      "kind": "ticket.create",
+      "ticket": "01MB0000000000000000000001",
+      "from": "orchestrator",
+      "ts": {
+        "wall": 1793012400000,
+        "counter": 0,
+        "actor": "orchestrator"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.create",
+        "ticket": "01MB0000000000000000000001",
+        "actor": "orchestrator",
+        "ts": {
+          "wall": 1793012400000,
+          "counter": 0,
+          "actor": "orchestrator"
+        },
+        "body": {
+          "title": "Free lock",
+          "adhoc": "merge lock"
+        }
+      }
+    },
+    {
+      "hash": "16651c379a4b51bfdf1d656698d92371901d54eeacb4fe0b8ff36d6a523cd4d9",
+      "kind": "ticket.create",
+      "ticket": "01MB0000000000000000000002",
+      "from": "orchestrator",
+      "ts": {
+        "wall": 1793012401000,
+        "counter": 0,
+        "actor": "orchestrator"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.create",
+        "ticket": "01MB0000000000000000000002",
+        "actor": "orchestrator",
+        "ts": {
+          "wall": 1793012401000,
+          "counter": 0,
+          "actor": "orchestrator"
+        },
+        "body": {
+          "title": "Lock in grace",
+          "adhoc": "merge lock"
+        }
+      }
+    },
+    {
+      "hash": "b9dd06d0e15d4e1ee8dd14d1ecfef3fcae50cc6439f592498dce47523d3740c2",
+      "kind": "ticket.create",
+      "ticket": "01MB0000000000000000000003",
+      "from": "orchestrator",
+      "ts": {
+        "wall": 1793012402000,
+        "counter": 0,
+        "actor": "orchestrator"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.create",
+        "ticket": "01MB0000000000000000000003",
+        "actor": "orchestrator",
+        "ts": {
+          "wall": 1793012402000,
+          "counter": 0,
+          "actor": "orchestrator"
+        },
+        "body": {
+          "title": "Confirmed lock",
+          "adhoc": "merge lock"
+        }
+      }
+    },
+    {
+      "hash": "1497dbd5d5d5a4df733805b43fe78dca28a0e6193d57737e460e8965a6cd0665",
+      "kind": "ticket.create",
+      "ticket": "01MB0000000000000000000004",
+      "from": "orchestrator",
+      "ts": {
+        "wall": 1793012403000,
+        "counter": 0,
+        "actor": "orchestrator"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.create",
+        "ticket": "01MB0000000000000000000004",
+        "actor": "orchestrator",
+        "ts": {
+          "wall": 1793012403000,
+          "counter": 0,
+          "actor": "orchestrator"
+        },
+        "body": {
+          "title": "Expired lock",
+          "adhoc": "merge lock"
+        }
+      }
+    },
+    {
+      "hash": "e80c8a84bab9f66bc7abf3d984359d58d99887e4a2daea5ac9ab1f24f6b861d3",
+      "kind": "ticket.create",
+      "ticket": "01MB0000000000000000000005",
+      "from": "orchestrator",
+      "ts": {
+        "wall": 1793012404000,
+        "counter": 0,
+        "actor": "orchestrator"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.create",
+        "ticket": "01MB0000000000000000000005",
+        "actor": "orchestrator",
+        "ts": {
+          "wall": 1793012404000,
+          "counter": 0,
+          "actor": "orchestrator"
+        },
+        "body": {
+          "title": "Claimable lock",
+          "adhoc": "merge lock"
+        }
+      }
+    },
+    {
+      "hash": "7cfa40cf1356bc4dc8c6e6001015d58d3e0632c1921bd7558569ba2f1fadabd6",
+      "kind": "ticket.create",
+      "ticket": "01MB0000000000000000000006",
+      "from": "orchestrator",
+      "ts": {
+        "wall": 1793012405000,
+        "counter": 0,
+        "actor": "orchestrator"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.create",
+        "ticket": "01MB0000000000000000000006",
+        "actor": "orchestrator",
+        "ts": {
+          "wall": 1793012405000,
+          "counter": 0,
+          "actor": "orchestrator"
+        },
+        "body": {
+          "title": "Queued lock",
+          "adhoc": "merge lock"
+        }
+      }
+    },
+    {
+      "hash": "3140e3a505b8a9a4882ba9eb1ce073123fbd204759db7d8ffcc5c0807abfc330",
+      "kind": "ticket.create",
+      "ticket": "01MB0000000000000000000007",
+      "from": "orchestrator",
+      "ts": {
+        "wall": 1793012406000,
+        "counter": 0,
+        "actor": "orchestrator"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.create",
+        "ticket": "01MB0000000000000000000007",
+        "actor": "orchestrator",
+        "ts": {
+          "wall": 1793012406000,
+          "counter": 0,
+          "actor": "orchestrator"
+        },
+        "body": {
+          "title": "Granted lock",
+          "adhoc": "merge lock"
+        }
+      }
+    },
+    {
+      "hash": "5f20f95695e840884616f015e764943f8d55da146153f67791952056797c5243",
+      "kind": "ticket.create",
+      "ticket": "01MB0000000000000000000008",
+      "from": "orchestrator",
+      "ts": {
+        "wall": 1793012407000,
+        "counter": 0,
+        "actor": "orchestrator"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.create",
+        "ticket": "01MB0000000000000000000008",
+        "actor": "orchestrator",
+        "ts": {
+          "wall": 1793012407000,
+          "counter": 0,
+          "actor": "orchestrator"
+        },
+        "body": {
+          "title": "Taken over lock",
+          "adhoc": "merge lock"
+        }
+      }
+    },
+    {
+      "hash": "94bced600d4bd270fd0c100cdfefeeb3614536b7087857add2c9fd53ee6ac019",
+      "kind": "ticket.create",
+      "ticket": "01MB0000000000000000000009",
+      "from": "orchestrator",
+      "ts": {
+        "wall": 1793012408000,
+        "counter": 0,
+        "actor": "orchestrator"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.create",
+        "ticket": "01MB0000000000000000000009",
+        "actor": "orchestrator",
+        "ts": {
+          "wall": 1793012408000,
+          "counter": 0,
+          "actor": "orchestrator"
+        },
+        "body": {
+          "title": "Force-released lock",
+          "adhoc": "merge lock"
+        }
+      }
+    },
+    {
+      "hash": "23f850ec2fe7cfe4dd22e55dc26164e94ecd6ab6edfdd3aba6658d8681115851",
+      "kind": "ticket.claim",
+      "ticket": "01MB0000000000000000000009",
+      "from": "merger-7",
+      "ts": {
+        "wall": 1793014000000,
+        "counter": 0,
+        "actor": "merger-7"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.claim",
+        "ticket": "01MB0000000000000000000009",
+        "actor": "merger-7",
+        "ts": {
+          "wall": 1793014000000,
+          "counter": 0,
+          "actor": "merger-7"
+        },
+        "body": {}
+      }
+    },
+    {
+      "hash": "7fedeabb49346f4250e6714f8fb3edc0c92c818d440f7b895f756bb663acec74",
+      "kind": "ticket.release.force",
+      "ticket": "01MB0000000000000000000009",
+      "from": "orchestrator",
+      "ts": {
+        "wall": 1793014900000,
+        "counter": 0,
+        "actor": "orchestrator"
+      },
+      "to": null,
+      "status": null,
+      "note": "merger-7 crashed",
+      "affects": "merger-7",
+      "event": {
+        "v": 1,
+        "kind": "ticket.release.force",
+        "ticket": "01MB0000000000000000000009",
+        "actor": "orchestrator",
+        "ts": {
+          "wall": 1793014900000,
+          "counter": 0,
+          "actor": "orchestrator"
+        },
+        "body": {
+          "holder": "merger-7",
+          "reason": "merger-7 crashed"
+        }
+      }
+    },
+    {
+      "hash": "161429173b998349d61a9972c197b923f381c99a48bc7d9f089e768a7b63ccae",
+      "kind": "ticket.claim",
+      "ticket": "01MB0000000000000000000008",
+      "from": "impl-4",
+      "ts": {
+        "wall": 1793014950000,
+        "counter": 0,
+        "actor": "impl-4"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.claim",
+        "ticket": "01MB0000000000000000000008",
+        "actor": "impl-4",
+        "ts": {
+          "wall": 1793014950000,
+          "counter": 0,
+          "actor": "impl-4"
+        },
+        "body": {
+          "lease": {
+            "ttl": 1800000,
+            "grace": 120000,
+            "expiresAt": 1793015070000
+          }
+        }
+      }
+    },
+    {
+      "hash": "dc11d3957b0f2ac7052d8a591e090fe206816390551390a54ec53e31d7e31460",
+      "kind": "ticket.claim",
+      "ticket": "01MB0000000000000000000005",
+      "from": "impl-3",
+      "ts": {
+        "wall": 1793015000000,
+        "counter": 0,
+        "actor": "impl-3"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.claim",
+        "ticket": "01MB0000000000000000000005",
+        "actor": "impl-3",
+        "ts": {
+          "wall": 1793015000000,
+          "counter": 0,
+          "actor": "impl-3"
+        },
+        "body": {
+          "lease": {
+            "ttl": 600000,
+            "grace": 120000,
+            "expiresAt": 1793015120000
+          }
+        }
+      }
+    },
+    {
+      "hash": "4578f2cdcca6c8e725200d310954399209ce22453290aa2a877aaf2d379ffebb",
+      "kind": "ticket.renew",
+      "ticket": "01MB0000000000000000000005",
+      "from": "impl-3",
+      "ts": {
+        "wall": 1793015100000,
+        "counter": 0,
+        "actor": "impl-3"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.renew",
+        "ticket": "01MB0000000000000000000005",
+        "actor": "impl-3",
+        "ts": {
+          "wall": 1793015100000,
+          "counter": 0,
+          "actor": "impl-3"
+        },
+        "body": {
+          "ttl": 600000,
+          "expiresAt": 1793015700000
+        }
+      }
+    },
+    {
+      "hash": "3ef82e6115dd5a11dcc60af78cb1d4a3a004ad4602b37098ab927231ba2d70fe",
+      "kind": "ticket.claim",
+      "ticket": "01MB0000000000000000000008",
+      "from": "impl-5",
+      "ts": {
+        "wall": 1793015300000,
+        "counter": 0,
+        "actor": "impl-5"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": "impl-4",
+      "event": {
+        "v": 1,
+        "kind": "ticket.claim",
+        "ticket": "01MB0000000000000000000008",
+        "actor": "impl-5",
+        "ts": {
+          "wall": 1793015300000,
+          "counter": 0,
+          "actor": "impl-5"
+        },
+        "body": {
+          "lease": {
+            "ttl": 3600000,
+            "grace": 120000,
+            "expiresAt": 1793015420000
+          },
+          "supersedes": {
+            "holder": "impl-4",
+            "expiresAt": 1793015070000,
+            "event": "161429173b998349d61a9972c197b923f381c99a48bc7d9f089e768a7b63ccae"
+          }
+        }
+      }
+    },
+    {
+      "hash": "76ba46d565a2150046febd53770f7c9627af61d8f5b774fe23770186a7eff36f",
+      "kind": "ticket.renew",
+      "ticket": "01MB0000000000000000000008",
+      "from": "impl-5",
+      "ts": {
+        "wall": 1793015350000,
+        "counter": 0,
+        "actor": "impl-5"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.renew",
+        "ticket": "01MB0000000000000000000008",
+        "actor": "impl-5",
+        "ts": {
+          "wall": 1793015350000,
+          "counter": 0,
+          "actor": "impl-5"
+        },
+        "body": {
+          "ttl": 3600000,
+          "expiresAt": 1793018950000
+        }
+      }
+    },
+    {
+      "hash": "f8b7e5e1eb938540ad8d8191af89b0a5c0888830c71a1fc9712f2ed5170ccdc3",
+      "kind": "ticket.claim",
+      "ticket": "01MB0000000000000000000003",
+      "from": "impl-1",
+      "ts": {
+        "wall": 1793015400000,
+        "counter": 0,
+        "actor": "impl-1"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.claim",
+        "ticket": "01MB0000000000000000000003",
+        "actor": "impl-1",
+        "ts": {
+          "wall": 1793015400000,
+          "counter": 0,
+          "actor": "impl-1"
+        },
+        "body": {
+          "lease": {
+            "ttl": 1800000,
+            "grace": 120000,
+            "expiresAt": 1793015520000
+          }
+        }
+      }
+    },
+    {
+      "hash": "0cfe8445e632877c0750bed4d2f8b3184cf0db0b40b3e0f7de2e9bc2bde63658",
+      "kind": "ticket.claim",
+      "ticket": "01MB0000000000000000000007",
+      "from": "merger-5",
+      "ts": {
+        "wall": 1793015500000,
+        "counter": 0,
+        "actor": "merger-5"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.claim",
+        "ticket": "01MB0000000000000000000007",
+        "actor": "merger-5",
+        "ts": {
+          "wall": 1793015500000,
+          "counter": 0,
+          "actor": "merger-5"
+        },
+        "body": {}
+      }
+    },
+    {
+      "hash": "62e877df7cb9a2aa83d311747c3f0d2651eb29dcb81c33e87cbc9c300f1eec30",
+      "kind": "ticket.queue.join",
+      "ticket": "01MB0000000000000000000007",
+      "from": "merger-6",
+      "ts": {
+        "wall": 1793015600000,
+        "counter": 0,
+        "actor": "merger-6"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.queue.join",
+        "ticket": "01MB0000000000000000000007",
+        "actor": "merger-6",
+        "ts": {
+          "wall": 1793015600000,
+          "counter": 0,
+          "actor": "merger-6"
+        },
+        "body": {
+          "ttl": 1800000
+        }
+      }
+    },
+    {
+      "hash": "256ea778bc757a25444d597d882d2b00f687e366000011f01514e18046e22a54",
+      "kind": "ticket.renew",
+      "ticket": "01MB0000000000000000000003",
+      "from": "impl-1",
+      "ts": {
+        "wall": 1793015700000,
+        "counter": 0,
+        "actor": "impl-1"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.renew",
+        "ticket": "01MB0000000000000000000003",
+        "actor": "impl-1",
+        "ts": {
+          "wall": 1793015700000,
+          "counter": 0,
+          "actor": "impl-1"
+        },
+        "body": {
+          "ttl": 1800000,
+          "expiresAt": 1793017500000
+        }
+      }
+    },
+    {
+      "hash": "6e428720bc37a91c8d33fcb5ca52527735c86bb45e488a7c6871a51df8d08c77",
+      "kind": "ticket.claim",
+      "ticket": "01MB0000000000000000000006",
+      "from": "merger-1",
+      "ts": {
+        "wall": 1793015800000,
+        "counter": 0,
+        "actor": "merger-1"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.claim",
+        "ticket": "01MB0000000000000000000006",
+        "actor": "merger-1",
+        "ts": {
+          "wall": 1793015800000,
+          "counter": 0,
+          "actor": "merger-1"
+        },
+        "body": {
+          "lease": {
+            "ttl": 1800000,
+            "grace": 120000,
+            "expiresAt": 1793015920000
+          }
+        }
+      }
+    },
+    {
+      "hash": "6b408e7221a5492a0fd115cbdb63ae4b4f5eb7ccadc7f442477fadc73c604c2b",
+      "kind": "ticket.claim",
+      "ticket": "01MB0000000000000000000004",
+      "from": "impl-2",
+      "ts": {
+        "wall": 1793015860000,
+        "counter": 0,
+        "actor": "impl-2"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.claim",
+        "ticket": "01MB0000000000000000000004",
+        "actor": "impl-2",
+        "ts": {
+          "wall": 1793015860000,
+          "counter": 0,
+          "actor": "impl-2"
+        },
+        "body": {
+          "lease": {
+            "ttl": 1800000,
+            "grace": 120000,
+            "expiresAt": 1793015980000
+          }
+        }
+      }
+    },
+    {
+      "hash": "0e41d5763dda22b313b7c4452f81bdaf37366528166fe8d58a62843336ece98e",
+      "kind": "ticket.renew",
+      "ticket": "01MB0000000000000000000006",
+      "from": "merger-1",
+      "ts": {
+        "wall": 1793015900000,
+        "counter": 0,
+        "actor": "merger-1"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.renew",
+        "ticket": "01MB0000000000000000000006",
+        "actor": "merger-1",
+        "ts": {
+          "wall": 1793015900000,
+          "counter": 0,
+          "actor": "merger-1"
+        },
+        "body": {
+          "ttl": 1800000,
+          "expiresAt": 1793017700000
+        }
+      }
+    },
+    {
+      "hash": "9a3a6b5a2b84e9f29718a88308643c0c0c768fd8f4b02a514c6f004b33b33fd4",
+      "kind": "ticket.queue.join",
+      "ticket": "01MB0000000000000000000006",
+      "from": "merger-2",
+      "ts": {
+        "wall": 1793015910000,
+        "counter": 0,
+        "actor": "merger-2"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.queue.join",
+        "ticket": "01MB0000000000000000000006",
+        "actor": "merger-2",
+        "ts": {
+          "wall": 1793015910000,
+          "counter": 0,
+          "actor": "merger-2"
+        },
+        "body": {
+          "ttl": 1800000
+        }
+      }
+    },
+    {
+      "hash": "5f2303626b85d5a224b906c7ce50bb1955e7e6485138fe8553f04fb358654977",
+      "kind": "ticket.queue.join",
+      "ticket": "01MB0000000000000000000006",
+      "from": "merger-3",
+      "ts": {
+        "wall": 1793015920000,
+        "counter": 0,
+        "actor": "merger-3"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.queue.join",
+        "ticket": "01MB0000000000000000000006",
+        "actor": "merger-3",
+        "ts": {
+          "wall": 1793015920000,
+          "counter": 0,
+          "actor": "merger-3"
+        },
+        "body": {
+          "ttl": 600000
+        }
+      }
+    },
+    {
+      "hash": "9b8c15b520f2da7824de4fd3dfa69f5a4f9f4a8f393339105d6e8b0ea00d6d2f",
+      "kind": "ticket.queue.join",
+      "ticket": "01MB0000000000000000000006",
+      "from": "merger-4",
+      "ts": {
+        "wall": 1793015930000,
+        "counter": 0,
+        "actor": "merger-4"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.queue.join",
+        "ticket": "01MB0000000000000000000006",
+        "actor": "merger-4",
+        "ts": {
+          "wall": 1793015930000,
+          "counter": 0,
+          "actor": "merger-4"
+        },
+        "body": {
+          "ttl": 3600000
+        }
+      }
+    },
+    {
+      "hash": "08bcafd79b50289500c5e1f053fc4fca6844013accafba54c8e945f42f720ea1",
+      "kind": "ticket.release",
+      "ticket": "01MB0000000000000000000007",
+      "from": "merger-5",
+      "ts": {
+        "wall": 1793015940000,
+        "counter": 0,
+        "actor": "merger-5"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.release",
+        "ticket": "01MB0000000000000000000007",
+        "actor": "merger-5",
+        "ts": {
+          "wall": 1793015940000,
+          "counter": 0,
+          "actor": "merger-5"
+        },
+        "body": {}
+      }
+    },
+    {
+      "hash": "d20dfef32a03d1c38ad52ff9a3a8a7a6122953c46bf73716b52b25dbdd632b2d",
+      "kind": "ticket.grant",
+      "ticket": "01MB0000000000000000000007",
+      "from": "agentboard",
+      "ts": {
+        "wall": 1793015940001,
+        "counter": 0,
+        "actor": "agentboard"
+      },
+      "to": "merger-6",
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.grant",
+        "ticket": "01MB0000000000000000000007",
+        "actor": "agentboard",
+        "ts": {
+          "wall": 1793015940001,
+          "counter": 0,
+          "actor": "agentboard"
+        },
+        "body": {
+          "to": "merger-6",
+          "ttl": 1800000,
+          "window": 120000,
+          "after": {
+            "released": "08bcafd79b50289500c5e1f053fc4fca6844013accafba54c8e945f42f720ea1"
+          }
+        }
+      }
+    },
+    {
+      "hash": "66a6cd76fb02f56649d0dea9836485b592547d2519d2a32c13ef85c4b1f561f3",
+      "kind": "ticket.claim",
+      "ticket": "01MB0000000000000000000002",
+      "from": "merger-1",
+      "ts": {
+        "wall": 1793015970000,
+        "counter": 0,
+        "actor": "merger-1"
+      },
+      "to": null,
+      "status": null,
+      "note": null,
+      "affects": null,
+      "event": {
+        "v": 1,
+        "kind": "ticket.claim",
+        "ticket": "01MB0000000000000000000002",
+        "actor": "merger-1",
+        "ts": {
+          "wall": 1793015970000,
+          "counter": 0,
+          "actor": "merger-1"
+        },
+        "body": {
+          "lease": {
+            "ttl": 1800000,
+            "grace": 120000,
+            "expiresAt": 1793016090000
+          }
+        }
+      }
+    }
+  ],
+  "cursor": null,
+  "advanced": false
+}

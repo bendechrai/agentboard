@@ -1,0 +1,397 @@
+{
+  "clock": {
+    "t0": 1793008800000,
+    "m1": "01MC0000000000000000000001",
+    "m2": "01MC0000000000000000000002"
+  },
+  "calls": {
+    "leasedClaim": {
+      "at": 1793008800000,
+      "tool": "board_claim",
+      "args": {
+        "id": "01MC0000000000000000000001",
+        "ttl": "30m",
+        "as": "merger-1"
+      },
+      "structured": {
+        "hash": "d18a657f890e5988e80f51458ab257d66b1e58eced698383f87a406366adbb09",
+        "events": [
+          "d18a657f890e5988e80f51458ab257d66b1e58eced698383f87a406366adbb09"
+        ],
+        "ticket": {
+          "id": "01MC0000000000000000000001",
+          "title": "Merge lock",
+          "description": null,
+          "status": "todo",
+          "blockedFrom": null,
+          "assignee": "merger-1",
+          "labels": [],
+          "task": null,
+          "adhoc": "merge lock",
+          "unplanned": null,
+          "checklist": [],
+          "comments": [],
+          "links": [],
+          "closed": false,
+          "superseded": null,
+          "disposition": null,
+          "lease": {
+            "ttl": 1800000,
+            "expiresAt": 1793008920000,
+            "event": "d18a657f890e5988e80f51458ab257d66b1e58eced698383f87a406366adbb09",
+            "confirmed": false
+          },
+          "queue": [],
+          "available": {
+            "at": 1793008980000,
+            "event": "d18a657f890e5988e80f51458ab257d66b1e58eced698383f87a406366adbb09"
+          },
+          "createdBy": "orchestrator",
+          "createdAt": {
+            "wall": 1793008740000,
+            "counter": 0,
+            "actor": "orchestrator"
+          },
+          "version": 2,
+          "updatedAt": {
+            "wall": 1793008800000,
+            "counter": 0,
+            "actor": "merger-1"
+          }
+        }
+      }
+    },
+    "renew": {
+      "at": 1793008860000,
+      "tool": "board_renew",
+      "args": {
+        "id": "01MC0000000000000000000001",
+        "as": "merger-1"
+      },
+      "structured": {
+        "hash": "b520076b16e58677e190d45492bc21f969445e29004625b8a2a6ddc30493cbbe",
+        "events": [
+          "b520076b16e58677e190d45492bc21f969445e29004625b8a2a6ddc30493cbbe"
+        ],
+        "ticket": {
+          "id": "01MC0000000000000000000001",
+          "title": "Merge lock",
+          "description": null,
+          "status": "todo",
+          "blockedFrom": null,
+          "assignee": "merger-1",
+          "labels": [],
+          "task": null,
+          "adhoc": "merge lock",
+          "unplanned": null,
+          "checklist": [],
+          "comments": [],
+          "links": [],
+          "closed": false,
+          "superseded": null,
+          "disposition": null,
+          "lease": {
+            "ttl": 1800000,
+            "expiresAt": 1793010660000,
+            "event": "b520076b16e58677e190d45492bc21f969445e29004625b8a2a6ddc30493cbbe",
+            "confirmed": true
+          },
+          "queue": [],
+          "available": {
+            "at": 1793010720000,
+            "event": "b520076b16e58677e190d45492bc21f969445e29004625b8a2a6ddc30493cbbe"
+          },
+          "createdBy": "orchestrator",
+          "createdAt": {
+            "wall": 1793008740000,
+            "counter": 0,
+            "actor": "orchestrator"
+          },
+          "version": 3,
+          "updatedAt": {
+            "wall": 1793008860000,
+            "counter": 0,
+            "actor": "merger-1"
+          }
+        }
+      }
+    },
+    "firstWait": {
+      "at": 1793008870000,
+      "tool": "board_claim",
+      "args": {
+        "id": "01MC0000000000000000000001",
+        "ttl": "30m",
+        "wait": true,
+        "as": "merger-2"
+      },
+      "structured": {
+        "queued": true,
+        "position": 1,
+        "holder": "merger-1",
+        "ticket": "01MC0000000000000000000001"
+      }
+    },
+    "queuedClaim": {
+      "at": 1793008880000,
+      "tool": "board_claim",
+      "args": {
+        "id": "01MC0000000000000000000001",
+        "ttl": "10m",
+        "wait": true,
+        "as": "merger-3"
+      },
+      "structured": {
+        "queued": true,
+        "position": 2,
+        "holder": "merger-1",
+        "ticket": "01MC0000000000000000000001"
+      }
+    },
+    "secondClaim": {
+      "at": 1793008890000,
+      "tool": "board_claim",
+      "args": {
+        "id": "01MC0000000000000000000002",
+        "ttl": "30m",
+        "as": "merger-1"
+      },
+      "structured": {
+        "hash": "35388598b40bc35c8a56197b5af0fe1ddb8e1129da2ece2764921cbb727bf840",
+        "events": [
+          "35388598b40bc35c8a56197b5af0fe1ddb8e1129da2ece2764921cbb727bf840"
+        ],
+        "ticket": {
+          "id": "01MC0000000000000000000002",
+          "title": "Deploy lock",
+          "description": null,
+          "status": "todo",
+          "blockedFrom": null,
+          "assignee": "merger-1",
+          "labels": [],
+          "task": null,
+          "adhoc": "deploy lock",
+          "unplanned": null,
+          "checklist": [],
+          "comments": [],
+          "links": [],
+          "closed": false,
+          "superseded": null,
+          "disposition": null,
+          "lease": {
+            "ttl": 1800000,
+            "expiresAt": 1793009010000,
+            "event": "35388598b40bc35c8a56197b5af0fe1ddb8e1129da2ece2764921cbb727bf840",
+            "confirmed": false
+          },
+          "queue": [],
+          "available": {
+            "at": 1793009070000,
+            "event": "35388598b40bc35c8a56197b5af0fe1ddb8e1129da2ece2764921cbb727bf840"
+          },
+          "createdBy": "orchestrator",
+          "createdAt": {
+            "wall": 1793008741000,
+            "counter": 0,
+            "actor": "orchestrator"
+          },
+          "version": 2,
+          "updatedAt": {
+            "wall": 1793008890000,
+            "counter": 0,
+            "actor": "merger-1"
+          }
+        }
+      }
+    },
+    "ack": {
+      "at": 1793008895000,
+      "tool": "board_inbox",
+      "args": {
+        "as": "merger-2"
+      }
+    },
+    "refusedTakeover": {
+      "at": 1793009040000,
+      "tool": "board_claim",
+      "args": {
+        "id": "01MC0000000000000000000002",
+        "ttl": "30m",
+        "as": "merger-4"
+      },
+      "error": {
+        "exitCode": 4,
+        "reason": "already-assigned",
+        "message": "ticket 01MC0000000000000000000002 is already assigned to merger-1 (lease expires 2026-10-26T10:03:30.000Z, claimable from 2026-10-26T10:04:30.000Z)",
+        "hint": "another actor holds this ticket, so do not work on it: see who with board_show {\"id\":\"01MC0000000000000000000002\"}, or find your own work with board_inbox {\"as\":\"merger-4\"}; it can be claimed from 2026-10-26T10:04:30.000Z, or wait in its queue with board_claim {\"id\":\"01MC0000000000000000000002\",\"ttl\":\"<duration>\",\"wait\":true,\"as\":\"merger-4\"}"
+      }
+    },
+    "release": {
+      "at": 1793009100000,
+      "tool": "board_release",
+      "args": {
+        "id": "01MC0000000000000000000001",
+        "as": "merger-1"
+      }
+    },
+    "grantInbox": {
+      "at": 1793009100001,
+      "tool": "board_inbox",
+      "args": {
+        "as": "merger-2"
+      },
+      "structured": {
+        "actor": "merger-2",
+        "entries": [
+          {
+            "hash": "0d01067825ac960560f5ce167f932ec4a0be59224b65defd27c03ed4e9688b2b",
+            "kind": "ticket.release",
+            "ticket": "01MC0000000000000000000001",
+            "from": "merger-1",
+            "ts": {
+              "wall": 1793009100000,
+              "counter": 0,
+              "actor": "merger-1"
+            },
+            "to": null,
+            "status": null,
+            "note": null,
+            "affects": null,
+            "event": {
+              "v": 1,
+              "kind": "ticket.release",
+              "ticket": "01MC0000000000000000000001",
+              "actor": "merger-1",
+              "ts": {
+                "wall": 1793009100000,
+                "counter": 0,
+                "actor": "merger-1"
+              },
+              "body": {}
+            }
+          },
+          {
+            "hash": "ffc57b3e77fe3168ce39a27c4d75f92a5fd250c8b1a50386755a0afcc44d4079",
+            "kind": "ticket.grant",
+            "ticket": "01MC0000000000000000000001",
+            "from": "agentboard",
+            "ts": {
+              "wall": 1793009100001,
+              "counter": 0,
+              "actor": "agentboard"
+            },
+            "to": "merger-2",
+            "status": null,
+            "note": null,
+            "affects": null,
+            "event": {
+              "v": 1,
+              "kind": "ticket.grant",
+              "ticket": "01MC0000000000000000000001",
+              "actor": "agentboard",
+              "ts": {
+                "wall": 1793009100001,
+                "counter": 0,
+                "actor": "agentboard"
+              },
+              "body": {
+                "to": "merger-2",
+                "ttl": 1800000,
+                "window": 120000,
+                "after": {
+                  "released": "0d01067825ac960560f5ce167f932ec4a0be59224b65defd27c03ed4e9688b2b"
+                }
+              }
+            }
+          }
+        ],
+        "cursor": "ffc57b3e77fe3168ce39a27c4d75f92a5fd250c8b1a50386755a0afcc44d4079",
+        "advanced": true
+      }
+    },
+    "forcedRelease": {
+      "at": 1793009200000,
+      "tool": "board_release",
+      "args": {
+        "id": "01MC0000000000000000000002",
+        "force": true,
+        "reason": "merger-1 crashed",
+        "as": "orchestrator"
+      },
+      "structured": {
+        "hash": "ebbf226ca13d055bf9b3d79ec82e26dea3b5e6732faf9255199cb86273aa2648",
+        "events": [
+          "ebbf226ca13d055bf9b3d79ec82e26dea3b5e6732faf9255199cb86273aa2648"
+        ],
+        "ticket": {
+          "id": "01MC0000000000000000000002",
+          "title": "Deploy lock",
+          "description": null,
+          "status": "todo",
+          "blockedFrom": null,
+          "assignee": null,
+          "labels": [],
+          "task": null,
+          "adhoc": "deploy lock",
+          "unplanned": null,
+          "checklist": [],
+          "comments": [],
+          "links": [],
+          "closed": false,
+          "superseded": null,
+          "disposition": null,
+          "lease": null,
+          "queue": [],
+          "available": {
+            "at": 1793009200000,
+            "event": "ebbf226ca13d055bf9b3d79ec82e26dea3b5e6732faf9255199cb86273aa2648"
+          },
+          "createdBy": "orchestrator",
+          "createdAt": {
+            "wall": 1793008741000,
+            "counter": 0,
+            "actor": "orchestrator"
+          },
+          "version": 3,
+          "updatedAt": {
+            "wall": 1793009200000,
+            "counter": 0,
+            "actor": "orchestrator"
+          }
+        }
+      }
+    }
+  },
+  "creates": [
+    {
+      "v": 1,
+      "kind": "ticket.create",
+      "ticket": "01MC0000000000000000000001",
+      "actor": "orchestrator",
+      "ts": {
+        "wall": 1793008740000,
+        "counter": 0,
+        "actor": "orchestrator"
+      },
+      "body": {
+        "title": "Merge lock",
+        "adhoc": "merge lock"
+      }
+    },
+    {
+      "v": 1,
+      "kind": "ticket.create",
+      "ticket": "01MC0000000000000000000002",
+      "actor": "orchestrator",
+      "ts": {
+        "wall": 1793008741000,
+        "counter": 0,
+        "actor": "orchestrator"
+      },
+      "body": {
+        "title": "Deploy lock",
+        "adhoc": "deploy lock"
+      }
+    }
+  ]
+}

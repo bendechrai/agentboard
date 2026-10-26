@@ -1,0 +1,18 @@
+id: 01MB0000000000000000000006
+title: Queued lock
+status: todo
+assignee: merger-1
+lease: live, ttl 30m, expires 2026-10-26T12:28:20.000Z, claimable from 2026-10-26T12:29:20.000Z
+next grant: merger-2 at 2026-10-26T12:29:20.001Z, accept by 2026-10-26T12:31:20.001Z
+queue:
+  1 merger-2 (joined 2026-10-26T11:58:30.000Z, ttl 30m)
+  2 merger-3 (joined 2026-10-26T11:58:40.000Z, ttl 10m)
+  3 merger-4 (joined 2026-10-26T11:58:50.000Z, ttl 1h)
+adhoc: merge lock
+labels: -
+description: -
+checklist:
+links:
+comments:
+closed: no
+events: 6

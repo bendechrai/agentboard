@@ -1,0 +1,52 @@
+{
+  "ticket": {
+    "id": "01MB0000000000000000000007",
+    "title": "Granted lock",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": "merger-6",
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": {
+      "ttl": 1800000,
+      "expiresAt": 1793016060001,
+      "event": "d20dfef32a03d1c38ad52ff9a3a8a7a6122953c46bf73716b52b25dbdd632b2d",
+      "confirmed": false,
+      "state": "live",
+      "claimableAt": 1793016120001
+    },
+    "queue": [],
+    "available": {
+      "at": 1793016120001,
+      "event": "d20dfef32a03d1c38ad52ff9a3a8a7a6122953c46bf73716b52b25dbdd632b2d"
+    },
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012406000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 5,
+    "updatedAt": {
+      "wall": 1793015940001,
+      "counter": 0,
+      "actor": "agentboard"
+    }
+  },
+  "events": 5,
+  "unknown": [],
+  "grant": {
+    "to": "merger-6",
+    "at": 1793015940001,
+    "acceptBy": 1793016060001
+  }
+}

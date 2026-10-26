@@ -1,0 +1,47 @@
+{
+  "ticket": {
+    "id": "01MB0000000000000000000009",
+    "title": "Force-released lock",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": null,
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": null,
+    "queue": [],
+    "available": {
+      "at": 1793014900000,
+      "event": "7fedeabb49346f4250e6714f8fb3edc0c92c818d440f7b895f756bb663acec74"
+    },
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012408000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 3,
+    "updatedAt": {
+      "wall": 1793014900000,
+      "counter": 0,
+      "actor": "orchestrator"
+    }
+  },
+  "events": 3,
+  "unknown": [],
+  "forcedRelease": {
+    "actor": "orchestrator",
+    "at": 1793014900000,
+    "holder": "merger-7",
+    "reason": "merger-7 crashed",
+    "event": "7fedeabb49346f4250e6714f8fb3edc0c92c818d440f7b895f756bb663acec74"
+  }
+}

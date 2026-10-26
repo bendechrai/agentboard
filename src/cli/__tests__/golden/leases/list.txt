@@ -1,0 +1,9 @@
+01MB0000000000000000000001  todo  -  [adhoc] Free lock
+01MB0000000000000000000002  todo  merger-1*+1m  [adhoc] Lock in grace
+01MB0000000000000000000003  todo  impl-1+25m  [adhoc] Confirmed lock
+01MB0000000000000000000004  todo  impl-2*!expired  [adhoc] Expired lock
+01MB0000000000000000000005  todo  impl-3!claimable  [adhoc] Claimable lock
+01MB0000000000000000000006  todo  merger-1+28m^3  [adhoc] Queued lock
+01MB0000000000000000000007  todo  merger-6*+1m  [adhoc] Granted lock
+01MB0000000000000000000008  todo  impl-5+49m  [adhoc] Taken over lock
+01MB0000000000000000000009  todo  -  [adhoc] Force-released lock

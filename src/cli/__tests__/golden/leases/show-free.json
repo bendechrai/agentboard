@@ -1,0 +1,37 @@
+{
+  "ticket": {
+    "id": "01MB0000000000000000000001",
+    "title": "Free lock",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": null,
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": null,
+    "queue": [],
+    "available": null,
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012400000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 1,
+    "updatedAt": {
+      "wall": 1793012400000,
+      "counter": 0,
+      "actor": "orchestrator"
+    }
+  },
+  "events": 1,
+  "unknown": []
+}
