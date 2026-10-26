@@ -125,6 +125,8 @@ describe('the help data of record in the registry', () => {
         'show',
         'list',
         'claim',
+        'renew',
+        'unqueue',
         'release',
         'move',
         'comment',
@@ -137,7 +139,17 @@ describe('the help data of record in the registry', () => {
       awareness: ['inbox', 'watch', 'serve', 'top', 'health'],
       planning: ['import-change', 'close-merged'],
       maintenance: ['rebuild', 'sync'],
-      setup: ['init', 'remote', 'mcp', 'agents install', 'agents check', 'version', 'help'],
+      setup: [
+        'init',
+        'remote',
+        'config set',
+        'config get',
+        'mcp',
+        'agents install',
+        'agents check',
+        'version',
+        'help',
+      ],
     });
     expect(COMMAND_GROUPS).toEqual(['lifecycle', 'awareness', 'planning', 'maintenance', 'setup']);
     expect(GROUP_TITLES).toEqual({
@@ -390,7 +402,21 @@ describe('synopsis', () => {
       'move',
       'agentboard move <id> [<status>] [--allow-secret-like] [--task <task> | --change <change> --group <group> | --unplanned <unplanned>] --as <actor> [--json]',
     ],
-    ['claim', 'agentboard claim <id> --as <actor> [--json]'],
+    [
+      'claim',
+      'agentboard claim <id> [--ttl <ttl>] [--wait --timeout <timeout>] --as <actor> [--json]',
+    ],
+    ['renew', 'agentboard renew <id> [--ttl <ttl>] --as <actor> [--json]'],
+    ['unqueue', 'agentboard unqueue <id> --as <actor> [--json]'],
+    [
+      'release',
+      'agentboard release <id> [--allow-secret-like] [--force --reason <reason>] --as <actor> [--json]',
+    ],
+    [
+      'config set',
+      'agentboard config set <lease.grace|queue.window> <value> --as <actor> [--json]',
+    ],
+    ['config get', 'agentboard config get [<lease.grace|queue.window>] [--json]'],
     ['checklist tick', 'agentboard checklist tick <id> <index> --as <actor> [--json]'],
     ['inbox', 'agentboard inbox [--since <since>] [--peek] --as <actor> [--json]'],
     ['show', 'agentboard show <id> [--raw] [--json]'],
@@ -410,7 +436,9 @@ describe('synopsis', () => {
     expect(text.startsWith(`agentboard ${name}`)).toBe(true);
     expect(text.endsWith(' [--json]')).toBe(true);
     for (const p of c.positionals) {
-      expect(text).toContain(p.required ? ` <${p.name}>` : ` [<${p.name}>]`);
+      // A positional with choices is written with them (config set <lease.grace|queue.window>).
+      const form = p.choices === undefined ? p.name : p.choices.join('|');
+      expect(text).toContain(p.required ? ` <${form}>` : ` [<${form}>]`);
     }
     for (const f of c.flags.filter((x) => x.required)) {
       expect(text).toContain(`--${f.name} <${f.name}>`);
@@ -639,7 +667,7 @@ describe('renderCommandHelp', () => {
 
   it("scenario: claim's help has --as, exit 4 already-assigned and an example", () => {
     const text = help(command('claim'));
-    expect(text).toMatch(/^Usage: agentboard claim <id> --as <actor>/);
+    expect(text).toMatch(/^Usage: agentboard claim <id> .*--as <actor>/);
     expect(text).toMatch(/^ {2}--as <actor> /m);
     expect(text).toMatch(/^ {2}4 already-assigned {2,}\S/m);
     expect(text).toMatch(/^ {2}agentboard claim \S+ --as \S+$/m);
@@ -826,9 +854,18 @@ describe('helpOutput', () => {
     expect(err.message).toContain("'agentboard help'");
   });
 
-  it('refuses a group word alone, suggesting its commands', () => {
-    const err = expectBoardError(() => helpOutput(HELP_SOURCE, ['checklist']), 1, 'usage');
-    expect(err.message).toContain('checklist tick or checklist untick');
+  it('prints the help of every command of a group word, in registry order (help config)', () => {
+    // add-claim-leases: board-cli scenario "Renew, unqueue and config have help".
+    const checklist = helpOutput(HELP_SOURCE, ['checklist']);
+    expect(checklist.text).toBe(
+      `${help(command('checklist tick'))}\n${help(command('checklist untick'))}`,
+    );
+    expect(checklist.json).toEqual([
+      commandHelpDocument(HELP_SOURCE, command('checklist tick')),
+      commandHelpDocument(HELP_SOURCE, command('checklist untick')),
+    ]);
+    const config = helpOutput(HELP_SOURCE, ['config']);
+    expect(config.text).toBe(`${help(command('config set'))}\n${help(command('config get'))}`);
   });
 
   it('refuses a subtopic after a one-word command, pointing to its help', () => {

@@ -251,7 +251,9 @@ describe('the built CLI', { timeout: 30_000 }, () => {
     const out = spawnCli(['claim', '--help'], dir, cliEnv({ AGENTBOARD_ACTOR: undefined }));
     expect(out.code).toBe(0);
     expect(out.stderr).toBe('');
-    expect(out.stdout).toMatch(/^Usage: agentboard claim <id> --as <actor>/);
+    expect(out.stdout).toMatch(
+      /^Usage: agentboard claim <id> \[--ttl <ttl>\] \[--wait --timeout <timeout>\] --as <actor>/,
+    );
     expect(out.stdout).toMatch(/^ {2}--as <actor> /m);
     expect(out.stdout).toMatch(/^Exit codes:$/m);
     expect(out.stdout).toMatch(/^ {2}4 already-assigned {2,}\S/m);
