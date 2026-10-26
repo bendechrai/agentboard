@@ -52,13 +52,20 @@ export function parseMarkdown(source: string): Root {
 /** The protocols a description link may have. */
 const ALLOWED_PROTOCOLS: ReadonlySet<string> = new Set(['http:', 'https:', 'mailto:']);
 
+/** An `http:` or `https:` scheme followed by `//`, as written, in any letter case. */
+const HTTP_WITH_AUTHORITY = /^https?:\/\//i;
+
 /**
  * Whether `url` may be the `href` of a link in a description: true exactly
  * when `new URL(url)`, without a base, succeeds and its `protocol` is
  * `http:`, `https:` or `mailto:`. Relative, protocol-relative and
  * fragment-only URLs fail to parse without a base and so are refused, as
  * are malformed URLs and every other scheme (`javascript:`, `data:`,
- * `vbscript:`, `file:` and the rest, in any letter case).
+ * `vbscript:`, `file:` and the rest, in any letter case). An `http:` or
+ * `https:` URL must also have `//` right after its scheme as written: a
+ * browser resolves an `href` such as `http:/api/session` or `http:api`
+ * against the page's own origin, although the parser without a base reads
+ * it as absolute with host `api`.
  */
 export function isAllowedUrl(url: string): boolean {
   let parsed: URL;
@@ -67,7 +74,10 @@ export function isAllowedUrl(url: string): boolean {
   } catch {
     return false;
   }
-  return ALLOWED_PROTOCOLS.has(parsed.protocol);
+  if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) {
+    return false;
+  }
+  return parsed.protocol === 'mailto:' || HTTP_WITH_AUTHORITY.test(url);
 }
 
 /**

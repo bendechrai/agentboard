@@ -440,16 +440,18 @@ select {
   line-height: 1.25;
 }
 
+/* Below the section's own h3 (1rem): h4 > h5 > h6, each visibly smaller. */
+
 .description h4 {
-  font-size: 1.05rem;
+  font-size: 0.95rem;
 }
 
 .description h5 {
-  font-size: 1rem;
+  font-size: 0.9rem;
 }
 
 .description h6 {
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   color: var(--muted);
 }
 

@@ -85,7 +85,11 @@ check. An unresolved reference is its text. Definitions render nothing.
 A URL is linked only when `new URL(url)` succeeds without a base and its
 `protocol` is `http:`, `https:` or `mailto:`. Relative URLs fail to parse
 without a base and so render as text, which also keeps a description from
-pointing at the server's own API or changing the app's hash route.
+pointing at the server's own API or changing the app's hash route. An
+`http:` or `https:` URL must also have `//` right after its scheme as
+written, because a browser resolves an `href` such as `http:/api/session`
+or `http:api` against the page's own origin (a same-origin link) even
+though the parser without a base reads it as absolute with host `api`.
 Allowed links get `target="_blank"` and `rel="noopener noreferrer"`. The
 page's `Referrer-Policy: no-referrer` already applies; `rel` repeats it on
 the element.
