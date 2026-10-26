@@ -104,20 +104,160 @@ class AlreadyHeld extends Error {
 }
 
 /**
- * `claim`: writes `ticket.claim`, assigning the ticket to `actor`.
+ * The refusal of a `claim` by the state of the ticket (board-cli: "Claim,
+ * release and handoff", "Lease and queue hints"): a `BoardError` with exit
+ * code 4 and reason `already-assigned` or `queued`, carrying what the hint
+ * needs, since a plain `BoardError` carries no details. `hintFor`
+ * (`src/guidance/hints.ts`) reads `lease` to name the time from which the
+ * ticket can be claimed.
+ */
+export class ClaimRefusedError extends BoardError {
+  /** The assignee at the time of the refusal, or null (a free ticket with waiters). */
+  readonly holder: string | null;
+  /**
+   * For `already-assigned` on a ticket held under a lease: its `expiresAt`
+   * and `claimableAt` (`expiresAt + LEASE_SKEW_MS`); null otherwise.
+   */
+  readonly lease: { readonly expiresAt: number; readonly claimableAt: number } | null;
+
+  constructor(
+    reason: 'already-assigned' | 'queued',
+    message: string,
+    holder: string | null,
+    lease: { readonly expiresAt: number; readonly claimableAt: number } | null,
+  ) {
+    super(4, reason, message);
+    this.name = 'ClaimRefusedError';
+    this.holder = holder;
+    this.lease = lease;
+  }
+}
+
+/** Input of `claimTicket`. */
+export interface ClaimInput {
+  id: string;
+  /**
+   * `--ttl`: the lease to ask for, in milliseconds (the registry parses the
+   * duration with `parseTtl`). Must be a safe integer in
+   * `TTL_MIN_MS`..`TTL_MAX_MS`, else `BoardError(1, 'usage')`.
+   */
+  ttl?: number | undefined;
+  /**
+   * `--wait`: join the queue when the ticket cannot be claimed at once,
+   * without blocking (the foreground wait of the CLI is built on top of
+   * this). Needs `ttl`.
+   */
+  wait?: boolean | undefined;
+}
+
+/**
+ * The result of a claim that holds the ticket (it was written, or the
+ * actor already held it): the ordinary `WriteOutcome`, plus `queued: false`
+ * exactly when `wait` was given (absent otherwise, so a plain claim's
+ * document is unchanged).
+ */
+export type ClaimedOutcome = WriteOutcome & { queued?: false };
+
+/**
+ * The result of a `claim` with `wait` that joined (or was already in) the
+ * queue: exactly these four keys, in this order, and also the `--json`
+ * document and the MCP structured content (board-cli: "Lease and queue
+ * tools over MCP", scenario "MCP wait returns at once").
+ */
+export interface QueuedOutcome {
+  queued: true;
+  /** The actor's 1-based position in the queue after the join. */
+  position: number;
+  /** The assignee, or null when the ticket is unassigned (it has waiters). */
+  holder: string | null;
+  /** The full ticket id. */
+  ticket: string;
+}
+
+/** Result of `claimTicket`. */
+export type ClaimOutcome = ClaimedOutcome | QueuedOutcome;
+
+/**
+ * `claim` (board-cli: "Claim, release and handoff", "Leases on the command
+ * line", "Waiting on the command line"; add-claim-leases design.md:
+ * "Command-time validation matches the fold", "Takeover rule").
  *
- * - Unassigned: the claim is written.
- * - Already assigned to `actor` (a retried claim): succeeds without
- *   writing anything, returning `hash: null` and the current ticket.
- * - Assigned to someone else: `BoardError(4, 'already-assigned')` whose
- *   message names the current assignee; nothing is written.
+ * Checks before the board is read, each `BoardError(1, ...)`, writing
+ * nothing: an empty actor (`missing-actor`); `ttl` given and not a safe
+ * integer in `TTL_MIN_MS`..`TTL_MAX_MS` (`usage`); `wait` without `ttl`
+ * (`usage`, naming `--ttl`).
+ *
+ * Then, in the command transaction (`runCommand`: catch-up, which writes
+ * the grants due at its clock `t`, then the decision, where the event's
+ * hybrid timestamp `ts` is built before the decision so it can be
+ * validated), with `ticket` the resolved ticket after catch-up and `lease`
+ * its lease, in this order:
+ *
+ * 1. `ticket.assignee === actor` (a retried claim, with or without `ttl`
+ *    or `wait`): nothing is written; the result is `{ hash: null, events:
+ *    [], ticket }` (plus `queued: false` with `wait`), the lease unchanged.
+ * 2. `wait` and the actor is already queued: nothing is written; the
+ *    result is the `QueuedOutcome` with its current position.
+ * 3. `ticket.assignee === null` and the queue is empty: writes
+ *    `ticket.claim` with body `{}` without `ttl`, else `{ lease: { ttl,
+ *    grace, expiresAt } }` with `grace = leaseGrace(meta)` (the board's
+ *    `lease.grace` as folded, default 120000) and `expiresAt = ts.wall +
+ *    min(ttl, grace)`. Result: the `WriteOutcome` (plus `queued: false`
+ *    with `wait`).
+ * 4. `wait` (the ticket is held, by anyone else and under any lease or
+ *    none, or it has waiters): writes `ticket.queue.join` with body `{ ttl
+ *    }`, and returns the `QueuedOutcome` (position = queue length after
+ *    the join, holder = `ticket.assignee`). A ticket whose lease is
+ *    already claimable is joined, not taken over: its grant follows from
+ *    the queue.
+ * 5. The queue is not empty: `ClaimRefusedError('queued', ...)` whose
+ *    message is `ticket <id> has <n> actor(s) waiting for it, who have
+ *    priority`, nothing written.
+ * 6. Held by another actor under a lease with `ts.wall >= lease.expiresAt
+ *    + LEASE_SKEW_MS` and `t >= lease.expiresAt + LEASE_SKEW_MS` (the local
+ *    clock too, so the writer is never looser than the fold, even when a
+ *    folded event from a fast clock has pushed the hybrid timestamp
+ *    ahead): a takeover. Without `ttl` it is refused with `BoardError(1,
+ *    'usage')` naming `--ttl` (a takeover always carries its own lease, so
+ *    the new hold can lapse too), nothing written. With `ttl` it writes
+ *    `ticket.claim` with body `{ lease: { ttl, grace, expiresAt },
+ *    supersedes: { holder: ticket.assignee, expiresAt: lease.expiresAt,
+ *    event: lease.event } }`; callers never supply `supersedes`.
+ * 7. Otherwise (held by another actor without a lease, or under a lease
+ *    not yet claimable by both readings): `ClaimRefusedError(
+ *    'already-assigned', ...)`, nothing written, whose message is
+ *    `ticket <id> is already assigned to <holder>` without a lease and
+ *    `ticket <id> is already assigned to <holder> (lease expires <iso
+ *    expiresAt>, claimable from <iso expiresAt + LEASE_SKEW_MS>)` with one
+ *    (`isoTime`; the holder through `asciiText`), and whose `lease` is
+ *    `{ expiresAt, claimableAt }` or null.
+ *
+ * Every event is validated with the fold's own rules against `ts` before
+ * its file is written, so a refusal writes no event file and no temporary
+ * file; a refusal still commits what the catch-up did (board-cache: "One
+ * command, one transaction").
  */
 export function claimTicket(
   board: Board,
   actor: string,
-  input: { id: string },
+  input: ClaimInput & { wait?: false | undefined },
   options?: WriteOptions,
-): WriteOutcome {
+): ClaimedOutcome;
+export function claimTicket(
+  board: Board,
+  actor: string,
+  input: ClaimInput,
+  options?: WriteOptions,
+): ClaimOutcome;
+export function claimTicket(
+  board: Board,
+  actor: string,
+  input: ClaimInput,
+  options?: WriteOptions,
+): ClaimOutcome {
+  if (input.ttl !== undefined || input.wait !== undefined) {
+    throw new Error('not implemented');
+  }
   try {
     return writeTicketEvent(
       board,
@@ -139,17 +279,117 @@ export function claimTicket(
   }
 }
 
+/** Input of `renewTicket`. */
+export interface RenewInput {
+  id: string;
+  /**
+   * `--ttl` in milliseconds (a safe integer in `TTL_MIN_MS`..`TTL_MAX_MS`,
+   * else `BoardError(1, 'usage')`); omitted means the ttl of the current
+   * lease.
+   */
+  ttl?: number | undefined;
+}
+
 /**
- * `release`: writes `ticket.release`, clearing the assignment. Refused by
- * the fold with exit 4 `not-assignee` unless `actor` is the assignee (an
- * unassigned ticket included).
+ * `renew` (board-cli: "Leases on the command line"): writes `ticket.renew`
+ * with body `{ ttl, expiresAt: ts.wall + ttl }`, where `ttl` is
+ * `input.ttl` or, when omitted, `ticket.lease.ttl` (the ttl the holder
+ * asked for, or the grant's ttl for a grantee accepting a grant). The
+ * renew sets the lease (it does not extend it) and confirms it, also after
+ * the lease expired when nothing took the ticket over before it.
+ *
+ * Refusals, writing nothing:
+ * - `actor` is not the assignee (the ticket is held by another actor, or
+ *   unassigned): `BoardError(4, 'not-assignee')`, the fold's own rejection;
+ * - the actor is the assignee, `input.ttl` is omitted and the ticket has
+ *   no lease: `BoardError(1, 'usage')` saying `--ttl` is needed;
+ * - `input.ttl` out of range: `BoardError(1, 'usage')`, before the board
+ *   is read.
+ *
+ * @throws BoardError exit 1 `missing-actor` when `actor` is empty.
  */
-export function releaseTicket(
+export function renewTicket(
+  board: Board,
+  actor: string,
+  input: RenewInput,
+  options?: WriteOptions,
+): WriteOutcome {
+  void board;
+  void actor;
+  void input;
+  void options;
+  throw new Error('not implemented');
+}
+
+/**
+ * `unqueue` (board-cli: "Waiting on the command line"): writes
+ * `ticket.queue.leave` (empty body), removing `actor` from the ticket's
+ * queue. When `actor` is not queued it is the fold's rejection,
+ * `BoardError(4, 'invalid-queue')`, and nothing is written.
+ *
+ * @throws BoardError exit 1 `missing-actor` when `actor` is empty.
+ */
+export function unqueueTicket(
   board: Board,
   actor: string,
   input: { id: string },
   options?: WriteOptions,
 ): WriteOutcome {
+  void board;
+  void actor;
+  void input;
+  void options;
+  throw new Error('not implemented');
+}
+
+/** Input of `releaseTicket`. */
+export interface ReleaseInput {
+  id: string;
+  /** `--force`: break another actor's hold (needs `reason`). */
+  force?: boolean | undefined;
+  /** `--reason`: why the hold is broken; only with `force`. */
+  reason?: string | undefined;
+  /** Skips the secret-pattern refusal of the reason. */
+  allowSecretLike?: boolean | undefined;
+}
+
+/**
+ * `release` (board-cli: "Claim, release and handoff", "Forced release on
+ * the command line").
+ *
+ * Without `force` (and without `reason`): writes `ticket.release`,
+ * clearing the assignment and the lease. Refused by the fold with exit 4
+ * `not-assignee` unless `actor` is the assignee (an unassigned ticket
+ * included).
+ *
+ * With `force`: writes `ticket.release.force` with body `{ holder:
+ * ticket.assignee, reason }`, clearing the assignee and the lease and
+ * leaving the status unchanged (with waiters, the grant to the head waiter
+ * is then due at once). Any actor may force a release; there is no
+ * allowlist.
+ *
+ * Refusals, writing nothing:
+ * - `reason` given without `force`, or `force` with `reason` undefined or
+ *   empty: `BoardError(1, 'usage')`, before the board is read;
+ * - a reason matching a secret pattern: `refuseSecretLike` (exit 1
+ *   `secret-like`, naming the pattern) unless `allowSecretLike`, before
+ *   the board is read;
+ * - `force` by the assignee itself: `BoardError(1, 'usage')` whose message
+ *   says to run `release` without `--force` (the words `without --force`
+ *   appear);
+ * - `force` on an unassigned ticket: `BoardError(4, 'not-assignee')`.
+ *
+ * @throws BoardError exit 1 `missing-actor` when `actor` is empty.
+ */
+export function releaseTicket(
+  board: Board,
+  actor: string,
+  input: ReleaseInput,
+  options?: WriteOptions,
+): WriteOutcome {
+  if (input.force !== undefined || input.reason !== undefined) {
+    throw new Error('not implemented');
+  }
   return writeTicketEvent(
     board,
     actor,

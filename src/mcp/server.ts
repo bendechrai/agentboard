@@ -194,7 +194,10 @@ export interface BoardMcpServer {
    *    so the order is call `as`, server `--as`, `AGENTBOARD_ACTOR`. With
    *    none, the `missing-actor` error (exit 1) names both `--as` and
    *    `AGENTBOARD_ACTOR`. For any other command the actor is null. This
-   *    happens before the board is opened.
+   *    happens before the board is opened. The reserved actor is refused
+   *    here too (`refuseReservedActor`: the call's `as` for every tool,
+   *    and the resolved actor of a tool that needs one), as exit 1
+   *    `usage`, writing nothing.
    * 4. `command.run(ctx, values)` with a `RunContext` like the CLI's:
    *    `cwd` and `env` from the options, the actor, `boardDir()` returning
    *    `boardDir`, and `board(options)` opening `boardDir` with `openBoard`

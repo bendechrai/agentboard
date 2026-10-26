@@ -85,7 +85,10 @@ export interface CommandHelpDocument {
  * `agentboard handoff <id> --to <to> --status <status> --note <note> [--allow-secret-like] --as <actor> [--json]`.
  *
  * `agentboard <name>`, then, separated by single spaces:
- * 1. each positional: `<name>` when required, `[<name>]` when optional;
+ * 1. each positional: `<name>` when required, `[<name>]` when optional,
+ *    where a positional with `choices` is written with its choices joined
+ *    by `|` in place of its name (`config set <lease.grace|queue.window>
+ *    <value>`, `config get [<lease.grace|queue.window>]`);
  * 2. each own flag not in an exclusive group, in registry order: a
  *    boolean flag is `--name`, any other `--name <name>`; wrapped in
  *    `[...]` when optional, and followed by `...` when repeatable (e.g.
@@ -142,7 +145,11 @@ export function synopsis(command: CommandSpec): string {
  *    by one line per exclusive group: `Exactly one of: ` (required group)
  *    or `At most one of: ` (optional group) and its alternatives, each
  *    alternative's flags as `--a with --b`, joined by ` | ` (e.g.
- *    `Exactly one of: --task | --change with --group | --adhoc`).
+ *    `Exactly one of: --task | --change with --group | --adhoc`); an
+ *    optional group with a single alternative, whose flags are only given
+ *    together, is `Given together: ` and that alternative (`Given
+ *    together: --wait with --timeout`, `Given together: --force with
+ *    --reason`).
  * 6. `Global flags:` then one line per global flag.
  * 7. `Exit codes:` then one line per `exitCodes` entry, in order:
  *    `  <code> <reason>  <meaning>`, or `  <code>  <meaning>` without a
@@ -154,7 +161,8 @@ export function synopsis(command: CommandSpec): string {
  * An argument line is two spaces, the argument's form, at least two
  * spaces, `<type>, required` or `<type>, optional` (plus `, repeatable`
  * for a repeatable flag), at least two spaces, and its summary. The form is
- * `<name>` for a positional, `--name` for a boolean flag and
+ * `<name>` for a positional (`<a|b>` for one with `choices`, as in the
+ * synopsis), `--name` for a boolean flag and
  * `--name <name>` for any other flag, except `--as <actor>`. The `--as`
  * line reads `string, required (or set AGENTBOARD_ACTOR)` for a command
  * that writes or tracks a cursor; for any other it reads `string, optional`
@@ -310,6 +318,12 @@ export function overviewDocument(source: HelpSource): CommandHelpDocument[] {
  * - words that, joined by single spaces, are exactly a command name
  *   (`['claim']`, `['checklist', 'tick']`): that command's help (`json`:
  *   `commandHelpDocument`, `text`: `renderCommandHelp`).
+ * - one word that is not a command name but is the first word of one or
+ *   more commands (`['config']`, `['checklist']`; `['agents']` is the guide,
+ *   below): the help of each of those commands in registry order (`json`:
+ *   the array of their `commandHelpDocument`s; `text`: their
+ *   `renderCommandHelp` texts joined by one empty line), so `help config`
+ *   prints the help of `config set` and then of `config get`.
  * - two words whose first alone is a command name (`['claim', 'extra']`):
  *   throws `BoardError(1, 'usage')` with exactly
  *   `<command> has no help subtopic <word>; run 'agentboard help <command>'`

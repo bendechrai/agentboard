@@ -71,6 +71,14 @@ export interface HintContext {
   readonly closeDecision?:
     | { readonly flag: 'no-decision' }
     | { readonly flag: 'decision-recorded-in'; readonly path: string };
+  /**
+   * For `already-assigned` on a ticket held under a lease: the time, in
+   * milliseconds since the epoch, from which the ticket can be claimed
+   * (`expiresAt + LEASE_SKEW_MS`). `hintFor` fills it from a
+   * `ClaimRefusedError` (`src/board/actions.ts`) whose `lease` is not
+   * null; undefined otherwise.
+   */
+  readonly claimableAt?: number;
 }
 
 /**
@@ -448,12 +456,29 @@ export function hintStep(
  *   step `help move`.
  * - `already-assigned`: step `show` with I and step `inbox` with `as` A
  *   (board-agent-guidance scenario: the loser of a claim race is told to
- *   run `agentboard inbox --as <itself>`).
- * - `not-assignee`: step `show` with I.
+ *   run `agentboard inbox --as <itself>`), exactly
+ *   `another actor holds this ticket, so do not work on it: see who with <show>, or find your own work with <inbox>`;
+ *   when `context.claimableAt` is defined (board-cli: "Lease and queue
+ *   hints"), followed by
+ *   `; it can be claimed from <isoTime(claimableAt)>, or wait in its queue with <W>`,
+ *   where W, the wait step, is step `claim` with `id` I, `ttl`
+ *   `<duration>`, `wait`, `timeout` `<duration>`, `as` A on the CLI
+ *   (`'agentboard claim I --ttl <duration> --wait --timeout <duration> --as A'`)
+ *   and step `claim` with `id` I, `ttl` `<duration>`, `wait`, `as` A over
+ *   MCP (`board_claim {"id":"I","ttl":"<duration>","wait":true,"as":"A"}`:
+ *   `timeout` is CLI-only).
+ * - `not-assignee`: step `show` with I. When the command is `renew`,
+ *   exactly
+ *   `the lock was lost: you no longer hold this ticket, so stop the work it protects; see who holds it with <show>`.
  * - `checklist-index`: step `show` with I.
  * - `holder-changed`, `invalid-queue`, `stale-grant`: step `show` with I
- *   (for the current holder, queue and lease).
- * - `queued`: step `show` with I (for the queue).
+ *   (for the current holder, queue and lease, which `show` prints).
+ * - `queued`: exactly
+ *   `other actors are waiting for this ticket and have priority; wait in its queue with <W>`,
+ *   W as for `already-assigned`.
+ * - `wait-timeout`: exactly
+ *   `the wait timed out and you left the queue; see what happened with <inbox>, then wait again or report ready`,
+ *   where `<inbox>` is step `inbox` with `as` A.
  * - `needs-scope-disposition` (board-agent-guidance: "Error hints",
  *   scenario "Missing disposition hint"; design.md section 9): both forms
  *   of the refused command, each a step, and the text "do not create an
@@ -522,7 +547,10 @@ export function renderHint(reason: string | null, context: HintContext): string 
 
 /**
  * The hint of a thrown value: `renderHint(error.reason, context)` for a
- * `BoardError`, null for anything else. Pure.
+ * `BoardError`, null for anything else. For a `ClaimRefusedError` whose
+ * `lease` is not null, the context's `claimableAt` is that lease's
+ * `claimableAt` (so the CLI's stderr hint, the `--json` error document
+ * and the MCP tool error all name it). Pure.
  */
 export function hintFor(error: unknown, context: HintContext): string | null {
   return error instanceof BoardError ? renderHint(error.reason, context) : null;

@@ -32,8 +32,9 @@ export const TOOL_PREFIX = 'board_';
 /**
  * The commands that are not exposed as tools (board-cli: "MCP server"):
  * setup, streaming or maintenance commands run by a human or an
- * orchestrator in a shell, `help` (tools/list already describes every
- * tool), and `agents install` and
+ * orchestrator in a shell (`config set` and `config get` among them: the
+ * board settings are set up in a shell), `help` (tools/list already
+ * describes every tool), and `agents install` and
  * `agents check`, which write or read host project files in the caller's
  * working tree (board-agent-guidance: "Help is not an MCP tool").
  */
@@ -45,6 +46,8 @@ export const EXCLUDED_COMMANDS: readonly string[] = [
   'rebuild',
   'sync',
   'remote',
+  'config set',
+  'config get',
   'mcp',
   'version',
   'help',
@@ -70,7 +73,9 @@ export interface ToolInputSchema {
   readonly type: 'object';
   /**
    * One property per positional (in order), then per flag of the command
-   * (in order), then `as` (with `ACTOR_FLAG.summary` as description). Keys
+   * that is not CLI-only (`ArgSpec.cliOnly`: `claim --timeout` has no
+   * property), in order, then `as` (with `ACTOR_FLAG.summary` as
+   * description). Keys
    * are the kebab-case `ArgSpec.name`s (`decision-recorded-in`,
    * `allow-secret-like`). No `json` property.
    */
@@ -122,12 +127,16 @@ export function toolName(commandName: string): string {
  * separated by one space (so a command with two groups has a single period
  * between them):
  * - a required group: `Give exactly one of: <alternatives>.`
- * - an optional group: `Give at most one of: <alternatives>.`
+ * - an optional group: `Give at most one of: <alternatives>.`, except an
+ *   optional group with a single alternative: `Give together:
+ *   <alternative>.` (`release`: `Give together: force with reason.`)
  * where `<alternatives>` lists each alternative's property names joined
- * with ` with `, alternatives joined with ` | `. For example `new` is
+ * with ` with `, alternatives joined with ` | `. A group that names a
+ * CLI-only flag (`ArgSpec.cliOnly`) is not applied over MCP and has no
+ * sentence, so `claim` is just `Assign an unassigned ticket to yourself`.
+ * For example `new` is
  * `Create a ticket. Give exactly one of: task | change with group | adhoc.`
- * and `claim` is just `Assign an unassigned ticket to yourself`. Plain
- * ASCII. Pure.
+ * Plain ASCII. Pure.
  */
 export function toolDescription(command: CommandSpec): string {
   const sentences = command.exclusive.map(
@@ -216,6 +225,11 @@ export function findTool(
  *
  * `as`, when given as a non-empty string, is in the result as `as` (as
  * `parseArgs` puts `--as` there); actor resolution is not done here.
+ *
+ * A CLI-only flag (`ArgSpec.cliOnly`, `claim --timeout`) is not a
+ * property, so passing it (`timeout`) is the unknown-property usage error;
+ * and an exclusive group that names a CLI-only flag (`claim`'s `--wait`
+ * with `--timeout`) is not checked, so `wait` alone is accepted.
  *
  * @throws BoardError exit 1: reason `usage` naming the property for a
  *   non-object `args`, an unknown property (including `json`), a value of

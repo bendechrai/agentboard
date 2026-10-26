@@ -17,6 +17,7 @@ import { inSnapshot, stmt } from '../store/engine.js';
 import { BoardError } from '../store/errors.js';
 import { readEventFile, readEventLog } from '../store/eventfile.js';
 import { runCommand } from '../store/transaction.js';
+import { leaseDocument, type LeaseDocument } from './leases.js';
 import { requireActor, resolveTicket, ticketOf } from './lookup.js';
 import type { TaskFilter } from './resolve.js';
 import { refuseSecretLike } from './secrets.js';
@@ -118,9 +119,65 @@ export function newTicket(
   };
 }
 
+/**
+ * A ticket as `show --json` and `list --json` carry it (board-cli: "Leases
+ * on the command line"): the folded `Ticket` exactly, `available` and the
+ * queue's `Waiter`s (`actor`, `ttl`, `event`, `joined`) included, except
+ * that `lease` is null or its `LeaseDocument` at the command's clock
+ * (`leaseDocument`), with `state` and `claimableAt`. The documents of
+ * writing commands keep the folded `Ticket` as it is.
+ */
+export interface TicketDocument extends Omit<Ticket, 'lease'> {
+  lease: LeaseDocument | null;
+}
+
+/**
+ * The grant `show` displays (board-cli: "Leases on the command line"):
+ * `to` (the grantee), `at` (the grant's slot time, its wall) and
+ * `acceptBy` (the time by which the grantee must renew to accept it,
+ * `at + window`).
+ */
+export interface GrantView {
+  to: string;
+  at: number;
+  acceptBy: number;
+}
+
+/**
+ * The last applied takeover of a ticket: a `ticket.claim` with
+ * `supersedes` that was applied while the ticket was held (one applied on
+ * a free ticket ignores its `supersedes` and is not a takeover).
+ */
+export interface TakeoverView {
+  /** The actor that took the ticket over. */
+  actor: string;
+  /** The takeover's wall time. */
+  at: number;
+  /** `supersedes.holder`: the previous holder. */
+  holder: string;
+  /** `supersedes.expiresAt`: when the previous holder's lease expired. */
+  expiresAt: number;
+  /** The takeover claim's hash. */
+  event: string;
+}
+
+/** The last applied `ticket.release.force` of a ticket. */
+export interface ForcedReleaseView {
+  /** The actor that forced the release. */
+  actor: string;
+  /** Its wall time. */
+  at: number;
+  /** `body.holder`: the holder released. */
+  holder: string;
+  /** `body.reason`. */
+  reason: string;
+  /** Its hash. */
+  event: string;
+}
+
 /** Result of `showTicket`; also the `show --json` document. */
 export interface ShowResult {
-  ticket: Ticket;
+  ticket: TicketDocument;
   /**
    * The event count: the number of applied events of this ticket (equal to
    * `ticket.version`), shown by the human output as `events: <n>`.
@@ -133,18 +190,53 @@ export interface ShowResult {
    * reason is `unknown-kind`; only those event files are read.
    */
   unknown: { hash: string; kind: string }[];
+  /**
+   * The applied grant waiting for acceptance: present exactly when the
+   * ticket's current lease was set by an applied `ticket.grant` (its
+   * `lease.event` is that grant's hash, so it is not confirmed yet):
+   * `{ to: the grant's to, at: its wall, acceptBy: lease.expiresAt }`.
+   * Absent otherwise (a renew by the grantee replaces the lease).
+   */
+  grant?: GrantView;
+  /**
+   * The grant that is not yet written because its slot time is still to
+   * come: present exactly when `dueGrant(ticket, meta)` (the folded meta)
+   * is not null, as `{ to: body.to, at: ts.wall, acceptBy: ts.wall +
+   * body.window }`. For a ticket held under a lease with waiters, the
+   * grant that follows if the lease lapses.
+   */
+  nextGrant?: GrantView;
+  /** The ticket's last applied takeover, when it has one (see `TakeoverView`). */
+  takeover?: TakeoverView;
+  /** The ticket's last applied forced release, when it has one. */
+  forcedRelease?: ForcedReleaseView;
+}
+
+/** Options of `showTicket` and `listTickets`. */
+export interface ReadOptions {
+  /**
+   * The clock reading the lease state is computed at, in milliseconds
+   * since the epoch. Defaults to `Date.now()`, read once per call.
+   */
+  now?: number | undefined;
 }
 
 /**
  * `show`: resolves `id` (full id or prefix, `resolveTicketId`) and reads
- * the ticket from the cache. Resolution and the ticket read come from one
- * read snapshot of the cache (a single read transaction), so a concurrent
- * writer can never make `version` disagree with the comment list.
+ * the ticket from the cache. Resolution, the ticket read and the folded
+ * meta come from one read snapshot of the cache (a single read
+ * transaction), so a concurrent writer can never make `version` disagree
+ * with the comment list. The ticket is returned as its `TicketDocument` at
+ * `options.now`. `grant`, `nextGrant`, `takeover` and `forcedRelease` are
+ * filled as `ShowResult` documents them; the takeover and forced release
+ * are read from the ticket's applied event files (board-cache: "Cache
+ * schema": `show` MAY read them).
  *
  * @throws BoardError as `resolveTicketId` (exit 1 `id-too-short` or
  *   `ambiguous-id`, exit 4 `unknown-ticket`).
  */
-export function showTicket(board: Board, id: string): ShowResult {
+export function showTicket(board: Board, id: string, options?: ReadOptions): ShowResult {
+  const now = options?.now ?? Date.now();
   const { db } = board;
   const { ticket, unknownHashes } = inSnapshot(db, () => ({
     ticket: resolveTicket(db, id),
@@ -161,10 +253,18 @@ export function showTicket(board: Board, id: string): ShowResult {
   }
   unknown.sort(compareFoldOrder);
   return {
-    ticket,
+    ticket: ticketDocument(ticket, now),
     events: ticket.version,
     unknown: unknown.map((input) => ({ hash: input.hash, kind: input.event.kind })),
   };
+}
+
+/**
+ * The `TicketDocument` of `ticket` at `now`: a copy of `ticket` whose
+ * `lease` is `leaseDocument(ticket.lease, now)`, or null without a lease.
+ */
+function ticketDocument(ticket: Ticket, now: number): TicketDocument {
+  return { ...ticket, lease: ticket.lease === null ? null : leaseDocument(ticket.lease, now) };
 }
 
 /** One event file of a ticket, as `show --raw` prints it. */
@@ -215,10 +315,16 @@ export interface ListFilter {
 
 /**
  * `list`: the tickets matching `filter`, ascending by id (creation order,
- * as ids are ULIDs). Closed tickets are excluded unless `filter.closed`.
- * Reads only the cache, in one read snapshot (`readState`).
+ * as ids are ULIDs), each as its `TicketDocument` at `options.now`.
+ * Closed tickets are excluded unless `filter.closed`. Reads only the
+ * cache, in one read snapshot (`readState`).
  */
-export function listTickets(board: Board, filter?: ListFilter): Ticket[] {
+export function listTickets(
+  board: Board,
+  filter?: ListFilter,
+  options?: ReadOptions,
+): TicketDocument[] {
+  const now = options?.now ?? Date.now();
   const f = filter ?? {};
   const labels = f.labels ?? [];
   return Object.values(readState(board.db).tickets)
@@ -230,7 +336,8 @@ export function listTickets(board: Board, filter?: ListFilter): Ticket[] {
         (f.task === undefined || matchesTask(t, f.task)) &&
         labels.every((label) => t.labels.includes(label)),
     )
-    .sort((a, b) => (a.id < b.id ? -1 : 1));
+    .sort((a, b) => (a.id < b.id ? -1 : 1))
+    .map((t) => ticketDocument(t, now));
 }
 
 /** The `ticket` field of an event, or undefined for `board.meta` and ticketless unknown kinds. */

@@ -6,6 +6,7 @@
 import type { Ticket } from '../events/fold.js';
 import { formatTaskRef } from '../events/schema.js';
 import { asciiText } from '../board/text.js';
+import type { ConfigResult } from '../board/config.js';
 import type { ImportAction, ImportResult, ImportedTicket } from '../board/import.js';
 import type { InboxEntry } from '../board/inbox.js';
 import type { ShowResult } from '../board/tickets.js';
@@ -20,8 +21,14 @@ export { asciiText };
 
 /**
  * The `list` line of a ticket, without a newline:
- * `<full 26-character id>  <status>  <assignee or ->  <markers><title>`,
- * fields separated by two spaces, where `<markers>` is `[unplanned] ` for
+ * `<full 26-character id>  <status>  <assignee>  <markers><title>`,
+ * fields separated by two spaces, where `<assignee>` is
+ * `assigneeToken(ticket, now)` (`src/board/leases.ts`: the actor or `-`,
+ * with the lease and queue suffixes, for example `merger-1*+2m^3`) when
+ * `now` is given, as `list` gives it (its clock reading, the same one its
+ * `--json` lease states are computed at), and the assignee or `-` alone
+ * when `now` is omitted (the result line of a writing command), and
+ * `<markers>` is `[unplanned] ` for
  * a ticket with an unplanned disposition (`unplanned` not null), else
  * `[adhoc] ` for a ticket with an ad hoc reason and no unplanned
  * disposition, then `[closed] ` for a closed ticket, then `[superseded] `
@@ -36,7 +43,8 @@ export { asciiText };
  * The id is never shortened, so every id printed by `list` can be pasted
  * back into any command. Pure.
  */
-export function renderListLine(ticket: Ticket): string {
+export function renderListLine(ticket: Ticket, now?: number): string {
+  void now;
   return listLine({
     ...ticket,
     adhoc: ticket.adhoc !== null,
@@ -72,13 +80,43 @@ function listLine(fields: ListFields): string {
 
 /**
  * The `show` record, one `<label>: <value>` per line, ending with a
- * newline, user text through `asciiText`:
+ * newline, user text (actors, reasons, titles) through `asciiText`, times
+ * as `isoTime` (`src/board/leases.ts`). A ticket without a lease, waiters,
+ * grant, takeover or forced release prints exactly what it printed before
+ * leases existed. Example of a held ticket with waiters:
+ *
+ * ```
+ * assignee: merger-1
+ * lease: live, ttl 30m, expires 2026-10-26T12:28:20.000Z, claimable from 2026-10-26T12:29:20.000Z
+ * next grant: merger-2 at 2026-10-26T12:29:20.001Z, accept by 2026-10-26T12:31:20.001Z
+ * queue:
+ *   1 merger-2 (joined 2026-10-26T11:58:30.000Z, ttl 30m)
+ * ```
+ *
+ * The record:
  *
  * ```
  * id: <full id>
  * title: <title>
  * status: <status>                  (blocked: `blocked (from <origin>)`)
  * assignee: <assignee or ->
+ * lease: <state>[ (grace)], ttl <ttl>, expires <iso>, claimable from <iso>
+ *                                   (only with a lease: its `state`, ` (grace)`
+ *                                    while not confirmed, `formatDuration(ttl)`,
+ *                                    `isoTime(expiresAt)`, `isoTime(claimableAt)`)
+ * granted: <to> at <iso>, accept by <iso>
+ *                                   (only with `show.grant`: `to`, `at`, `acceptBy`)
+ * next grant: <to> at <iso>, accept by <iso>
+ *                                   (only with `show.nextGrant`)
+ * queue:                            (only with waiters; then per waiter, in order,
+ *                                    `  <position> <actor> (joined <iso>, ttl <ttl>)`,
+ *                                    position from 1, `isoTime(joined.wall)`,
+ *                                    `formatDuration(ttl)`)
+ * takeover: <actor> at <iso> from <holder> (lease expired <iso>)
+ *                                   (only with `show.takeover`: `at`, then
+ *                                    `expiresAt` of the lease it replaced)
+ * forced release: <actor> at <iso> from <holder>: <reason>
+ *                                   (only with `show.forcedRelease`)
  * task: <source>:<ref>#<item>       (or `adhoc: <reason>`, or `task: -`)
  * unplanned: <reason> (by <actor>)  (only when the ticket has an unplanned
  *                                    disposition: its reason and actor,
@@ -280,9 +318,18 @@ function closedText(t: Ticket): string {
  * `note <note>`, each only when the entry's field is not null, in that
  * order; `from`, `to` and `note` pass through `asciiText`. Example:
  * `01ARYZ6S41TSV4RRFFQ69G5FAV  ticket.handoff  impl  to reviewer  status review  note done`.
+ *
+ * `reader` is the actor reading the inbox (`inbox` and `watch` pass their
+ * actor). The line begins with `GRANTED: ` when the entry is a
+ * `ticket.grant` whose `to` equals `reader`, and with `LOST: ` when its
+ * `affects` equals `reader` (board-cli: "Lease and queue events in the
+ * inbox"); with `reader` omitted there is no prefix. Examples:
+ * `GRANTED: 01ARYZ6S41TSV4RRFFQ69G5FAV  ticket.grant  agentboard  to merger-2`,
+ * `LOST: 01ARYZ6S41TSV4RRFFQ69G5FAV  ticket.release.force  orchestrator  note stalled`.
  * Pure.
  */
-export function renderInboxLine(entry: InboxEntry): string {
+export function renderInboxLine(entry: InboxEntry, reader?: string): string {
+  void reader;
   const fields = [entry.ticket ?? '-', entry.kind, asciiText(entry.from)];
   if (entry.to !== null) {
     fields.push(`to ${asciiText(entry.to)}`);
@@ -294,6 +341,20 @@ export function renderInboxLine(entry: InboxEntry): string {
     fields.push(`note ${asciiText(entry.note)}`);
   }
   return fields.join('  ');
+}
+
+/**
+ * Human output of `config get`, ending with a newline: for `config get
+ * <key>` (`keyed` true) the one line `<formatDuration(value)>`, followed by
+ * ` (default)` when the default is in effect (`5m`, `2m (default)`); for
+ * `config get` (`keyed` false) one line per setting,
+ * `<key> <formatDuration(value)>` with the same suffix, in the order of
+ * `result.settings` (`lease.grace 2m (default)`, `queue.window 5m`). Pure.
+ */
+export function renderConfig(result: ConfigResult, keyed: boolean): string {
+  void result;
+  void keyed;
+  throw new Error('not implemented');
 }
 
 /**
