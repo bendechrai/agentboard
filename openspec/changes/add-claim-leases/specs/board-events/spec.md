@@ -31,9 +31,10 @@ scope was never planned, see "Unplanned disposition");
 non-empty string, and `done`, a boolean; the fold appends them in order);
 `ticket.reconcile` (optional `title`; `updated`, an array of objects with
 `index`, `text` and `done`; `removed`, an array of indices; `added`, an
-array of objects with `text` and `done`; `forced`, a boolean; `source`, a
-string naming the tasks file and the SHA-256 of its bytes; at least one of
-`title`, `updated`, `removed` and `added` non-empty);
+array of objects with `text` and `done`; `forced`, a boolean; optional
+`holder`, the ticket's assignee, present only when `forced` is true;
+`source`, a string naming the tasks file and the SHA-256 of its bytes; at
+least one of `title`, `updated`, `removed` and `added` non-empty);
 `ticket.renumber` (from and to: non-empty item strings);
 `ticket.supersede` (reason: non-empty string);
 `board.meta` (key, value; board-level settings such as the default column

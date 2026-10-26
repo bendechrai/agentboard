@@ -5,6 +5,7 @@
  * process with captured streams.
  */
 
+import { ImportRefusedError, type ImportResult } from '../board/import.js';
 import { MoveSyncFailure } from '../board/into-host.js';
 import { openBoard, type Board } from '../store/board.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
@@ -72,6 +73,13 @@ export interface ErrorDocument {
      */
     hint: string | null;
     /**
+     * Present only for the `import-change` refusals `reconcile-blocked` and
+     * `reconcile-ambiguous` (an `ImportRefusedError`): the import's result,
+     * what was written for a blocked import and the dry run with the
+     * candidates for an ambiguous one. Absent for every other error.
+     */
+    result?: ImportResult;
+    /**
      * The kept old repository of a completed `init --into-host` whose
      * final `sync` failed (`MoveSyncFailure` in `src/board/into-host.ts`),
      * and the old remote's URL; present exactly when the error is one.
@@ -94,7 +102,8 @@ export function exitCodeFor(error: unknown): Exclude<ExitCode, 0> {
  * `BoardError` reason (null for other errors), the error message and
  * `hintFor(error, context)`. `context` defaults to
  * `{ surface: 'cli', command: null }` (placeholders for the id and actor).
- * Pure.
+ * A `MoveSyncFailure` adds its `keptAt` and `oldRemoteUrl`, and an
+ * `ImportRefusedError` its `result`. Pure.
  */
 export function errorDocument(error: unknown, context?: HintContext): ErrorDocument {
   const base: ErrorDocument['error'] = {
@@ -107,7 +116,9 @@ export function errorDocument(error: unknown, context?: HintContext): ErrorDocum
     error:
       error instanceof MoveSyncFailure
         ? { ...base, keptAt: error.keptAt, oldRemoteUrl: error.oldRemoteUrl }
-        : base,
+        : error instanceof ImportRefusedError
+          ? { ...base, result: error.result }
+          : base,
   };
 }
 

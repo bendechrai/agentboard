@@ -37,9 +37,13 @@
  *                                 --   {"actor","reason","ts"}; null without one
  *   labels       TEXT NOT NULL,   -- JSON array of strings
  *   closed       INTEGER NOT NULL,
+ *   superseded   TEXT,            -- Ticket.superseded: the supersede reason,
+ *                                 --   null when not superseded
  *   decision     TEXT,            -- decision path when closed with one;
  *                                 --   null when open or closed with noDecision
- *   checklist    TEXT NOT NULL    -- JSON array of {"done":bool,"text":string}
+ *   checklist    TEXT NOT NULL    -- JSON array of {"done":bool,"text":string},
+ *                                 --   plus "removed":true on a removed line
+ *                                 --   (Ticket.checklist, canonical JSON)
  * );
  * CREATE TABLE waiters (
  *   ticket   TEXT NOT NULL REFERENCES tickets(id),
@@ -144,13 +148,15 @@ import type { CorruptFile, MalformedFile, WriteHooks } from './eventfile.js';
 export const CACHE_FILE = 'cache.sqlite';
 
 /**
- * Version of the cache schema above, stored in `meta.schema_version`: 4,
- * the version with the `tickets.unplanned` column (board-cache: "Cache
- * schema", scenario "Cache from an earlier schema is rebuilt"), so a cache
- * of version 3 (lease and queue columns, `waiters`, `grant_watermark`) or
- * older is dropped and rebuilt from the event files on first open.
+ * Version of the cache schema above, stored in `meta.schema_version`: 5,
+ * the version with the `tickets.unplanned` column, the `tickets.superseded`
+ * column and the per-line `removed` flag of the checklist (board-cache:
+ * "Cache schema", scenario "Cache from an earlier schema is rebuilt"), so a
+ * cache of version 4 or older (version 3: lease and queue columns,
+ * `waiters`, `grant_watermark`) is dropped and rebuilt from the event files
+ * on first open.
  */
-export const CACHE_SCHEMA_VERSION = 4;
+export const CACHE_SCHEMA_VERSION = 5;
 
 /** Minimum busy timeout on every connection, in milliseconds. */
 export const BUSY_TIMEOUT_MS = 5000;
@@ -375,6 +381,7 @@ CREATE TABLE tickets (
   unplanned    TEXT,
   labels       TEXT NOT NULL,
   closed       INTEGER NOT NULL,
+  superseded   TEXT,
   decision     TEXT,
   checklist    TEXT NOT NULL
 );

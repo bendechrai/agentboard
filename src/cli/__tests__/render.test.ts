@@ -27,6 +27,7 @@ function ticket(extra: Partial<Ticket> = {}): Ticket {
     comments: [],
     links: [],
     closed: false,
+    superseded: null,
     disposition: null,
     createdBy: 'orch',
     createdAt: TS,

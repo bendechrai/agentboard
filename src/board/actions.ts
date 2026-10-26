@@ -474,8 +474,10 @@ export function linkTicket(
 export interface ChecklistOutcome extends WriteOutcome {
   /**
    * For a tick, the tasks-file reminder (`taskReminder` with the host
-   * project root, the parent of `board.dir`, and the ticket after the
-   * event); null for an untick.
+   * project root, the parent of `board.dir`, the ticket after the event,
+   * and the number of active, not removed, lines before the ticked one, so
+   * a line removed by a reconcile never shifts the mapping); null for an
+   * untick.
    */
   reminder: TaskReminder | null;
 }
@@ -504,9 +506,12 @@ export function setChecklistItem(
     }),
     options,
   );
-  const reminder = input.done
-    ? taskReminder(dirname(board.dir), outcome.ticket, input.index)
-    : null;
+  // The tasks file holds only the active lines, so the reminder counts the
+  // active lines before the ticked one (removed lines keep their index).
+  const active = outcome.ticket.checklist
+    .slice(0, input.index)
+    .filter((line) => line.removed !== true).length;
+  const reminder = input.done ? taskReminder(dirname(board.dir), outcome.ticket, active) : null;
   return { ...outcome, reminder };
 }
 

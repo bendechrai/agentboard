@@ -51,6 +51,7 @@ import {
   asciiText,
   renderCheck,
   renderHealth,
+  renderImport,
   renderInboxLine,
   renderListLine,
   renderRebuild,
@@ -643,12 +644,13 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  * - `sync`: `SyncResult` (`syncBoard` with `ctx.env`; writes no event, so
  *   no actor is needed); text: its `message` and a newline; `warnings`:
  *   the result's `warnings`, printed to stderr by `runCli`.
- * - `import-change <name>`: `ImportResult`; `name` goes through
- *   `parseImportTarget` (a plain name is an OpenSpec change,
- *   `<source>:<ref>` names another source). Text: one line per unit,
- *   `<action> ` followed by the `list` line of its ticket (`created`,
- *   `updated` or `unchanged`), then
- *   `imported <source>:<ref>: <c> created, <u> updated, <n> unchanged, <e> events`.
+ * - `import-change <name> [--dry-run] [--force]`: `ImportResult`
+ *   (`importChange` with `dryRun` and `force` from the flags); `name` goes
+ *   through `parseImportTarget` (a plain name is an OpenSpec change,
+ *   `<source>:<ref>` names another source). Text: `renderImport(result)`.
+ *   A dry run exits 0 whatever it finds. `reconcile-blocked` and
+ *   `reconcile-ambiguous` are thrown by `importChange` (exit 4) and printed
+ *   like any refusal, with their message and hint.
  * - `close-merged`: `CloseMergedResult` (with `cwd` and `env` from the
  *   context and the default `gh` runner). Text: for each closed ticket
  *   `closed ` plus its `list` line plus ` (decision <path>)` or
@@ -1810,12 +1812,16 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'import-change',
     summary: 'Create or update one ticket per task group of a planning change',
     description:
-      'Creates one ticket per task group of a planning change: a plain name is an OpenSpec change (its tasks.md is read), <source>:<ref> names another source. A group whose tasks are all ticked gets a ticket in merged. Running it again creates tickets for new groups and appends new task lines to existing checklists. Run it after proposing a change.',
+      "Creates one ticket per task group of a planning change: a plain name is an OpenSpec change (its tasks.md is read), <source>:<ref> names another source. A group whose tasks are all ticked gets a ticket in merged. Running it again pairs the existing tickets with the groups by title and task lines, never by number alone: a moved group's ticket is renumbered, a paired ticket is reconciled with its group's title and lines (removed lines are marked removed, never deleted), a new group gets a new ticket and a removed group's ticket is marked superseded. A reconcile that would remove or reword a done line, or reword the lines of a ticket held in progress, is blocked (exit 4) unless --force; an ambiguous pairing writes nothing (exit 4). --dry-run shows all of it and writes nothing. Run it after proposing or revising a change.",
     group: 'planning',
     examples: [
       {
         command: 'agentboard import-change add-parser --as orch',
         summary: 'Create a ticket per task group of the OpenSpec change add-parser',
+      },
+      {
+        command: 'agentboard import-change add-parser --dry-run --as orch',
+        summary: 'Show how a revised tasks file would change the tickets, writing nothing',
       },
     ],
     exitCodes: [
@@ -1836,27 +1842,36 @@ export const COMMANDS: readonly CommandSpec[] = [
       },
       EXIT_SECRET,
       EXIT_NO_BOARD,
+      {
+        code: 4,
+        reason: 'reconcile-blocked',
+        meaning:
+          'A reconcile would remove or reword a done line, or reword a held ticket in progress (lines named); every other group was imported',
+      },
+      {
+        code: 4,
+        reason: 'reconcile-ambiguous',
+        meaning: 'Tickets cannot be paired with groups unambiguously; nothing was written',
+      },
       EXIT_INTEGRITY,
     ],
     positionals: [
       positional('name', 'string', 'OpenSpec change name, or <source>:<ref> for another source'),
     ],
-    flags: [],
+    flags: [
+      flag('dry-run', 'boolean', 'Show the pairing and the changes, writing nothing'),
+      flag('force', 'boolean', 'Also reconcile tickets the guard blocks (recorded as forced)'),
+    ],
     exclusive: [],
     writes: true,
     operation: 'importChange',
     run: (ctx, values) => {
       const target = parseImportTarget(req(values, 'name'));
-      const result = importChange(ctx.board(), actorOf(ctx), target);
-      const count = (action: string): number =>
-        result.tickets.filter((t) => t.action === action).length;
-      const lines = result.tickets.map((t) => `${t.action} ${renderListLine(t.ticket)}`);
-      lines.push(
-        `imported ${asciiText(result.source)}:${asciiText(result.ref)}: ` +
-          `${String(count('created'))} created, ${String(count('updated'))} updated, ` +
-          `${String(count('unchanged'))} unchanged, ${String(result.events)} events`,
-      );
-      return { json: result, text: `${lines.join('\n')}\n` };
+      const result = importChange(ctx.board(), actorOf(ctx), target, {
+        dryRun: values['dry-run'] === true,
+        force: values.force === true,
+      });
+      return { json: result, text: renderImport(result) };
     },
   },
   {

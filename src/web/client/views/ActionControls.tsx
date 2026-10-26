@@ -106,7 +106,9 @@
  * `li` per line, in order, with class `done` when done, holding a `label`
  * with an `input` (type `checkbox`, `data-index="<index>"`, checked
  * exactly when the line is done, as the ticket given says) and the line's
- * text. Checking a box posts `checklist-tick` with `{ id, index }`;
+ * text. A removed line is the same `li` as in the read-only detail (class
+ * `removed`, its text and ` (removed)`) with no checkbox, so it is never
+ * offered for a tick. Checking a box posts `checklist-tick` with `{ id, index }`;
  * unchecking one posts `checklist-untick` with `{ id, index }`, `index`
  * counted from 0. A box always shows the given ticket's state (after a
  * refusal it shows the line as it was). Each line has its own request
@@ -707,14 +709,26 @@ export function ActionControls(props: ActionControlProps): JSX.Element {
   );
 }
 
+/**
+ * A removed checklist line: an `li` with the class `removed` only, holding
+ * its text followed by ` (removed)`, with no control.
+ */
+export function RemovedLine(props: { text: string }): JSX.Element {
+  return <li class="removed">{`${props.text} (removed)`}</li>;
+}
+
 /** The checklist with a checkbox per line (module comment). */
 export function ChecklistControl(props: ActionControlProps): JSX.Element {
   return (
     <div class="action checklist-control" data-action="checklist">
       <ul class="checklist">
-        {props.ticket.checklist.map((line, index) => (
-          <ChecklistLine key={String(index)} {...props} index={index} />
-        ))}
+        {props.ticket.checklist.map((line, index) =>
+          line.removed === true ? (
+            <RemovedLine key={String(index)} text={line.text} />
+          ) : (
+            <ChecklistLine key={String(index)} {...props} index={index} />
+          ),
+        )}
       </ul>
     </div>
   );

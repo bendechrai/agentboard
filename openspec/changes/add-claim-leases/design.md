@@ -311,6 +311,11 @@ in-flight information.
   without the number catches renumbering after a regroup. Unchanged text
   keeps the ticket's done flag, the board's in-flight progress; changed
   text takes the tasks file's checkbox, because it is a different task.
+  A line whose text differs only in its task number is the same task
+  moved: it keeps the ticket's done flag and never blocks, so inserting a
+  group before a held ticket (which renumbers its lines) reconciles it
+  without `--force`. Repeated numbers or texts match the k-th to the k-th,
+  and the text pass compares exactly, so a case change is a rewording.
 - Decision: refuse per ticket, not warn. A ticked line being removed or
   reworded, or lines rewritten under an agent that holds the ticket in
   `tests`, `implementing` or `review`, is lost progress or a moving
@@ -324,6 +329,28 @@ in-flight information.
   `ticket.supersede` event and nothing else: the record stays intact,
   and closing it is a human decision (close needs a decision disposition
   anyway).
+- A removed line is inactive everywhere, not only in the fold: counts and
+  progress (cards, `top`, the web app) leave it out, `show`, `top` and the
+  web detail show it marked as removed with nothing to tick, and the tick
+  reminder maps an index to the tasks file by counting only lines that
+  are not removed.
+- Writing: the pairing is computed once on the caught-up cache, then each
+  event is written in its own command transaction, as the import already
+  did before this change (one event per ticket per transaction): the
+  renumbers by ascending old number, then each group in file order (a
+  create, or a reconcile recomputed on the caught-up ticket), then the
+  supersedes. Each transaction re-checks its event, and an event a
+  concurrent import has already made stale (a renumber whose `from` no
+  longer matches, a supersede of a superseded ticket, an empty
+  recomputed reconcile, a create whose group already has a ticket with
+  its number and title) is refused `stale-import` inside the transaction,
+  so the catch-up it did is committed and nothing is reported written.
+  Two concurrent imports of one revision therefore write the events of
+  one.
+- A refusal (`reconcile-blocked`, `reconcile-ambiguous`) carries the
+  import's result in the `--json` error document and the MCP error, so an
+  orchestrator learns what was written and what is blocked without
+  running `--dry-run` again.
 - `ticket.checklist.add` stays defined so existing boards fold as
   before; new imports write `ticket.reconcile` instead.
 

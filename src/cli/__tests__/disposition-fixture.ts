@@ -126,6 +126,7 @@ export function ticketDoc(fields: Partial<Ticket> & Pick<Ticket, 'id' | 'title'>
     comments: [],
     links: [],
     closed: false,
+    superseded: null,
     disposition: null,
     createdBy: 'orch',
     createdAt: at(0, 'orch'),

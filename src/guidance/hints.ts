@@ -143,11 +143,14 @@ export const HINT_REASONS: readonly string[] = [
   'port-in-use',
   'queued',
   'read-only',
+  'reconcile-ambiguous',
+  'reconcile-blocked',
   'remote-mismatch',
   'remote-unreachable',
   'schema-mismatch',
   'secret-like',
   'stale-grant',
+  'stale-import',
   'streaming-command',
   'sync-conflict',
   'sync-failed',
@@ -222,7 +225,10 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'remote-unreachable': 3,
   'schema-mismatch': 5,
   'secret-like': 1,
+  'reconcile-ambiguous': 4,
+  'reconcile-blocked': 4,
   'stale-grant': 4,
+  'stale-import': 4,
   'streaming-command': 1,
   'sync-conflict': 3,
   'sync-failed': 3,
@@ -474,6 +480,16 @@ export function hintStep(
  *   command without it, that is step `move` with I, `status` `merged`, A
  *   (for `move`, and unknown) or step `close` with I, D, A (for `close`),
  *   and step `show` with I (for the link).
+ * - `reconcile-blocked`: step `import-change` with `name` `<change>`,
+ *   `dry-run`, `as` A (to see the blocked lines), and step `import-change`
+ *   with `name` `<change>`, `force`, `as` A (to reconcile anyway, telling
+ *   the holder).
+ * - `reconcile-ambiguous`: edit a group title in the tasks file so each
+ *   ticket's group is clear (the words `tasks` and `title` appear), after
+ *   step `import-change` with `name` `<change>`, `dry-run`, `as` A shows
+ *   the candidates.
+ * - `stale-import`: step `import-change` with `name` `<change>`,
+ *   `dry-run`, `as` A.
  *
  * Exit 5: `integrity`: a human must inspect the file named in the
  * message; step `rebuild --check`. `busy`: retry the command. `no-cache`,
@@ -574,6 +590,15 @@ function tasksHint(what: string): HintTemplate {
       ['name', '<change>'],
       ['as', h.actor],
     ])} again`;
+}
+
+/** Step `import-change` with `name` `<change>`, `dry-run` and A. */
+function importDryRun(h: HintParts): string {
+  return h.step('import-change', [
+    ['name', '<change>'],
+    ['dry-run', true],
+    ['as', h.actor],
+  ]);
 }
 
 /** Rebuilding the cache from the event log. */
@@ -868,6 +893,19 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     `that queue change does not apply to the ticket as it stands; see its holder and queue with ${h.step('show', [['id', h.id]])}`,
   'stale-grant': (h) =>
     `that grant is no longer the one due; see the ticket's holder, lease and queue with ${h.step('show', [['id', h.id]])}`,
+  'reconcile-blocked': (h) =>
+    `see the blocked lines with ${importDryRun(h)}, then revise the tasks file or reconcile anyway, telling the holder, with ${h.step(
+      'import-change',
+      [
+        ['name', '<change>'],
+        ['force', true],
+        ['as', h.actor],
+      ],
+    )}`,
+  'reconcile-ambiguous': (h) =>
+    `see the candidates and their scores with ${importDryRun(h)}, then edit a group title in the tasks file so each ticket's group is clear, and import again`,
+  'stale-import': (h) =>
+    `another import changed the ticket first; see what is left to change with ${importDryRun(h)}`,
   queued: (h) =>
     `other actors are waiting for this ticket and have priority; see the queue with ${h.step('show', [['id', h.id]])}`,
   'needs-scope-disposition': needsScopeDispositionHint,

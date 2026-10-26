@@ -60,6 +60,13 @@ export interface InboxEntry {
    * `body.text` of `ticket.comment`; null for every other kind.
    */
   note: string | null;
+  /**
+   * The actor the event acts on behind its back: `body.holder` of a
+   * forced `ticket.reconcile` (the assignee whose checklist was rewritten,
+   * board-openspec-integration: "Reconcile on re-import"); null for every
+   * other event, and for a reconcile without `holder`.
+   */
+  affects: string | null;
   /** The whole event as written (its canonical encoding is the file). */
   event: BoardEvent;
 }

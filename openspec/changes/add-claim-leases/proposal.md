@@ -135,7 +135,11 @@ None.
   `--force`.
 - `board-agent-guidance`: the mutex ticket recipe in the guide, the role
   checklists, installed guidance and the MCP instructions.
-- `board-view-model`: feed summaries for the new events.
+- `board-view-model`: feed summaries for the new events; checklist progress counts
+  active lines only.
+- `board-web`: removed checklist lines shown as removed in the ticket
+  detail.
+- `board-web-actions`: no checkbox for a removed checklist line.
 
 ## Non-Goals
 

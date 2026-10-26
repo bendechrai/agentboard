@@ -45,3 +45,14 @@ be marked `late` when the consumer's model recorded it as a late arrival.
 #### Scenario: Grant summary
 - **WHEN** T1 is granted to `merger-2` with a window of 120000
 - **THEN** its entry's actor is `agentboard` and its summary is `granted to merger-2 (accept within 2m)`
+
+## ADDED Requirements
+
+### Requirement: Checklist progress counts active lines
+A card's checklist progress SHALL count only the ticket's active lines:
+a line a reconcile marked removed is in neither the done nor the total
+count.
+
+#### Scenario: Removed lines are not counted
+- **WHEN** a ticket has lines `1.1 A` (done), `1.2 B` (removed, done) and `1.3 C`
+- **THEN** its card's checklist progress is 1 done of 2

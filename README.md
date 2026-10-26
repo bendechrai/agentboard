@@ -677,10 +677,38 @@ created 01M38YSQS830A0HTFQ9H8KRZ4D  todo  -  Query
 imported openspec:add-search: 2 created, 0 updated, 0 unchanged, 8 events
 ```
 
-Re-importing is safe: tickets are matched by task reference, no duplicate
-is ever created, and new task lines are appended to existing checklists
-(existing lines, titles, labels and statuses are never changed). Run it
-again whenever a change's `tasks.md` grows.
+Re-importing makes the tickets follow a revised `tasks.md`, and never
+moves work between groups. Tickets are paired with groups by identity:
+first by title, then by their task lines (Jaccard similarity of at least
+0.5, with every rival at least 0.2 lower), and only then by group number.
+A ticket whose group moved is renumbered (`ticket.renumber`, which moves
+its task item and `group:<n>` label and nothing else); a paired ticket gets
+one `ticket.reconcile` with its group's title and lines (lines matched by
+task number, then by text; removed lines are kept on the ticket, marked
+removed, so checklist indices never change meaning; new lines are
+appended); a new group gets a new ticket; and a ticket whose group is gone
+is marked superseded (`ticket.supersede`), never rewritten or closed. A
+re-import never changes a ticket's status or assignee, and an unchanged
+tasks file writes nothing.
+
+Two cases refuse with exit 4. A reconcile that would remove or reword a
+line done on the ticket, or reword the lines of a ticket held in `tests`,
+`implementing` or `review`, is blocked for that ticket
+(`reconcile-blocked`, every other group is still imported); `--force`
+writes it anyway, recorded as forced and delivered to the holder's inbox.
+A pairing that is ambiguous (for example a group split in two) writes
+nothing at all (`reconcile-ambiguous`); edit a group title so each ticket's
+group is clear. `--dry-run` (with or without `--json`) shows the pairing,
+renumbers, line changes, blocks and supersedes and writes nothing:
+
+```
+$ agentboard import-change add-search --dry-run --as orchestrator
+created group 1: Schema
+updated 01M38YSQQ5DQ05MQ21B5DCCJZ6  merged  -  Index
+  paired by title (score 1.00)
+  renumbered from group 1 to 2
+dry run openspec:add-search: 1 created, 1 updated, 0 unchanged, nothing written
+```
 
 `agentboard close-merged --as <actor>` closes every open `merged` ticket
 whose `pr` link points at a merged pull request, with the ticket's
@@ -2094,7 +2122,7 @@ argument and `agentboard mcp --as <actor>`.
 | 1 | usage error (including an unknown command or flag), missing actor, refused text or close disposition, `rebuild --check` found a difference, an `agents install` target was refused or nothing was detected, `agents check` found guidance that is not current, `serve` could not use its port (`port-in-use`) or was given an empty `--as` or both `--open` and `--no-open`, or `top` was not run in an interactive terminal (`not-a-tty`) |
 | 2 | board not found or unreadable |
 | 3 | sync problem that needs a human |
-| 4 | action rejected by board state: `invalid-transition`, `already-assigned`, `not-assignee`, `unknown-ticket`, `duplicate-create`, `needs-scope-disposition`, `already-linked`, `checklist-index` |
+| 4 | action rejected by board state: `invalid-transition`, `already-assigned`, `not-assignee`, `unknown-ticket`, `duplicate-create`, `needs-scope-disposition`, `already-linked`, `checklist-index`, `reconcile-blocked`, `reconcile-ambiguous` |
 | 5 | event log or cache integrity problem, or the cache still locked after the busy timeout and one retry |
 
 ## MCP server

@@ -26,7 +26,8 @@
  *   description text, so a reload of the detail with the same text does
  *   not parse it again. No section without a description;
  * - a `ul` with class `checklist`: one `li` per line, in order, holding
- *   its text, with class `done` when done;
+ *   its text, with class `done` when done; a removed line is an `li` with
+ *   the class `removed` only, holding its text followed by ` (removed)`;
  * - a `ul` with class `links`: one `li` per link, in order, with the text
  *   `pr <pr>` or `decision <path>`;
  * - when closed, an element with class `disposition` holding
@@ -80,7 +81,7 @@ import {
 } from '../api.js';
 import type { ActionSuccess } from '../actions.js';
 import { renderMarkdown } from '../markdown.js';
-import { ActionControls, ChecklistControl } from './ActionControls.js';
+import { ActionControls, ChecklistControl, RemovedLine } from './ActionControls.js';
 import { isoTime } from './controls.js';
 
 export interface TicketViewProps {
@@ -165,11 +166,15 @@ export function TicketView(props: TicketViewProps): JSX.Element {
         <ChecklistControl key={ticket.id} {...controlProps} />
       ) : (
         <ul class="checklist">
-          {ticket.checklist.map((line, index) => (
-            <li key={String(index)} class={line.done ? 'done' : undefined}>
-              {line.text}
-            </li>
-          ))}
+          {ticket.checklist.map((line, index) =>
+            line.removed === true ? (
+              <RemovedLine key={String(index)} text={line.text} />
+            ) : (
+              <li key={String(index)} class={line.done ? 'done' : undefined}>
+                {line.text}
+              </li>
+            ),
+          )}
         </ul>
       )}
       <h3>Links</h3>

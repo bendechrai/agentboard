@@ -94,6 +94,7 @@ import {
   renderGuideSummary,
   type Role,
 } from '../guidance/guide.js';
+import type { ImportResult } from '../board/import.js';
 import { closeDecisionOf, type HintContext } from '../guidance/hints.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
 import { findBoard } from '../store/locate.js';
@@ -126,6 +127,11 @@ export interface ToolErrorContent {
    * command lines, the `as` argument instead of `--as`).
    */
   hint: string | null;
+  /**
+   * The import's result, present only for `reconcile-blocked` and
+   * `reconcile-ambiguous` (as `ErrorDocument.error.result`).
+   */
+  result?: ImportResult;
 }
 
 /** The result of one `tools/call`, as sent to the client. */

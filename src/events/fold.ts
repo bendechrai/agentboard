@@ -30,6 +30,7 @@ import {
   type GrantAfter,
   type TicketClaimEvent,
   type TicketGrantEvent,
+  type TicketReconcileBody,
   type Status,
   type TaskRef,
   type TicketCreateEvent,
@@ -67,7 +68,8 @@ export type RejectionReason =
   | 'queued'
   | 'holder-changed'
   | 'invalid-queue'
-  | 'stale-grant';
+  | 'stale-grant'
+  | 'stale-import';
 
 /** An event the fold refused. It stays in the log and in this report. */
 export interface Rejected {
@@ -102,10 +104,19 @@ export type TicketLink =
   | { type: 'pr'; pr: string | number; actor: string; ts: Hlc; hash: string }
   | { type: 'decision'; path: string; actor: string; ts: Hlc; hash: string };
 
-/** One checklist line. */
+/**
+ * One checklist line. `removed` is present, and `true`, only on a line an
+ * applied `ticket.reconcile` marked removed (board-events: "Reconcile
+ * events"): the line keeps its index and its text and done flag, is not
+ * part of the active checklist, and a `ticket.checklist` naming it is
+ * rejected `checklist-index`. A line that was never removed has no
+ * `removed` key at all, so its JSON (and the cache's checklist column) is
+ * exactly `{"done":...,"text":...}`.
+ */
 export interface ChecklistItem {
   text: string;
   done: boolean;
+  removed?: true;
 }
 
 /**
@@ -208,7 +219,11 @@ export interface Ticket {
   unplanned: UnplannedDisposition | null;
   /**
    * From create, all `done: false` (`[]` when not given), followed by the
-   * items of each applied `ticket.checklist.add`, in fold order.
+   * items of each applied `ticket.checklist.add` and the `added` lines of
+   * each applied `ticket.reconcile`, in fold order. Lines are never
+   * deleted or reordered: a reconcile replaces a line's text and done flag
+   * in place or marks it removed (see `ChecklistItem`). The active
+   * checklist is the lines without `removed`.
    */
   checklist: ChecklistItem[];
   /** In fold order. */
@@ -216,6 +231,12 @@ export interface Ticket {
   /** PR and decision links in fold order; duplicates are kept. */
   links: TicketLink[];
   closed: boolean;
+  /**
+   * The `reason` of the applied `ticket.supersede`, or null while the
+   * ticket is not superseded (board-events: "Renumber and supersede
+   * events"). Null at create.
+   */
+  superseded: string | null;
   /** Set by the applied `ticket.close`; null while open. */
   disposition: CloseDisposition | null;
   /** Actor of the `ticket.create`. */
@@ -400,13 +421,34 @@ export function isTransitionAllowed(from: Status, to: Status, blockedFrom: Statu
  *   are the CLI's `close` checks, so a close of an undisposed ad hoc ticket
  *   written by an earlier version still folds. Events after a close are
  *   folded by their own rules.
- * - `ticket.checklist`: `checklist-index` if `index` is negative or not less
- *   than the checklist length; otherwise sets that item's `done` (setting
- *   it to its current value still counts as applied).
+ * - `ticket.checklist`: `checklist-index` if `index` is negative, not less
+ *   than the checklist length, or names a removed line; otherwise sets
+ *   that item's `done` (setting it to its current value still counts as
+ *   applied).
  * - `ticket.checklist.add`: appends `body.items` to the checklist in array
  *   order, each as `{ text, done }` copied from the item; never rejected
  *   once the ticket exists (it may be closed), and counts as one applied
  *   event (version goes up by exactly 1, however many items).
+ * - `ticket.reconcile` (board-events: "Reconcile events"):
+ *   `checklist-index`, changing nothing, unless every index in
+ *   `body.updated` and `body.removed` names an existing line (0 to length
+ *   minus 1) that is not removed, and no index appears twice across both
+ *   arrays. Otherwise, as one step: `title` is set when `body.title` is
+ *   present; each `updated` line gets that `text` and `done` (it stays
+ *   active); each `removed` line gets `removed: true` (text and done kept);
+ *   the `added` lines are appended in order as `{ text, done }`. `forced`,
+ *   `holder` and `source` change nothing. Applies to a closed or
+ *   superseded ticket too (the command never writes one there). Counts as
+ *   one applied event.
+ * - `ticket.renumber`: `stale-import` unless the ticket is not superseded,
+ *   `task` is not null and `task.item` equals `body.from`; otherwise
+ *   `task.item` = `body.to`, and in `labels` every label equal to
+ *   `group:<from>` is replaced in place by `group:<to>` (when there is
+ *   none, `group:<to>` is appended). Nothing else changes (assignee,
+ *   lease, queue, status, comments, checklist, title).
+ * - `ticket.supersede`: `stale-import` when the ticket is already
+ *   superseded; otherwise `superseded` = `body.reason` and nothing else
+ *   changes.
  * - `board.meta`: sets `state.meta[key] = value`; never rejected; affects no
  *   ticket.
  * - Unknown kinds: appended to `unknown`; affect no ticket and are never
@@ -630,6 +672,7 @@ function createTicket(event: TicketCreateEvent): Ticket {
     comments: [],
     links: [],
     closed: false,
+    superseded: null,
     disposition: null,
     lease: null,
     queue: [],
@@ -753,7 +796,7 @@ function applyToTicket(
       return null;
     case 'ticket.checklist': {
       const item: ChecklistItem | undefined = ticket.checklist[event.body.index];
-      if (item === undefined) {
+      if (item === undefined || item.removed === true) {
         return 'checklist-index';
       }
       item.done = event.body.done;
@@ -764,7 +807,63 @@ function applyToTicket(
         ticket.checklist.push({ text: item.text, done: item.done });
       }
       return null;
+    case 'ticket.reconcile':
+      return reconcile(ticket, event.body);
+    case 'ticket.renumber': {
+      const { from, to } = event.body;
+      if (ticket.superseded !== null || ticket.task?.item !== from) {
+        return 'stale-import';
+      }
+      ticket.task.item = to;
+      const fromLabel = `group:${from}`;
+      const toLabel = `group:${to}`;
+      if (ticket.labels.includes(fromLabel)) {
+        ticket.labels = ticket.labels.map((label) => (label === fromLabel ? toLabel : label));
+      } else {
+        ticket.labels.push(toLabel);
+      }
+      return null;
+    }
+    case 'ticket.supersede':
+      if (ticket.superseded !== null) {
+        return 'stale-import';
+      }
+      ticket.superseded = event.body.reason;
+      return null;
   }
+}
+
+/**
+ * Applies a `ticket.reconcile` in one step, or returns `checklist-index`
+ * without touching the ticket when an index of `updated` or `removed` is out
+ * of range, names a removed line, or appears twice.
+ */
+function reconcile(ticket: Ticket, body: TicketReconcileBody): RejectionReason | null {
+  const indices = [...body.updated.map((line) => line.index), ...body.removed];
+  const seen = new Set<number>();
+  for (const index of indices) {
+    const line: ChecklistItem | undefined = ticket.checklist[index];
+    if (line === undefined || line.removed === true || seen.has(index)) {
+      return 'checklist-index';
+    }
+    seen.add(index);
+  }
+  if (body.title !== undefined) {
+    ticket.title = body.title;
+  }
+  for (const { index, text, done } of body.updated) {
+    ticket.checklist[index] = { text, done };
+  }
+  for (const index of body.removed) {
+    const line = ticket.checklist[index];
+    if (line !== undefined) {
+      ticket.checklist[index] = { text: line.text, done: line.done, removed: true };
+    }
+  }
+  for (const { text, done } of body.added) {
+    ticket.checklist.push({ text, done });
+  }
+  return null;
 }
 
 /**

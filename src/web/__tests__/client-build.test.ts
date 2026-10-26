@@ -23,6 +23,13 @@ import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
 import { describe, expect, it } from 'vitest';
 
+/**
+ * A bare side-effect import (`import "x"`). The lookbehind excludes a
+ * hyphen or word character before `import`, so a string ending in
+ * `-import` (the fold's rejection reason "stale-import") is not a match.
+ */
+const BARE_IMPORT = /(?<![-\w])import\s*["']/;
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const DIST_WEB = join(ROOT, 'dist', 'web');
 const CLIENT = join(ROOT, 'src', 'web', 'client');
@@ -111,11 +118,19 @@ describe('dist/web', () => {
     expect(html).not.toMatch(/\son[a-z]+="/);
   });
 
+  it('bare-import pattern catches import "x" and import \'x\' but not "stale-import"', () => {
+    expect('import "x";').toMatch(BARE_IMPORT);
+    expect("import 'x';").toMatch(BARE_IMPORT);
+    expect('a;import"x"').toMatch(BARE_IMPORT);
+    expect('reason:"stale-import"').not.toMatch(BARE_IMPORT);
+    expect("reason:'stale-import'").not.toMatch(BARE_IMPORT);
+  });
+
   it('bundles the client with everything inlined', () => {
     const js = readFileSync(join(DIST_WEB, 'app.js'), 'utf8');
     expect(js).not.toMatch(/\bimport\s*[\w{*][^;]*?\bfrom\s*["']/);
     expect(js).not.toMatch(/\bimport\s*\(\s*["']/);
-    expect(js).not.toMatch(/\bimport\s*["']/);
+    expect(js).not.toMatch(BARE_IMPORT);
     expect(js).not.toMatch(/\brequire\s*\(/);
     expect(js).not.toContain('node:');
     expect(js).not.toContain('not implemented');

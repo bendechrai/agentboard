@@ -229,10 +229,12 @@ function ticketLines(model: BoardModel, t: Ticket): LogicalLine[] {
   if (t.checklist.length === 0) {
     lines.push(plain('checklist: -'));
   } else {
-    const done = t.checklist.filter((item) => item.done).length;
-    lines.push(plain(`checklist: ${String(done)}/${String(t.checklist.length)}`));
+    const active = t.checklist.filter((item) => item.removed !== true);
+    const done = active.filter((item) => item.done).length;
+    lines.push(plain(`checklist: ${String(done)}/${String(active.length)}`));
     for (const item of t.checklist) {
-      lines.push(plain(`  [${item.done ? 'x' : ' '}] ${item.text}`));
+      const removed = item.removed === true ? ' (removed)' : '';
+      lines.push(plain(`  [${item.done ? 'x' : ' '}] ${item.text}${removed}`));
     }
   }
   if (t.links.length === 0) {
@@ -301,8 +303,10 @@ function detailRows(model: BoardModel, ticketId: string, columns: number): Detai
  * 6. `labels: <labels joined with ", ">`, or `labels: -` when none
  * 7. `description: <t.description>`, or `description: -` when null
  * 8. `checklist: -` when the checklist is empty; otherwise
- *    `checklist: <done>/<total>` followed by one line per item in order,
- *    `  [x] <text>` when done and `  [ ] <text>` when not
+ *    `checklist: <done>/<total>` over the active lines (removed lines
+ *    are in neither count) followed by one line per item in order,
+ *    `  [x] <text>` when done and `  [ ] <text>` when not, with
+ *    ` (removed)` appended to a removed line
  * 9. `links: -` when `t.links` is empty; otherwise `links:` followed by one
  *    line per link in order, `  pr <pr>` or `  decision <path>`
  * 10. `disposition: open` while open; `disposition: closed, decision

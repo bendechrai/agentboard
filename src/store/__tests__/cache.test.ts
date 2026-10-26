@@ -273,6 +273,7 @@ describe('openCache', () => {
         'unplanned',
         'labels',
         'closed',
+        'superseded',
         'decision',
         'checklist',
       ].sort(),
@@ -298,7 +299,7 @@ describe('openCache', () => {
       { key: 'last_position', value: 'null' },
       { key: 'schema_version', value: String(CACHE_SCHEMA_VERSION) },
     ]);
-    expect(CACHE_SCHEMA_VERSION).toBe(4);
+    expect(CACHE_SCHEMA_VERSION).toBe(5);
   });
 
   it('enforces the foreign key from comments to tickets', () => {

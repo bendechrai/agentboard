@@ -8,10 +8,10 @@
  * the library built from commit 079707c (see
  * `src/store/__tests__/pre-disposition.ts`) and `fold.json` is the
  * canonical fold that release computed. Today's fold of the same files
- * must be byte-identical, apart from the one field that did not exist
- * then, `unplanned`, which must be null on every ticket; and the
- * `ticket.move`, `ticket.close` and `ticket.link` files are golden: the
- * same events built today encode to the same bytes.
+ * must be byte-identical, apart from the two fields that did not exist
+ * then, `unplanned` and `superseded`, which must be null on every ticket;
+ * and the `ticket.move`, `ticket.close` and `ticket.link` files are
+ * golden: the same events built today encode to the same bytes.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -40,13 +40,17 @@ function fixtureInputs(): FoldInput[] {
   return inputs;
 }
 
-/** The fold with `unplanned` removed from every ticket, after asserting it is null. */
+/**
+ * The fold with `unplanned` and `superseded` removed from every ticket,
+ * after asserting both are null.
+ */
 function withoutUnplanned(result: FoldResult): unknown {
   const tickets: Record<string, Partial<Ticket>> = {};
   for (const [id, ticket] of Object.entries(result.state.tickets)) {
     expect(ticket.unplanned, id).toBeNull();
+    expect(ticket.superseded, id).toBeNull();
     tickets[id] = Object.fromEntries(
-      Object.entries(ticket).filter(([key]) => key !== 'unplanned'),
+      Object.entries(ticket).filter(([key]) => key !== 'unplanned' && key !== 'superseded'),
     ) as Partial<Ticket>;
   }
   return {
@@ -88,8 +92,18 @@ describe('golden: the pre-disposition board folds as before', () => {
       ]),
     );
     expect(summary).toEqual({
-      [ADHOC.todo]: { status: 'todo', closed: false, task: false, adhoc: 'spike: try the new parser' },
-      [ADHOC.tests]: { status: 'tests', closed: false, task: false, adhoc: 'bug seen in production' },
+      [ADHOC.todo]: {
+        status: 'todo',
+        closed: false,
+        task: false,
+        adhoc: 'spike: try the new parser',
+      },
+      [ADHOC.tests]: {
+        status: 'tests',
+        closed: false,
+        task: false,
+        adhoc: 'bug seen in production',
+      },
       [ADHOC.blocked]: { status: 'blocked', closed: false, task: false, adhoc: 'flaky test in CI' },
       [ADHOC.closed]: { status: 'blocked', closed: true, task: false, adhoc: 'idea, abandoned' },
       [LINKED.implementing]: { status: 'implementing', closed: false, task: true, adhoc: null },
