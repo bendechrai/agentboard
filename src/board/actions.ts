@@ -407,9 +407,11 @@ export interface RenewInput {
  * renew sets the lease (it does not extend it) and confirms it, also after
  * the lease expired when nothing took the ticket over before it.
  *
- * Refusals, writing nothing:
+ * Refusals, writing nothing, in this order:
  * - `actor` is not the assignee (the ticket is held by another actor, or
- *   unassigned): `BoardError(4, 'not-assignee')`, the fold's own rejection;
+ *   unassigned): `BoardError(4, 'not-assignee')`, the fold's own rejection,
+ *   with or without `input.ttl` and with or without a lease, so a former
+ *   holder learns it lost the lock;
  * - the actor is the assignee, `input.ttl` is omitted and the ticket has
  *   no lease: `BoardError(1, 'usage')` saying `--ttl` is needed;
  * - `input.ttl` out of range: `BoardError(1, 'usage')`, before the board
@@ -432,6 +434,15 @@ export function renewTicket(
     actor,
     input.id,
     (ticket, ctx) => {
+      if (ticket.assignee !== actor) {
+        // The fold's own refusal, raised before the usage check so a former
+        // holder learns it lost the lock whether or not it gave --ttl.
+        throw new BoardError(
+          4,
+          'not-assignee',
+          `ticket.renew on ticket ${ticket.id} refused: not-assignee`,
+        );
+      }
       const ttl = input.ttl ?? ticket.lease?.ttl;
       if (ttl === undefined) {
         throw new BoardError(

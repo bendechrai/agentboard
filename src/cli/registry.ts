@@ -26,6 +26,7 @@ import { SETTING_KEYS, getConfig, setConfig } from '../board/config.js';
 import { formatDuration, isoTime, parseSetting, parseTimeout, parseTtl } from '../board/leases.js';
 import { importChange, parseImportTarget } from '../board/import.js';
 import { readInbox } from '../board/inbox.js';
+import { refuseSecretLike } from '../board/secrets.js';
 import { initBoard } from '../board/init.js';
 import { initBoardWithRemote } from '../board/init-remote.js';
 import { moveBoardIntoHost } from '../board/into-host.js';
@@ -660,7 +661,8 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  * - `renew [--ttl <duration>]`: `--ttl` parsed with `parseTtl` before
  *   `ctx.board()`; `renewTicket`; `WriteOutcome` and the `list` line.
  * - `unqueue`: `unqueueTicket`; `WriteOutcome` and the `list` line.
- * - `release [--force --reason <text>] [--allow-secret-like]`:
+ * - `release [--force --reason <text>] [--allow-secret-like]`: the reason
+ *   goes through `refuseSecretLike` before `ctx.board()`, then
  *   `releaseTicket` with `force`, `reason` and `allowSecretLike`;
  *   `WriteOutcome` and the `list` line.
  * - `config set <key> <value>`: `<key>` is one of `SETTING_KEYS` (the
@@ -1275,15 +1277,23 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [FORCE_GROUP],
     writes: true,
     operation: 'releaseTicket',
-    run: (ctx, values) =>
-      written(
+    run: (ctx, values) => {
+      const reason = str(values, 'reason');
+      const allowSecretLike = bool(values, 'allow-secret-like');
+      // Checked before the board is opened, like comment text, so a
+      // token-shaped reason is refused even where there is no board.
+      if (reason !== undefined) {
+        refuseSecretLike([reason], allowSecretLike);
+      }
+      return written(
         releaseTicket(ctx.board(), actorOf(ctx), {
           id: req(values, 'id'),
           force: bool(values, 'force'),
-          reason: str(values, 'reason'),
-          allowSecretLike: bool(values, 'allow-secret-like'),
+          reason,
+          allowSecretLike,
         }),
-      ),
+      );
+    },
   },
   {
     name: 'move',

@@ -122,16 +122,19 @@ export function parseTimeout(text: string): number {
  * `SETTING_MAX_MS` (10 minutes) inclusive. So `30s`, `90s`, `5m`, `600s`
  * and `10m` are accepted, and `29s`, `11m`, `1h`, `0m`, `5min`, `m` and
  * `-1m` are refused with `BoardError(1, 'usage')` whose message is exactly
- * `invalid value <text>: a setting is <n>s or <n>m with <n> of 1 to 5 digits, from 30s to 10m`.
- * Pure.
+ * `invalid value: a setting is <n>s or <n>m with <n> of 1 to 5 digits, from 30s to 10m`,
+ * never repeating the value (a token pasted as a value must not land in a
+ * terminal or a log). Pure.
  */
 export function parseSetting(text: string): number {
   return parseDuration(text, {
     units: 'sm',
     min: SETTING_MIN_MS,
     max: SETTING_MAX_MS,
-    message: (given) =>
-      `invalid value ${given}: a setting is <n>s or <n>m with <n> of 1 to 5 digits, from 30s to 10m`,
+    // The value is never repeated: a token pasted as a value must not land
+    // in a terminal or a log.
+    message: () =>
+      'invalid value: a setting is <n>s or <n>m with <n> of 1 to 5 digits, from 30s to 10m',
   });
 }
 
