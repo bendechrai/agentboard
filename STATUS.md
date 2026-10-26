@@ -61,6 +61,17 @@ tested and documented in README.md.
   walkthrough `src/__tests__/walkthroughs/adhoc-lifecycle.sh` runs the
   README example end to end. ADR 0013 (amends ADR 0004). Archived as
   `openspec/changes/archive/2026-10-17-add-adhoc-ticket-lifecycle`.
+- **Markdown descriptions** (`board-web`): the ticket detail view of the
+  web app renders a ticket's description as Markdown (CommonMark plus GFM
+  tables, task lists, strikethrough and autolink literals), parsed to a
+  syntax tree and rendered into elements from an allow-list, never as an
+  HTML string, with a guard test over the client source; links only for
+  absolute `http:`, `https:` and `mailto:` URLs, opened in a new tab with
+  no opener and no referrer; images never loaded, shown as links labelled
+  with the alt text; nesting deeper than 32 levels and descriptions
+  longer than 16384 characters fall back to text. ADR 0015 (amends ADR
+  0006). The change `add-description-markdown` is complete and awaiting
+  archive.
 
 Released as `@bendechrai/agentboard` 0.2.0 on npm (tag `v0.2.0`), with the
 landing site in `docs/` served at https://bendechrai.github.io/agentboard/.
@@ -73,10 +84,7 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
 
 ## What is next
 
-1. `add-description-markdown` (proposed, in `openspec/changes/`): render a
-   ticket's description as Markdown in the web app, into elements only,
-   never HTML.
-2. `add-claim-leases` (in progress, in `openspec/changes/`): grace
+1. `add-claim-leases` (in progress, in `openspec/changes/`): grace
    leases confirmed by `renew` (`claim --ttl`), takeover of a lapsed
    lease, a fair waiting queue (`claim --wait`), an audited `release
    --force --reason`, board settings (`config`), mutex ticket guidance,

@@ -117,7 +117,7 @@ no request is made, whatever the CSP.
 
 The detail view's own headings are `h2` (ticket title) and `h3`
 (sections). A description heading of depth `d` renders as
-`h(min(d + 3, 6))`: `#` becomes `h4`, `####` and deeper become `h6`. The
+`h(min(d + 3, 6))`: `#` becomes `h4`, `###` and deeper become `h6`. The
 description section itself has an `h3` "Description".
 
 ### Task list checkboxes
