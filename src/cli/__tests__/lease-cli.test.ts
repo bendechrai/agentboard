@@ -462,13 +462,25 @@ describe('scenario: orchestrator breaks a stale lock', () => {
     expect(out.stderr).toContain('without --force');
   });
 
-  it('force on an unassigned ticket exits 4 not-assignee', () => {
+  it('force on an unassigned ticket exits 4 not-assignee, hinting that there is nothing to force', () => {
     const b = board();
-    refused(
+    const out = refused(
       b,
       ['release', b.id, '--as', 'orchestrator', '--force', '--reason', 'x'],
       4,
       'not-assignee',
+    );
+    expect(out.stderr).toContain(
+      `hint: the ticket is not held, so there is nothing to force; see its holder and queue with 'agentboard show ${b.id}'\n`,
+    );
+  });
+
+  it('a plain release by a non-holder keeps the assignee-only hint', () => {
+    const b = board();
+    ok(run(['claim', b.id, '--as', 'merger-1'], b.root));
+    const out = refused(b, ['release', b.id, '--as', 'merger-2'], 4, 'not-assignee');
+    expect(out.stderr).toContain(
+      `hint: only the assignee can do this; see who holds the ticket with 'agentboard show ${b.id}'\n`,
     );
   });
 });

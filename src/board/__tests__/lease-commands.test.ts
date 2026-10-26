@@ -19,7 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { canonicalDecode } from '../../events/canonical.js';
 import { validateEvent, type BoardEvent } from '../../events/schema.js';
-import type { Board } from '../../store/board.js';
+import { openBoard, type Board } from '../../store/board.js';
 import { catchUp, dumpCache } from '../../store/cache.js';
 import { BoardError } from '../../store/errors.js';
 import { runCommand } from '../../store/transaction.js';
@@ -728,5 +728,104 @@ describe('the show document of a leased ticket', () => {
     });
     expect(showTicket(board, id, { now: T + 120_000 }).ticket.lease?.state).toBe('expired');
     expect(showTicket(board, id, { now: T + 180_000 }).ticket.lease?.state).toBe('claimable');
+  });
+});
+
+describe('pinned by review round 1', () => {
+  it('a claim that writes nothing (NoWrite) still commits the grant its catch-up wrote', () => {
+    const id = lock();
+    claimTicket(board, 'merger-1', { id });
+    claimTicket(board, 'merger-2', { id, ttl: 600_000, wait: true });
+    at(1000);
+    releaseTicket(board, 'merger-1', { id });
+    at(2000);
+    // The catch-up writes the grant to merger-2, who then already holds the
+    // ticket: the claim itself writes nothing.
+    const out = claimTicket(board, 'merger-2', { id, ttl: 600_000, wait: true });
+    expect(out).toMatchObject({ hash: null, queued: false, ticket: { assignee: 'merger-2' } });
+    const grants = eventNames(board.eventsDir).filter(
+      (name) => eventOf(name.slice(0, -5)).kind === 'ticket.grant',
+    );
+    expect(grants).toHaveLength(1);
+    // The cache committed it: a read without catch-up sees the grantee, and
+    // a fresh open reads no event file for it.
+    expect(showTicket(board, id).ticket).toMatchObject({ assignee: 'merger-2', queue: [] });
+    const read: string[] = [];
+    const fresh = openBoard(board.dir, { onReadEventFile: (name) => read.push(name) });
+    try {
+      expect(read).toEqual([]);
+      expect(dumpCache(fresh.db)).toEqual(dumpCache(board.db));
+    } finally {
+      fresh.close();
+    }
+  });
+
+  it('show reports no takeover for a claim with supersedes applied on a free ticket', () => {
+    const id = lock();
+    putEvent(
+      board.eventsDir,
+      ev(
+        {
+          kind: 'ticket.claim',
+          ticket: id,
+          body: { supersedes: { holder: 'gone', expiresAt: T - 500_000, event: 'b'.repeat(64) } },
+        },
+        'merger-2',
+        T + 1000,
+      ),
+    );
+    at(2000);
+    catchUp(board);
+    const shown = showTicket(board, id);
+    expect(shown.ticket.assignee).toBe('merger-2');
+    expect(shown.takeover).toBeUndefined();
+  });
+
+  it('show drops the granted line once the grantee renews', () => {
+    const id = lock();
+    claimTicket(board, 'merger-1', { id });
+    claimTicket(board, 'merger-2', { id, ttl: 600_000, wait: true });
+    at(1000);
+    releaseTicket(board, 'merger-1', { id });
+    at(2000);
+    catchUp(board);
+    expect(showTicket(board, id).grant).toEqual({
+      to: 'merger-2',
+      at: T + 1001,
+      acceptBy: T + 1001 + 120_000,
+    });
+    at(3000);
+    renewTicket(board, 'merger-2', { id });
+    expect(showTicket(board, id).grant).toBeUndefined();
+  });
+
+  it('show reports the most recent takeover of a ticket taken over twice', () => {
+    const id = lock();
+    leased(id, 'merger-1', 60_000);
+    at(180_000);
+    claimTicket(board, 'merger-2', { id, ttl: 60_000 });
+    // merger-2's grace lease expires at 180000 + 60000 and is claimable 60 s later.
+    at(300_000);
+    const second = claimTicket(board, 'merger-3', { id, ttl: 60_000 });
+    expect(showTicket(board, id).takeover).toEqual({
+      actor: 'merger-3',
+      at: T + 300_000,
+      holder: 'merger-2',
+      expiresAt: T + 240_000,
+      event: second.hash,
+    });
+  });
+
+  it('renew sets expiresAt from the hybrid wall when a folded event put it ahead of the clock', () => {
+    const id = lock();
+    const other = lock();
+    leased(id);
+    // A folded event from a clock 500 s fast: the renew's wall is T + 500000.
+    putEvent(board.eventsDir, ev(P.comment(other, 'fast'), 'remote', T + 500_000));
+    at(1000);
+    const out = renewTicket(board, 'merger-1', { id });
+    const event = eventOf(out.hash);
+    expect(event.ts).toEqual({ wall: T + 500_000, counter: 1, actor: 'merger-1' });
+    expect(event.body).toEqual({ ttl: 1_800_000, expiresAt: T + 500_000 + 1_800_000 });
   });
 });

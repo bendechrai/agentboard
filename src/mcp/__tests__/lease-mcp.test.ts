@@ -272,6 +272,26 @@ describe('scenario: CLI-only flag is refused over MCP', () => {
   });
 });
 
+describe('forced release of an unassigned ticket over MCP', () => {
+  it('is a not-assignee tool error whose hint says there is nothing to force', () => {
+    const { server, eventsDir } = goldenBoard();
+    const before = allNames(eventsDir);
+    const id = GOLDEN.clock.m1;
+    const result = server.callTool('board_release', {
+      id,
+      force: true,
+      reason: 'x',
+      as: 'orchestrator',
+    });
+    expect(failure(result)).toMatchObject({
+      exitCode: 4,
+      reason: 'not-assignee',
+      hint: `the ticket is not held, so there is nothing to force; see its holder and queue with board_show {"id":"${id}"}`,
+    });
+    expect(allNames(eventsDir)).toEqual(before);
+  });
+});
+
 describe('scenario: MCP wait returns at once', () => {
   it('on a ticket held by merger-1 with one waiter: {queued: true, position: 2, holder, ticket} within a second, and a join written', () => {
     const { server, eventsDir } = goldenBoard();
