@@ -50,7 +50,10 @@ entries" and "Global harness config is never edited by default".
 The `claude`, `agents-md`, `cursor` and `copilot` text SHALL state the rules an agent must never
 break (always pass an actor; claim before working; hand off or block with a
 comment before stopping; never mark completion on the board instead of in
-the tasks file; promote `DECISION:` comments before closing) and SHALL
+the tasks file; promote `DECISION:` comments before closing; never create
+an issue, task file or task reference only to move a ticket, but work an
+ad hoc ticket normally and give its task link or unplanned disposition
+when merging or closing it) and SHALL
 direct the agent to `agentboard help agents` for everything else. With no
 `--target`, the command SHALL select `claude` when
 `.claude/` exists, `agents-md` when `AGENTS.md` exists, `openspec` when
@@ -80,7 +83,7 @@ output with a line suggesting `agentboard agents install`.
 
 #### Scenario: Install the Claude skill
 - **WHEN** `agentboard agents install --target claude` runs in a project with no `.claude/skills/agentboard`
-- **THEN** `.claude/skills/agentboard/SKILL.md` exists with frontmatter name `agentboard`, the five rules, the text `agentboard help agents`, and the guidance version marker
+- **THEN** `.claude/skills/agentboard/SKILL.md` exists with frontmatter name `agentboard`, the six rules, the text `agentboard help agents`, and the guidance version marker
 
 #### Scenario: Auto-detection
 - **WHEN** `agentboard agents install` runs in a project that has `.claude/` and `openspec/config.yaml` but no `AGENTS.md`
@@ -113,6 +116,10 @@ output with a line suggesting `agentboard agents install`.
 #### Scenario: Local MCP command
 - **WHEN** `agentboard agents install --command agentboard` runs in a project with no `.mcp.json`
 - **THEN** `.mcp.json` contains `mcpServers.agentboard` equal to `{"command": "agentboard", "args": ["mcp"]}` and the output names `mcp-json` as selected by `--command`
+
+#### Scenario: Installed guidance covers ad hoc tickets
+- **WHEN** `agentboard agents install --target claude --target agents-md` runs with guidance version 2
+- **THEN** `SKILL.md` and the `AGENTS.md` block each state the ad hoc rule, contain no text saying an ad hoc ticket cannot enter `implementing`, carry the guidance version marker `v2`, and `agents check` reports installations of guidance version 1 as `stale`
 
 ### Requirement: Installed guidance never clobbers user content
 Each target SHALL own only its marked region: the whole of `SKILL.md` only

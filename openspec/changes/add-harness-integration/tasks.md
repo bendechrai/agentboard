@@ -1,5 +1,17 @@
 # Tasks
 
+The MODIFIED text in this change's deltas (`board-cli` "Command surface",
+"Exit codes" and "MCP server"; `board-agent-guidance` "Help is not an MCP
+tool", "Installing guidance into a host project", "Installed guidance never
+clobbers user content" and "Checking installed guidance") was re-synced on
+2026-10-26 with the main specs as left by the archives of
+`add-board-sharing` and `add-adhoc-ticket-lifecycle`, so it keeps their
+`remote` command, `init --remote` and `--into-host`, the scope disposition
+flags and exit reasons and the six installed rules. `add-claim-leases` is
+proposed first and takes `GUIDANCE_VERSION` 3 and ADR 0014, so this
+change's guidance group (group 4) sets `GUIDANCE_VERSION` to 4 and its ADR
+(task 1.4) is 0015.
+
 Every group is delivered by a test author, an implementer and a reviewer in
 turn (see CONTRIBUTING.md), on one branch per group named
 `<area>/<group-slug>` and cut from `origin/staging`; the test author's first
@@ -20,7 +32,7 @@ archiving whichever lands second.
 - [ ] 1.1 Test author: write tests for every scenario of "Hook command and protocol" and "Hook actor resolution" (no board, garbage payload, 2 second budget with a locked cache, `AGENTBOARD_HOOKS=off`, read-only byte comparison, worktree discovery, missing actor), and stubs for the hook module and registry entry. Verify: tests compile, are red, and pre-push subset passes
 - [ ] 1.2 Implementer: add the `hook` registry entry (events, `--strict`, exit codes 0 and 2, MCP exclusion), the stdin reader, the deadline wrapper and actor resolution. Verify: the group 1 tests pass, `agentboard help hook` renders, `board_hook` is refused over MCP, the layering test passes
 - [ ] 1.3 Reviewer: check conformance to the scenarios, that no code path in hook mode writes (other than the inbox cursor), and that every failure is fail-open. Verify: report with a verdict; at least one hook payload recomputed by a throwaway script
-- [ ] 1.4 Write ADR 0012 recording warn-only default, strict opt-in and fail-open. Verify: `make ascii` and the ADR index in `adr/README.md` list it
+- [ ] 1.4 Write ADR 0015 recording warn-only default, strict opt-in and fail-open. Verify: `make ascii` and the ADR index in `adr/README.md` list it
 
 ## 2. Hook events (`hooks/events`)
 
@@ -37,7 +49,7 @@ archiving whichever lands second.
 ## 4. Other harness targets (`guidance/harness-targets`)
 
 - [ ] 4.1 Test author: tests for `codex`, `cursor`, `antigravity` and `copilot` install, auto-detection, the printed `codex mcp add` / `agy mcp add` commands, `--global` (explicit target required, scratch `CODEX_HOME` and `HOME`, other entries untouched), refusal (foreign TOML table, markerless mdc, unmanaged MCP entries), `--command` reaching each MCP entry, the 4096 byte `AGENTS.md` block and the 24 KB warning, check states, and "Harness MCP entries". Verify: tests are red, pre-push subset passes
-- [ ] 4.2 Implementer: implement the four targets with the existing block, owned-key and refusal helpers; the rendered rule text states the five rules and points to `agentboard help agents`. Verify: group 4 tests pass; every `agentboard ` line in the new texts parses against the registry
+- [ ] 4.2 Implementer: implement the four targets with the existing block, owned-key and refusal helpers; the rendered rule text states the six rules and points to `agentboard help agents`; set `GUIDANCE_VERSION` to 4. Verify: group 4 tests pass; every `agentboard ` line in the new texts parses against the registry
 - [ ] 4.3 Reviewer: check no user bytes change outside owned regions in any target. Verify: report with verdict
 
 ## 5. Prompts (`guidance/prompts`)
