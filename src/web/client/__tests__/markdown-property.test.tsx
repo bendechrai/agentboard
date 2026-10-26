@@ -8,8 +8,8 @@
  * HTML prop, no `style`, no component other than
  * `Fragment`, no `img`, `script`, `iframe` or `style` element, and no
  * `href` outside `http:`, `https:` and `mailto:`. The same holds for the
- * DOM it renders to. The URL oracle is restated here, independently of
- * `isAllowedUrl`. With a throwing parser the output is exactly the input as
+ * DOM it renders to. The URL oracle is restated here as a pattern over the
+ * `href` as written, independently of `isAllowedUrl`. With a throwing parser the output is exactly the input as
  * text.
  */
 
@@ -65,15 +65,24 @@ const ALIGNMENTS = new Set(['left', 'center', 'right']);
 /** Preact's raw HTML prop, spelt in two parts so the source scans do not match this file. */
 const INNER_HTML_PROP = 'dangerously' + 'SetInnerHTML';
 
-/** The URL rule, restated: absolute (parses without a base) with an allowed protocol. */
+/**
+ * The scheme an `href` must start with, restated as a pattern over the URL
+ * as written: `http://` or `https://` (so never a same-origin form such as
+ * `http:/api/session`) or `mailto:`, in any letter case.
+ */
+const ALLOWED_HREF = /^(https?:\/\/|mailto:)/i;
+
+/** The URL rule, restated: the URL as written matches `ALLOWED_HREF` and parses without a base. */
 function oracleAllowed(url: string): boolean {
-  let parsed: URL;
+  if (!ALLOWED_HREF.test(url)) {
+    return false;
+  }
   try {
-    parsed = new URL(url);
+    new URL(url);
   } catch {
     return false;
   }
-  return ['http:', 'https:', 'mailto:'].includes(parsed.protocol);
+  return true;
 }
 
 /** The rule violations in a rendered vnode tree, as readable strings. */
@@ -246,6 +255,9 @@ const TOKENS = [
   'data:text/html,',
   'http://',
   'https://',
+  'http:/',
+  'http:',
+  'HTTPS:',
   'mailto:',
   'ftp://',
   '//',
@@ -331,6 +343,10 @@ describe('renderMarkdown on arbitrary input', () => {
           '#/board',
           'http://[::1',
           'ftp://example.com',
+          'http:/api/session',
+          'http:api',
+          'HTTPS:/x',
+          'http:#/board',
         ),
         fc.string({
           unit: fc.constantFrom(

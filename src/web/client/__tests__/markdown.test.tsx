@@ -115,6 +115,22 @@ function returning(tree: Root): MarkdownParser {
   return () => tree;
 }
 
+/**
+ * `http:` and `https:` URLs without `//` after the scheme: an `href`
+ * written this way is resolved by the browser against the page's own
+ * origin (`http:/api/session` is `http://127.0.0.1:<port>/api/session`).
+ */
+const SAME_ORIGIN_FORMS = [
+  'http:/api/session',
+  'http:api',
+  'HTTP:/api/session',
+  'https:/x',
+  'http:#/board',
+  'http:?q',
+  'https:api/session',
+  'http:\\\\example.com',
+];
+
 /** URLs that must never become an `href`, in any position. */
 const REFUSED_URLS = [
   'javascript:alert(1)',
@@ -138,6 +154,10 @@ const REFUSED_URLS = [
   'http://[::1',
   'https://',
   'http//example.com',
+  // Same-scheme relative forms: new URL without a base parses them as
+  // absolute (host `api`), but a browser resolves them against the page
+  // origin, so they are refused unless `//` follows the scheme.
+  ...SAME_ORIGIN_FORMS,
 ];
 
 describe('isAllowedUrl', () => {
@@ -166,6 +186,44 @@ describe('isAllowedUrl', () => {
     ]) {
       expect(isAllowedUrl(url), JSON.stringify(url)).toBe(false);
     }
+  });
+});
+
+describe('isAllowedUrl and same-origin forms of http: and https:', () => {
+  it('refuses http: and https: URLs not followed by //, although new URL parses most of them', () => {
+    expect(new URL('http:/api/session').host).toBe('api');
+    for (const url of SAME_ORIGIN_FORMS) {
+      expect(isAllowedUrl(url), url).toBe(false);
+    }
+  });
+
+  it('still allows http://, https:// and mailto: URLs', () => {
+    for (const url of [
+      'http://example.com',
+      'https://example.com',
+      'HTTP://example.com/a',
+      'https://example.com/api/session',
+      'mailto:a@b.co',
+    ]) {
+      expect(isAllowedUrl(url), url).toBe(true);
+    }
+  });
+
+  it('never links a same-origin form in an inline link, a reference, an autolink or an image', () => {
+    for (const url of SAME_ORIGIN_FORMS) {
+      expect(shape(`[t](<${url}>)`), url).toBe('<p>"t"</>');
+      expect(shape(`[t][r]\n\n[r]: <${url}>`), url).toBe('<p>"t"</>');
+      expect(shape(`![t](<${url}>)`), url).toBe('<p>"t"</>');
+      expect(shape(`![t][r]\n\n[r]: <${url}>`), url).toBe('<p>"t"</>');
+    }
+    expect(shape('<http:/api/session>')).toBe('<p>"http:/api/session"</>');
+    expect(shape('<HTTPS:api>')).toBe('<p>"HTTPS:api"</>');
+  });
+
+  it('keeps the href of an allowed URL as written', () => {
+    expect(shape('[a](HTTP://Example.com/A) [m](mailto:a@b.co)')).toBe(
+      `<p>${link('HTTP://Example.com/A')}"a"</>" "${link('mailto:a@b.co')}"m"</></>`,
+    );
   });
 });
 
@@ -532,6 +590,45 @@ describe('link references and definitions', () => {
     expect(shape('[REF]: https://example.com/r "title"\n\nSee [Text][ref].')).toBe(
       `<p>"See "${link('https://example.com/r')}"Text"</>"."</>`,
     );
+  });
+
+  it('uses the first definition of an identifier and ignores later ones, case-insensitively', () => {
+    expect(
+      shape('[x]: https://example.com/first\n[X]: https://example.com/second\n\n[t][x] [t][X]'),
+    ).toBe(
+      `<p>${link('https://example.com/first')}"t"</>" "${link('https://example.com/first')}"t"</></>`,
+    );
+  });
+
+  it('keeps a refused first definition even when a later one is allowed', () => {
+    expect(shape('[x]: javascript:alert(1)\n[x]: https://example.com/ok\n\n[t][x]')).toBe(
+      '<p>"t"</>',
+    );
+    expect(shape('[x]: javascript:alert(1)\n[X]: https://example.com/ok\n\n![pic][x]')).toBe(
+      '<p>"pic"</>',
+    );
+  });
+
+  it('resolves references through a definition nested in a list item', () => {
+    const root = md('- item\n\n  [n]: https://example.com/n\n\nSee [t][n] and ![p][n].');
+    expect(
+      [...root.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')]),
+    ).toEqual([
+      ['t', 'https://example.com/n'],
+      ['p', 'https://example.com/n'],
+    ]);
+    expect(root.textContent).not.toContain('https://example.com/n');
+  });
+
+  it('resolves references through a definition nested in a block quote, before or after it', () => {
+    const root = md('[t][q]\n\n> quoted\n>\n> [q]: https://example.com/q\n\n- [u][q]');
+    expect(
+      [...root.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')]),
+    ).toEqual([
+      ['t', 'https://example.com/q'],
+      ['u', 'https://example.com/q'],
+    ]);
+    expect(root.querySelector('blockquote')?.textContent).toBe('quoted');
   });
 
   it('renders a definition alone as nothing', () => {
