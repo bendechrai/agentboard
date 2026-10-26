@@ -13,8 +13,21 @@
  * text). The module is pure: no hooks, no state, no side effects.
  */
 
-import type { Root } from 'mdast';
-import type { VNode } from 'preact';
+import type {
+  AlignType,
+  Definition,
+  List,
+  ListItem,
+  Nodes,
+  Parents,
+  Root,
+  Table,
+  TableRow,
+} from 'mdast';
+import { fromMarkdown } from 'mdast-util-from-markdown';
+import { gfmFromMarkdown } from 'mdast-util-gfm';
+import { gfm } from 'micromark-extension-gfm';
+import { createElement, type ComponentChildren, type VNode } from 'preact';
 
 /** Parses a description into an mdast tree; may throw on input it cannot handle. */
 export type MarkdownParser = (source: string) => Root;
@@ -30,9 +43,14 @@ export type DescriptionHeading = 'h4' | 'h5' | 'h6';
  * supported syntax. Whatever the parser throws is thrown to the caller.
  */
 export function parseMarkdown(source: string): Root {
-  void source;
-  throw new Error('not implemented');
+  return fromMarkdown(source, {
+    extensions: [gfm()],
+    mdastExtensions: [gfmFromMarkdown()],
+  });
 }
+
+/** The protocols a description link may have. */
+const ALLOWED_PROTOCOLS: ReadonlySet<string> = new Set(['http:', 'https:', 'mailto:']);
 
 /**
  * Whether `url` may be the `href` of a link in a description: true exactly
@@ -43,8 +61,13 @@ export function parseMarkdown(source: string): Root {
  * `vbscript:`, `file:` and the rest, in any letter case).
  */
 export function isAllowedUrl(url: string): boolean {
-  void url;
-  throw new Error('not implemented');
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  return ALLOWED_PROTOCOLS.has(parsed.protocol);
 }
 
 /**
@@ -53,8 +76,18 @@ export function isAllowedUrl(url: string): boolean {
  * depth 1 is `h4`, depth 2 is `h5`, depth 3 and deeper are `h6`.
  */
 export function headingTag(depth: number): DescriptionHeading {
-  void depth;
-  throw new Error('not implemented');
+  if (depth <= 1) {
+    return 'h4';
+  }
+  return depth === 2 ? 'h5' : 'h6';
+}
+
+/** What every node of one description is rendered with. */
+interface Context {
+  /** The description, for the source text of nodes outside the allow-list. */
+  source: string;
+  /** The tree's `definition` nodes by identifier, collected before rendering. */
+  definitions: ReadonlyMap<string, Definition>;
 }
 
 /**
@@ -111,7 +144,196 @@ export function headingTag(depth: number): DescriptionHeading {
  *   node without position offsets renders nothing.
  */
 export function renderMarkdown(source: string, parse: MarkdownParser = parseMarkdown): VNode {
-  void source;
-  void parse;
-  throw new Error('not implemented');
+  let root: Root;
+  try {
+    root = parse(source);
+  } catch {
+    return <>{source}</>;
+  }
+  const context: Context = { source, definitions: collectDefinitions(root) };
+  return <>{renderChildren(root, context)}</>;
+}
+
+/** Every `definition` node of the tree, by identifier; the first one of an identifier wins. */
+function collectDefinitions(root: Root): ReadonlyMap<string, Definition> {
+  const definitions = new Map<string, Definition>();
+  const visit = (node: Nodes): void => {
+    if (node.type === 'definition') {
+      if (!definitions.has(node.identifier)) {
+        definitions.set(node.identifier, node);
+      }
+      return;
+    }
+    if ('children' in node) {
+      for (const child of node.children) {
+        visit(child);
+      }
+    }
+  };
+  visit(root);
+  return definitions;
+}
+
+/** The rendered children of `parent`, in order. */
+function renderChildren(parent: Parents, context: Context): ComponentChildren[] {
+  return parent.children.map((child) => renderNode(child, parent, context));
+}
+
+/** One node of the tree as Preact children, following the allow-list of `renderMarkdown`. */
+function renderNode(node: Nodes, parent: Parents, context: Context): ComponentChildren {
+  switch (node.type) {
+    case 'paragraph':
+      return <p>{renderChildren(node, context)}</p>;
+    case 'heading':
+      return createElement(headingTag(node.depth), null, renderChildren(node, context));
+    case 'thematicBreak':
+      return <hr />;
+    case 'blockquote':
+      return <blockquote>{renderChildren(node, context)}</blockquote>;
+    case 'list':
+      return renderList(node, context);
+    case 'code':
+      return (
+        <pre>
+          {typeof node.lang === 'string' && node.lang !== '' ? (
+            <code data-lang={node.lang}>{node.value}</code>
+          ) : (
+            <code>{node.value}</code>
+          )}
+        </pre>
+      );
+    case 'inlineCode':
+      return <code>{node.value}</code>;
+    case 'emphasis':
+      return <em>{renderChildren(node, context)}</em>;
+    case 'strong':
+      return <strong>{renderChildren(node, context)}</strong>;
+    case 'delete':
+      return <del>{renderChildren(node, context)}</del>;
+    case 'break':
+      return <br />;
+    case 'text':
+      return node.value;
+    case 'table':
+      return renderTable(node, context);
+    case 'link':
+      return renderLink(node.url, renderChildren(node, context));
+    case 'linkReference': {
+      const definition = context.definitions.get(node.identifier);
+      const children = renderChildren(node, context);
+      return definition === undefined ? children : renderLink(definition.url, children);
+    }
+    case 'image':
+      return renderImage(node.url, node.alt ?? '');
+    case 'imageReference': {
+      const definition = context.definitions.get(node.identifier);
+      const alt = node.alt ?? '';
+      return definition === undefined ? alt : renderImage(definition.url, alt);
+    }
+    case 'definition':
+      return null;
+    default:
+      return renderSourceText(node, parent, context);
+  }
+}
+
+/** A list as `ol` or `ul`; its items are tight when neither the list nor any item is spread. */
+function renderList(list: List, context: Context): ComponentChildren {
+  const spread = (node: List | ListItem): boolean => node.spread === true;
+  const tight = !spread(list) && list.children.every((item) => !spread(item));
+  const items = list.children.map((item) => renderListItem(item, tight, context));
+  if (list.ordered === true) {
+    const start = list.start;
+    if (typeof start === 'number' && start !== 1) {
+      return <ol start={start}>{items}</ol>;
+    }
+    return <ol>{items}</ol>;
+  }
+  return <ul>{items}</ul>;
+}
+
+function renderListItem(item: ListItem, tight: boolean, context: Context): ComponentChildren {
+  const content = item.children.flatMap((child) =>
+    tight && child.type === 'paragraph'
+      ? renderChildren(child, context)
+      : [renderNode(child, item, context)],
+  );
+  const checked = item.checked;
+  if (typeof checked === 'boolean') {
+    return (
+      <li>
+        <input type="checkbox" disabled checked={checked} />
+        {content}
+      </li>
+    );
+  }
+  return <li>{content}</li>;
+}
+
+function renderTable(table: Table, context: Context): ComponentChildren {
+  const align: readonly AlignType[] = table.align ?? [];
+  const [head, ...body] = table.children;
+  const cells = (row: TableRow, tag: 'th' | 'td'): ComponentChildren[] =>
+    row.children.map((cell, column) => {
+      const alignment = align[column] ?? null;
+      const children = renderChildren(cell, context);
+      return alignment === null
+        ? createElement(tag, null, children)
+        : createElement(tag, { 'data-align': alignment }, children);
+    });
+  return (
+    <table>
+      {head === undefined ? null : (
+        <thead>
+          <tr>{cells(head, 'th')}</tr>
+        </thead>
+      )}
+      {body.length === 0 ? null : (
+        <tbody>
+          {body.map((row) => (
+            <tr>{cells(row, 'td')}</tr>
+          ))}
+        </tbody>
+      )}
+    </table>
+  );
+}
+
+/** An `a` to `url` around `children` when the URL is allowed; otherwise the children alone. */
+function renderLink(url: string, children: ComponentChildren): ComponentChildren {
+  if (!isAllowedUrl(url)) {
+    return children;
+  }
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  );
+}
+
+/** An image as a link to `url` labelled with `alt` (or the URL), never an `img`. */
+function renderImage(url: string, alt: string): ComponentChildren {
+  const label = alt === '' ? url : alt;
+  if (!isAllowedUrl(url)) {
+    return label;
+  }
+  return (
+    <a class="image-link" href={url} target="_blank" rel="noopener noreferrer">
+      {label}
+    </a>
+  );
+}
+
+/**
+ * A node outside the allow-list as the text of its source: a `p` under the
+ * root or a `blockquote`, bare text elsewhere, nothing without a position.
+ */
+function renderSourceText(node: Nodes, parent: Parents, context: Context): ComponentChildren {
+  const start = node.position?.start.offset;
+  const end = node.position?.end.offset;
+  if (start === undefined || end === undefined) {
+    return null;
+  }
+  const text = context.source.slice(start, end);
+  return parent.type === 'root' || parent.type === 'blockquote' ? <p>{text}</p> : text;
 }

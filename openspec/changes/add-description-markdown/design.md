@@ -40,9 +40,11 @@ extensions (`micromark-extension-gfm` with `mdast-util-gfm`), and the
 resulting syntax tree is mapped to Preact elements by a small pure
 renderer, `src/web/client/markdown.tsx`. The renderer handles an explicit
 allow-list of node types; each produces fixed elements whose only dynamic
-content is text children and, for links, an `href` that passed the URL
-check. A node type outside the list (including `html`) is rendered as the
-plain text of its source.
+content is text children, for links an `href` that passed the URL check,
+and a fixed vocabulary of attributes whose values are fields of the syntax
+tree rather than input text: `data-lang` (the info string's first word, as
+text), `checked`, `start` and `data-align`. A node type outside the list
+(including `html`) is rendered as the plain text of its source.
 
 Alternatives considered:
 - *A Markdown-to-HTML library plus a sanitizer (DOMPurify) and
@@ -66,7 +68,10 @@ like Preact.
 The GFM extensions used are tables, task list items, strikethrough and
 autolink literals. Footnotes are left out: they need cross-references and
 generated ids in the page for little value in a ticket description, so
-`[^1]` stays text.
+`[^1]` stays text. The umbrella packages `micromark-extension-gfm` and
+`mdast-util-gfm` still parse footnote syntax, so `footnoteReference` and
+`footnoteDefinition` nodes are outside the allow-list and render as their
+source text.
 
 ### Link references are resolved by the renderer
 

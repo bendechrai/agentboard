@@ -419,6 +419,142 @@ select {
   white-space: pre-wrap;
 }
 
+/* Description: Markdown rendered to elements (src/web/client/markdown.tsx). */
+
+.description {
+  line-height: 1.5;
+}
+
+.description > :not(h3) {
+  margin: 0 0 10px;
+}
+
+.description > :last-child {
+  margin-bottom: 0;
+}
+
+.description h4,
+.description h5,
+.description h6 {
+  margin: 14px 0 6px;
+  line-height: 1.25;
+}
+
+.description h4 {
+  font-size: 1.05rem;
+}
+
+.description h5 {
+  font-size: 1rem;
+}
+
+.description h6 {
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
+.description ul,
+.description ol {
+  padding-left: 1.6em;
+  list-style: revert;
+}
+
+.description ul ul,
+.description ul ol,
+.description ol ul,
+.description ol ol {
+  margin: 2px 0 0;
+}
+
+.description li {
+  margin: 2px 0;
+}
+
+.description li > p {
+  margin: 0 0 6px;
+}
+
+.description li:has(> input[type='checkbox']) {
+  list-style: none;
+  margin-left: -1.4em;
+}
+
+.description input[type='checkbox'] {
+  margin: 0 6px 0 0;
+  vertical-align: -1px;
+  accent-color: var(--accent);
+}
+
+.description input[type='checkbox']:disabled {
+  cursor: default;
+  opacity: 0.8;
+}
+
+.description pre {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  overflow-x: auto;
+}
+
+.description pre code {
+  font-size: 0.88em;
+}
+
+.description :not(pre) > code {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--panel);
+}
+
+.description blockquote {
+  padding: 2px 12px;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+.description blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.description hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.description table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.description th,
+.description td {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.description th {
+  background: var(--panel);
+}
+
+.description [data-align='center'] {
+  text-align: center;
+}
+
+.description [data-align='right'] {
+  text-align: right;
+}
+
+.description .image-link::before {
+  content: 'image: ';
+  color: var(--muted);
+}
+
 .disposition {
   display: inline-block;
   margin: 12px 0 0;
