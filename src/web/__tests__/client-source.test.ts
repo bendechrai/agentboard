@@ -1,8 +1,9 @@
 /**
  * Source rules of the web client (board-web: "Board text is never markup";
  * add-board-web design.md: "Front end": `dangerouslySetInnerHTML` is not
- * used anywhere). The client imports only Preact, its own modules and the
- * pure, browser-safe view-model and event modules, and authenticates only
+ * used anywhere). The client imports only Preact, the Markdown parser of
+ * the description renderer, its own modules and the pure, browser-safe
+ * view-model and event modules, and authenticates only
  * with the Bearer header: it uses no cookie, no `EventSource` (which cannot
  * send the header) and no `localStorage` (the token is kept in
  * `sessionStorage` only).
@@ -88,8 +89,20 @@ describe('dangerouslySetInnerHTML', () => {
   });
 });
 
+/**
+ * The Markdown parser of the description renderer and its syntax tree types
+ * (add-description-markdown design.md: "Parse to mdast, render the tree to
+ * Preact elements"), bundled into `app.js` like Preact.
+ */
+const MARKDOWN_PACKAGES = new Set([
+  'mdast',
+  'mdast-util-from-markdown',
+  'mdast-util-gfm',
+  'micromark-extension-gfm',
+]);
+
 describe('client imports', () => {
-  it('imports only Preact, its own modules and src/view and src/events', () => {
+  it('imports only Preact, the Markdown parser, its own modules and src/view and src/events', () => {
     const offenders: string[] = [];
     const sources = filesUnder(CLIENT).filter(
       (f) => /\.tsx?$/.test(f) && !f.includes(`${sep}__tests__${sep}`),
@@ -97,7 +110,7 @@ describe('client imports', () => {
     expect(sources.length).toBeGreaterThan(5);
     for (const file of sources) {
       for (const spec of specifiers(readFileSync(file, 'utf8'))) {
-        if (spec === 'preact' || spec.startsWith('preact/')) {
+        if (spec === 'preact' || spec.startsWith('preact/') || MARKDOWN_PACKAGES.has(spec)) {
           continue;
         }
         if (!spec.startsWith('.')) {
