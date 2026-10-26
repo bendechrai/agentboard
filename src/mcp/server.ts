@@ -414,12 +414,14 @@ function mcpHintContext(options: McpServerOptions, name: string, args: unknown):
   const actor = nonEmpty(given.as) ?? nonEmpty(options.actor) ?? nonEmpty(options.env[ACTOR_ENV]);
   const command = findTool(name)?.command.name ?? null;
   const closeDecision = command === 'close' ? closeDecisionOf(given) : undefined;
+  const force = command === 'release' && given.force === true;
   return {
     surface: 'mcp',
     command,
     ...(id === undefined ? {} : { id }),
     ...(actor === undefined ? {} : { actor }),
     ...(closeDecision === undefined ? {} : { closeDecision }),
+    ...(force ? { force } : {}),
   };
 }
 

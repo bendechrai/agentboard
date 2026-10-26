@@ -292,6 +292,33 @@ describe('forced release of an unassigned ticket over MCP', () => {
   });
 });
 
+describe('review round 2: renew by a former holder over MCP', () => {
+  it('after a forced release is a not-assignee tool error with or without ttl, writing nothing', () => {
+    const { server, eventsDir } = goldenBoard();
+    const id = GOLDEN.clock.m1;
+    success(server.callTool('board_claim', { id, ttl: '30m', as: 'merger-1' }));
+    success(
+      server.callTool('board_release', {
+        id,
+        force: true,
+        reason: 'looked gone',
+        as: 'orchestrator',
+      }),
+    );
+    const before = allNames(eventsDir);
+    for (const args of [
+      { id, as: 'merger-1' },
+      { id, ttl: '30m', as: 'merger-1' },
+    ]) {
+      expect(failure(server.callTool('board_renew', args))).toMatchObject({
+        exitCode: 4,
+        reason: 'not-assignee',
+      });
+    }
+    expect(allNames(eventsDir)).toEqual(before);
+  });
+});
+
 describe('scenario: MCP wait returns at once', () => {
   it('on a ticket held by merger-1 with one waiter: {queued: true, position: 2, holder, ticket} within a second, and a join written', () => {
     const { server, eventsDir } = goldenBoard();

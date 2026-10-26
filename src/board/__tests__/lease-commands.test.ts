@@ -12,12 +12,12 @@
  * included) and the cache dump unchanged.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { canonicalDecode } from '../../events/canonical.js';
+import { canonicalDecode, canonicalEncode } from '../../events/canonical.js';
 import { validateEvent, type BoardEvent } from '../../events/schema.js';
 import { openBoard, type Board } from '../../store/board.js';
 import { catchUp, dumpCache } from '../../store/cache.js';
@@ -27,6 +27,7 @@ import { P, allNames, ev, eventNames, putEvent, propose } from '../../store/__te
 import {
   ClaimRefusedError,
   claimTicket,
+  handoffTicket,
   moveTicket,
   releaseTicket,
   renewTicket,
@@ -827,5 +828,129 @@ describe('pinned by review round 1', () => {
     const event = eventOf(out.hash);
     expect(event.ts).toEqual({ wall: T + 500_000, counter: 1, actor: 'merger-1' });
     expect(event.body).toEqual({ ttl: 1_800_000, expiresAt: T + 500_000 + 1_800_000 });
+  });
+});
+
+describe('review round 2: renew by a former holder', () => {
+  it('after a forced release with an empty queue: exit 4 not-assignee with or without --ttl', () => {
+    const id = lock();
+    leased(id);
+    releaseTicket(board, 'orchestrator', { id, force: true, reason: 'merger-1 looked gone' });
+    refused(() => renewTicket(board, 'merger-1', { id }), 4, 'not-assignee');
+    refused(() => renewTicket(board, 'merger-1', { id, ttl: 600_000 }), 4, 'not-assignee');
+  });
+
+  it('after a hand-off by another actor: exit 4 not-assignee with or without --ttl', () => {
+    const id = lock();
+    leased(id);
+    handoffTicket(board, 'orchestrator', { id, to: 'impl-9', status: 'todo', note: 'reassigned' });
+    refused(() => renewTicket(board, 'merger-1', { id }), 4, 'not-assignee');
+    refused(() => renewTicket(board, 'merger-1', { id, ttl: 600_000 }), 4, 'not-assignee');
+  });
+
+  it('the assignee of a hold without a lease and without --ttl is still exit 1 usage', () => {
+    const id = lock();
+    claimTicket(board, 'impl', { id });
+    refused(() => renewTicket(board, 'impl', { id }), 1, 'usage');
+  });
+});
+
+describe('review round 2: show reads applied event files only', () => {
+  /** merger-1 holds a 30m lease taken at T and renewed at T + 1000 (expires T + 1801000). */
+  function held(): { id: string; renew: string } {
+    const id = lock();
+    leased(id);
+    at(1000);
+    const renew = String(renewTicket(board, 'merger-1', { id }).hash);
+    return { id, renew };
+  }
+
+  it('a rejected takeover and a rejected forced release contribute nothing', () => {
+    const { id, renew } = held();
+    // A takeover too early for the lease it names: rejected already-assigned.
+    putEvent(
+      board.eventsDir,
+      ev(
+        {
+          kind: 'ticket.claim',
+          ticket: id,
+          body: {
+            lease: { ttl: 60_000, grace: 120_000, expiresAt: T + 2000 + 60_000 },
+            supersedes: { holder: 'merger-1', expiresAt: T + 1_801_000, event: renew },
+          },
+        },
+        'merger-2',
+        T + 2000,
+      ),
+    );
+    // A forced release naming a holder the ticket does not have: rejected holder-changed.
+    putEvent(
+      board.eventsDir,
+      ev(
+        { kind: 'ticket.release.force', ticket: id, body: { holder: 'nobody', reason: 'stale' } },
+        'orchestrator',
+        T + 3000,
+      ),
+    );
+    at(4000);
+    catchUp(board);
+    const shown = showTicket(board, id);
+    expect(shown.ticket.assignee).toBe('merger-1');
+    expect(shown.takeover).toBeUndefined();
+    expect(shown.forcedRelease).toBeUndefined();
+  });
+
+  it('a stale grant file contributes no granted line', () => {
+    const { id } = held();
+    claimTicket(board, 'merger-2', { id, ttl: 600_000, wait: true });
+    // Not the grant due (the lease is live): rejected stale-grant.
+    putEvent(board.eventsDir, {
+      v: 1,
+      kind: 'ticket.grant',
+      ticket: id,
+      actor: 'agentboard',
+      ts: { wall: T + 5000, counter: 0, actor: 'agentboard' },
+      body: { to: 'merger-2', ttl: 600_000, window: 120_000, after: { released: 'c'.repeat(64) } },
+    });
+    at(6000);
+    catchUp(board);
+    const shown = showTicket(board, id);
+    expect(shown.ticket.assignee).toBe('merger-1');
+    expect(shown.grant).toBeUndefined();
+  });
+
+  it('a forced release not yet folded is not shown until a catch-up folds it', () => {
+    const { id } = held();
+    putEvent(
+      board.eventsDir,
+      ev(
+        { kind: 'ticket.release.force', ticket: id, body: { holder: 'merger-1', reason: 'late' } },
+        'orchestrator',
+        T + 3000,
+      ),
+    );
+    // No catch-up since the file appeared: show reads the cache as it is.
+    expect(showTicket(board, id).forcedRelease).toBeUndefined();
+    at(4000);
+    catchUp(board);
+    expect(showTicket(board, id).forcedRelease).toMatchObject({
+      actor: 'orchestrator',
+      reason: 'late',
+    });
+  });
+
+  it('a file whose name is not its hash is never shown', () => {
+    const { id } = held();
+    const event = ev(
+      { kind: 'ticket.release.force', ticket: id, body: { holder: 'merger-1', reason: 'forged' } },
+      'orchestrator',
+      T + 3000,
+    );
+    writeFileSync(join(board.eventsDir, `${'d'.repeat(64)}.json`), canonicalEncode(event));
+    at(4000);
+    catchUp(board);
+    const shown = showTicket(board, id);
+    expect(shown.ticket.assignee).toBe('merger-1');
+    expect(shown.forcedRelease).toBeUndefined();
   });
 });

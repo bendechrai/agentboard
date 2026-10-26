@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { claimTicket } from '../../board/actions.js';
+import { SAMPLES } from '../../board/__tests__/helpers.js';
 import { canonicalDecode } from '../../events/canonical.js';
 import { validateEvent, type BoardEvent } from '../../events/schema.js';
 import { openBoard } from '../../store/board.js';
@@ -575,5 +576,84 @@ describe('scenario: reserved actor', () => {
     refused(b, ['inbox', '--as', 'agentboard'], 1, 'usage');
     refused(b, ['config', 'set', 'queue.window', '5m', '--as', 'agentboard'], 1, 'usage');
     refused(b, ['claim', b.id], 1, 'usage', cliEnv({ AGENTBOARD_ACTOR: 'agentboard' }));
+  });
+});
+
+describe('review round 2: renew by a former holder', () => {
+  it('after a forced release with an empty queue: exit 4 not-assignee, the lock-lost hint, nothing written', () => {
+    const b = board();
+    ok(run(['claim', b.id, '--as', 'merger-1', '--ttl', '30m'], b.root));
+    ok(
+      run(['release', b.id, '--as', 'orchestrator', '--force', '--reason', 'looked gone'], b.root),
+    );
+    const out = refused(b, ['renew', b.id, '--as', 'merger-1'], 4, 'not-assignee');
+    expect(out.stderr).toContain('hint: the lock was lost');
+    refused(b, ['renew', b.id, '--as', 'merger-1', '--ttl', '30m'], 4, 'not-assignee');
+  });
+
+  it('after a hand-off by another actor: exit 4 not-assignee with or without --ttl', () => {
+    const b = board();
+    ok(run(['claim', b.id, '--as', 'merger-1', '--ttl', '30m'], b.root));
+    ok(
+      run(
+        [
+          'handoff',
+          b.id,
+          '--to',
+          'impl-9',
+          '--status',
+          'todo',
+          '--note',
+          'reassigned',
+          '--as',
+          'orchestrator',
+        ],
+        b.root,
+      ),
+    );
+    refused(b, ['renew', b.id, '--as', 'merger-1'], 4, 'not-assignee');
+    refused(b, ['renew', b.id, '--as', 'merger-1', '--ttl', '30m'], 4, 'not-assignee');
+  });
+});
+
+describe('review round 2: secret-looking text', () => {
+  it('release --force with a token-shaped reason is refused secret-like before the board is opened', () => {
+    const { root } = project();
+    const out = run(
+      [
+        'release',
+        '01J9K3',
+        '--force',
+        '--reason',
+        `gone ${SAMPLES['github-token']}`,
+        '--as',
+        'orchestrator',
+      ],
+      root,
+      cliEnv({ AGENTBOARD_DIR: join(root, 'nowhere') }),
+    );
+    expect(out.code, out.stderr).toBe(1);
+    expect(out.stderr).toContain('secret');
+    expect(out.stderr).not.toContain(SAMPLES['github-token']);
+  });
+
+  it('config set with a token-shaped value is refused and never repeats the value', () => {
+    const b = board();
+    const token = SAMPLES['github-token'];
+    const out = refused(
+      b,
+      ['config', 'set', 'queue.window', token, '--as', 'orchestrator'],
+      1,
+      'usage',
+    );
+    expect(out.stderr).not.toContain(token);
+    const doc = run(
+      ['config', 'set', 'queue.window', token, '--as', 'orchestrator', '--json'],
+      b.root,
+    );
+    expect(doc.code).toBe(1);
+    expect(doc.stdout).not.toContain(token);
+    expect(doc.stderr).not.toContain(token);
+    expect(out.stderr).toContain('a setting is <n>s or <n>m');
   });
 });

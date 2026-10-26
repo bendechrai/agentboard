@@ -81,6 +81,14 @@ export interface HintContext {
    * null; undefined otherwise.
    */
   readonly claimableAt?: number;
+  /**
+   * True when the command is `release` and `--force` (the `force`
+   * argument over MCP) was given, so the `not-assignee` hint of a forced
+   * release on an unassigned ticket says there is nothing to force.
+   * `cliHintContext` and `runTool` fill it as they fill `closeDecision`;
+   * undefined for every other command and when it is unknown.
+   */
+  readonly force?: boolean;
 }
 
 /**
@@ -474,6 +482,9 @@ export function hintStep(
  * - `not-assignee`: step `show` with I. When the command is `renew`,
  *   exactly
  *   `the lock was lost: you no longer hold this ticket, so stop the work it protects; see who holds it with <show>`.
+ *   When the command is `release` and `context.force` is true (a forced
+ *   release of an unassigned ticket), exactly
+ *   `the ticket is not held, so there is nothing to force; see its holder and queue with <show>`.
  * - `checklist-index`: step `show` with I.
  * - `holder-changed`, `invalid-queue`, `stale-grant`: step `show` with I
  *   (for the current holder, queue and lease, which `show` prints).
@@ -945,10 +956,16 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
       ? base
       : `${base}; it can be claimed from ${isoTime(claimableAt)}, or wait in its queue with ${waitStep(h)}`;
   },
-  'not-assignee': (h) =>
-    h.command?.name === 'renew'
-      ? `the lock was lost: you no longer hold this ticket, so stop the work it protects; see who holds it with ${h.step('show', [['id', h.id]])}`
-      : `only the assignee can do this; see who holds the ticket with ${h.step('show', [['id', h.id]])}`,
+  'not-assignee': (h) => {
+    const show = h.step('show', [['id', h.id]]);
+    if (h.command?.name === 'renew') {
+      return `the lock was lost: you no longer hold this ticket, so stop the work it protects; see who holds it with ${show}`;
+    }
+    if (h.command?.name === 'release' && h.context.force === true) {
+      return `the ticket is not held, so there is nothing to force; see its holder and queue with ${show}`;
+    }
+    return `only the assignee can do this; see who holds the ticket with ${show}`;
+  },
   'checklist-index': (h) =>
     `checklist lines are numbered from 0; see them with ${h.step('show', [['id', h.id]])}`,
   'holder-changed': (h) =>

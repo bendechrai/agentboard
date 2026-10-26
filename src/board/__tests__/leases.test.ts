@@ -28,8 +28,10 @@ const TTL_MESSAGE = (text: string): string =>
   `invalid --ttl ${text}: a ttl is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 30s to 7d`;
 const TIMEOUT_MESSAGE = (text: string): string =>
   `invalid --timeout ${text}: a timeout is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 1s to 1d`;
-const SETTING_MESSAGE = (text: string): string =>
-  `invalid value ${text}: a setting is <n>s or <n>m with <n> of 1 to 5 digits, from 30s to 10m`;
+// The refused value is never repeated: a token pasted as a value must not
+// land in a terminal or a log (review round 2 ruling).
+const SETTING_MESSAGE =
+  'invalid value: a setting is <n>s or <n>m with <n> of 1 to 5 digits, from 30s to 10m';
 
 describe('parseTtl', () => {
   it.each([
@@ -130,7 +132,7 @@ describe('parseSetting', () => {
     'refuses %j with exit 1 usage naming the form and the 30s to 10m range',
     (text) => {
       const err = expectBoardError(() => parseSetting(text), 1, 'usage');
-      expect(err.message).toBe(SETTING_MESSAGE(text));
+      expect(err.message).toBe(SETTING_MESSAGE);
     },
   );
 });

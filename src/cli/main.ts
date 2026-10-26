@@ -333,12 +333,14 @@ function cliHintContext(io: CliIo, parsed: ParsedCommand | null): HintContext {
     const actor = nonEmpty(parsed.values.as) ?? fromEnv;
     const closeDecision =
       parsed.command.name === 'close' ? closeDecisionOf(parsed.values) : undefined;
+    const force = parsed.command.name === 'release' && parsed.values.force === true;
     return {
       surface: 'cli',
       command: parsed.command.name,
       ...(id === undefined ? {} : { id }),
       ...(actor === undefined ? {} : { actor }),
       ...(closeDecision === undefined ? {} : { closeDecision }),
+      ...(force ? { force } : {}),
     };
   }
   const actor = argvActor(io.argv) ?? fromEnv;
