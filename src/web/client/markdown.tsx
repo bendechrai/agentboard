@@ -32,6 +32,26 @@ import { createElement, type ComponentChildren, type VNode } from 'preact';
 /** Parses a description into an mdast tree; may throw on input it cannot handle. */
 export type MarkdownParser = (source: string) => Root;
 
+/**
+ * The deepest nesting `renderMarkdown` renders as elements. The depth of a
+ * node is the number of nodes of the types `blockquote`, `list`, `listItem`,
+ * `table`, `tableRow`, `tableCell`, `emphasis`, `strong`, `delete`, `link`,
+ * `paragraph` and `heading` among the node itself and its ancestors. A node
+ * of those types whose depth is greater than this renders as one text node
+ * holding its source text (`source.slice(start.offset, end.offset)`), with
+ * none of its children mapped, so neither the renderer nor Preact recurses
+ * without bound. A tree whose depth is at most this renders as elements.
+ */
+export const MAX_MARKDOWN_DEPTH = 32;
+
+/**
+ * The longest description, in string length (UTF-16 code units), that
+ * `renderMarkdown` parses. A longer one is not parsed at all and renders as
+ * the plain-text fallback, because the parser's time is super-linear on
+ * some inputs (emphasis-heavy text) and a description has no length limit.
+ */
+export const MAX_MARKDOWN_LENGTH = 16384;
+
 /** The heading element a description heading of a given depth renders as. */
 export type DescriptionHeading = 'h4' | 'h5' | 'h6';
 
@@ -104,8 +124,12 @@ interface Context {
  * Renders the description `source` as a Preact tree. `parse` defaults to
  * `parseMarkdown`; it is a parameter so the fallback below can be exercised.
  *
- * When `parse` throws, the result is the whole `source` as one text child,
- * with no element. Otherwise the result is a `Fragment` of the rendered
+ * When `source` is longer than `MAX_MARKDOWN_LENGTH` (then `parse` is not
+ * called), or when parsing or mapping the tree throws, the result is the
+ * whole `source` as one text child, with no element. Nodes deeper than
+ * `MAX_MARKDOWN_DEPTH` render as their source text (see there). A link or
+ * image inside a rendered link renders as its children or its label text,
+ * never as a nested `a`. Otherwise the result is a `Fragment` of the rendered
  * children of the root, built only from string-typed element vnodes,
  * `Fragment`s and text (no component, no event handler, no
  * raw HTML prop, no `style`), as follows:

@@ -18,6 +18,7 @@ import { act, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { MAX_MARKDOWN_DEPTH, MAX_MARKDOWN_LENGTH } from '../markdown.js';
 import {
   E,
   FakeApi,
@@ -312,4 +313,48 @@ describe('parsing', () => {
     expect(all(s, '*').map((el) => el.tagName.toLowerCase())).toEqual(['h3']);
     expect(document.querySelector('b')).toBeNull();
   });
+});
+
+describe('bounded rendering (review round 2)', () => {
+  const DEEP = '> '.repeat(5000) + 'deep text';
+  // While the length cap is missing, the over-long text takes seconds to parse.
+  const SLOW_PARSE_MS = 60_000;
+
+  it('renders a description nested far past the depth cap, capped', async () => {
+    await open(T1, inputs(DEEP));
+    const s = section();
+    expect(s.firstElementChild?.textContent).toBe('Description');
+    expect(all(s, 'blockquote')).toHaveLength(MAX_MARKDOWN_DEPTH);
+    expect(s.textContent).toContain('deep text');
+  });
+
+  it('replaces the previous ticket with one whose description is nested past the cap', async () => {
+    await open(T1, inputs('Plain words', DEEP));
+    expect(section().textContent).toContain('Plain words');
+    act(() => {
+      setHash(`#/ticket/${T2}`);
+    });
+    await waitFor(() => {
+      expect(document.querySelector(`article.ticket[data-ticket="${T2}"]`)).not.toBeNull();
+    });
+    await waitFor(() => {
+      expect(all(section(), 'blockquote')).toHaveLength(MAX_MARKDOWN_DEPTH);
+    });
+    expect(document.body.textContent).not.toContain('Plain words');
+    expect(section().textContent).toContain('deep text');
+  });
+
+  it(
+    'shows a description longer than the length cap as plain text without parsing it',
+    async () => {
+      const text = '# Heading\n\n' + '_a*'.repeat(Math.ceil(MAX_MARKDOWN_LENGTH / 3));
+      expect(text.length).toBeGreaterThan(MAX_MARKDOWN_LENGTH);
+      await open(T1, inputs(text));
+      const s = section();
+      expect(parsesOf(text)).toBe(0);
+      expect(all(s, '*').map((el) => el.tagName.toLowerCase())).toEqual(['h3']);
+      expect(s.textContent).toBe('Description' + text);
+    },
+    SLOW_PARSE_MS,
+  );
 });

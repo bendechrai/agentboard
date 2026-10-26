@@ -20,7 +20,11 @@ import type { Root } from 'mdast';
 import { render } from 'preact';
 import { describe, expect, it } from 'vitest';
 
+import type { PhrasingContent, RootContent } from 'mdast';
+
 import {
+  MAX_MARKDOWN_DEPTH,
+  MAX_MARKDOWN_LENGTH,
   headingTag,
   isAllowedUrl,
   parseMarkdown,
@@ -944,5 +948,251 @@ describe('a description with many elements', () => {
         '<hr></>' +
         '<table><thead><tr><th data-align="center">"h"</></></><tbody><tr><td data-align="center">"c"</></></></>',
     );
+  });
+});
+
+/** The deepest element nesting under `root` (a child of `root` is depth 1). */
+function elementDepth(root: Element): number {
+  let deepest = 0;
+  for (const child of root.children) {
+    deepest = Math.max(deepest, 1 + elementDepth(child));
+  }
+  return deepest;
+}
+
+/** A parser that records each call, then hands the source to `inner` (by default the real parser). */
+function recording(inner: MarkdownParser = parseMarkdown): {
+  parse: MarkdownParser;
+  calls: string[];
+} {
+  const calls: string[] = [];
+  return {
+    calls,
+    parse: (source) => {
+      calls.push(source);
+      return inner(source);
+    },
+  };
+}
+
+describe('the depth cap', () => {
+  it('is 32', () => {
+    expect(MAX_MARKDOWN_DEPTH).toBe(32);
+  });
+
+  it('renders block quotes nested exactly to the cap as elements', () => {
+    // 31 block quotes and the paragraph: depth 32.
+    const root = md('> '.repeat(MAX_MARKDOWN_DEPTH - 1) + 'a');
+    expect(root.querySelectorAll('blockquote')).toHaveLength(MAX_MARKDOWN_DEPTH - 1);
+    const p = root.querySelector('p');
+    expect(p?.textContent).toBe('a');
+    expect(p?.parentElement?.tagName.toLowerCase()).toBe('blockquote');
+    expect(elementDepth(root)).toBe(MAX_MARKDOWN_DEPTH);
+  });
+
+  it('renders the paragraph one level past the cap as its source text', () => {
+    const root = md('> '.repeat(MAX_MARKDOWN_DEPTH) + 'a');
+    const quotes = [...root.querySelectorAll('blockquote')];
+    expect(quotes).toHaveLength(MAX_MARKDOWN_DEPTH);
+    expect(root.querySelector('p')).toBeNull();
+    expect(shapeOf(quotes.at(-1) ?? root)).toBe('"a"');
+  });
+
+  it('renders the block quote past the cap as one text node of its source, children unmapped', () => {
+    const root = md('> '.repeat(40) + 'a');
+    const quotes = [...root.querySelectorAll('blockquote')];
+    expect(quotes).toHaveLength(MAX_MARKDOWN_DEPTH);
+    const innermost = quotes.at(-1);
+    expect(innermost?.childNodes).toHaveLength(1);
+    expect(innermost?.firstChild?.nodeType).toBe(3);
+    expect(innermost?.textContent).toBe('> '.repeat(8) + 'a');
+  });
+
+  it('renders the list past the cap as its source text', () => {
+    // Each `- ` is a list and a list item: 16 levels reach depth 32.
+    const root = md('- '.repeat(20) + 'a');
+    expect(root.querySelectorAll('ul')).toHaveLength(16);
+    expect(root.querySelectorAll('li')).toHaveLength(16);
+    const innermost = [...root.querySelectorAll('li')].at(-1);
+    expect(innermost?.textContent).toBe('- - - - a');
+    expect(innermost?.children).toHaveLength(0);
+  });
+
+  it('renders a mix of block quotes, lists and emphasis past the cap as source text', () => {
+    const root = md('> - '.repeat(12) + '**_a_**');
+    expect(elementDepth(root)).toBeLessThanOrEqual(MAX_MARKDOWN_DEPTH);
+    expect(root.querySelector('strong, em')).toBeNull();
+    expect(root.textContent).toContain('- > - **_a_**');
+  });
+
+  it('renders deep emphasis without throwing, capped, keeping the text', () => {
+    const root = md('*'.repeat(3000) + 'a' + '*'.repeat(3000));
+    expect(elementDepth(root)).toBeLessThanOrEqual(MAX_MARKDOWN_DEPTH);
+    expect(root.textContent).toContain('a');
+  });
+
+  for (const [name, source] of [
+    ['1500 block quotes', '> '.repeat(1500) + 'a'],
+    ['5000 block quotes', '> '.repeat(5000) + 'a'],
+    ['1000 nested lists', '- '.repeat(1000) + 'a'],
+    ['3000 levels of emphasis', '*'.repeat(3000) + 'a' + '*'.repeat(3000)],
+    ['2000 nested link brackets', '['.repeat(2000) + 'a' + '](https://example.com)'.repeat(2000)],
+    ['a mix 1000 levels deep', '> - *'.repeat(1000) + 'a'],
+  ] as const) {
+    it(`returns a tree and renders it into a DOM without throwing: ${name}`, () => {
+      // A throw from renderMarkdown or from Preact's render fails the test.
+      const tree = renderMarkdown(source);
+      const root = document.createElement('div');
+      render(tree, root);
+      expect(elementDepth(root)).toBeLessThanOrEqual(MAX_MARKDOWN_DEPTH + 2);
+      expect(root.textContent).toContain('a');
+    });
+  }
+});
+
+// While the length cap is missing, the over-long inputs below take seconds
+// to parse; the timeout keeps them failing on their assertions, not on time.
+const SLOW_PARSE_MS = 60_000;
+
+describe('the length cap', () => {
+  it('is 16384', () => {
+    expect(MAX_MARKDOWN_LENGTH).toBe(16384);
+  });
+
+  it(
+    'shows a description longer than the cap as plain text without parsing it',
+    () => {
+      const source = '# Title\n\n' + '_a*'.repeat(6000);
+      expect(source.length).toBeGreaterThan(MAX_MARKDOWN_LENGTH);
+      // An empty tree in place of a slow real parse; a call would also empty the output.
+      const { parse, calls } = recording(() => ({ type: 'root', children: [] }));
+      const root = md(source, parse);
+      expect(calls).toEqual([]);
+      expect(root.children).toHaveLength(0);
+      expect(root.textContent).toBe(source);
+    },
+    SLOW_PARSE_MS,
+  );
+
+  it('does not parse a description one character over the cap', () => {
+    const source = '# ' + 'a'.repeat(MAX_MARKDOWN_LENGTH - 1);
+    expect(source.length).toBe(MAX_MARKDOWN_LENGTH + 1);
+    const { parse, calls } = recording();
+    const root = md(source, parse);
+    expect(calls).toEqual([]);
+    expect(root.querySelector('h4')).toBeNull();
+    expect(root.textContent).toBe(source);
+  });
+
+  it('parses a description of exactly the cap', () => {
+    const source = '# ' + 'a'.repeat(MAX_MARKDOWN_LENGTH - 2);
+    expect(source.length).toBe(MAX_MARKDOWN_LENGTH);
+    const { parse, calls } = recording();
+    const root = md(source, parse);
+    expect(calls).toEqual([source]);
+    expect(root.querySelector('h4')?.textContent).toBe('a'.repeat(MAX_MARKDOWN_LENGTH - 2));
+  });
+
+  it(
+    'shows an over-long emphasis-heavy description through the default parser as plain text',
+    () => {
+      const source = '_a*'.repeat(Math.ceil((MAX_MARKDOWN_LENGTH + 1) / 3));
+      const root = md(source);
+      expect(root.children).toHaveLength(0);
+      expect(root.textContent).toBe(source);
+    },
+    SLOW_PARSE_MS,
+  );
+});
+
+describe('the fallback covers the mapping', () => {
+  it('shows the source as plain text when mapping the root throws', () => {
+    const tree: Root = {
+      type: 'root',
+      get children(): RootContent[] {
+        throw new TypeError('malformed children');
+      },
+    };
+    const root = md('# a\n\nb', returning(tree));
+    expect(root.children).toHaveLength(0);
+    expect(root.textContent).toBe('# a\n\nb');
+  });
+
+  it('discards what was mapped before a nested node throws', () => {
+    const tree: Root = {
+      type: 'root',
+      children: [
+        { type: 'heading', depth: 1, children: [{ type: 'text', value: 'a' }] },
+        {
+          type: 'paragraph',
+          get children(): PhrasingContent[] {
+            throw new TypeError('malformed children');
+          },
+        },
+      ],
+    };
+    const root = md('# a\n\nb', returning(tree));
+    expect(root.children).toHaveLength(0);
+    expect(root.textContent).toBe('# a\n\nb');
+  });
+
+  it('shows the source as plain text when a node has a malformed position', () => {
+    const tree: Root = {
+      type: 'root',
+      children: [
+        {
+          type: 'yaml',
+          value: 'k',
+          get position(): NonNullable<Root['position']> {
+            throw new TypeError('malformed position');
+          },
+        },
+      ],
+    };
+    const root = md('---\nk\n---', returning(tree));
+    expect(root.children).toHaveLength(0);
+    expect(root.textContent).toBe('---\nk\n---');
+  });
+});
+
+describe('links inside links', () => {
+  it('renders an autolink inside a link as its text, with one a', () => {
+    expect(shape('[a <https://x.example> b](https://y.example)')).toBe(
+      `<p>${link('https://y.example')}"a https://x.example b"</></>`,
+    );
+  });
+
+  it('renders a GFM autolink literal inside a link as its text', () => {
+    const root = md('[see www.example.com now](https://y.example)');
+    expect(root.querySelectorAll('a')).toHaveLength(1);
+    expect(root.querySelector('a a')).toBeNull();
+    expect(root.querySelector('a')?.textContent).toBe('see www.example.com now');
+  });
+
+  it('renders an image inside a link as its label text, with one a', () => {
+    expect(shape('[![alt](https://i.example/p.png)](https://ok.example)')).toBe(
+      `<p>${link('https://ok.example')}"alt"</></>`,
+    );
+  });
+
+  it('labels an image without alt text inside a link with its URL', () => {
+    expect(shape('[![](https://i.example/p.png)](https://ok.example)')).toBe(
+      `<p>${link('https://ok.example')}"https://i.example/p.png"</></>`,
+    );
+  });
+
+  it('renders an image reference inside a link reference as its label text', () => {
+    expect(shape('[![alt][i]][l]\n\n[i]: https://i.example/p.png\n[l]: https://ok.example')).toBe(
+      `<p>${link('https://ok.example')}"alt"</></>`,
+    );
+  });
+
+  it('nests no a in any a for links in emphasis inside a link', () => {
+    const root = md(
+      '[*x <https://a.example>* and ![p](https://b.example/p.png)](https://c.example)',
+    );
+    expect(root.querySelectorAll('a')).toHaveLength(1);
+    expect(root.querySelector('a a')).toBeNull();
+    expect(root.querySelector('a em')?.textContent).toBe('x https://a.example');
   });
 });

@@ -9,7 +9,11 @@
  * `Fragment`, no `img`, `script`, `iframe` or `style` element, and no
  * `href` outside `http:`, `https:` and `mailto:`. The same holds for the
  * DOM it renders to. The URL oracle is restated here as a pattern over the
- * `href` as written, independently of `isAllowedUrl`. With a throwing parser the output is exactly the input as
+ * `href` as written, independently of `isAllowedUrl`, and a bracket link
+ * is a link exactly when the oracle allows its URL. Plain words keep their
+ * text (so a renderer that drops content fails), input nested past
+ * `MAX_MARKDOWN_DEPTH` renders into a DOM without throwing, and input
+ * longer than `MAX_MARKDOWN_LENGTH` is shown as text without being parsed. With a throwing parser the output is exactly the input as
  * text.
  */
 
@@ -17,7 +21,13 @@ import fc from 'fast-check';
 import { Fragment, isValidElement, render, type ComponentChildren } from 'preact';
 import { describe, expect, it } from 'vitest';
 
-import { isAllowedUrl, renderMarkdown } from '../markdown.js';
+import {
+  MAX_MARKDOWN_DEPTH,
+  MAX_MARKDOWN_LENGTH,
+  isAllowedUrl,
+  renderMarkdown,
+  type MarkdownParser,
+} from '../markdown.js';
 
 // Each run parses and renders up to a few hundred inputs; under a loaded
 // machine the whole property can exceed vitest's 5 second default.
@@ -114,6 +124,10 @@ function vnodeViolations(node: ComponentChildren, out: string[] = []): string[] 
     return out;
   }
   const tag = node.type;
+  // Preact keeps `ref` on the vnode, never in `props`.
+  if (node.ref !== null && node.ref !== undefined) {
+    out.push(`${tag} ref`);
+  }
   if (!ELEMENTS.has(tag)) {
     out.push(`element ${tag}`);
   }
@@ -121,7 +135,7 @@ function vnodeViolations(node: ComponentChildren, out: string[] = []): string[] 
     out.push(`${tag} prop ${INNER_HTML_PROP}`);
   }
   for (const name of Object.keys(props)) {
-    if (/^on/i.test(name) || name === 'style' || name === 'ref') {
+    if (/^on/i.test(name) || name === 'style') {
       out.push(`${tag} prop ${name}`);
     }
   }
@@ -367,21 +381,27 @@ describe('renderMarkdown on arbitrary input', () => {
           maxLength: 12,
         }),
       );
+      // Each form, and whether it is a link exactly when the oracle allows
+      // its URL (the bracket forms are; an autolink needs a scheme first).
       const form = fc.constantFrom(
-        (u: string) => `[t](<${u}>)`,
-        (u: string) => `[t][r]\n\n[r]: <${u}>`,
-        (u: string) => `<${u}>`,
-        (u: string) => `![t](<${u}>)`,
-        (u: string) => `![t][r]\n\n[r]: <${u}>`,
+        { make: (u: string) => `[t](<${u}>)`, exact: true },
+        { make: (u: string) => `[t][r]\n\n[r]: <${u}>`, exact: true },
+        { make: (u: string) => `<${u}>`, exact: false },
+        { make: (u: string) => `![t](<${u}>)`, exact: true },
+        { make: (u: string) => `![t][r]\n\n[r]: <${u}>`, exact: true },
       );
       fc.assert(
-        fc.property(url, form, (u, make) => {
+        fc.property(url, form, (u, { make, exact }) => {
           const root = document.createElement('div');
           render(renderMarkdown(make(u)), root);
           for (const a of root.querySelectorAll('a')) {
             const href = a.getAttribute('href') ?? '';
             expect(oracleAllowed(href), href).toBe(true);
             expect(isAllowedUrl(href)).toBe(true);
+          }
+          if (exact) {
+            const hrefs = [...root.querySelectorAll('a[href]')].map((a) => a.getAttribute('href'));
+            expect(hrefs, u).toEqual(oracleAllowed(u) ? [u] : []);
           }
           expect(root.querySelector('img')).toBeNull();
         }),
@@ -451,4 +471,104 @@ describe('isAllowedUrl on arbitrary input', () => {
       { numRuns: 500 },
     );
   });
+});
+
+/** The deepest element nesting under `root` (a child of `root` is depth 1). */
+function elementDepth(root: Element): number {
+  let deepest = 0;
+  for (const child of root.children) {
+    deepest = Math.max(deepest, 1 + elementDepth(child));
+  }
+  return deepest;
+}
+
+describe('renderMarkdown renders what it is given', () => {
+  it('keeps the text of plain words and lines exactly (a renderer that drops content fails)', () => {
+    const word = fc.stringMatching(/^[a-z0-9]{1,10}$/);
+    const text = fc
+      .array(fc.tuple(word, fc.constantFrom(' ', '\n')), { minLength: 1, maxLength: 12 })
+      .map((parts) => parts.map(([w, sep], i) => (i === parts.length - 1 ? w : w + sep)).join(''));
+    fc.assert(
+      fc.property(text, (source) => {
+        const root = document.createElement('div');
+        render(renderMarkdown(source), root);
+        expect(root.textContent).toBe(source);
+        expect([...root.children].map((el) => el.tagName.toLowerCase())).toEqual(['p']);
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  it('shows a single plain word as itself in a paragraph', () => {
+    fc.assert(
+      fc.property(fc.stringMatching(/^[A-Za-z]{1,20}$/), (wordText) => {
+        const root = document.createElement('div');
+        render(renderMarkdown(wordText), root);
+        expect(root.querySelector('p')?.textContent).toBe(wordText);
+      }),
+      { numRuns: 100 },
+    );
+  });
+});
+
+describe('renderMarkdown on deep and long input', () => {
+  it(
+    'renders input nested far beyond the depth cap into a DOM without throwing, capped',
+    () => {
+      const deep = fc
+        .tuple(
+          fc.constantFrom('> ', '- ', '*', '[', '> - ', '1. ', '~~', '> *'),
+          fc.integer({ min: MAX_MARKDOWN_DEPTH, max: 1500 }),
+        )
+        .map(([unit, n]) => {
+          const close =
+            unit === '*' ? '*'.repeat(n) : unit === '[' ? '](https://example.com)'.repeat(n) : '';
+          return unit.repeat(n) + 'a' + close;
+        });
+      fc.assert(
+        fc.property(deep, (source) => {
+          // A throw from renderMarkdown or from Preact's render fails the property.
+          const tree = renderMarkdown(source);
+          expect(vnodeViolations(tree)).toEqual([]);
+          const root = document.createElement('div');
+          render(tree, root);
+          expect(domViolations(root)).toEqual([]);
+          expect(elementDepth(root)).toBeLessThanOrEqual(MAX_MARKDOWN_DEPTH + 2);
+          expect(root.textContent).toContain('a');
+        }),
+        { numRuns: 25 },
+      );
+    },
+    PROPERTY_TIMEOUT_MS,
+  );
+
+  it(
+    'shows input longer than the length cap as plain text without parsing it',
+    () => {
+      const long = fc
+        .tuple(
+          fc.constantFrom('_a*', '*a', '# a\n', '> ', '[a](https://example.com) ', '<b>x</b>'),
+          fc.integer({ min: MAX_MARKDOWN_LENGTH + 1, max: MAX_MARKDOWN_LENGTH + 4096 }),
+        )
+        .map(([unit, n]) => unit.repeat(Math.ceil(n / unit.length)).slice(0, n));
+      fc.assert(
+        fc.property(long, (source) => {
+          const calls: string[] = [];
+          // Returns an empty tree rather than parsing, so a call costs nothing
+          // and leaves the output empty.
+          const parse: MarkdownParser = (s) => {
+            calls.push(s);
+            return { type: 'root', children: [] };
+          };
+          const root = document.createElement('div');
+          render(renderMarkdown(source, parse), root);
+          expect(calls).toEqual([]);
+          expect(root.children).toHaveLength(0);
+          expect(root.textContent).toBe(source);
+        }),
+        { numRuns: 40 },
+      );
+    },
+    PROPERTY_TIMEOUT_MS,
+  );
 });
