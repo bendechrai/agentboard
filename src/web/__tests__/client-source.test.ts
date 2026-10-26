@@ -101,6 +101,79 @@ const MARKDOWN_PACKAGES = new Set([
   'micromark-extension-gfm',
 ]);
 
+/**
+ * The HTML insertion APIs no client module may use (add-description-markdown
+ * design.md: "A guard against HTML insertion"), each spelt in two parts so
+ * this file does not match itself.
+ */
+const HTML_INSERTION: readonly { name: string; pattern: RegExp }[] = [
+  { name: 'dangerously' + 'SetInnerHTML', pattern: new RegExp('dangerously' + 'SetInnerHTML') },
+  { name: 'inner' + 'HTML', pattern: new RegExp('\\binner' + 'HTML\\b') },
+  { name: 'outer' + 'HTML', pattern: new RegExp('\\bouter' + 'HTML\\b') },
+  { name: 'insertAdjacent' + 'HTML', pattern: new RegExp('\\binsertAdjacent' + 'HTML\\b') },
+  {
+    name: 'document.' + 'write',
+    pattern: new RegExp('\\bdocument\\s*\\.\\s*' + 'write(?:ln)?\\b'),
+  },
+];
+
+/** `<file>: <api>` for every client source (tests excluded) under `dir` using an HTML insertion API. */
+function htmlInsertionOffenders(dir: string): string[] {
+  const offenders: string[] = [];
+  const sources = filesUnder(dir).filter(
+    (f) => /\.tsx?$/.test(f) && !f.includes(`${sep}__tests__${sep}`),
+  );
+  for (const file of sources) {
+    const text = readFileSync(file, 'utf8');
+    for (const { name, pattern } of HTML_INSERTION) {
+      if (pattern.test(text)) {
+        offenders.push(`${relative(dir, file).split(sep).join('/')}: ${name}`);
+      }
+    }
+  }
+  return offenders;
+}
+
+describe('HTML insertion APIs', () => {
+  it('the scan finds each API in a source and ignores tests', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentboard-client-html-'));
+    try {
+      mkdirSync(join(dir, 'views'));
+      mkdirSync(join(dir, '__tests__'));
+      const uses = [
+        `<div ${'dangerously' + 'SetInnerHTML'}={{ __html: t }} />`,
+        `el.${'inner' + 'HTML'} = t;`,
+        `const s = el.${'outer' + 'HTML'};`,
+        `el.${'insertAdjacent' + 'HTML'}('beforeend', t);`,
+        `document . ${'write'}(t);`,
+      ];
+      uses.forEach((use, i) => {
+        writeFileSync(join(dir, 'views', `U${String(i)}.tsx`), use);
+      });
+      writeFileSync(join(dir, 'views', 'W.ts'), `document.${'writeln'}(t);`);
+      writeFileSync(join(dir, '__tests__', 'x.test.tsx'), `el.${'inner' + 'HTML'} = t;`);
+      writeFileSync(join(dir, 'ok.tsx'), '<div>{t}</div>; el.textContent = t; doc.writer = 1;');
+      expect(htmlInsertionOffenders(dir).sort()).toEqual([
+        `views/U0.tsx: ${'dangerously' + 'SetInnerHTML'}`,
+        `views/U1.tsx: ${'inner' + 'HTML'}`,
+        `views/U2.tsx: ${'outer' + 'HTML'}`,
+        `views/U3.tsx: ${'insertAdjacent' + 'HTML'}`,
+        `views/U4.tsx: ${'document.' + 'write'}`,
+        `views/W.ts: ${'document.' + 'write'}`,
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('no module under src/web/client/ uses one', () => {
+    const names = filesUnder(CLIENT).map((f) => relative(CLIENT, f).split(sep).join('/'));
+    expect(names).toContain('markdown.tsx');
+    expect(names).toContain('views/TicketView.tsx');
+    expect(htmlInsertionOffenders(CLIENT)).toEqual([]);
+  });
+});
+
 describe('client imports', () => {
   it('imports only Preact, the Markdown parser, its own modules and src/view and src/events', () => {
     const offenders: string[] = [];

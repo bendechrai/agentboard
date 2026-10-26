@@ -1,0 +1,438 @@
+// @vitest-environment happy-dom
+/**
+ * Property tests for the description renderer (add-description-markdown
+ * task 1.1; board-web: "Board text is never markup", "Description links and
+ * images"). For arbitrary input, from random Unicode to dense mixes of
+ * Markdown and HTML syntax, the tree `renderMarkdown` returns holds only
+ * allow-listed element names and attributes, no event handler, no raw
+ * HTML prop, no `style`, no component other than
+ * `Fragment`, no `img`, `script`, `iframe` or `style` element, and no
+ * `href` outside `http:`, `https:` and `mailto:`. The same holds for the
+ * DOM it renders to. The URL oracle is restated here, independently of
+ * `isAllowedUrl`. With a throwing parser the output is exactly the input as
+ * text.
+ */
+
+import fc from 'fast-check';
+import { Fragment, isValidElement, render, type ComponentChildren } from 'preact';
+import { describe, expect, it } from 'vitest';
+
+import { isAllowedUrl, renderMarkdown } from '../markdown.js';
+
+// Each run parses and renders up to a few hundred inputs; under a loaded
+// machine the whole property can exceed vitest's 5 second default.
+const PROPERTY_TIMEOUT_MS = 120_000;
+
+/** The element names a description may render to. */
+const ELEMENTS = new Set([
+  'p',
+  'h4',
+  'h5',
+  'h6',
+  'em',
+  'strong',
+  'del',
+  'code',
+  'pre',
+  'blockquote',
+  'ul',
+  'ol',
+  'li',
+  'input',
+  'hr',
+  'br',
+  'table',
+  'thead',
+  'tbody',
+  'tr',
+  'th',
+  'td',
+  'a',
+]);
+
+/** The attributes (props) each element may carry, `children` aside. */
+const ATTRIBUTES: Record<string, ReadonlySet<string>> = {
+  a: new Set(['href', 'target', 'rel', 'class']),
+  input: new Set(['type', 'checked', 'disabled']),
+  code: new Set(['data-lang']),
+  th: new Set(['data-align']),
+  td: new Set(['data-align']),
+  ol: new Set(['start']),
+};
+
+const ALIGNMENTS = new Set(['left', 'center', 'right']);
+
+/** Preact's raw HTML prop, spelt in two parts so the source scans do not match this file. */
+const INNER_HTML_PROP = 'dangerously' + 'SetInnerHTML';
+
+/** The URL rule, restated: absolute (parses without a base) with an allowed protocol. */
+function oracleAllowed(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  return ['http:', 'https:', 'mailto:'].includes(parsed.protocol);
+}
+
+/** The rule violations in a rendered vnode tree, as readable strings. */
+function vnodeViolations(node: ComponentChildren, out: string[] = []): string[] {
+  if (Array.isArray(node)) {
+    for (const child of node as ComponentChildren[]) {
+      vnodeViolations(child, out);
+    }
+    return out;
+  }
+  if (!isValidElement(node)) {
+    if (node !== null && node !== undefined && typeof node === 'object') {
+      out.push(`non-vnode object child ${JSON.stringify(node)}`);
+    }
+    return out;
+  }
+  const props: Record<string, unknown> = node.props;
+  if (node.type === Fragment) {
+    for (const name of Object.keys(props)) {
+      if (name !== 'children') {
+        out.push(`Fragment prop ${name}`);
+      }
+    }
+    vnodeViolations(props['children'] as ComponentChildren, out);
+    return out;
+  }
+  if (typeof node.type !== 'string') {
+    out.push('component vnode');
+    return out;
+  }
+  const tag = node.type;
+  if (!ELEMENTS.has(tag)) {
+    out.push(`element ${tag}`);
+  }
+  if (INNER_HTML_PROP in props) {
+    out.push(`${tag} prop ${INNER_HTML_PROP}`);
+  }
+  for (const name of Object.keys(props)) {
+    if (/^on/i.test(name) || name === 'style' || name === 'ref') {
+      out.push(`${tag} prop ${name}`);
+    }
+  }
+  const allowed = ATTRIBUTES[tag] ?? new Set<string>();
+  for (const [name, value] of Object.entries(props)) {
+    if (name === 'children') {
+      continue;
+    }
+    if (!allowed.has(name)) {
+      out.push(`${tag} prop ${name}`);
+      continue;
+    }
+    if (name === 'href') {
+      if (typeof value !== 'string' || !oracleAllowed(value)) {
+        out.push(`href ${JSON.stringify(value)}`);
+      }
+    } else if (name === 'target' && value !== '_blank') {
+      out.push(`target ${JSON.stringify(value)}`);
+    } else if (name === 'rel' && value !== 'noopener noreferrer') {
+      out.push(`rel ${JSON.stringify(value)}`);
+    } else if (name === 'class' && value !== 'image-link') {
+      out.push(`class ${JSON.stringify(value)}`);
+    } else if (name === 'type' && value !== 'checkbox') {
+      out.push(`type ${JSON.stringify(value)}`);
+    } else if (name === 'disabled' && value !== true) {
+      out.push(`disabled ${JSON.stringify(value)}`);
+    } else if (name === 'checked' && typeof value !== 'boolean') {
+      out.push(`checked ${JSON.stringify(value)}`);
+    } else if (name === 'data-lang' && typeof value !== 'string') {
+      out.push(`data-lang ${JSON.stringify(value)}`);
+    } else if (name === 'data-align' && !(typeof value === 'string' && ALIGNMENTS.has(value))) {
+      out.push(`data-align ${JSON.stringify(value)}`);
+    } else if (name === 'start' && !(typeof value === 'number' && Number.isInteger(value))) {
+      out.push(`start ${JSON.stringify(value)}`);
+    }
+  }
+  if (tag === 'a') {
+    for (const name of ['href', 'target', 'rel']) {
+      if (!(name in props)) {
+        out.push(`a without ${name}`);
+      }
+    }
+  }
+  if (tag === 'input' && props['disabled'] !== true) {
+    out.push('input not disabled');
+  }
+  vnodeViolations(props['children'] as ComponentChildren, out);
+  return out;
+}
+
+/** The rule violations in the DOM rendered under `root`. */
+function domViolations(root: Element): string[] {
+  const out: string[] = [];
+  for (const el of root.querySelectorAll('*')) {
+    const tag = el.tagName.toLowerCase();
+    if (!ELEMENTS.has(tag)) {
+      out.push(`element ${tag}`);
+    }
+    const allowed = ATTRIBUTES[tag] ?? new Set<string>();
+    for (const name of el.getAttributeNames()) {
+      if (!allowed.has(name)) {
+        out.push(`${tag} attribute ${name}`);
+      }
+    }
+    const href = el.getAttribute('href');
+    if (href !== null && !oracleAllowed(href)) {
+      out.push(`href ${JSON.stringify(href)}`);
+    }
+  }
+  if (root.querySelector('img, script, iframe, style') !== null) {
+    out.push('forbidden element');
+  }
+  return out;
+}
+
+/** Fragments that make the parser take its interesting paths. */
+const TOKENS = [
+  'a',
+  'b c',
+  ' ',
+  '  ',
+  '\n',
+  '\n\n',
+  '\t',
+  '    ',
+  '#',
+  '## ',
+  '###### ',
+  '*',
+  '**',
+  '_',
+  '~~',
+  '~',
+  '`',
+  '```',
+  '~~~',
+  '> ',
+  '- ',
+  '+ ',
+  '1. ',
+  '3) ',
+  '- [ ] ',
+  '- [x] ',
+  '[',
+  ']',
+  '(',
+  ')',
+  '<',
+  '>',
+  '![',
+  '](',
+  ']: ',
+  '[^1]',
+  '[^1]: ',
+  '|',
+  '|---|',
+  '|:-:|',
+  '---',
+  '===',
+  '\\',
+  '&',
+  '&amp;',
+  '&#106;',
+  '&#x3C;',
+  '"',
+  "'",
+  '=',
+  'javascript:',
+  'JavaScript:',
+  'vbscript:',
+  'data:text/html,',
+  'http://',
+  'https://',
+  'mailto:',
+  'ftp://',
+  '//',
+  '/api/session',
+  '#/board',
+  'example.com',
+  'www.',
+  '@',
+  'alert(1)',
+  '<script>',
+  '</script>',
+  '<img src=x onerror=alert(1)>',
+  '<iframe src=x>',
+  '<style>',
+  '<a href="javascript:alert(1)">',
+  '<div>',
+  '<!--',
+  '-->',
+  '<![CDATA[',
+  '<?',
+  ' onclick=',
+  'style=',
+];
+
+const markdownish = fc.string({ unit: fc.constantFrom(...TOKENS), maxLength: 60 });
+const anyText = fc.oneof(
+  { weight: 4, arbitrary: markdownish },
+  { weight: 1, arbitrary: fc.string({ unit: 'grapheme', maxLength: 80 }) },
+  { weight: 1, arbitrary: fc.string({ unit: 'binary', maxLength: 80 }) },
+);
+
+describe('renderMarkdown on arbitrary input', () => {
+  it(
+    'returns a tree of allow-listed elements and attributes with only allowed hrefs',
+    () => {
+      fc.assert(
+        fc.property(anyText, (source) => {
+          expect(vnodeViolations(renderMarkdown(source))).toEqual([]);
+        }),
+        { numRuns: 400 },
+      );
+    },
+    PROPERTY_TIMEOUT_MS,
+  );
+
+  it(
+    'renders to a DOM of allow-listed elements and attributes with only allowed hrefs',
+    () => {
+      fc.assert(
+        fc.property(anyText, (source) => {
+          const root = document.createElement('div');
+          render(renderMarkdown(source), root);
+          expect(domViolations(root)).toEqual([]);
+          for (const a of root.querySelectorAll('a')) {
+            expect(a.getAttribute('target')).toBe('_blank');
+            expect(a.getAttribute('rel')).toBe('noopener noreferrer');
+          }
+          for (const input of root.querySelectorAll('input')) {
+            expect(input.disabled).toBe(true);
+          }
+        }),
+        { numRuns: 300 },
+      );
+    },
+    PROPERTY_TIMEOUT_MS,
+  );
+
+  it(
+    'links a URL only when the oracle allows it, in links, references, autolinks and images',
+    () => {
+      const url = fc.oneof(
+        fc.constantFrom(
+          'https://example.com/x',
+          'http://example.com',
+          'mailto:a@example.com',
+          'HTTPS://EXAMPLE.COM',
+          'javascript:alert(1)',
+          'JavaScript:alert(1)',
+          'data:text/html,x',
+          'vbscript:x',
+          '/api/session',
+          '//evil.example/x',
+          '#/board',
+          'http://[::1',
+          'ftp://example.com',
+        ),
+        fc.string({
+          unit: fc.constantFrom(
+            'a',
+            ':',
+            '/',
+            '.',
+            'h',
+            't',
+            'p',
+            's',
+            'java',
+            'script',
+            '%',
+            '#',
+            '?',
+          ),
+          maxLength: 12,
+        }),
+      );
+      const form = fc.constantFrom(
+        (u: string) => `[t](<${u}>)`,
+        (u: string) => `[t][r]\n\n[r]: <${u}>`,
+        (u: string) => `<${u}>`,
+        (u: string) => `![t](<${u}>)`,
+        (u: string) => `![t][r]\n\n[r]: <${u}>`,
+      );
+      fc.assert(
+        fc.property(url, form, (u, make) => {
+          const root = document.createElement('div');
+          render(renderMarkdown(make(u)), root);
+          for (const a of root.querySelectorAll('a')) {
+            const href = a.getAttribute('href') ?? '';
+            expect(oracleAllowed(href), href).toBe(true);
+            expect(isAllowedUrl(href)).toBe(true);
+          }
+          expect(root.querySelector('img')).toBeNull();
+        }),
+        { numRuns: 300 },
+      );
+    },
+    PROPERTY_TIMEOUT_MS,
+  );
+
+  it(
+    'shows the input exactly as text when the parser throws',
+    () => {
+      fc.assert(
+        fc.property(anyText, (source) => {
+          const root = document.createElement('div');
+          render(
+            renderMarkdown(source, () => {
+              throw new Error('parser failure');
+            }),
+            root,
+          );
+          expect(root.children).toHaveLength(0);
+          expect(root.textContent).toBe(source);
+        }),
+        { numRuns: 200 },
+      );
+    },
+    PROPERTY_TIMEOUT_MS,
+  );
+});
+
+describe('isAllowedUrl on arbitrary input', () => {
+  it('agrees with the restated URL rule', () => {
+    const urlish = fc.oneof(
+      fc.string({
+        unit: fc.constantFrom(
+          'http',
+          'https',
+          'mailto',
+          'javascript',
+          'data',
+          ':',
+          '//',
+          '/',
+          'a',
+          '.',
+          '@',
+          ' ',
+          '\n',
+          '\t',
+          'H',
+          'S',
+          '[',
+          ']',
+          '%',
+          '#',
+        ),
+        maxLength: 10,
+      }),
+      fc.webUrl(),
+      fc.string({ maxLength: 30 }),
+    );
+    fc.assert(
+      fc.property(urlish, (url) => {
+        expect(isAllowedUrl(url)).toBe(oracleAllowed(url));
+      }),
+      { numRuns: 500 },
+    );
+  });
+});
