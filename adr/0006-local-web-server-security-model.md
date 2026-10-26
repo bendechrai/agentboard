@@ -4,7 +4,9 @@ Date: 2026-09-24
 
 ## Status
 
-Accepted
+Accepted. Amended by ADR 0015: a ticket description is rendered as
+Markdown into elements from an allow-list, so the guarantee below reads
+"board text is never inserted as HTML", not "never rendered as markup".
 
 ## Context
 

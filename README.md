@@ -1125,8 +1125,9 @@ up to date as agents write, including events that arrive late through
   through `sync` are marked.
 - **Ticket detail** (click a card or a feed entry): the ticket's fields
   (an `Unplanned` field, `<reason> (by <actor>)`, right after `Task` when
-  the ticket has an unplanned disposition), checklist, links and close
-  disposition, its conversation (comments and
+  the ticket has an unplanned disposition), a "Description" section
+  rendered as Markdown (see "Markdown descriptions" below), checklist,
+  links and close disposition, its conversation (comments and
   hand-off notes, with `DECISION:` comments highlighted and retracted ones
   flagged), and every event on it with its outcome, including rejected
   ones with their reason (for example a claim that lost a race,
@@ -1212,6 +1213,39 @@ opener is `open` on macOS, `start` through `cmd` on Windows and `xdg-open`
 elsewhere, looked up on `PATH`. If it is missing or fails you get one
 warning line on stderr and the server keeps running.
 
+### Markdown descriptions
+
+A ticket's description is rendered as Markdown in the ticket detail view:
+CommonMark plus the GitHub extensions for tables, task lists,
+strikethrough and autolink literals (footnotes stay text). The Markdown is
+parsed into a syntax tree and turned into page elements from an
+allow-list, never into HTML: no HTML string is built or inserted, so raw
+HTML in a description (`<img>`, `<script>` and the like) is shown
+literally, as the text the author wrote. What that means in practice:
+
+- **Links.** A link becomes a link only for an absolute `http:`, `https:`
+  or `mailto:` URL (an `http:` or `https:` URL must have `//` right after
+  the scheme, and leading whitespace is refused); any other URL,
+  `javascript:`, `data:` and relative ones included, is shown as its text.
+  A link opens in a new tab with no opener and no referrer
+  (`target="_blank"`, `rel="noopener noreferrer"`).
+- **Images.** An image is never loaded: it is shown as a link to the image
+  URL (under the same rule) labelled with its alt text, or with the URL
+  when there is no alt text, so the page requests nothing from another
+  origin.
+- **Task lists.** A task list item shows a checkbox that cannot be changed.
+- **Headings and code.** Headings are shifted down three levels (`#` is an
+  `h4`, `####` and deeper an `h6`) so they sit under the view's own
+  headings, and a code block keeps the first word of its info string as a
+  `data-lang` attribute, without syntax highlighting.
+- **Limits.** Anything nested deeper than 32 levels (block quotes, lists,
+  emphasis and the like) is shown as its source text, and a description
+  longer than 16384 characters is not parsed at all and is shown as plain
+  text, as is any description the renderer fails on.
+
+Titles, labels, comments, hand-off notes, actor names and paths stay plain
+text, and `top` is unchanged.
+
 ### Security model
 
 The server is meant for your own machine, with a browser that also has
@@ -1260,7 +1294,8 @@ arbitrary web sites open. What it does:
   write route (every action is 405 `read-only`). With it, the only writes
   are the action endpoints of "Acting from the browser", behind the checks
   described there. Board text (titles, comments, actor names) is always
-  shown as text, never as HTML.
+  shown as text, never as HTML; a description is rendered as Markdown
+  into elements (see "Markdown descriptions"), still never as HTML.
 
 What it does not protect against:
 
@@ -1289,8 +1324,15 @@ What it does not protect against:
   stops.
 - **Script in the page.** The token sits in `sessionStorage`, where script
   of the page's own origin could read it. The Content-Security-Policy
-  admits only the server's own script and board text is never rendered as
-  markup, so there is no known way to inject any.
+  admits only the server's own script and is unchanged by Markdown
+  descriptions: a description is interpreted as Markdown into elements
+  from an allow-list of node types (see "Markdown descriptions"), and no
+  HTML string is ever built or inserted into the page. A test scans every
+  module under `src/web/client/` for `dangerouslySetInnerHTML`,
+  `innerHTML`, `outerHTML`, `insertAdjacentHTML` and `document.write` and
+  fails on any match, so this does not rest on review alone. Every other
+  board text is shown as text, and the token handling is unchanged, so
+  there is no known way to inject script.
 - **Idle authenticated streams.** A client holding the token can open up
   to 64 streams; one that never reads its first message can keep about the
   size of the board in memory until it disconnects.
