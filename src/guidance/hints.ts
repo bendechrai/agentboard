@@ -26,6 +26,8 @@
  * is plain ASCII on one line.
  */
 
+import { ClaimRefusedError } from '../board/actions.js';
+import { isoTime } from '../board/leases.js';
 import { findCommand } from '../cli/registry.js';
 import type { CommandSpec } from '../cli/types.js';
 import { EXCLUDED_COMMANDS, toolName } from '../mcp/tools.js';
@@ -172,6 +174,7 @@ export const HINT_REASONS: readonly string[] = [
   'unsupported-source',
   'unsynced',
   'usage',
+  'wait-timeout',
 ];
 
 /**
@@ -250,6 +253,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'unsupported-source': 1,
   unsynced: 4,
   usage: 1,
+  'wait-timeout': 4,
 };
 
 /**
@@ -553,7 +557,32 @@ export function renderHint(reason: string | null, context: HintContext): string 
  * and the MCP tool error all name it). Pure.
  */
 export function hintFor(error: unknown, context: HintContext): string | null {
-  return error instanceof BoardError ? renderHint(error.reason, context) : null;
+  if (!(error instanceof BoardError)) {
+    return null;
+  }
+  const claimableAt = error instanceof ClaimRefusedError ? error.lease?.claimableAt : undefined;
+  return renderHint(
+    error.reason,
+    claimableAt === undefined ? context : { ...context, claimableAt },
+  );
+}
+
+/**
+ * The wait step of the `already-assigned` and `queued` hints: `claim` with
+ * the id, `--ttl <duration>`, `--wait`, on the CLI `--timeout <duration>`
+ * (CLI-only, so not over MCP), and the actor.
+ */
+function waitStep(h: HintParts): string {
+  const args: (readonly [string, string | true])[] = [
+    ['id', h.id],
+    ['ttl', '<duration>'],
+    ['wait', true],
+  ];
+  if (h.context.surface === 'cli') {
+    args.push(['timeout', '<duration>']);
+  }
+  args.push(['as', h.actor]);
+  return h.step('claim', args);
 }
 
 /** A shell word: double-quoted when it contains a space. */
@@ -909,10 +938,17 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
   'duplicate-create': (h) => `that ticket already exists; find it with ${h.step('list')}`,
   'invalid-transition': (h) =>
     `check the current status with ${h.step('show', [['id', h.id]])} and the permitted moves with ${h.step('help', [['topic', 'move']])}`,
-  'already-assigned': (h) =>
-    `another actor holds this ticket, so do not work on it: see who with ${h.step('show', [['id', h.id]])}, or find your own work with ${h.step('inbox', [['as', h.actor]])}`,
+  'already-assigned': (h) => {
+    const base = `another actor holds this ticket, so do not work on it: see who with ${h.step('show', [['id', h.id]])}, or find your own work with ${h.step('inbox', [['as', h.actor]])}`;
+    const { claimableAt } = h.context;
+    return claimableAt === undefined
+      ? base
+      : `${base}; it can be claimed from ${isoTime(claimableAt)}, or wait in its queue with ${waitStep(h)}`;
+  },
   'not-assignee': (h) =>
-    `only the assignee can do this; see who holds the ticket with ${h.step('show', [['id', h.id]])}`,
+    h.command?.name === 'renew'
+      ? `the lock was lost: you no longer hold this ticket, so stop the work it protects; see who holds it with ${h.step('show', [['id', h.id]])}`
+      : `only the assignee can do this; see who holds the ticket with ${h.step('show', [['id', h.id]])}`,
   'checklist-index': (h) =>
     `checklist lines are numbered from 0; see them with ${h.step('show', [['id', h.id]])}`,
   'holder-changed': (h) =>
@@ -935,7 +971,9 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
   'stale-import': (h) =>
     `another import changed the ticket first; see what is left to change with ${importDryRun(h)}`,
   queued: (h) =>
-    `other actors are waiting for this ticket and have priority; see the queue with ${h.step('show', [['id', h.id]])}`,
+    `other actors are waiting for this ticket and have priority; wait in its queue with ${waitStep(h)}`,
+  'wait-timeout': (h) =>
+    `the wait timed out and you left the queue; see what happened with ${h.step('inbox', [['as', h.actor]])}, then wait again or report ready`,
   'needs-scope-disposition': needsScopeDispositionHint,
   'already-linked': alreadyLinkedHint,
   // Exit 5.

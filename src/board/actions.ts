@@ -24,17 +24,27 @@ import { existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import { openDecisions } from '../events/decisions.js';
-import type { Ticket } from '../events/fold.js';
-import { type TaskRef, type Status } from '../events/schema.js';
+import { leaseGrace, type Ticket } from '../events/fold.js';
+import {
+  LEASE_SKEW_MS,
+  TTL_MAX_MS,
+  TTL_MIN_MS,
+  type Status,
+  type TaskRef,
+  type TicketClaimBody,
+} from '../events/schema.js';
 import { asciiText } from './text.js';
 import type { Board } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
 import {
+  NoWrite,
   alreadyLinkedMessage,
   runCommand,
   type ProposedEvent,
   type ProposedEvents,
+  type TxContext,
 } from '../store/transaction.js';
+import { isoTime } from './leases.js';
 import { requireActor, resolveTicket, ticketOf } from './lookup.js';
 import { treePath, type TreePathOptions } from './paths.js';
 import { taskReminder, type TaskReminder } from './reminder.js';
@@ -56,30 +66,31 @@ function writeTicketEvent(
   board: Board,
   actor: string,
   id: string,
-  build: (ticket: Ticket) => ProposedEvent,
+  build: (ticket: Ticket, ctx: TxContext) => ProposedEvent,
   options: WriteOptions | undefined,
 ): WriteOutcome {
-  return writeTicketEvents(board, actor, id, (ticket) => [build(ticket)], options);
+  return writeTicketEvents(board, actor, id, (ticket, ctx) => [build(ticket, ctx)], options);
 }
 
 /**
  * As `writeTicketEvent`, for a command that writes one or two events in
  * one transaction (a scope disposition and then its move or close):
  * `runCommand` folds them in memory in order, so a refusal of either
- * writes nothing.
+ * writes nothing. `build` also receives the transaction context (the
+ * clock and the first event's timestamp) for the lease commands.
  */
 function writeTicketEvents(
   board: Board,
   actor: string,
   id: string,
-  build: (ticket: Ticket) => ProposedEvents,
+  build: (ticket: Ticket, ctx: TxContext) => ProposedEvents,
   options: WriteOptions | undefined,
 ): WriteOutcome {
   requireActor(actor);
   const result = runCommand(
     board,
     actor,
-    () => ({ ok: true, events: build(resolveTicket(board.db, id)) }),
+    (ctx) => ({ ok: true, events: build(resolveTicket(board.db, id), ctx) }),
     options,
   );
   return {
@@ -90,17 +101,43 @@ function writeTicketEvents(
 }
 
 /**
- * Thrown inside the claim transaction when the actor already holds the
- * ticket, so the transaction is rolled back and `claimTicket` reports the
- * ticket as read in it without writing an event. Never escapes this module.
+ * Thrown inside the claim transaction when nothing needs writing (the
+ * actor already holds the ticket, or is already queued), carrying the
+ * result read in that transaction; `runCommand` commits the catch-up and
+ * `claimTicket` returns the outcome. Never escapes this module.
  */
-class AlreadyHeld extends Error {
-  readonly ticket: Ticket;
+class ClaimNoWrite extends NoWrite {
+  readonly outcome: ClaimOutcome;
 
-  constructor(ticket: Ticket) {
-    super(`ticket ${ticket.id} is already held by its claimant`);
-    this.ticket = ticket;
+  constructor(outcome: ClaimOutcome) {
+    super('the claim has nothing to write');
+    this.outcome = outcome;
   }
+}
+
+/**
+ * `ttl` must be a safe integer in `TTL_MIN_MS`..`TTL_MAX_MS` (milliseconds),
+ * else `BoardError(1, 'usage')`; the command line parser has already
+ * refused a malformed duration, so this covers library callers.
+ */
+function checkTtl(ttl: number): void {
+  if (!Number.isSafeInteger(ttl) || ttl < TTL_MIN_MS || ttl > TTL_MAX_MS) {
+    throw new BoardError(
+      1,
+      'usage',
+      `invalid ttl ${String(ttl)}: a ttl is a whole number of milliseconds from ${String(TTL_MIN_MS)} (30s) to ${String(TTL_MAX_MS)} (7d)`,
+    );
+  }
+}
+
+/** The `QueuedOutcome` of `actor` queued on `ticket`, in its key order. */
+function queuedOutcome(ticket: Ticket, actor: string): QueuedOutcome {
+  return {
+    queued: true,
+    position: ticket.queue.findIndex((waiter) => waiter.actor === actor) + 1,
+    holder: ticket.assignee,
+    ticket: ticket.id,
+  };
 }
 
 /**
@@ -255,25 +292,97 @@ export function claimTicket(
   input: ClaimInput,
   options?: WriteOptions,
 ): ClaimOutcome {
-  if (input.ttl !== undefined || input.wait !== undefined) {
-    throw new Error('not implemented');
+  requireActor(actor);
+  const { ttl } = input;
+  const wait = input.wait === true;
+  if (ttl !== undefined) {
+    checkTtl(ttl);
   }
+  if (wait && ttl === undefined) {
+    throw new BoardError(1, 'usage', 'claim --wait needs --ttl <duration>, the lease to ask for');
+  }
+  // The result of a claim that holds the ticket: `queued: false` only with wait.
+  const held = (outcome: WriteOutcome): ClaimedOutcome =>
+    wait ? { ...outcome, queued: false } : outcome;
+  let joined = false;
   try {
-    return writeTicketEvent(
+    const outcome = writeTicketEvent(
       board,
       actor,
       input.id,
-      (ticket) => {
+      (ticket, ctx) => {
+        const { lease } = ticket;
+        const id = ticket.id;
         if (ticket.assignee === actor) {
-          throw new AlreadyHeld(ticket);
+          throw new ClaimNoWrite(held({ hash: null, events: [], ticket }));
         }
-        return { kind: 'ticket.claim', ticket: ticket.id, body: {} };
+        if (wait && ticket.queue.some((waiter) => waiter.actor === actor)) {
+          throw new ClaimNoWrite(queuedOutcome(ticket, actor));
+        }
+        const leaseBody = (): { lease: { ttl: number; grace: number; expiresAt: number } } => {
+          const grace = leaseGrace(ctx.meta());
+          return {
+            lease: { ttl: ttl ?? 0, grace, expiresAt: ctx.ts.wall + Math.min(ttl ?? 0, grace) },
+          };
+        };
+        if (ticket.assignee === null && ticket.queue.length === 0) {
+          const body: TicketClaimBody = ttl === undefined ? {} : leaseBody();
+          return { kind: 'ticket.claim', ticket: id, body };
+        }
+        if (wait) {
+          joined = true;
+          return { kind: 'ticket.queue.join', ticket: id, body: { ttl: ttl ?? 0 } };
+        }
+        const holder = ticket.assignee;
+        if (ticket.queue.length > 0) {
+          throw new ClaimRefusedError(
+            'queued',
+            `ticket ${id} has ${String(ticket.queue.length)} actor(s) waiting for it, who have priority`,
+            holder,
+            null,
+          );
+        }
+        if (holder === null) {
+          // Unreachable: a free ticket with an empty queue is claimed above.
+          throw new Error(`ticket ${id} is free with no waiters and was not claimed`);
+        }
+        const assigned = `ticket ${id} is already assigned to ${asciiText(holder)}`;
+        if (lease === null) {
+          throw new ClaimRefusedError('already-assigned', assigned, holder, null);
+        }
+        // The fold's takeover rule against the event's own timestamp, and
+        // the local clock too, so the writer is never looser than the fold.
+        const claimableAt = lease.expiresAt + LEASE_SKEW_MS;
+        if (ctx.ts.wall < claimableAt || ctx.now < claimableAt) {
+          throw new ClaimRefusedError(
+            'already-assigned',
+            `${assigned} (lease expires ${isoTime(lease.expiresAt)}, claimable from ${isoTime(claimableAt)})`,
+            holder,
+            { expiresAt: lease.expiresAt, claimableAt },
+          );
+        }
+        if (ttl === undefined) {
+          throw new BoardError(
+            1,
+            'usage',
+            `taking over the lapsed lease of ticket ${id} needs --ttl <duration>: a takeover carries its own lease, so the new hold lapses too`,
+          );
+        }
+        return {
+          kind: 'ticket.claim',
+          ticket: id,
+          body: {
+            ...leaseBody(),
+            supersedes: { holder, expiresAt: lease.expiresAt, event: lease.event },
+          },
+        };
       },
       options,
     );
+    return joined ? queuedOutcome(outcome.ticket, actor) : held(outcome);
   } catch (error) {
-    if (error instanceof AlreadyHeld) {
-      return { hash: null, events: [], ticket: error.ticket };
+    if (error instanceof ClaimNoWrite) {
+      return error.outcome;
     }
     throw error;
   }
@@ -314,11 +423,31 @@ export function renewTicket(
   input: RenewInput,
   options?: WriteOptions,
 ): WriteOutcome {
-  void board;
-  void actor;
-  void input;
-  void options;
-  throw new Error('not implemented');
+  requireActor(actor);
+  if (input.ttl !== undefined) {
+    checkTtl(input.ttl);
+  }
+  return writeTicketEvent(
+    board,
+    actor,
+    input.id,
+    (ticket, ctx) => {
+      const ttl = input.ttl ?? ticket.lease?.ttl;
+      if (ttl === undefined) {
+        throw new BoardError(
+          1,
+          'usage',
+          `ticket ${ticket.id} has no lease to renew: give the lease with --ttl <duration>`,
+        );
+      }
+      return {
+        kind: 'ticket.renew',
+        ticket: ticket.id,
+        body: { ttl, expiresAt: ctx.ts.wall + ttl },
+      };
+    },
+    options,
+  );
 }
 
 /**
@@ -335,11 +464,13 @@ export function unqueueTicket(
   input: { id: string },
   options?: WriteOptions,
 ): WriteOutcome {
-  void board;
-  void actor;
-  void input;
-  void options;
-  throw new Error('not implemented');
+  return writeTicketEvent(
+    board,
+    actor,
+    input.id,
+    (ticket) => ({ kind: 'ticket.queue.leave', ticket: ticket.id, body: {} }),
+    options,
+  );
 }
 
 /** Input of `releaseTicket`. */
@@ -387,14 +518,51 @@ export function releaseTicket(
   input: ReleaseInput,
   options?: WriteOptions,
 ): WriteOutcome {
-  if (input.force !== undefined || input.reason !== undefined) {
-    throw new Error('not implemented');
+  requireActor(actor);
+  const force = input.force === true;
+  const { reason } = input;
+  if (!force) {
+    if (reason !== undefined) {
+      throw new BoardError(1, 'usage', 'release takes --reason only with --force');
+    }
+    return writeTicketEvent(
+      board,
+      actor,
+      input.id,
+      (ticket) => ({ kind: 'ticket.release', ticket: ticket.id, body: {} }),
+      options,
+    );
   }
+  if (reason === undefined || reason === '') {
+    throw new BoardError(
+      1,
+      'usage',
+      'release --force needs a non-empty --reason <text> saying why the hold is broken',
+    );
+  }
+  refuseSecretLike([reason], input.allowSecretLike === true);
   return writeTicketEvent(
     board,
     actor,
     input.id,
-    (ticket) => ({ kind: 'ticket.release', ticket: ticket.id, body: {} }),
+    (ticket) => {
+      const holder = ticket.assignee;
+      if (holder === actor) {
+        throw new BoardError(
+          1,
+          'usage',
+          `you hold ticket ${ticket.id} yourself: give it up with release without --force`,
+        );
+      }
+      if (holder === null) {
+        throw new BoardError(
+          4,
+          'not-assignee',
+          `ticket ${ticket.id} is not assigned, so there is no hold to break`,
+        );
+      }
+      return { kind: 'ticket.release.force', ticket: ticket.id, body: { holder, reason } };
+    },
     options,
   );
 }

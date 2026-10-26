@@ -107,7 +107,8 @@ export interface CommandHelpDocument {
 export function synopsis(command: CommandSpec): string {
   const parts = ['agentboard', command.name];
   for (const arg of command.positionals) {
-    parts.push(arg.required ? `<${arg.name}>` : `[<${arg.name}>]`);
+    const form = positionalForm(arg);
+    parts.push(arg.required ? form : `[${form}]`);
   }
   const grouped = new Set(command.exclusive.flatMap((group) => group.alternatives.flat()));
   for (const flag of command.flags) {
@@ -183,7 +184,7 @@ export function renderCommandHelp(source: HelpSource, command: CommandSpec): str
     sections.push([
       'Arguments:',
       ...argumentLines(
-        command.positionals.map((arg) => [`<${arg.name}>`, typeText(arg), arg.summary]),
+        command.positionals.map((arg) => [positionalForm(arg), typeText(arg), arg.summary]),
       ),
     ]);
   }
@@ -191,12 +192,18 @@ export function renderCommandHelp(source: HelpSource, command: CommandSpec): str
     sections.push([
       'Flags:',
       ...argumentLines(command.flags.map((flag) => [flagForm(flag), typeText(flag), flag.summary])),
-      ...command.exclusive.map(
-        (group) =>
-          `${group.required ? 'Exactly one of: ' : 'At most one of: '}${group.alternatives
-            .map((alternative) => alternative.map((name) => `--${name}`).join(' with '))
-            .join(' | ')}`,
-      ),
+      ...command.exclusive.map((group) => {
+        const alternatives = group.alternatives
+          .map((alternative) => alternative.map((name) => `--${name}`).join(' with '))
+          .join(' | ');
+        const label =
+          !group.required && group.alternatives.length === 1
+            ? 'Given together: '
+            : group.required
+              ? 'Exactly one of: '
+              : 'At most one of: ';
+        return `${label}${alternatives}`;
+      }),
     ]);
   }
   sections.push([
@@ -369,6 +376,16 @@ export function helpOutput(
   const name = topic.join(' ');
   const command = source.commands.find((candidate) => candidate.name === name);
   const [first = '', word = ''] = topic;
+  if (command === undefined && topic.length === 1) {
+    // A group word: the help of each command it starts, in registry order.
+    const group = source.commands.filter((candidate) => candidate.name.startsWith(`${first} `));
+    if (group.length > 0) {
+      return {
+        json: group.map((member) => commandHelpDocument(source, member)),
+        text: group.map((member) => renderCommandHelp(source, member)).join('\n'),
+      };
+    }
+  }
   if (
     command === undefined &&
     topic.length === 2 &&
@@ -402,6 +419,11 @@ const ACTOR_FORM = '--as <actor>';
 /** True when `command` requires an actor (`--as` or `AGENTBOARD_ACTOR`). */
 function needsActor(command: CommandSpec): boolean {
   return command.writes || command.tracksCursor === true;
+}
+
+/** `<name>` for a positional, or `<a|b>` for one with `choices`. */
+function positionalForm(arg: ArgSpec): string {
+  return `<${arg.choices === undefined ? arg.name : arg.choices.join('|')}>`;
 }
 
 /** `--name` for a boolean flag, `--as <actor>`, else `--name <name>`. */

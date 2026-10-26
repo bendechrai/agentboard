@@ -7,6 +7,7 @@ import type { Ticket } from '../events/fold.js';
 import { formatTaskRef } from '../events/schema.js';
 import { asciiText } from '../board/text.js';
 import type { ConfigResult } from '../board/config.js';
+import { assigneeToken, formatDuration, isoTime } from '../board/leases.js';
 import type { ImportAction, ImportResult, ImportedTicket } from '../board/import.js';
 import type { InboxEntry } from '../board/inbox.js';
 import type { ShowResult } from '../board/tickets.js';
@@ -44,12 +45,12 @@ export { asciiText };
  * back into any command. Pure.
  */
 export function renderListLine(ticket: Ticket, now?: number): string {
-  void now;
   return listLine({
     ...ticket,
     adhoc: ticket.adhoc !== null,
     unplanned: ticket.unplanned !== null,
     superseded: typeof ticket.superseded === 'string',
+    ...(now === undefined ? {} : { column: assigneeToken(ticket, now) }),
   });
 }
 
@@ -61,6 +62,8 @@ type ListFields = Pick<Card, 'id' | 'status' | 'assignee' | 'adhoc' | 'closed' |
   /** The unplanned marker: true when the ticket has an unplanned disposition. */
   unplanned: boolean;
   superseded?: boolean;
+  /** The assignee column already rendered (the token with its suffixes), when given. */
+  column?: string;
 };
 
 /** The `list` line of `fields` (see `renderListLine`). */
@@ -73,7 +76,7 @@ function listLine(fields: ListFields): string {
   return [
     fields.id,
     fields.status,
-    fields.assignee === null ? '-' : asciiText(fields.assignee),
+    fields.column ?? (fields.assignee === null ? '-' : asciiText(fields.assignee)),
     `${markers}${asciiText(fields.title)}`,
   ].join('  ');
 }
@@ -144,6 +147,42 @@ export function renderShow(show: ShowResult): string {
     `status: ${t.status}${t.blockedFrom === null ? '' : ` (from ${t.blockedFrom})`}`,
     `assignee: ${orDash(t.assignee)}`,
   ];
+  if (t.lease !== null) {
+    const { lease } = t;
+    lines.push(
+      `lease: ${lease.state}${lease.confirmed ? '' : ' (grace)'}, ttl ${formatDuration(lease.ttl)}, ` +
+        `expires ${isoTime(lease.expiresAt)}, claimable from ${isoTime(lease.claimableAt)}`,
+    );
+  }
+  const grantLine = (label: string, grant: { to: string; at: number; acceptBy: number }): string =>
+    `${label}: ${asciiText(grant.to)} at ${isoTime(grant.at)}, accept by ${isoTime(grant.acceptBy)}`;
+  if (show.grant !== undefined) {
+    lines.push(grantLine('granted', show.grant));
+  }
+  if (show.nextGrant !== undefined) {
+    lines.push(grantLine('next grant', show.nextGrant));
+  }
+  if (t.queue.length > 0) {
+    lines.push(
+      'queue:',
+      ...t.queue.map(
+        (w, i) =>
+          `  ${String(i + 1)} ${asciiText(w.actor)} (joined ${isoTime(w.joined.wall)}, ttl ${formatDuration(w.ttl)})`,
+      ),
+    );
+  }
+  if (show.takeover !== undefined) {
+    const { takeover } = show;
+    lines.push(
+      `takeover: ${asciiText(takeover.actor)} at ${isoTime(takeover.at)} from ${asciiText(takeover.holder)} (lease expired ${isoTime(takeover.expiresAt)})`,
+    );
+  }
+  if (show.forcedRelease !== undefined) {
+    const { forcedRelease } = show;
+    lines.push(
+      `forced release: ${asciiText(forcedRelease.actor)} at ${isoTime(forcedRelease.at)} from ${asciiText(forcedRelease.holder)}: ${asciiText(forcedRelease.reason)}`,
+    );
+  }
   if (t.task !== null) {
     lines.push(`task: ${asciiText(formatTaskRef(t.task))}`);
   } else if (t.adhoc !== null) {
@@ -329,8 +368,15 @@ function closedText(t: Ticket): string {
  * Pure.
  */
 export function renderInboxLine(entry: InboxEntry, reader?: string): string {
-  void reader;
-  const fields = [entry.ticket ?? '-', entry.kind, asciiText(entry.from)];
+  const prefix =
+    reader === undefined
+      ? ''
+      : entry.kind === 'ticket.grant' && entry.to === reader
+        ? 'GRANTED: '
+        : entry.affects === reader
+          ? 'LOST: '
+          : '';
+  const fields = [`${prefix}${entry.ticket ?? '-'}`, entry.kind, asciiText(entry.from)];
   if (entry.to !== null) {
     fields.push(`to ${asciiText(entry.to)}`);
   }
@@ -352,9 +398,12 @@ export function renderInboxLine(entry: InboxEntry, reader?: string): string {
  * `result.settings` (`lease.grace 2m (default)`, `queue.window 5m`). Pure.
  */
 export function renderConfig(result: ConfigResult, keyed: boolean): string {
-  void result;
-  void keyed;
-  throw new Error('not implemented');
+  return result.settings
+    .map((setting) => {
+      const value = `${formatDuration(setting.value)}${setting.default ? ' (default)' : ''}`;
+      return `${keyed ? '' : `${setting.key} `}${value}\n`;
+    })
+    .join('');
 }
 
 /**

@@ -9,7 +9,15 @@
  * not an MCP tool.
  */
 
+import { leaseGrace, queueWindow } from '../events/fold.js';
+import { SETTING_MAX_MS, SETTING_MIN_MS } from '../events/schema.js';
+import type { JsonValue } from '../events/canonical.js';
 import type { Board } from '../store/board.js';
+import { inSnapshot, loadMeta } from '../store/engine.js';
+import { BoardError } from '../store/errors.js';
+import { runCommand } from '../store/transaction.js';
+import { requireActor } from './lookup.js';
+import { asciiText } from './text.js';
 import type { WriteOptions } from './types.js';
 
 /** The setting keys `config` accepts, in this order. */
@@ -69,11 +77,51 @@ export function setConfig(
   input: { key: string; value: number },
   options?: WriteOptions,
 ): ConfigSetResult {
-  void board;
-  void actor;
-  void input;
-  void options;
-  throw new Error('not implemented');
+  requireActor(actor);
+  const key = settingKey(input.key);
+  const { value } = input;
+  if (!Number.isSafeInteger(value) || value < SETTING_MIN_MS || value > SETTING_MAX_MS) {
+    throw new BoardError(
+      1,
+      'usage',
+      `invalid value ${String(value)} for ${key}: a setting is a whole number of milliseconds from ${String(SETTING_MIN_MS)} (30s) to ${String(SETTING_MAX_MS)} (10m)`,
+    );
+  }
+  const result = runCommand(
+    board,
+    actor,
+    () => ({ ok: true, event: { kind: 'board.meta', body: { key, value } } }),
+    options,
+  );
+  return { hash: result.hash, key, value };
+}
+
+/** `text` as a `SettingKey`, or `BoardError(1, 'usage')` naming it and listing the keys. */
+function settingKey(text: string): SettingKey {
+  const found = SETTING_KEYS.find((key) => key === text);
+  if (found === undefined) {
+    throw new BoardError(
+      1,
+      'usage',
+      `unknown setting ${asciiText(text)}: the keys are ${SETTING_KEYS.join(' and ')}`,
+    );
+  }
+  return found;
+}
+
+/**
+ * The effective setting `key` in `meta`: the fold's value and whether the
+ * default is in effect (no stored value, or one the fold ignores).
+ */
+function effective(meta: Readonly<Record<string, JsonValue>>, key: SettingKey): ConfigSetting {
+  const value = key === 'lease.grace' ? leaseGrace(meta) : queueWindow(meta);
+  const stored = Object.hasOwn(meta, key) ? meta[key] : undefined;
+  const used =
+    typeof stored === 'number' &&
+    Number.isSafeInteger(stored) &&
+    stored >= SETTING_MIN_MS &&
+    stored <= SETTING_MAX_MS;
+  return { key, value, default: !used };
 }
 
 /**
@@ -86,7 +134,7 @@ export function setConfig(
  *   the same message as `setConfig`.
  */
 export function getConfig(board: Board, key?: string): ConfigResult {
-  void board;
-  void key;
-  throw new Error('not implemented');
+  const keys = key === undefined ? SETTING_KEYS : [settingKey(key)];
+  const meta = inSnapshot(board.db, () => loadMeta(board.db));
+  return { settings: keys.map((k) => effective(meta, k)) };
 }

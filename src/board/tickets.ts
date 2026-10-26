@@ -8,12 +8,18 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { canonicalDecode, type JsonValue } from '../events/canonical.js';
-import { compareFoldOrder, type FoldInput, type Ticket } from '../events/fold.js';
-import type { Status, TaskRef, TicketCreateBody } from '../events/schema.js';
+import { compareFoldOrder, dueGrant, type FoldInput, type Ticket } from '../events/fold.js';
+import {
+  isKnownEvent,
+  type BoardEvent,
+  type Status,
+  type TaskRef,
+  type TicketCreateBody,
+} from '../events/schema.js';
 import { newUlid } from '../events/ulid.js';
 import type { Board } from '../store/board.js';
 import { readState } from '../store/cache.js';
-import { inSnapshot, stmt } from '../store/engine.js';
+import { inSnapshot, loadMeta, stmt } from '../store/engine.js';
 import { BoardError } from '../store/errors.js';
 import { readEventFile, readEventLog } from '../store/eventfile.js';
 import { runCommand } from '../store/transaction.js';
@@ -238,11 +244,17 @@ export interface ReadOptions {
 export function showTicket(board: Board, id: string, options?: ReadOptions): ShowResult {
   const now = options?.now ?? Date.now();
   const { db } = board;
-  const { ticket, unknownHashes } = inSnapshot(db, () => ({
+  const { ticket, meta, unknownHashes, applied } = inSnapshot(db, () => ({
     ticket: resolveTicket(db, id),
+    meta: loadMeta(db),
     unknownHashes: stmt(db, "SELECT hash FROM folded WHERE reason = 'unknown-kind'")
       .all()
       .map((row) => String(row.hash)),
+    applied: new Set(
+      stmt(db, 'SELECT hash FROM folded WHERE folded = 1')
+        .all()
+        .map((row) => String(row.hash)),
+    ),
   }));
   const unknown: FoldInput[] = [];
   for (const hash of unknownHashes) {
@@ -252,11 +264,96 @@ export function showTicket(board: Board, id: string, options?: ReadOptions): Sho
     }
   }
   unknown.sort(compareFoldOrder);
-  return {
+  const result: ShowResult = {
     ticket: ticketDocument(ticket, now),
     events: ticket.version,
     unknown: unknown.map((input) => ({ hash: input.hash, kind: input.event.kind })),
   };
+  const next = dueGrant(ticket, meta);
+  if (next !== null) {
+    result.nextGrant = {
+      to: next.body.to,
+      at: next.ts.wall,
+      acceptBy: next.ts.wall + next.body.window,
+    };
+  }
+  // The applied grant, takeover and forced release come from the ticket's
+  // applied event files, which only show reads (board-cache: "Cache
+  // schema"). A ticket with only its create has none of them.
+  if (ticket.version > 1) {
+    Object.assign(result, history(board, ticket, applied));
+  }
+  return result;
+}
+
+/**
+ * The parts of `ShowResult` read from the ticket's applied event files
+ * (`grant`, `takeover`, `forcedRelease`), walking them in fold order.
+ */
+function history(
+  board: Board,
+  ticket: Ticket,
+  applied: ReadonlySet<string>,
+): Pick<ShowResult, 'grant' | 'takeover' | 'forcedRelease'> {
+  const events = readEventLog(board.eventsDir)
+    .inputs.filter((input) => applied.has(input.hash) && ticketOfEvent(input) === ticket.id)
+    .sort(compareFoldOrder);
+  const out: Pick<ShowResult, 'grant' | 'takeover' | 'forcedRelease'> = {};
+  // The assignee before each event, replayed from the events that set it,
+  // so a claim carrying supersedes counts as a takeover only when the
+  // ticket was held (one applied on a free ticket ignores its supersedes).
+  let assignee: string | null = null;
+  for (const { hash, event } of events) {
+    if (!isKnownEvent(event)) {
+      continue;
+    }
+    switch (event.kind) {
+      case 'ticket.claim':
+        if (assignee !== null && event.body.supersedes !== undefined) {
+          out.takeover = {
+            actor: event.actor,
+            at: event.ts.wall,
+            holder: event.body.supersedes.holder,
+            expiresAt: event.body.supersedes.expiresAt,
+            event: hash,
+          };
+        }
+        assignee = event.actor;
+        break;
+      case 'ticket.release.force':
+        out.forcedRelease = {
+          actor: event.actor,
+          at: event.ts.wall,
+          holder: event.body.holder,
+          reason: event.body.reason,
+          event: hash,
+        };
+        assignee = null;
+        break;
+      case 'ticket.grant':
+        if (ticket.lease?.event === hash) {
+          out.grant = { to: event.body.to, at: event.ts.wall, acceptBy: ticket.lease.expiresAt };
+        }
+        assignee = event.body.to;
+        break;
+      default:
+        assignee = assigneeAfter(event, assignee);
+    }
+  }
+  return out;
+}
+
+/** The assignee after `event` applied (for the kinds `history` does not handle itself). */
+function assigneeAfter(event: BoardEvent, before: string | null): string | null {
+  switch (event.kind) {
+    case 'ticket.assign':
+    case 'ticket.handoff':
+      return event.body.to;
+    case 'ticket.release':
+      return null;
+    default:
+      return before;
+  }
 }
 
 /**

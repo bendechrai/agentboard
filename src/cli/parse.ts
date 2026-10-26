@@ -3,6 +3,7 @@
  * (board-cli: "Command surface", "Actor is explicit").
  */
 
+import { SYSTEM_ACTOR } from '../events/schema.js';
 import { BoardError } from '../store/errors.js';
 import { unknownCommandMessage, unknownFlagMessage } from '../guidance/suggest.js';
 import { COMMANDS, GLOBAL_FLAGS, JSON_FLAG } from './registry.js';
@@ -180,6 +181,11 @@ export function parseArgs(
       }
       return;
     }
+    if (spec.choices !== undefined && !spec.choices.includes(raw)) {
+      throw usage(
+        `${command.name} takes <${spec.name}> as one of ${spec.choices.join(', ')}, not ${asciiText(raw)}`,
+      );
+    }
     values[spec.name] = spec.type === 'integer' ? parseInteger(spec.name, raw) : raw;
   });
   for (const spec of command.flags) {
@@ -286,6 +292,11 @@ export function resolveActor(given: string | undefined, env: Env): string {
  * one. Nothing is written. Pure.
  */
 export function refuseReservedActor(actor: string | undefined): void {
-  void actor;
-  throw new Error('not implemented');
+  if (actor === SYSTEM_ACTOR) {
+    throw new BoardError(
+      1,
+      'usage',
+      `the actor ${SYSTEM_ACTOR} is reserved for the grants the board writes itself; pass your own name with --as <actor>`,
+    );
+  }
 }

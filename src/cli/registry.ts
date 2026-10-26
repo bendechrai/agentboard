@@ -23,7 +23,7 @@ import {
   type LinkTarget,
 } from '../board/actions.js';
 import { SETTING_KEYS, getConfig, setConfig } from '../board/config.js';
-import { formatDuration, parseSetting } from '../board/leases.js';
+import { formatDuration, isoTime, parseSetting, parseTimeout, parseTtl } from '../board/leases.js';
 import { importChange, parseImportTarget } from '../board/import.js';
 import { readInbox } from '../board/inbox.js';
 import { initBoard } from '../board/init.js';
@@ -1024,7 +1024,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         const raw = showRaw(ctx.board(), id);
         return { json: raw, text: raw.map((r) => `${r.text}\n`).join('') };
       }
-      const shown = showTicket(ctx.board(), id);
+      const shown = showTicket(ctx.board(), id, { now: Date.now() });
       return { json: shown, text: renderShow(shown) };
     },
   },
@@ -1057,14 +1057,19 @@ export const COMMANDS: readonly CommandSpec[] = [
     run: (ctx, values) => {
       const given = str(values, 'status');
       const task = listTaskFilter(values);
-      const tickets = listTickets(ctx.board(), {
-        status: given === undefined ? undefined : status(given),
-        assignee: str(values, 'assignee'),
-        task,
-        labels: list(values, 'label'),
-        closed: bool(values, 'closed'),
-      });
-      return { json: tickets, text: tickets.map((t) => `${renderListLine(t)}\n`).join('') };
+      const now = Date.now();
+      const tickets = listTickets(
+        ctx.board(),
+        {
+          status: given === undefined ? undefined : status(given),
+          assignee: str(values, 'assignee'),
+          task,
+          labels: list(values, 'label'),
+          closed: bool(values, 'closed'),
+        },
+        { now },
+      );
+      return { json: tickets, text: tickets.map((t) => `${renderListLine(t, now)}\n`).join('') };
     },
   },
   {
@@ -1124,16 +1129,38 @@ export const COMMANDS: readonly CommandSpec[] = [
     writes: true,
     operation: 'claimTicket',
     run: (ctx, values) => {
-      if (
-        values.ttl !== undefined ||
-        values.wait !== undefined ||
-        values.timeout !== undefined
-      ) {
-        throw new Error('not implemented');
+      const ttlText = str(values, 'ttl');
+      const ttl = ttlText === undefined ? undefined : parseTtl(ttlText);
+      const timeout = str(values, 'timeout');
+      if (timeout !== undefined) {
+        parseTimeout(timeout);
+      }
+      const wait = bool(values, 'wait');
+      if (wait && ttl === undefined) {
+        throw new BoardError(
+          1,
+          'usage',
+          'claim --wait needs --ttl <duration>, the lease to ask for once the ticket is granted',
+        );
       }
       const actor = actorOf(ctx);
-      const out = claimTicket(ctx.board(), actor, { id: req(values, 'id') });
-      return written(out, out.hash === null ? `already claimed by ${asciiText(actor)}\n` : '');
+      const out = claimTicket(ctx.board(), actor, { id: req(values, 'id'), ttl, wait });
+      if (out.queued === true) {
+        return {
+          json: out,
+          text: `queued for ${out.ticket} at position ${String(out.position)}, held by ${out.holder === null ? '-' : asciiText(out.holder)}\n`,
+        };
+      }
+      const { lease } = out.ticket;
+      if (out.hash === null) {
+        const expiry = lease === null ? '' : ` (lease expires ${isoTime(lease.expiresAt)})`;
+        return written(out, `already claimed by ${asciiText(actor)}${expiry}\n`);
+      }
+      const confirm =
+        lease === null
+          ? ''
+          : `confirm the lease with 'agentboard renew ${out.ticket.id} --as ${asciiText(actor)}' before ${isoTime(lease.expiresAt)}\n`;
+      return written(out, '', confirm);
     },
   },
   {
@@ -1172,8 +1199,11 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [],
     writes: true,
     operation: 'renewTicket',
-    run: (ctx, values) =>
-      written(renewTicket(ctx.board(), actorOf(ctx), { id: req(values, 'id') })),
+    run: (ctx, values) => {
+      const ttlText = str(values, 'ttl');
+      const ttl = ttlText === undefined ? undefined : parseTtl(ttlText);
+      return written(renewTicket(ctx.board(), actorOf(ctx), { id: req(values, 'id'), ttl }));
+    },
   },
   {
     name: 'unqueue',
@@ -1245,16 +1275,15 @@ export const COMMANDS: readonly CommandSpec[] = [
     exclusive: [FORCE_GROUP],
     writes: true,
     operation: 'releaseTicket',
-    run: (ctx, values) => {
-      if (
-        values.force !== undefined ||
-        values.reason !== undefined ||
-        values['allow-secret-like'] !== undefined
-      ) {
-        throw new Error('not implemented');
-      }
-      return written(releaseTicket(ctx.board(), actorOf(ctx), { id: req(values, 'id') }));
-    },
+    run: (ctx, values) =>
+      written(
+        releaseTicket(ctx.board(), actorOf(ctx), {
+          id: req(values, 'id'),
+          force: bool(values, 'force'),
+          reason: str(values, 'reason'),
+          allowSecretLike: bool(values, 'allow-secret-like'),
+        }),
+      ),
   },
   {
     name: 'move',
@@ -1664,7 +1693,9 @@ export const COMMANDS: readonly CommandSpec[] = [
       });
       return {
         json: result,
-        text: result.entries.map((entry) => `${renderInboxLine(entry)}\n`).join(''),
+        text: result.entries
+          .map((entry) => `${renderInboxLine(entry, actorOf(ctx))}\n`)
+          .join(''),
       };
     },
   },
@@ -1706,7 +1737,10 @@ export const COMMANDS: readonly CommandSpec[] = [
         onEntries: (entries) => {
           io.stdout(
             entries
-              .map((entry) => `${io.json ? JSON.stringify(entry) : renderInboxLine(entry)}\n`)
+              .map(
+                (entry) =>
+                  `${io.json ? JSON.stringify(entry) : renderInboxLine(entry, actorOf(ctx))}\n`,
+              )
               .join(''),
           );
         },
