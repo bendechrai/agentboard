@@ -3,6 +3,7 @@
  * (board-cli: "Command surface", "Actor is explicit").
  */
 
+import { SYSTEM_ACTOR } from '../events/schema.js';
 import { BoardError } from '../store/errors.js';
 import { unknownCommandMessage, unknownFlagMessage } from '../guidance/suggest.js';
 import { COMMANDS, GLOBAL_FLAGS, JSON_FLAG } from './registry.js';
@@ -73,6 +74,12 @@ export interface ParsedCommand {
  *   the argument.
  * - `integer` values must match `^-?[0-9]+$` and be safe integers; the
  *   value is the number. Repeatable flags produce string arrays.
+ * - A positional with `choices` (`config set <key>`) must be one of them;
+ *   any other value is a usage error listing every choice, exactly
+ *   `<command> takes <<name>> as one of <choice>, <choice>`, which never
+ *   repeats the value (a token pasted there must not land in a terminal
+ *   or a log).
+ * - A CLI-only flag (`ArgSpec.cliOnly`) is parsed like any other flag.
  * - Then each of the command's exclusive groups is checked as documented
  *   on `ExclusiveGroup` (a missing required group throws with the group's
  *   own reason and message, for example `needs-task-or-adhoc` for `new`
@@ -177,6 +184,9 @@ export function parseArgs(
       }
       return;
     }
+    if (spec.choices !== undefined && !spec.choices.includes(raw)) {
+      throw usage(`${command.name} takes <${spec.name}> as one of ${spec.choices.join(', ')}`);
+    }
     values[spec.name] = spec.type === 'integer' ? parseInteger(spec.name, raw) : raw;
   });
   for (const spec of command.flags) {
@@ -265,4 +275,29 @@ export function resolveActor(given: string | undefined, env: Env): string {
     'missing-actor',
     `this command needs an actor: pass --as <actor> or set ${ACTOR_ENV}`,
   );
+}
+
+/**
+ * Refuses the reserved system actor (board-cli: "Claim, release and
+ * handoff"; board-events: "Reserved system actor"): when `actor` is
+ * exactly `SYSTEM_ACTOR` (`agentboard`), throws `BoardError(1, 'usage')`
+ * whose message says that `agentboard` is reserved for the grants the
+ * board writes itself and names `--as <actor>`; for any other value,
+ * undefined included, does nothing.
+ *
+ * `runCli` calls it, before the board is opened, with the parsed `--as` of
+ * every command (so `show T1 --as agentboard` exits 1 too) and with the
+ * actor `resolveActor` resolves for a command that needs one (so
+ * `AGENTBOARD_ACTOR=agentboard` is refused there); the MCP server calls it
+ * with the call's `as`, and with the resolved actor of a tool that needs
+ * one. Nothing is written. Pure.
+ */
+export function refuseReservedActor(actor: string | undefined): void {
+  if (actor === SYSTEM_ACTOR) {
+    throw new BoardError(
+      1,
+      'usage',
+      `the actor ${SYSTEM_ACTOR} is reserved for the grants the board writes itself; pass your own name with --as <actor>`,
+    );
+  }
 }

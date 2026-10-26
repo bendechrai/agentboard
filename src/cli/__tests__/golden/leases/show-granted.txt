@@ -1,0 +1,14 @@
+id: 01MB0000000000000000000007
+title: Granted lock
+status: todo
+assignee: merger-6
+lease: live (grace), ttl 30m, expires 2026-10-26T12:01:00.001Z, claimable from 2026-10-26T12:02:00.001Z
+granted: merger-6 at 2026-10-26T11:59:00.001Z, accept by 2026-10-26T12:01:00.001Z
+adhoc: merge lock
+labels: -
+description: -
+checklist:
+links:
+comments:
+closed: no
+events: 5

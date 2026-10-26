@@ -1,0 +1,47 @@
+{
+  "ticket": {
+    "id": "01MB0000000000000000000002",
+    "title": "Lock in grace",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": "merger-1",
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": {
+      "ttl": 1800000,
+      "expiresAt": 1793016090000,
+      "event": "66a6cd76fb02f56649d0dea9836485b592547d2519d2a32c13ef85c4b1f561f3",
+      "confirmed": false,
+      "state": "live",
+      "claimableAt": 1793016150000
+    },
+    "queue": [],
+    "available": {
+      "at": 1793016150000,
+      "event": "66a6cd76fb02f56649d0dea9836485b592547d2519d2a32c13ef85c4b1f561f3"
+    },
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012401000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 2,
+    "updatedAt": {
+      "wall": 1793015970000,
+      "counter": 0,
+      "actor": "merger-1"
+    }
+  },
+  "events": 2,
+  "unknown": []
+}

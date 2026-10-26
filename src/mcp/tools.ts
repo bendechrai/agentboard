@@ -23,7 +23,7 @@
 import { parseArgs } from '../cli/parse.js';
 import { ACTOR_FLAG, COMMANDS } from '../cli/registry.js';
 import { asciiText } from '../cli/render.js';
-import type { ArgSpec, ArgValues, CommandSpec } from '../cli/types.js';
+import type { ArgSpec, ArgValues, CommandSpec, ExclusiveGroup } from '../cli/types.js';
 import { BoardError } from '../store/errors.js';
 
 /** Prefix of every tool name. */
@@ -32,8 +32,9 @@ export const TOOL_PREFIX = 'board_';
 /**
  * The commands that are not exposed as tools (board-cli: "MCP server"):
  * setup, streaming or maintenance commands run by a human or an
- * orchestrator in a shell, `help` (tools/list already describes every
- * tool), and `agents install` and
+ * orchestrator in a shell (`config set` and `config get` among them: the
+ * board settings are set up in a shell), `help` (tools/list already
+ * describes every tool), and `agents install` and
  * `agents check`, which write or read host project files in the caller's
  * working tree (board-agent-guidance: "Help is not an MCP tool").
  */
@@ -45,6 +46,8 @@ export const EXCLUDED_COMMANDS: readonly string[] = [
   'rebuild',
   'sync',
   'remote',
+  'config set',
+  'config get',
   'mcp',
   'version',
   'help',
@@ -70,7 +73,9 @@ export interface ToolInputSchema {
   readonly type: 'object';
   /**
    * One property per positional (in order), then per flag of the command
-   * (in order), then `as` (with `ACTOR_FLAG.summary` as description). Keys
+   * that is not CLI-only (`ArgSpec.cliOnly`: `claim --timeout` has no
+   * property), in order, then `as` (with `ACTOR_FLAG.summary` as
+   * description). Keys
    * are the kebab-case `ArgSpec.name`s (`decision-recorded-in`,
    * `allow-secret-like`). No `json` property.
    */
@@ -122,27 +127,48 @@ export function toolName(commandName: string): string {
  * separated by one space (so a command with two groups has a single period
  * between them):
  * - a required group: `Give exactly one of: <alternatives>.`
- * - an optional group: `Give at most one of: <alternatives>.`
+ * - an optional group: `Give at most one of: <alternatives>.`, except an
+ *   optional group with a single alternative: `Give together:
+ *   <alternative>.` (`release`: `Give together: force with reason.`)
  * where `<alternatives>` lists each alternative's property names joined
- * with ` with `, alternatives joined with ` | `. For example `new` is
+ * with ` with `, alternatives joined with ` | `. A group that names a
+ * CLI-only flag (`ArgSpec.cliOnly`) is not applied over MCP and has no
+ * sentence, so `claim` is just `Assign an unassigned ticket to yourself`.
+ * For example `new` is
  * `Create a ticket. Give exactly one of: task | change with group | adhoc.`
- * and `claim` is just `Assign an unassigned ticket to yourself`. Plain
- * ASCII. Pure.
+ * Plain ASCII. Pure.
  */
 export function toolDescription(command: CommandSpec): string {
-  const sentences = command.exclusive.map(
-    (group) =>
-      `Give ${group.required ? 'exactly' : 'at most'} one of: ${group.alternatives
-        .map((alt) => alt.join(' with '))
-        .join(' | ')}.`,
-  );
+  const sentences = toolGroups(command).map((group) => {
+    const alternatives = group.alternatives.map((alt) => alt.join(' with ')).join(' | ');
+    if (!group.required && group.alternatives.length === 1) {
+      return `Give together: ${alternatives}.`;
+    }
+    return `Give ${group.required ? 'exactly' : 'at most'} one of: ${alternatives}.`;
+  });
   return sentences.length === 0 ? command.summary : [`${command.summary}.`, ...sentences].join(' ');
+}
+
+/** The flags of `command` that are tool arguments: every flag not CLI-only. */
+function toolFlags(command: CommandSpec): ArgSpec[] {
+  return command.flags.filter((flag) => flag.cliOnly !== true);
+}
+
+/**
+ * The exclusive groups that apply over MCP: every group that names no
+ * CLI-only flag (`claim`'s `--wait` with `--timeout` is left out).
+ */
+function toolGroups(command: CommandSpec): ExclusiveGroup[] {
+  const cliOnly = new Set(command.flags.filter((f) => f.cliOnly === true).map((f) => f.name));
+  return command.exclusive.filter((group) =>
+    group.alternatives.every((alt) => alt.every((name) => !cliOnly.has(name))),
+  );
 }
 
 /** The input schema of a command's tool (see `ToolInputSchema`). Pure. */
 export function toolInputSchema(command: CommandSpec): ToolInputSchema {
   const properties: Record<string, ToolProperty> = {};
-  const args = [...command.positionals, ...command.flags];
+  const args = [...command.positionals, ...toolFlags(command)];
   for (const arg of args) {
     properties[arg.name] = toolProperty(arg);
   }
@@ -217,6 +243,11 @@ export function findTool(
  * `as`, when given as a non-empty string, is in the result as `as` (as
  * `parseArgs` puts `--as` there); actor resolution is not done here.
  *
+ * A CLI-only flag (`ArgSpec.cliOnly`, `claim --timeout`) is not a
+ * property, so passing it (`timeout`) is the unknown-property usage error;
+ * and an exclusive group that names a CLI-only flag (`claim`'s `--wait`
+ * with `--timeout`) is not checked, so `wait` alone is accepted.
+ *
  * @throws BoardError exit 1: reason `usage` naming the property for a
  *   non-object `args`, an unknown property (including `json`), a value of
  *   the wrong type, or a missing required argument; or the reason of a
@@ -225,7 +256,8 @@ export function findTool(
 export function toolArguments(command: CommandSpec, args: unknown): ArgValues {
   const given = argumentObject(args);
   const specs = new Map<string, ArgSpec>();
-  for (const arg of [...command.positionals, ...command.flags, ACTOR_FLAG]) {
+  const flags = toolFlags(command);
+  for (const arg of [...command.positionals, ...flags, ACTOR_FLAG]) {
     specs.set(arg.name, arg);
   }
   const values = new Map<string, string | number | true | readonly string[]>();
@@ -245,7 +277,7 @@ export function toolArguments(command: CommandSpec, args: unknown): ArgValues {
   }
 
   const argv: string[] = [...command.name.split(' ')];
-  for (const spec of [...command.flags, ACTOR_FLAG]) {
+  for (const spec of [...flags, ACTOR_FLAG]) {
     const value = values.get(spec.name);
     if (value === undefined) {
       continue;
@@ -272,7 +304,9 @@ export function toolArguments(command: CommandSpec, args: unknown): ArgValues {
       throw usage(`${command.name} needs the argument <${spec.name}>`);
     }
   });
-  return parseArgs(argv, [command]).values;
+  // The parser sees the command without its CLI-only flags and the groups
+  // that name them, so a tool call cannot pass one and `wait` stands alone.
+  return parseArgs(argv, [{ ...command, flags, exclusive: toolGroups(command) }]).values;
 }
 
 /** `args` as a plain object (`{}` for undefined or null), else a usage error. */

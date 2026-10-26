@@ -1,0 +1,13 @@
+id: 01MB0000000000000000000003
+title: Confirmed lock
+status: todo
+assignee: impl-1
+lease: live, ttl 30m, expires 2026-10-26T12:25:00.000Z, claimable from 2026-10-26T12:26:00.000Z
+adhoc: merge lock
+labels: -
+description: -
+checklist:
+links:
+comments:
+closed: no
+events: 3

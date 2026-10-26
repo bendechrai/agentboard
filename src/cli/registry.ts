@@ -15,13 +15,18 @@ import {
   linkTicket,
   moveTicket,
   releaseTicket,
+  renewTicket,
   scopeDispositionFromArgs,
   setChecklistItem,
+  unqueueTicket,
   type DispositionArgs,
   type LinkTarget,
 } from '../board/actions.js';
+import { SETTING_KEYS, getConfig, setConfig } from '../board/config.js';
+import { formatDuration, isoTime, parseSetting, parseTimeout, parseTtl } from '../board/leases.js';
 import { importChange, parseImportTarget } from '../board/import.js';
 import { readInbox } from '../board/inbox.js';
+import { refuseSecretLike } from '../board/secrets.js';
 import { initBoard } from '../board/init.js';
 import { initBoardWithRemote } from '../board/init-remote.js';
 import { moveBoardIntoHost } from '../board/into-host.js';
@@ -54,6 +59,7 @@ import {
   renderImport,
   renderInboxLine,
   renderListLine,
+  renderConfig,
   renderRebuild,
   renderShow,
   type CheckDocument,
@@ -122,7 +128,7 @@ function flag(
   name: string,
   type: ArgSpec['type'],
   summary: string,
-  extra?: Partial<Pick<ArgSpec, 'required' | 'repeatable'>>,
+  extra?: Partial<Pick<ArgSpec, 'required' | 'repeatable'>> & { cliOnly?: true },
 ): ArgSpec {
   return {
     name,
@@ -130,6 +136,7 @@ function flag(
     required: extra?.required ?? false,
     repeatable: extra?.repeatable ?? false,
     summary,
+    ...(extra?.cliOnly === true ? { cliOnly: true } : {}),
   };
 }
 
@@ -138,8 +145,16 @@ function positional(
   type: 'string' | 'integer',
   summary: string,
   required = true,
+  choices?: readonly string[],
 ): ArgSpec {
-  return { name, type, required, repeatable: false, summary };
+  return {
+    name,
+    type,
+    required,
+    repeatable: false,
+    summary,
+    ...(choices === undefined ? {} : { choices }),
+  };
 }
 
 const ID = positional('id', 'string', 'Ticket id or unique prefix of at least 6 characters');
@@ -181,6 +196,37 @@ const SERVE_OPEN_GROUP: ExclusiveGroup = {
   reason: 'usage',
   message: 'serve takes at most one of --open and --no-open',
 };
+
+/**
+ * `claim --wait --timeout <duration>`: on the command line the two are
+ * given together (board-cli: "Waiting on the command line"). `--timeout`
+ * is CLI-only, so over MCP this group does not apply and `wait` stands
+ * alone (see `ArgSpec.cliOnly`).
+ */
+const WAIT_GROUP: ExclusiveGroup = {
+  alternatives: [['wait', 'timeout']],
+  required: false,
+  reason: 'usage',
+  message: 'claim takes --wait and --timeout together',
+};
+
+/** `release --force --reason <text>`: the two are given together. */
+const FORCE_GROUP: ExclusiveGroup = {
+  alternatives: [['force', 'reason']],
+  required: false,
+  reason: 'usage',
+  message: 'release takes --force and --reason together',
+};
+
+/** `--ttl <duration>` of `claim` and `renew`. */
+const TTL_FLAG: ArgSpec = flag(
+  'ttl',
+  'string',
+  'Lease to ask for: <n>s, <n>m, <n>h or <n>d, from 30s to 7d',
+);
+
+/** The setting keys of `config set` and `config get`. */
+const KEY_SUMMARY = 'Setting key: lease.grace or queue.window';
 
 /** The decision dispositions of `close`. */
 const CLOSE_GROUP: ExclusiveGroup = {
@@ -559,10 +605,17 @@ function checklistRun(done: boolean): CommandSpec['run'] {
 
 /**
  * Every command of this version, in this order: `init`, `new`, `show`,
- * `list`, `claim`, `release`, `move`, `comment`, `handoff`, `link`,
- * `checklist tick`, `checklist untick`, `close`, `inbox`, `watch`, `serve`, `top`, `health`, `rebuild`,
- * `sync`, `import-change`, `close-merged`, `mcp` (the board-cli order), then
- * `agents install` and `agents check`, `version` and `help`.
+ * `list`, `claim`, `renew`, `unqueue`, `release`, `move`, `comment`,
+ * `handoff`, `link`, `checklist tick`, `checklist untick`, `close`,
+ * `inbox`, `watch`, `serve`, `top`, `health`, `rebuild`, `sync`,
+ * `remote`, `import-change`, `close-merged`, `config set`, `config get`,
+ * `mcp` (the board-cli order), then `agents install` and `agents check`,
+ * `version` and `help`.
+ *
+ * Every command refuses the reserved actor `agentboard` (`--as agentboard`,
+ * and for a command that needs an actor `AGENTBOARD_ACTOR=agentboard`)
+ * with `BoardError(1, 'usage')` before the board is opened
+ * (`refuseReservedActor`, `src/cli/parse.ts`).
  *
  * Every entry carries the help data of record (`description`, `group`,
  * `examples`, `exitCodes`; see `CommandSpec`), rendered by
@@ -580,18 +633,54 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   way; `--remote` with `--into-host` is a usage error (the exclusive
  *   group).
  * - `new`: `WriteOutcome`; text: `created <full id>` then the `list` line.
- * - `show`: `ShowResult` (`--raw`: `RawEvent[]`); text: `renderShow`
- *   (`--raw`: each raw event's `text` on its own line).
- * - `list`: `Ticket[]`; text: one `renderListLine` per ticket.
+ * - `show`: `ShowResult` (`showTicket` with `now` = `Date.now()`, read
+ *   once; `--raw`: `RawEvent[]`); text: `renderShow` (`--raw`: each raw
+ *   event's `text` on its own line).
+ * - `list`: `TicketDocument[]` (`listTickets` with `now` = `Date.now()`,
+ *   read once); text: one `renderListLine(ticket, now)` per ticket, with
+ *   the same `now`, so the assignee token and the `--json` lease states
+ *   agree.
+ * - `claim [--ttl <duration>] [--wait --timeout <duration>]`: `--ttl` is
+ *   parsed with `parseTtl` and `--timeout` with `parseTimeout`
+ *   (`src/board/leases.ts`), and `--wait` without `--ttl` is
+ *   `BoardError(1, 'usage')` naming `--ttl`, all before `ctx.board()`, so
+ *   a malformed value exits 1 even where there is no board and writes
+ *   nothing; then `claimTicket(board, actor, { id, ttl, wait })`. A
+ *   `ClaimedOutcome` is the `--json` document; its text is the `list` line
+ *   of the ticket, preceded, when nothing was written, by the line
+ *   `already claimed by <actor>` (with ` (lease expires <iso>)` before the
+ *   newline when the ticket has a lease), and followed, when a claim with
+ *   a lease was written (a takeover included), by the line
+ *   `confirm the lease with 'agentboard renew <full id> --as <actor>' before <iso expiresAt>`.
+ *   A `QueuedOutcome` is the `--json` document as it is (exactly `{queued,
+ *   position, holder, ticket}`); its text is the line
+ *   `queued for <full id> at position <n>, held by <holder or ->`.
+ *   Times are `isoTime`, actors through `asciiText`. Over MCP, `timeout`
+ *   is not an argument (`ArgSpec.cliOnly`), so `board_claim` with `wait`
+ *   joins and returns at once.
+ * - `renew [--ttl <duration>]`: `--ttl` parsed with `parseTtl` before
+ *   `ctx.board()`; `renewTicket`; `WriteOutcome` and the `list` line.
+ * - `unqueue`: `unqueueTicket`; `WriteOutcome` and the `list` line.
+ * - `release [--force --reason <text>] [--allow-secret-like]`: the reason
+ *   goes through `refuseSecretLike` before `ctx.board()`, then
+ *   `releaseTicket` with `force`, `reason` and `allowSecretLike`;
+ *   `WriteOutcome` and the `list` line.
+ * - `config set <key> <value>`: `<key>` is one of `SETTING_KEYS` (the
+ *   parser refuses any other, `ArgSpec.choices`), `<value>` is parsed with
+ *   `parseSetting` before `ctx.board()`; then `setConfig`. `--json`:
+ *   `ConfigSetResult`; text: `set <key> <formatDuration(value)>` and a
+ *   newline. Writes, so it needs an actor. Not an MCP tool.
+ * - `config get [<key>]`: `getConfig`; `--json`: `ConfigResult`; text:
+ *   `renderConfig(result, <key given>)`. Needs no actor. Not an MCP tool.
  * - other writing commands: `WriteOutcome` (`ChecklistOutcome` for
  *   `checklist tick|untick`); text: the `list` line of the resulting
- *   ticket, preceded by `already claimed by <actor>` for a claim that
- *   wrote nothing, and followed, for a tick, by the reminder `message`.
+ *   ticket, followed, for a tick, by the reminder `message`.
  * - `inbox`: `InboxResult` (`readInbox` with `--peek` and `--since`); text:
- *   one `renderInboxLine` per entry, nothing when there is none. Tracks a
- *   cursor, so it requires an actor.
+ *   one `renderInboxLine(entry, actor)` per entry, nothing when there is
+ *   none. Tracks a cursor, so it requires an actor.
  * - `watch`: streams (`stream` calls `watchInbox` with the stop signal and
- *   prints each entry as one line, see `runCliAsync`; each `onWarning` line
+ *   prints each entry as one line, `renderInboxLine(entry, actor)` or its
+ *   JSON, see `runCliAsync`; each `onWarning` line
  *   goes to `io.stderr` as `agentboard: <line>` and a newline); its `run` throws
  *   `BoardError(1, 'streaming-command')` saying that watch streams and runs
  *   only from the agentboard executable. Tracks a cursor, so it requires an
@@ -937,7 +1026,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         const raw = showRaw(ctx.board(), id);
         return { json: raw, text: raw.map((r) => `${r.text}\n`).join('') };
       }
-      const shown = showTicket(ctx.board(), id);
+      const shown = showTicket(ctx.board(), id, { now: Date.now() });
       return { json: shown, text: renderShow(shown) };
     },
   },
@@ -970,27 +1059,40 @@ export const COMMANDS: readonly CommandSpec[] = [
     run: (ctx, values) => {
       const given = str(values, 'status');
       const task = listTaskFilter(values);
-      const tickets = listTickets(ctx.board(), {
-        status: given === undefined ? undefined : status(given),
-        assignee: str(values, 'assignee'),
-        task,
-        labels: list(values, 'label'),
-        closed: bool(values, 'closed'),
-      });
-      return { json: tickets, text: tickets.map((t) => `${renderListLine(t)}\n`).join('') };
+      const now = Date.now();
+      const tickets = listTickets(
+        ctx.board(),
+        {
+          status: given === undefined ? undefined : status(given),
+          assignee: str(values, 'assignee'),
+          task,
+          labels: list(values, 'label'),
+          closed: bool(values, 'closed'),
+        },
+        { now },
+      );
+      return { json: tickets, text: tickets.map((t) => `${renderListLine(t, now)}\n`).join('') };
     },
   },
   {
     name: 'claim',
     summary: 'Assign an unassigned ticket to yourself',
     description:
-      'Assigns an unassigned ticket to the actor. Claim a ticket before starting work on it. If another actor holds it the claim is refused (exit 4, already-assigned) naming the holder; a claim by the current holder succeeds without writing anything, so retrying a claim is safe.',
+      'Assigns an unassigned ticket to the actor. Claim a ticket before starting work on it. If another actor holds it the claim is refused (exit 4, already-assigned) naming the holder and, when it holds a lease, when the lease expires and from when the ticket can be claimed; a claim by the current holder succeeds without writing anything, so retrying a claim is safe. With --ttl the claim holds a lease: it starts as a grace lease (the board setting lease.grace, 2 minutes by default) and must be confirmed with agentboard renew <id> before the grace ends, or it lapses; a lease that lapsed more than 60 seconds ago can be taken over by a claim with --ttl. With --wait (and --ttl, and on the command line --timeout) a ticket that is held, or has waiters, is not refused: the actor joins its queue and the ticket is granted to the waiters in the order they joined (exit 4, queued, for a claim without --wait while others wait; exit 4, wait-timeout, when the timeout passes first).',
     group: 'lifecycle',
     examples: [
       { command: 'agentboard claim 01J9K3 --as impl', summary: 'Claim ticket 01J9K3 as impl' },
+      {
+        command: 'agentboard claim 01J9K3 --ttl 30m --as merger-1',
+        summary: 'Claim ticket 01J9K3 with a 30 minute lease, to confirm with renew',
+      },
+      {
+        command: 'agentboard claim 01J9K3 --ttl 30m --wait --timeout 10m --as merger-2',
+        summary: 'Wait up to 10 minutes in the queue for ticket 01J9K3',
+      },
     ],
     exitCodes: [
-      { code: 0, meaning: 'Claimed, or already held by the actor' },
+      { code: 0, meaning: 'Claimed, already held by the actor, or granted after waiting' },
       EXIT_USAGE,
       EXIT_ACTOR,
       EXIT_ID_SHORT,
@@ -999,30 +1101,85 @@ export const COMMANDS: readonly CommandSpec[] = [
       {
         code: 4,
         reason: 'already-assigned',
-        meaning: 'Another actor holds the ticket (named in the message)',
+        meaning: 'Another actor holds the ticket (named in the message, with its lease)',
+      },
+      {
+        code: 4,
+        reason: 'queued',
+        meaning: 'Other actors are waiting for the ticket and have priority: use --wait',
+      },
+      {
+        code: 4,
+        reason: 'wait-timeout',
+        meaning: 'The --timeout passed before the ticket was granted; the actor left the queue',
       },
       EXIT_UNKNOWN_TICKET,
       EXIT_INTEGRITY,
     ],
     positionals: [ID],
-    flags: [],
-    exclusive: [],
+    flags: [
+      TTL_FLAG,
+      flag('wait', 'boolean', 'Join the queue when the ticket cannot be claimed at once'),
+      flag(
+        'timeout',
+        'string',
+        'With --wait: give up after <n>s, <n>m, <n>h or <n>d, at most 1d (command line only)',
+        { cliOnly: true },
+      ),
+    ],
+    exclusive: [WAIT_GROUP],
     writes: true,
     operation: 'claimTicket',
     run: (ctx, values) => {
+      const ttlText = str(values, 'ttl');
+      const ttl = ttlText === undefined ? undefined : parseTtl(ttlText);
+      const timeout = str(values, 'timeout');
+      if (timeout !== undefined) {
+        parseTimeout(timeout);
+      }
+      const wait = bool(values, 'wait');
+      if (wait && ttl === undefined) {
+        throw new BoardError(
+          1,
+          'usage',
+          'claim --wait needs --ttl <duration>, the lease to ask for once the ticket is granted',
+        );
+      }
       const actor = actorOf(ctx);
-      const out = claimTicket(ctx.board(), actor, { id: req(values, 'id') });
-      return written(out, out.hash === null ? `already claimed by ${asciiText(actor)}\n` : '');
+      const out = claimTicket(ctx.board(), actor, { id: req(values, 'id'), ttl, wait });
+      if (out.queued === true) {
+        return {
+          json: out,
+          text: `queued for ${out.ticket} at position ${String(out.position)}, held by ${out.holder === null ? '-' : asciiText(out.holder)}\n`,
+        };
+      }
+      const { lease } = out.ticket;
+      if (out.hash === null) {
+        const expiry = lease === null ? '' : ` (lease expires ${isoTime(lease.expiresAt)})`;
+        return written(out, `already claimed by ${asciiText(actor)}${expiry}\n`);
+      }
+      const confirm =
+        lease === null
+          ? ''
+          : `confirm the lease with 'agentboard renew ${out.ticket.id} --as ${asciiText(actor)}' before ${isoTime(lease.expiresAt)}\n`;
+      return written(out, '', confirm);
     },
   },
   {
-    name: 'release',
-    summary: 'Give up a ticket you hold',
+    name: 'renew',
+    summary: 'Renew the lease of a ticket you hold',
     description:
-      'Clears the assignment of a ticket the actor holds, leaving its status unchanged, so another actor can claim it. Only the current assignee can release a ticket.',
+      'Sets the lease of a ticket the actor holds to --ttl from now, or to the ttl it asked for when --ttl is not given, and confirms it. Run it as the first action of real work after a claim with --ttl (an unconfirmed claim lapses after the grace period), to accept a ticket granted from the queue, and again at about half the ttl. Exit 4 not-assignee means the lock was lost: stop the critical work.',
     group: 'lifecycle',
     examples: [
-      { command: 'agentboard release 01J9K3 --as impl', summary: 'Give up ticket 01J9K3' },
+      {
+        command: 'agentboard renew 01J9K3 --as merger-1',
+        summary: 'Confirm or renew the lease on ticket 01J9K3 with the ttl it asked for',
+      },
+      {
+        command: 'agentboard renew 01J9K3 --ttl 1h --as merger-1',
+        summary: 'Renew the lease on ticket 01J9K3 for one hour from now',
+      },
     ],
     exitCodes: [
       EXIT_OK,
@@ -1031,7 +1188,49 @@ export const COMMANDS: readonly CommandSpec[] = [
       EXIT_ID_SHORT,
       EXIT_ID_AMBIGUOUS,
       EXIT_NO_BOARD,
-      { code: 4, reason: 'not-assignee', meaning: 'The actor does not hold the ticket' },
+      {
+        code: 4,
+        reason: 'not-assignee',
+        meaning: 'The actor does not hold the ticket: the lock was lost',
+      },
+      EXIT_UNKNOWN_TICKET,
+      EXIT_INTEGRITY,
+    ],
+    positionals: [ID],
+    flags: [TTL_FLAG],
+    exclusive: [],
+    writes: true,
+    operation: 'renewTicket',
+    run: (ctx, values) => {
+      const ttlText = str(values, 'ttl');
+      const ttl = ttlText === undefined ? undefined : parseTtl(ttlText);
+      return written(renewTicket(ctx.board(), actorOf(ctx), { id: req(values, 'id'), ttl }));
+    },
+  },
+  {
+    name: 'unqueue',
+    summary: 'Leave the queue of a ticket you are waiting for',
+    description:
+      'Removes the actor from the queue of a ticket it joined with claim --wait, so it is no longer granted the ticket.',
+    group: 'lifecycle',
+    examples: [
+      {
+        command: 'agentboard unqueue 01J9K3 --as merger-3',
+        summary: 'Stop waiting for ticket 01J9K3',
+      },
+    ],
+    exitCodes: [
+      EXIT_OK,
+      EXIT_USAGE,
+      EXIT_ACTOR,
+      EXIT_ID_SHORT,
+      EXIT_ID_AMBIGUOUS,
+      EXIT_NO_BOARD,
+      {
+        code: 4,
+        reason: 'invalid-queue',
+        meaning: 'The actor is not in the queue of the ticket',
+      },
       EXIT_UNKNOWN_TICKET,
       EXIT_INTEGRITY,
     ],
@@ -1039,9 +1238,62 @@ export const COMMANDS: readonly CommandSpec[] = [
     flags: [],
     exclusive: [],
     writes: true,
-    operation: 'releaseTicket',
+    operation: 'unqueueTicket',
     run: (ctx, values) =>
-      written(releaseTicket(ctx.board(), actorOf(ctx), { id: req(values, 'id') })),
+      written(unqueueTicket(ctx.board(), actorOf(ctx), { id: req(values, 'id') })),
+  },
+  {
+    name: 'release',
+    summary: 'Give up a ticket you hold',
+    description:
+      'Clears the assignment of a ticket the actor holds, leaving its status unchanged, so another actor (or the next waiter) can have it. Only the current assignee can release a ticket, except with --force and a --reason, which breaks another actor\'s hold and records who did it and why; reserve it for the orchestrator or a human, after checking the holder is gone.',
+    group: 'lifecycle',
+    examples: [
+      { command: 'agentboard release 01J9K3 --as impl', summary: 'Give up ticket 01J9K3' },
+      {
+        command:
+          'agentboard release 01J9K3 --force --reason "merger-1 crashed" --as orchestrator',
+        summary: 'Break the hold of a crashed holder on ticket 01J9K3',
+      },
+    ],
+    exitCodes: [
+      EXIT_OK,
+      EXIT_USAGE,
+      EXIT_ACTOR,
+      EXIT_ID_SHORT,
+      EXIT_ID_AMBIGUOUS,
+      EXIT_SECRET,
+      EXIT_NO_BOARD,
+      { code: 4, reason: 'not-assignee', meaning: 'The actor does not hold the ticket' },
+      EXIT_UNKNOWN_TICKET,
+      EXIT_INTEGRITY,
+    ],
+    positionals: [ID],
+    flags: [
+      flag('force', 'boolean', "Release another actor's hold (with --reason)"),
+      flag('reason', 'string', 'Why the hold is broken (with --force)'),
+      ALLOW_SECRET_FLAG,
+    ],
+    exclusive: [FORCE_GROUP],
+    writes: true,
+    operation: 'releaseTicket',
+    run: (ctx, values) => {
+      const reason = str(values, 'reason');
+      const allowSecretLike = bool(values, 'allow-secret-like');
+      // Checked before the board is opened, like comment text, so a
+      // token-shaped reason is refused even where there is no board.
+      if (reason !== undefined) {
+        refuseSecretLike([reason], allowSecretLike);
+      }
+      return written(
+        releaseTicket(ctx.board(), actorOf(ctx), {
+          id: req(values, 'id'),
+          force: bool(values, 'force'),
+          reason,
+          allowSecretLike,
+        }),
+      );
+    },
   },
   {
     name: 'move',
@@ -1451,7 +1703,9 @@ export const COMMANDS: readonly CommandSpec[] = [
       });
       return {
         json: result,
-        text: result.entries.map((entry) => `${renderInboxLine(entry)}\n`).join(''),
+        text: result.entries
+          .map((entry) => `${renderInboxLine(entry, actorOf(ctx))}\n`)
+          .join(''),
       };
     },
   },
@@ -1493,7 +1747,10 @@ export const COMMANDS: readonly CommandSpec[] = [
         onEntries: (entries) => {
           io.stdout(
             entries
-              .map((entry) => `${io.json ? JSON.stringify(entry) : renderInboxLine(entry)}\n`)
+              .map(
+                (entry) =>
+                  `${io.json ? JSON.stringify(entry) : renderInboxLine(entry, actorOf(ctx))}\n`,
+              )
               .join(''),
           );
         },
@@ -1923,10 +2180,62 @@ export const COMMANDS: readonly CommandSpec[] = [
     },
   },
   {
+    name: 'config set',
+    summary: 'Set a board setting: lease.grace or queue.window',
+    description:
+      'Sets a board setting for every actor, as an event: lease.grace, the grace a claim with --ttl gets to be confirmed by renew, and queue.window, the time a waiter granted a ticket has to accept it by renewing. Values are <n>s or <n>m, from 30s to 10m; both default to 2m.',
+    group: 'setup',
+    examples: [
+      {
+        command: 'agentboard config set queue.window 5m --as orchestrator',
+        summary: 'Give granted waiters 5 minutes to accept',
+      },
+    ],
+    exitCodes: [EXIT_OK, EXIT_USAGE, EXIT_ACTOR, EXIT_NO_BOARD, EXIT_INTEGRITY],
+    positionals: [
+      positional('key', 'string', KEY_SUMMARY, true, SETTING_KEYS),
+      positional('value', 'string', 'Duration: <n>s or <n>m, from 30s to 10m'),
+    ],
+    flags: [],
+    exclusive: [],
+    writes: true,
+    operation: 'setConfig',
+    run: (ctx, values) => {
+      const value = parseSetting(req(values, 'value'));
+      const out = setConfig(ctx.board(), actorOf(ctx), { key: req(values, 'key'), value });
+      return { json: out, text: `set ${out.key} ${formatDuration(out.value)}\n` };
+    },
+  },
+  {
+    name: 'config get',
+    summary: 'Print the board settings lease.grace and queue.window',
+    description:
+      'Prints the effective value of one board setting, or of both, marking the ones at their default. Needs no actor.',
+    group: 'setup',
+    examples: [
+      { command: 'agentboard config get', summary: 'Print both settings' },
+      {
+        command: 'agentboard config get queue.window --json',
+        summary: 'Print the acceptance window as JSON',
+      },
+    ],
+    exitCodes: [EXIT_OK, EXIT_USAGE, EXIT_NO_BOARD, EXIT_INTEGRITY],
+    positionals: [positional('key', 'string', KEY_SUMMARY, false, SETTING_KEYS)],
+    flags: [],
+    exclusive: [],
+    writes: false,
+    operation: 'getConfig',
+    run: (ctx, values) => {
+      const key = str(values, 'key');
+      const result = getConfig(ctx.board(), key);
+      return { json: result, text: renderConfig(result, key !== undefined) };
+    },
+  },
+  {
     name: 'mcp',
     summary: 'Serve the board as MCP tools over stdio',
     description:
-      'Serves the board as MCP tools over stdio, one tool per board command (not init, watch, serve, top, rebuild, sync, remote, mcp, version, help or the agents commands), for agents that prefer tools to the shell. Runs until the client disconnects or the process gets SIGINT or SIGTERM. --as sets the default actor for tool calls that pass no as of their own, before AGENTBOARD_ACTOR. Nothing but protocol messages is written to stdout. It exits 2 when no board is found from this directory.',
+      'Serves the board as MCP tools over stdio, one tool per board command (not init, watch, serve, top, rebuild, sync, remote, config, mcp, version, help or the agents commands), for agents that prefer tools to the shell. Runs until the client disconnects or the process gets SIGINT or SIGTERM. --as sets the default actor for tool calls that pass no as of their own, before AGENTBOARD_ACTOR. Nothing but protocol messages is written to stdout. It exits 2 when no board is found from this directory.',
     group: 'setup',
     examples: [
       { command: 'agentboard mcp', summary: 'Serve the board over MCP on stdio' },

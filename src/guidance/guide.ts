@@ -134,8 +134,9 @@ export const GUIDE_MAX_LINES = 180;
  *    line), defaulting to the server's actor (a command line
  *    `agentboard mcp --as <actor>`), then its `AGENTBOARD_ACTOR`; errors
  *    carry `exitCode`, `reason`, `message` and `hint`; `init`, `watch`,
- *    `serve`, `top`, `rebuild`, `sync`, `remote`, `mcp`, `version`, `help`,
- *    `agents install` and `agents check` are not tools. It names
+ *    `serve`, `top`, `rebuild`, `sync`, `remote`, `config set`, `config get`,
+ *    `mcp`, `version`, `help`, `agents install` and `agents check` are not
+ *    tools. It names
  *    at least `board_claim`, `board_inbox`, `board_handoff` and
  *    `board_checklist_tick`.
  * 9. `Exit codes and hints`: one line per exit code 0 to 5, each written
@@ -144,10 +145,10 @@ export const GUIDE_MAX_LINES = 180;
  *    error, missing actor or refused text or close disposition; 2 board not
  *    found; 3 sync problem that needs a human; 4 rejected by board state,
  *    listing every exit 4 reason the registry declares
- *    (`invalid-transition`, `already-assigned`, `not-assignee`,
- *    `unknown-ticket`, `needs-scope-disposition`, `already-linked`,
- *    `checklist-index`, `reconcile-blocked`, `reconcile-ambiguous`,
- *    `unsynced`); 5 integrity
+ *    (`invalid-transition`, `already-assigned`, `queued`, `wait-timeout`,
+ *    `not-assignee`, `invalid-queue`, `unknown-ticket`,
+ *    `needs-scope-disposition`, `already-linked`, `checklist-index`,
+ *    `reconcile-blocked`, `reconcile-ambiguous`, `unsynced`); 5 integrity
  *    problem or cache busy. Then: every refusal prints a `hint: ` line on
  *    stderr (the `hint` field over MCP) naming what to run next, and a
  *    command line `agentboard help <command>` shows any command's
@@ -472,15 +473,15 @@ const GUIDE_BODY: readonly string[] = [
   '  agentboard mcp --as <actor>',
   "and then the server's AGENTBOARD_ACTOR. A failed call returns exitCode,",
   'reason, message and hint. init, watch, serve, top, rebuild, sync, remote,',
-  'mcp, version, help, agents install and agents check are not tools; run',
-  'those in a shell.',
+  'config set, config get, mcp, version, help, agents install and',
+  'agents check are not tools; run those in a shell.',
   '',
   'Exit codes and hints',
   '  0  success',
   '  1  usage error, missing actor, refused text or close disposition, or rebuild --check found a difference',
   '  2  board not found or unreadable',
   '  3  sync problem that needs a human',
-  '  4  rejected by board state: invalid-transition, already-assigned, not-assignee, unknown-ticket, duplicate-create, needs-scope-disposition, already-linked, checklist-index, reconcile-blocked, reconcile-ambiguous, unsynced (init --into-host on a board with events not committed or not pushed)',
+  '  4  rejected by board state: invalid-transition, already-assigned, queued, wait-timeout, not-assignee, invalid-queue, unknown-ticket, duplicate-create, needs-scope-disposition, already-linked, checklist-index, reconcile-blocked, reconcile-ambiguous, unsynced (init --into-host on a board with events not committed or not pushed)',
   '  5  event log or cache integrity problem, or the cache is busy',
   'Every refusal also prints a line starting with hint: on stderr (the hint',
   'field over MCP) naming what to run next. For the arguments of a command:',

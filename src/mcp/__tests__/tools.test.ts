@@ -55,15 +55,18 @@ describe('tool names', () => {
     expect(TOOL_PREFIX).toBe('board_');
   });
 
-  it('excludes exactly init, watch, serve, top, rebuild, sync, remote, mcp, version, help and the agents commands', () => {
+  it('excludes exactly init, watch, serve, top, rebuild, sync, remote, config, mcp, version, help and the agents commands', () => {
     // agents install and agents check write or read host project files in
     // the caller's working tree and are run in a shell, like the other
     // setup commands; init, sync and remote run git against the host's
-    // configuration (board-cli "MCP server", add-board-sharing).
+    // configuration (board-cli "MCP server", add-board-sharing); config set
+    // and config get are board settings set up in a shell (add-claim-leases).
     expect([...EXCLUDED_COMMANDS].sort()).toEqual(
       [
         'agents check',
         'agents install',
+        'config get',
+        'config set',
         'help',
         'init',
         'mcp',
@@ -151,7 +154,8 @@ describe('input schemas', () => {
       const c = t.command;
       expect(Object.keys(t.inputSchema.properties), t.name).toEqual([
         ...c.positionals.map((a) => a.name),
-        ...c.flags.map((a) => a.name),
+        // A CLI-only flag (claim --timeout) has no property.
+        ...c.flags.filter((a) => a.cliOnly !== true).map((a) => a.name),
         'as',
       ]);
       expect(t.inputSchema.properties, t.name).not.toHaveProperty('json');
@@ -163,7 +167,8 @@ describe('input schemas', () => {
 
   it('maps argument types, with repeatable flags as string arrays', () => {
     for (const t of toolDefinitions()) {
-      for (const arg of [...t.command.positionals, ...t.command.flags]) {
+      const flags = t.command.flags.filter((a) => a.cliOnly !== true);
+      for (const arg of [...t.command.positionals, ...flags]) {
         const prop = t.inputSchema.properties[arg.name];
         const expected = arg.repeatable
           ? { type: 'array', items: { type: 'string' }, description: arg.summary }

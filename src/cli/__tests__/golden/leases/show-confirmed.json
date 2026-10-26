@@ -1,0 +1,47 @@
+{
+  "ticket": {
+    "id": "01MB0000000000000000000003",
+    "title": "Confirmed lock",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": "impl-1",
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": {
+      "ttl": 1800000,
+      "expiresAt": 1793017500000,
+      "event": "256ea778bc757a25444d597d882d2b00f687e366000011f01514e18046e22a54",
+      "confirmed": true,
+      "state": "live",
+      "claimableAt": 1793017560000
+    },
+    "queue": [],
+    "available": {
+      "at": 1793017560000,
+      "event": "256ea778bc757a25444d597d882d2b00f687e366000011f01514e18046e22a54"
+    },
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012402000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 3,
+    "updatedAt": {
+      "wall": 1793015700000,
+      "counter": 0,
+      "actor": "impl-1"
+    }
+  },
+  "events": 3,
+  "unknown": []
+}

@@ -33,6 +33,8 @@ describe('the command registry', () => {
       'show',
       'list',
       'claim',
+      'renew',
+      'unqueue',
       'release',
       'move',
       'comment',
@@ -51,6 +53,8 @@ describe('the command registry', () => {
       'remote',
       'import-change',
       'close-merged',
+      'config set',
+      'config get',
       'mcp',
       'agents install',
       'agents check',
@@ -79,6 +83,8 @@ describe('the command registry', () => {
     expect(COMMANDS.filter((c) => c.writes).map((c) => c.name)).toEqual([
       'new',
       'claim',
+      'renew',
+      'unqueue',
       'release',
       'move',
       'comment',
@@ -89,6 +95,7 @@ describe('the command registry', () => {
       'close',
       'import-change',
       'close-merged',
+      'config set',
     ]);
   });
 
@@ -103,10 +110,12 @@ describe('the command registry', () => {
     expect(ACTOR_FLAG).toMatchObject({ name: 'as', type: 'string', required: false });
   });
 
-  it('gives --allow-secret-like to new, move, comment, handoff and close only', () => {
-    // move and close take it for their --unplanned reason (add-adhoc-ticket-lifecycle).
+  it('gives --allow-secret-like to new, release, move, comment, handoff and close only', () => {
+    // move and close take it for their --unplanned reason (add-adhoc-ticket-lifecycle),
+    // release for its --force --reason (add-claim-leases).
     expect(COMMANDS.filter((c) => c.flags.includes(ALLOW_SECRET_FLAG)).map((c) => c.name)).toEqual([
       'new',
+      'release',
       'move',
       'comment',
       'handoff',

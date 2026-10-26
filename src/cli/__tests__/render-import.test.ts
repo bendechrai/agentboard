@@ -17,7 +17,7 @@ const ID3 = '01BX5ZZKBKACTAV9WEVGEMMVRZ';
 const TS = { wall: 1000, counter: 0, actor: 'orch' };
 const PATH = 'openspec/changes/add-x/tasks.md';
 
-function ticket(extra: Partial<Ticket> = {}): Ticket {
+function ticket(extra: Partial<Omit<Ticket, 'lease'>> = {}): Ticket & { lease: null } {
   return {
     id: ID,
     title: 'Build the CLI',

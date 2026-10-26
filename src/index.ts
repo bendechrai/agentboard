@@ -30,6 +30,8 @@ export * from './board/paths.js';
 export * from './board/reminder.js';
 export * from './board/tickets.js';
 export * from './board/actions.js';
+export * from './board/leases.js';
+export * from './board/config.js';
 export * from './board/inbox.js';
 export * from './board/watch.js';
 export * from './board/sync.js';

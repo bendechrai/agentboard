@@ -1,0 +1,13 @@
+id: 01MB0000000000000000000004
+title: Expired lock
+status: todo
+assignee: impl-2
+lease: expired (grace), ttl 30m, expires 2026-10-26T11:59:40.000Z, claimable from 2026-10-26T12:00:40.000Z
+adhoc: merge lock
+labels: -
+description: -
+checklist:
+links:
+comments:
+closed: no
+events: 2

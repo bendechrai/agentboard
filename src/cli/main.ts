@@ -13,7 +13,13 @@ import type { WriteHooks } from '../store/eventfile.js';
 import { pauseHooks } from '../store/transaction.js';
 import { findBoard } from '../store/locate.js';
 import { closeDecisionOf, hintFor, type HintContext } from '../guidance/hints.js';
-import { ACTOR_ENV, parseArgs, resolveActor, type ParsedCommand } from './parse.js';
+import {
+  ACTOR_ENV,
+  parseArgs,
+  refuseReservedActor,
+  resolveActor,
+  type ParsedCommand,
+} from './parse.js';
 import { COMMANDS } from './registry.js';
 import type { TerminalIo } from '../tui/terminal.js';
 import type { BoardOpenOptions, CommandSpec, Env, RunContext } from './types.js';
@@ -126,8 +132,10 @@ export function errorDocument(error: unknown, context?: HintContext): ErrorDocum
  * Runs one CLI invocation and returns its exit code.
  *
  * 1. `parseArgs(io.argv)`.
- * 2. For a writing command or one that tracks a cursor
- *    (`CommandSpec.tracksCursor`), `resolveActor(values.as, io.env)`.
+ * 2. `refuseReservedActor(values.as)` for every command, then, for a
+ *    writing command or one that tracks a cursor
+ *    (`CommandSpec.tracksCursor`), `resolveActor(values.as, io.env)` and
+ *    `refuseReservedActor` of the result (both in `commandActor`).
  * 3. `command.run(ctx, values)` with a context whose `board()` finds and
  *    opens the board lazily (`findBoard` with `io.cwd` and `io.env`, then
  *    `openBoard`, passing `catchUp: false` when the first call asks for
@@ -255,15 +263,25 @@ function cliBoard(io: CliIo): LazyBoard {
 /**
  * The actor of `command`: `resolveActor(given, env)` for a writing or
  * cursor-tracking command, null for any other (shared with the MCP server).
+ * The reserved actor is refused first as `given` (every command, so `show
+ * --as agentboard` exits 1) and then as the resolved actor (so
+ * `AGENTBOARD_ACTOR=agentboard` is refused by a command that needs one).
  *
- * @throws BoardError exit 1, reason `missing-actor`, from `resolveActor`.
+ * @throws BoardError exit 1, reason `missing-actor`, from `resolveActor`,
+ *   or reason `usage` from `refuseReservedActor`.
  */
 export function commandActor(
   command: CommandSpec,
   given: string | undefined,
   env: Env,
 ): string | null {
-  return command.writes || command.tracksCursor === true ? resolveActor(given, env) : null;
+  refuseReservedActor(given);
+  if (!(command.writes || command.tracksCursor === true)) {
+    return null;
+  }
+  const actor = resolveActor(given, env);
+  refuseReservedActor(actor);
+  return actor;
 }
 
 /** The `RunContext` of one command run on `opened` (shared with the MCP server). */
@@ -315,12 +333,14 @@ function cliHintContext(io: CliIo, parsed: ParsedCommand | null): HintContext {
     const actor = nonEmpty(parsed.values.as) ?? fromEnv;
     const closeDecision =
       parsed.command.name === 'close' ? closeDecisionOf(parsed.values) : undefined;
+    const force = parsed.command.name === 'release' && parsed.values.force === true;
     return {
       surface: 'cli',
       command: parsed.command.name,
       ...(id === undefined ? {} : { id }),
       ...(actor === undefined ? {} : { actor }),
       ...(closeDecision === undefined ? {} : { closeDecision }),
+      ...(force ? { force } : {}),
     };
   }
   const actor = argvActor(io.argv) ?? fromEnv;
@@ -389,7 +409,7 @@ function argvActor(argv: readonly string[]): string | undefined {
  * more line after any lines already streamed; the result is
  * `exitCodeFor(error)`.
  *
- * Output of `watch`: one line per entry, `renderInboxLine(entry)` without
+ * Output of `watch`: one line per entry, `renderInboxLine(entry, actor)` without
  * `--json`, and with `--json` `JSON.stringify(entry)` of the `InboxEntry`
  * (newline-delimited JSON, one document per line). This is the single
  * exception to "exactly one JSON document on stdout": a stream has no end

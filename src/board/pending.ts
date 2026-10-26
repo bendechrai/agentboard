@@ -81,6 +81,16 @@ function entryOf(hash: string, event: BoardEvent): InboxEntry {
       return { ...entry, note: event.body.text };
     case 'ticket.reconcile':
       return { ...entry, affects: event.body.holder ?? null };
+    case 'ticket.claim':
+      return { ...entry, affects: event.body.supersedes?.holder ?? null };
+    case 'ticket.release.force':
+      return { ...entry, note: event.body.reason, affects: event.body.holder };
+    case 'ticket.grant':
+      return {
+        ...entry,
+        to: event.body.to,
+        affects: 'lease' in event.body.after ? event.body.after.lease.holder : null,
+      };
     default:
       return entry;
   }

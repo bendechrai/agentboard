@@ -16,6 +16,8 @@ export const SPEC_TOOLS: readonly string[] = [
   'board_show',
   'board_list',
   'board_claim',
+  'board_renew',
+  'board_unqueue',
   'board_release',
   'board_move',
   'board_comment',

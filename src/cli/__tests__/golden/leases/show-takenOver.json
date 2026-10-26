@@ -1,0 +1,54 @@
+{
+  "ticket": {
+    "id": "01MB0000000000000000000008",
+    "title": "Taken over lock",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": "impl-5",
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": {
+      "ttl": 3600000,
+      "expiresAt": 1793018950000,
+      "event": "76ba46d565a2150046febd53770f7c9627af61d8f5b774fe23770186a7eff36f",
+      "confirmed": true,
+      "state": "live",
+      "claimableAt": 1793019010000
+    },
+    "queue": [],
+    "available": {
+      "at": 1793019010000,
+      "event": "76ba46d565a2150046febd53770f7c9627af61d8f5b774fe23770186a7eff36f"
+    },
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012407000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 4,
+    "updatedAt": {
+      "wall": 1793015350000,
+      "counter": 0,
+      "actor": "impl-5"
+    }
+  },
+  "events": 4,
+  "unknown": [],
+  "takeover": {
+    "actor": "impl-5",
+    "at": 1793015300000,
+    "holder": "impl-4",
+    "expiresAt": 1793015070000,
+    "event": "3ef82e6115dd5a11dcc60af78cb1d4a3a004ad4602b37098ab927231ba2d70fe"
+  }
+}
