@@ -292,7 +292,7 @@ export async function waitForGrant(
       const queued = ticket.queue.some((waiter) => waiter.actor === actor);
       if (signal.aborted || t >= deadline) {
         if (queued) {
-          unqueueTicket(board, actor, { id }, { now });
+          leaveQueue(board, actor, id, now);
         }
         if (signal.aborted) {
           throw new BoardError(
@@ -360,6 +360,22 @@ export async function waitForGrant(
     throw outcome.error;
   }
   return outcome.value;
+}
+
+/**
+ * Writes the actor's `ticket.queue.leave`. The ticket was read as queued a
+ * moment ago in another transaction, so a leave written elsewhere in
+ * between makes the fold reject this one `invalid-queue`: the actor is
+ * out of the queue either way, which is all the wait needs.
+ */
+function leaveQueue(board: Board, actor: string, id: string, now: () => number): void {
+  try {
+    unqueueTicket(board, actor, { id }, { now });
+  } catch (error) {
+    if (!(error instanceof BoardError && error.exitCode === 4 && error.reason === 'invalid-queue')) {
+      throw error;
+    }
+  }
 }
 
 /** True when the event file `hash` is an applied-kind `ticket.grant`. */
