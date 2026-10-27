@@ -214,8 +214,13 @@ value", "the repository given with --remote" or "the URL given", and a
 suggested command writes `<url>` for it. A remote's URL read from the
 board repository's configuration MAY be named. Git's error, where it is
 quoted, SHALL be quoted with every occurrence of the value given
-replaced by `<url>` and the user information of every URL in it
-(`<scheme>://<userinfo>@`) replaced by `<scheme>://<redacted>@`.
+replaced by `<url>` (the value as given, as the absolute path git was
+given for a relative local path, and without its user information, the
+form git prints for a URL with credentials), the user information of
+the value given (as given and percent-decoded) replaced by `<redacted>`
+wherever it appears, and the user information of every URL in it
+(`<scheme>://<userinfo>@`) replaced by `<scheme>://<redacted>@`. The
+user name of the scp-like form `user@host:path` is not user information.
 
 A board is cloned into a temporary sibling of `.board` named
 `.board-clone-<random>`, renamed to `.board` only once its working tree
@@ -250,6 +255,10 @@ failure's code and reason, keeping the board and the remote it set.
 #### Scenario: Credentials in an unreachable URL
 - **WHEN** `agentboard init --remote https://agent:<token>@git.example.com/me/missing.git` runs, with and without `--json`, and the repository cannot be read
 - **THEN** it exits 3 with reason `remote-unreachable`, quotes git's error, and neither the token nor the URL given appears in stdout or stderr
+
+#### Scenario: Token given as the user name of an unreachable URL
+- **WHEN** `agentboard init --remote http://<token>@<host>/me/x.git` runs, with and without `--json`, and the server answers 401 so git prints `could not read Password for 'http://<token>@<host>'`
+- **THEN** it exits 3 with reason `remote-unreachable`, the quoted line reads `http://<redacted>@<host>`, and the token appears nowhere in stdout or stderr
 
 #### Scenario: Init with a remote on an existing board without one
 - **WHEN** a standalone board with unsynced events and no remote exists and `agentboard init --remote <empty url>` runs

@@ -268,6 +268,49 @@ may print. A URL with credentials (`https://user:<token>@host/repo.git`)
 is the most likely way a real secret reaches an argument, which is why
 these refusals are in scope although the URL passed the form checks.
 
+Rulings of the group 2 test author (ticket 01M5YAB4PJQSSMGDM2XZAQA5FZ),
+from the lines git 2.32.7 and 2.53.0 actually print (`sanitizeGitLine`
+in `src/board/init-remote.ts` states the contract):
+
+- "The value given" covers every form of it git prints: the value as
+  given, the URL git was given for it (the absolute path of a relative
+  local path, which is what git quotes in `'<path>' does not appear to be
+  a git repository`), and the value without its user information (git
+  strips credentials itself and prints `unable to access
+  'https://host/x.git/'` and `Authentication failed for
+  'https://host/x.git/'`, which would otherwise repeat a token in the
+  path). Each becomes `<url>`, longest first; what git appends (a
+  trailing `/`) stays. The match is literal, so a short value may also be
+  replaced inside other words; that costs readability, never safety.
+- Credentials are the user information of a value that has a scheme: the
+  text between `<scheme>://` and the last `@` before the first `/`, `?`
+  or `#`, so a user name alone counts (git prints a token given as the
+  user name in `could not read Password for 'https://<token>@host'`) and
+  a password holding an unencoded `@` is taken whole. That user
+  information, as given and percent-decoded (git prints the decoded form),
+  is replaced by `<redacted>` wherever it appears, with or without a
+  scheme (a `git://` URL gives `unable to look up <userinfo>@host`, and
+  ssh echoes `<userinfo>@host`). Every other `<scheme>://<userinfo>@` in
+  the line is redacted as the delta says, whatever the scheme's case.
+- The scp-like form `user@host:path` has no user information: `user` is
+  an ssh login name and cannot carry a password, so it is kept where git
+  or ssh print it apart from the whole value. An IPv6 host (`[::1]`) needs
+  no special case: brackets belong to the host, after the `@`.
+- Apart from the value, every `init --remote` refusal keeps today's text
+  (the table above abbreviates; the tails `... and check your access to
+  it, then run agentboard init --remote again` and `--remote needs an
+  empty repository, or one that holds a board` stay). The `not-a-board`
+  checkout refusal quotes its git line through the same sanitizer.
+- `init` is neither an MCP tool nor a web action, so the CLI (plain and
+  `--json`) is the only surface of these refusals.
+- Not in this group: when `init --remote` attaches a URL to an existing
+  board, or creates a board on an empty remote, and the `sync` it runs
+  then fails, the refusal is `sync`'s own (`sync-failed`, quoting git's
+  line unsanitised). By then the URL is the board's configured remote
+  ("Out of scope", configuration), but a token given as the user name
+  would still be printed by git in that line; the orchestrator files a
+  follow-up for the `sync` refusals.
+
 Audit size: 45 rows; 37 change message or hint text (rows 1-4, 6-8,
 10-17, 19-33, 36, 40-45), 8 are already compliant and are listed to show
 they were checked (rows 5, 9, 18, 34, 35 as a pointer, 37-39).
