@@ -59,6 +59,18 @@
  * the file back. Like the clock offset, the variable is read by the
  * preload only.
  *
+ * Lock gate: `startLockGated` holds N children at the moment each asks for
+ * the cache's write lock, so the lock itself is raced and not only the
+ * start. Each child preloads a module that wraps `exec` of `node:sqlite`'s
+ * `DatabaseSync` (every write lock is taken by `exec('BEGIN IMMEDIATE')`):
+ * at its first `BEGIN IMMEDIATE` the child marks itself ready and blocks
+ * until a `go` file appears, then asks for the lock. It records when it
+ * asked, when it got the lock and when that transaction ended (`COMMIT`
+ * or `ROLLBACK` returned), on `performance.timeOrigin + performance.now()`
+ * (shared by all processes and not moved by the clock preload), and writes
+ * them when it exits (`LockTimes`). The variable is read by the preload
+ * only.
+ *
  * Temporary directories made here (`boardProject`, the gate) are removed
  * after the test file (afterAll), not after each test, so one scenario can
  * be set up in `beforeAll` and asserted by several tests.
@@ -543,6 +555,133 @@ export async function runTogether(
   const opened = gated.open();
   const results = await Promise.all(gated.procs.map((p) => p.exited));
   return { results, elapsedMs: Date.now() - opened, readyAtGate: gated.readyAtGate };
+}
+
+/** Environment variable naming the lock-gate directory of a child, read by the lock-gate preload. */
+export const LOCK_GATE_ENV = 'AGENTBOARD_HARNESS_LOCK_GATE';
+
+const LOCK_GATE_MODULE = `import { existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+const dir = process.env.${LOCK_GATE_ENV};
+if (dir) {
+  const clock = () => performance.timeOrigin + performance.now();
+  const exec = DatabaseSync.prototype.exec;
+  let gated = false;
+  let open = false;
+  const times = { asked: null, acquired: null, ended: null };
+  DatabaseSync.prototype.exec = function (sql) {
+    const text = String(sql).trim().toUpperCase();
+    if (text === 'BEGIN IMMEDIATE' && !gated) {
+      gated = true;
+      writeFileSync(join(dir, 'ready-' + String(process.pid)), '');
+      const cell = new Int32Array(new SharedArrayBuffer(4));
+      while (!existsSync(join(dir, 'go'))) {
+        Atomics.wait(cell, 0, 0, 1);
+      }
+      times.asked = clock();
+      const result = exec.call(this, sql);
+      times.acquired = clock();
+      open = true;
+      return result;
+    }
+    const result = exec.call(this, sql);
+    if (open && (text === 'COMMIT' || text === 'ROLLBACK')) {
+      open = false;
+      times.ended = clock();
+    }
+    return result;
+  };
+  process.on('exit', () => {
+    writeFileSync(join(dir, 'times-' + String(process.pid) + '.json'), JSON.stringify(times));
+  });
+}
+`;
+
+let lockGateModule: string | null = null;
+
+/** Path of the lock-gate preload module, written once per test file. */
+function lockGatePath(): string {
+  if (lockGateModule === null) {
+    lockGateModule = join(scratchDir(), 'lock-gate.mjs');
+    writeFileSync(lockGateModule, LOCK_GATE_MODULE);
+  }
+  return lockGateModule;
+}
+
+/**
+ * When a lock-gated child asked for the write lock, got it and ended that
+ * transaction, in milliseconds on `performance.timeOrigin +
+ * performance.now()`; null for a step it never reached.
+ */
+export interface LockTimes {
+  asked: number | null;
+  acquired: number | null;
+  ended: number | null;
+}
+
+/** Children blocked at one lock gate (`startLockGated`). */
+export interface LockGated {
+  /** One child per invocation, in the order given. */
+  procs: CliProcess[];
+  /** Number of children blocked at the lock gate when `open` is called (all of them). */
+  readyAtLock: number;
+  /** Lets every child ask for the write lock now. */
+  open(): void;
+  /** The `LockTimes` of each child, in the order given; call after all have exited. */
+  times(): LockTimes[];
+}
+
+/**
+ * Starts every invocation in `cwd` with the lock-gate preload and resolves
+ * once all of them are blocked at their first `BEGIN IMMEDIATE`, without
+ * letting them ask for the lock. Rejects, killing them, if they are not
+ * all there within `readyTimeoutMs` (a child that exits first, for
+ * example because it refused before taking the lock, never gets there).
+ */
+export async function startLockGated(
+  invocations: readonly Invocation[],
+  cwd: string,
+  readyTimeoutMs = 30_000,
+): Promise<LockGated> {
+  const gateDir = scratchDir();
+  const nodeArgs = ['--import', pathToFileURL(lockGatePath()).href];
+  const procs = invocations.map((inv) =>
+    startCli(
+      {
+        ...inv,
+        env: { ...(inv.env ?? cliEnv()), [LOCK_GATE_ENV]: gateDir },
+      },
+      cwd,
+      nodeArgs,
+    ),
+  );
+  const readyCount = (): number =>
+    readdirSync(gateDir).filter((name) => name.startsWith('ready-')).length;
+  const deadline = Date.now() + readyTimeoutMs;
+  while (readyCount() < procs.length) {
+    if (Date.now() > deadline) {
+      await Promise.all(procs.map((p) => p.kill()));
+      throw new Error(
+        `only ${String(readyCount())} of ${String(procs.length)} reached the lock gate`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return {
+    procs,
+    readyAtLock: readyCount(),
+    open: () => {
+      writeFileSync(join(gateDir, 'go'), '');
+    },
+    times: () =>
+      procs.map(
+        (proc) =>
+          JSON.parse(
+            readFileSync(join(gateDir, `times-${String(proc.pid)}.json`), 'utf8'),
+          ) as LockTimes,
+      ),
+  };
 }
 
 /** The `AGENTBOARD_TEST_PAUSE` points (see `src/store/transaction.ts`). */

@@ -60,6 +60,13 @@ export const RUNS = 20;
 /** Generous: each scenario spawns hundreds of processes over its runs. */
 export const SCENARIO_TIMEOUT_MS = 600_000;
 
+/**
+ * The replica scenarios: each run is about thirty children and nine syncs
+ * one after another, 283-370 s for 20 runs on a loaded host, so twice the
+ * other scenarios' timeout.
+ */
+export const REPLICA_TIMEOUT_MS = 1_200_000;
+
 export const T1 = '01ARYZ6S41TSV4RRFFQ69G5FAV';
 /** `LEASE_SKEW_MS`. */
 export const SKEW = 60_000;

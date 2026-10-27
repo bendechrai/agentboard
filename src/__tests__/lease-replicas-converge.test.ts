@@ -34,7 +34,7 @@ import { canonicalDump } from './harness/host-sync.js';
 import {
   GRACE,
   RUNS,
-  SCENARIO_TIMEOUT_MS,
+  REPLICA_TIMEOUT_MS,
   SKEW,
   T1,
   TTL,
@@ -62,7 +62,7 @@ const onB = (elapsed: number): Clock => (elapsed === 0 ? null : { offset: elapse
 describe('scenario: skewed replicas converge', () => {
   it(
     `both clones fold to identical state with one file per grant (${String(RUNS)} runs)`,
-    { timeout: SCENARIO_TIMEOUT_MS },
+    { timeout: REPLICA_TIMEOUT_MS },
     async () => {
       for (let run = 1; run <= RUNS; run += 1) {
         const label = `run ${String(run)}`;

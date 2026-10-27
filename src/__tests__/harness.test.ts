@@ -19,6 +19,7 @@ import {
   runTogether,
   scratchDir,
   startCli,
+  startLockGated,
   waitForPause,
   type ProcessResult,
 } from './harness/processes.js';
@@ -126,7 +127,8 @@ describe('the multi-process harness', () => {
       {
         argv: ['new', 'Hung', '--adhoc', 'timeout', '--as', 'orch'],
         env: cliEnv({ AGENTBOARD_TEST_PAUSE: 'after-rename' }),
-        timeoutMs: 3_000,
+        // Long enough for the child to reach its pause on a loaded host.
+        timeoutMs: 10_000,
       },
       root,
     );
@@ -135,6 +137,38 @@ describe('the multi-process harness', () => {
     expect(result.signal).toBe('SIGKILL');
     expect(result.stderr).toMatch(/^agentboard: paused at after-rename /m);
   }, 30_000);
+
+  it('holds children at their first write lock request until the lock gate opens', async () => {
+    const { root, eventsDir } = boardProject();
+    expect((await runCliAsync(['list'], root)).code).toBe(0);
+    const gated = await startLockGated(
+      ['a', 'b', 'c'].map((actor) => ({
+        argv: ['new', `Gated ${actor}`, '--adhoc', 'lock gate', '--as', actor],
+      })),
+      root,
+    );
+    expect(gated.readyAtLock).toBe(3);
+    // All three are at the lock and none has written.
+    expect(readdirSync(eventsDir).filter((name) => name.endsWith('.json'))).toEqual([]);
+    expect(gated.procs.every((proc) => proc.stdout() === '')).toBe(true);
+    gated.open();
+    const results = await Promise.all(gated.procs.map((proc) => proc.exited));
+    expect(results.map((r) => r.code)).toEqual([0, 0, 0]);
+    expect(readdirSync(eventsDir).filter((name) => name.endsWith('.json'))).toHaveLength(3);
+    const times = gated.times();
+    for (const t of times) {
+      expect(t.asked).not.toBeNull();
+      expect(t.acquired ?? 0).toBeGreaterThanOrEqual(t.asked ?? Infinity);
+      expect(t.ended ?? 0).toBeGreaterThanOrEqual(t.acquired ?? Infinity);
+    }
+    // One holder at a time: the transactions do not overlap.
+    const spans = times
+      .map((t) => [t.acquired ?? 0, t.ended ?? 0] as const)
+      .sort((x, y) => x[0] - y[0]);
+    for (let n = 1; n < spans.length; n += 1) {
+      expect(spans[n]?.[0] ?? 0).toBeGreaterThanOrEqual(spans[n - 1]?.[1] ?? Infinity);
+    }
+  }, 60_000);
 
   it('logs the event files a child opens through the read-log preload', async () => {
     const { root, eventsDir } = boardProject();

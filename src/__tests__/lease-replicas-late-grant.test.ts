@@ -10,12 +10,12 @@
 import { describe, it } from 'vitest';
 
 import { lateRenewRun } from './harness/late-renew.js';
-import { RUNS, SCENARIO_TIMEOUT_MS } from './harness/leases.js';
+import { RUNS, REPLICA_TIMEOUT_MS } from './harness/leases.js';
 
 describe('scenario: renew synced late still wins', () => {
   it(
     `A's grant is rejected stale-grant on both replicas (${String(RUNS)} runs)`,
-    { timeout: SCENARIO_TIMEOUT_MS },
+    { timeout: REPLICA_TIMEOUT_MS },
     async () => {
       for (let run = 1; run <= RUNS; run += 1) {
         await lateRenewRun('grant', `run ${String(run)}`);

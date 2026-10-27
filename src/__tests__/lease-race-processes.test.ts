@@ -6,9 +6,18 @@
  * Each run seeds a fresh board as event files at walls from the real
  * clock: `holder` claims T1 with `--ttl 30m` and the default 2m grace and
  * never renews, and T1 has no waiters. The ten `claim T1 --ttl 30m` children
- * start together behind the harness's start gate, their clocks five minutes
- * ahead (the lease is claimable from the claim's wall plus 180000 ms), so
- * every one of them may take over and exactly one must. The run is
+ * run with their clocks five minutes ahead (the lease is claimable from
+ * the claim's wall plus 180000 ms), so every one of them may take over and
+ * exactly one must. They are held by the harness's lock gate
+ * (`startLockGated`) at the moment each asks for the cache's write lock,
+ * and released together, so the race is at the lock itself and not only
+ * at start-up (a start gate alone left children reaching the lock up to
+ * hundreds of milliseconds apart). Every run asserts that it was a race:
+ * at least two children asked for the lock before the first transaction
+ * ended. With one shared cache a loser is refused inside the lock before
+ * it writes, so each run writes exactly one claim file and the fold
+ * rejects nothing; "any others written are rejected" is pinned by the
+ * group 1 property test "one effective takeover per lease". The run is
  * repeated `RUNS` times, each ending with `rebuild --check` clean.
  */
 
@@ -27,11 +36,12 @@ import {
   TTL,
   cliOk,
   errorOf,
+  eventsOfKind,
   expectCheckClean,
   expectExclusionIn,
   show,
 } from './harness/leases.js';
-import { boardProject, oneDocument, runTogether } from './harness/processes.js';
+import { boardProject, oneDocument, startLockGated } from './harness/processes.js';
 
 /** How far ahead the racing children run: well past the claimable time. */
 const AHEAD = GRACE + SKEW + 120_000;
@@ -63,14 +73,23 @@ describe('scenario: ten concurrent takeovers', () => {
         // The cache exists before the race, so the race is the claims alone.
         await cliOk(['list'], root);
 
-        const { results, readyAtGate } = await runTogether(
+        const gated = await startLockGated(
           ACTORS.map((actor) => ({
             argv: ['claim', T1, '--ttl', '30m', '--as', actor, '--json'],
             clockOffsetMs: AHEAD,
           })),
           root,
         );
-        expect(readyAtGate, label).toBe(10);
+        expect(gated.readyAtLock, label).toBe(10);
+        gated.open();
+        const results = await Promise.all(gated.procs.map((p) => p.exited));
+        // A race: more than one child asked for the lock before the first
+        // transaction ended (each child's asked time is after the gate).
+        const times = gated.times();
+        const firstEnd = Math.min(...times.map((t) => t.ended ?? Infinity));
+        expect(Number.isFinite(firstEnd), label).toBe(true);
+        const contending = times.filter((t) => t.asked !== null && t.asked < firstEnd).length;
+        expect(contending, `${label}: ${JSON.stringify(times)}`).toBeGreaterThanOrEqual(2);
         expect(
           results.map((r) => r.signal),
           label,
@@ -109,16 +128,18 @@ describe('scenario: ten concurrent takeovers', () => {
         expect(ticket.assignee, label).not.toBe('holder');
         expect(ticket.queue, label).toEqual([]);
 
-        // Exactly one takeover is effective; any other written is rejected, never deleted.
+        // Exactly one takeover is effective, and the losers wrote nothing:
+        // the holder's claim and the winner's are the only claim files.
         const walk = expectExclusionIn(eventsDir);
         expect(
           walk.takeovers.map((t) => t.actor),
           label,
         ).toEqual([winner]);
         expect(
-          walk.rejected.every((r) => r.kind === 'ticket.claim' && r.reason === 'already-assigned'),
+          eventsOfKind(eventsDir, 'ticket.claim').map((c) => c.event.actor),
           label,
-        ).toBe(true);
+        ).toEqual(['holder', winner]);
+        expect(walk.rejected, label).toEqual([]);
         expect(walk.state.tickets[T1]?.assignee, label).toBe(winner);
         await expectCheckClean(root, undefined, label);
       }

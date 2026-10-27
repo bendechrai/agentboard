@@ -434,10 +434,11 @@ describe('a busy wake during a wait (group 5, from reviewer-4-1 re-check nit A)'
       await until(() => running.out.stdout.includes('queued for'), 'the queued line');
       const locker = openCache(join(boardDir, 'cache.sqlite'));
       try {
-        // Another process holds the write lock while a new event file
-        // appears, so the wake's catch-up cannot fold it: the busy timeout
-        // and its retry run out (blocking this process meanwhile, as they
-        // block the CLI's), and the wait warns and carries on.
+        // A second connection to the cache, in this same process, holds
+        // the write lock while a new event file appears, so the wake's
+        // catch-up cannot fold it: the busy timeout and its retry run out
+        // (blocking this process, the wait's and the locker's alike, since
+        // both run here), and the wait warns and carries on.
         locker.exec('BEGIN IMMEDIATE');
         putEvent(join(boardDir, 'events'), ev(P.comment(id, 'while locked'), 'remote', Date.now()));
         await until(() => running.out.stderr !== '', 'a busy warning');

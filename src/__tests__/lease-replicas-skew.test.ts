@@ -14,12 +14,13 @@
  * boundary does not depend on how long the child takes to start.
  *
  * - The command refuses with `already-assigned` and writes nothing.
- * - A takeover event crafted with that wall, naming `h`'s lease, is put in
- *   A's events directory and synced: both replicas reject it
- *   `already-assigned`, `h` keeps T1, and the rebuilt caches are identical.
- * - Within A, a takeover at E + 59999 is refused and one at exactly
- *   E + 60000 is accepted with that wall; after both sync, both replicas
- *   fold it identically.
+ * - Takeover events crafted with that wall and with E + 59999, naming
+ *   `h`'s lease, are put in A's events directory and synced: both replicas
+ *   reject both `already-assigned`, `h` keeps T1, and the rebuilt caches
+ *   are identical.
+ * - Within A, a takeover at E + 59999 is refused, writing nothing, and one
+ *   at exactly E + 60000 is accepted with that wall; after both sync, both
+ *   replicas fold it identically.
  *
  * Repeated `RUNS` times, `rebuild --check` clean on both clones after each.
  */
@@ -32,7 +33,7 @@ import { canonicalDump } from './harness/host-sync.js';
 import {
   GRACE,
   RUNS,
-  SCENARIO_TIMEOUT_MS,
+  REPLICA_TIMEOUT_MS,
   SKEW,
   T1,
   TTL,
@@ -73,7 +74,7 @@ async function expectConverged(
 describe('scenario: fast clock inside tolerance cannot steal a live lease', () => {
   it(
     `A, 59 s fast, cannot take over at real E - 1 s; within A the boundary is exact (${String(RUNS)} runs)`,
-    { timeout: SCENARIO_TIMEOUT_MS },
+    { timeout: REPLICA_TIMEOUT_MS },
     async () => {
       for (let run = 1; run <= RUNS; run += 1) {
         const label = `run ${String(run)}`;
@@ -106,30 +107,37 @@ describe('scenario: fast clock inside tolerance cannot steal a live lease', () =
         expect(errorOf(refused).message, label).toContain('assigned to h ');
         expect(eventNames(a.eventsDir), label).toEqual(before);
 
-        // The same takeover written by hand with that wall is rejected on both replicas.
-        const crafted = putEvent(
-          a.eventsDir,
-          ev(
-            {
-              kind: 'ticket.claim',
-              ticket: T1,
-              body: {
-                lease: { ttl: TTL, grace: GRACE, expiresAt: stealAt + GRACE },
-                supersedes,
+        // The same takeover written by hand with that wall is rejected on
+        // both replicas, and so is one at expiresAt + 59999, which pins the
+        // fold's boundary to the millisecond.
+        const craft = (wall: number): string =>
+          putEvent(
+            a.eventsDir,
+            ev(
+              {
+                kind: 'ticket.claim',
+                ticket: T1,
+                body: { lease: { ttl: TTL, grace: GRACE, expiresAt: wall + GRACE }, supersedes },
               },
-            },
-            'thief',
-            stealAt,
-          ),
-        );
+              'thief',
+              wall,
+            ),
+          );
+        const crafted = [craft(stealAt), craft(expiresAt + SKEW - 1)];
         await syncOk(a.root, env);
         await syncOk(b.root, env);
         await syncOk(a.root, env);
-        const rejected = [{ hash: crafted, kind: 'ticket.claim', reason: 'already-assigned' }];
+        const rejected = crafted.map((hash) => ({
+          hash,
+          kind: 'ticket.claim',
+          reason: 'already-assigned',
+        }));
         await expectConverged(clones, 'h', rejected, `${label} crafted`);
 
         // Within one machine the rule is exact: refused one millisecond
-        // before expiresAt + 60000, accepted at it, with that wall.
+        // before expiresAt + 60000, writing nothing, accepted at it, with
+        // that wall.
+        const beforeEarly = eventNames(a.eventsDir);
         const early = await cli(
           ['claim', T1, '--ttl', '30m', '--as', 'thief', '--json'],
           a.root,
@@ -138,6 +146,7 @@ describe('scenario: fast clock inside tolerance cannot steal a live lease', () =
         );
         expect(early.code, `${label}: ${early.stdout} ${early.stderr}`).toBe(4);
         expect(errorOf(early).reason, label).toBe('already-assigned');
+        expect(eventNames(a.eventsDir), label).toEqual(beforeEarly);
         const taken = await cliOk(
           ['claim', T1, '--ttl', '30m', '--as', 'thief', '--json'],
           a.root,

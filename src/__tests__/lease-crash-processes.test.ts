@@ -14,8 +14,9 @@
  * transaction commits (`AGENTBOARD_TEST_PAUSE=after-rename`), the latest a
  * process can die while its event still counts; a waiter is killed while
  * blocked in `claim --wait`. Lapses are reached by children whose clocks
- * run ahead (`clockOffsetMs`), with margins of 30 seconds or more on both
- * sides of each boundary.
+ * run ahead (`clockOffsetMs`), with margins of 30 s or more past each
+ * boundary, and the one probe between the expiry and the claimable time
+ * runs on a stopped clock (`clockFixedMs`) 30 s from each.
  */
 
 import { existsSync } from 'node:fs';
@@ -97,9 +98,11 @@ describe('scenario: holder killed while holding the lock', () => {
         const [renewEvent] = eventsOfKind(eventsDir, 'ticket.renew');
         expect(expiresAt, label).toBe((renewEvent?.event.ts.wall ?? NaN) + TTL);
 
-        // Past the expiry but 30 s short of the tolerance: refused, naming the dead holder.
+        // Past the expiry but 30 s short of the claimable time: refused,
+        // naming the dead holder. A stopped clock, so the margin on either
+        // side is 30 s however long the run takes in real time.
         const early = await cli(['claim', T1, '--ttl', '30m', '--as', 'rescuer', '--json'], root, {
-          offset: TTL + SKEW / 2,
+          at: expiresAt + SKEW / 2,
         });
         expect(early.code, `${label}: ${early.stdout} ${early.stderr}`).toBe(4);
         expect(errorOf(early).reason, label).toBe('already-assigned');
