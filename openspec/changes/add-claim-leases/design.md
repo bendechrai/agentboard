@@ -247,7 +247,22 @@ catch-up it ends on the first that applies: a grant to it (exit 0, naming
 queued, exit 4); a free ticket with an empty queue, which is what a join
 rejected after a late-synced release leaves (claim instead); otherwise
 no longer queued (exit 4 `invalid-queue`). Checking the grant before the
-deadline makes a grant due exactly at the deadline win. With `--json`
+deadline makes a grant due exactly at the deadline win. The deadline and
+the signal end the wait through one more transaction that decides after
+its own catch-up, not on the wake's reading: between the two, the slot
+time of a grant to the waiter can pass, or a release or hand-off can be
+written, and a leave refused because the actor already holds the ticket
+would otherwise report "you left the queue" from a process that holds a
+lock nobody will renew. At the deadline the waiter then ends as granted
+or handed (exit 0); on a signal it releases what it was given, so the
+next waiter is served, and says so in its exit 4. The deadline is
+measured on a monotonic clock (`performance.now`), never the wall
+clock: an NTP step back would otherwise fire the deadline timer while
+the wall clock still reads before the deadline, and a step forward would
+end the wait early; the wall clock stays the clock of catch-ups and
+events, where grant slot times are walls. A busy ending transaction is
+retried once, as the busy policy retries a command, and then exits 5
+naming `unqueue`, since the actor is still queued. With `--json`
 the waiting claim prints the queued document and then the final one, one
 per line, like `watch --json`. The library entry point is `waitForGrant`
 (`src/board/wait.ts`), with the clock, timers and directory watcher

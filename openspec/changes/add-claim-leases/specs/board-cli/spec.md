@@ -299,7 +299,10 @@ Otherwise it SHALL write a `ticket.queue.join` with the ttl (unless the
 actor is already queued), print the actor's position (the line `queued
 for <id> at position <n>, held by <holder or ->`), and block in the
 foreground on the watch machinery until the wait ends. The deadline SHALL
-be the local clock read when the wait starts plus the timeout. While it
+be a monotonic clock read when the wait starts plus the timeout, and
+whether it has passed SHALL be decided on that monotonic clock alone, so
+a wall clock stepped back or forward neither delays nor advances it (the
+wall clock is still the clock of every catch-up and event). While it
 blocks it SHALL wake only on a change notification for the events
 directory, on the watch machinery's polling interval, at exactly the
 cache's grant watermark (the next time a grant is due, see board-cache
@@ -316,18 +319,37 @@ first of these that applies ends the wait:
 2. the actor has otherwise become the assignee (a hand-off or assign to a
    waiter): it SHALL exit 0 as a retried claim does (`already claimed by
    <actor>`), writing nothing;
-3. at the deadline, or on SIGINT or SIGTERM: it SHALL write
-   `ticket.queue.leave` when the actor is still queued (and nothing
-   otherwise) and exit 4 with reason `wait-timeout` at the deadline and
-   `wait-interrupted` on a signal. A grant due at the deadline itself is
-   therefore written and wins. An interrupted wait never exits 0 unless
-   it holds the ticket, because exit 0 means the actor holds it and a
-   script may go on to the critical step; the signal handlers SHALL be in
-   place before the join is written;
+3. at the deadline, or on SIGINT or SIGTERM: it SHALL end with one more
+   transaction that decides after its own catch-up, since that catch-up
+   can write a grant to the actor, or fold a hand-off to it, that the
+   wake did not see. When the actor is then the assignee, at the deadline
+   it SHALL write nothing and end as in 1 or 2 (exit 0: it holds the
+   ticket and must renew), and on a signal it SHALL write a plain
+   `ticket.release` (so the next waiter is granted) and exit 4 with
+   reason `wait-interrupted` and the message `the wait for ticket <id>
+   was interrupted after the ticket was given to you; you released it,
+   so it passes to the next waiter` (also in the `--json` error
+   document). When the actor is still queued it SHALL write
+   `ticket.queue.leave`, and otherwise (it left the queue elsewhere
+   meanwhile) nothing, and exit 4 with reason `wait-timeout` at the
+   deadline and `wait-interrupted` on a signal. A refused leave is never
+   ignored. When that transaction fails with exit 5 `busy` it SHALL be
+   attempted once more (the busy timeout and one retry), and when that
+   fails too it SHALL exit 5 with reason `busy` and a message naming
+   `agentboard unqueue <id> --as <actor>`, the actor still queued. A
+   grant due at the deadline itself is therefore written and wins. The
+   wait never exits non-zero while the actor holds the ticket, and an
+   interrupted wait never exits 0 unless it holds the ticket, because
+   exit 0 means the actor holds it and a script may go on to the
+   critical step. The signal handlers SHALL be in place before the join
+   is written and removed when the command returns, and the wait SHALL
+   leave no abort listener, timer or watcher behind;
 4. the actor is neither queued nor the assignee and the ticket is
    unassigned with no waiters (its join was rejected because the ticket
    became free, for example a release from another machine with an
-   earlier wall arrived through `sync`): it SHALL claim instead, as `claim
+   earlier wall arrived through `sync`): it SHALL claim instead (and when
+   that claim finds the ticket taken meanwhile and joins, the wait goes
+   on), as `claim
    --ttl`, and exit 0;
 5. the actor is neither queued nor the assignee otherwise (it left the
    queue from another command, or a grant to it lapsed and passed on): it
@@ -346,7 +368,10 @@ MCP"), and `runCli` refuses a `claim --wait --timeout` that passed
 validation with exit 1 `streaming-command`.
 
 `--wait` SHALL require `--ttl` and, on the CLI, `--timeout` (1 to 5
-digits and `s`, `m`, `h` or `d`, at most 1 day); otherwise it SHALL exit 1 with reason `usage`. A refused `--timeout` SHALL
+digits and `s`, `m`, `h` or `d`, at most 1 day), checked in the same
+order on every path (`--ttl`, then `--timeout`, then `--wait` without
+`--ttl`), so the same invalid arguments give the same first error from
+the executable and from the in-process `runCli`; otherwise it SHALL exit 1 with reason `usage`. A refused `--timeout` SHALL
 exit 1 with reason `usage` and the message `invalid --timeout: a timeout
 is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 1s to 1d`,
 which names the form and never repeats the value given. `unqueue <id> --as
@@ -388,6 +413,30 @@ which names the form and never repeats the value given. `unqueue <id> --as
 #### Scenario: Join rejected because the ticket became free
 - **WHEN** `merger-2` is waiting on T1 and a release by the holder with a wall earlier than `merger-2`'s join arrives late, so the join is rejected and T1 is free with no waiters
 - **THEN** the waiting command claims T1 with its ttl and exits 0
+
+#### Scenario: Grant written by the leave at the deadline
+- **WHEN** a waiter reaches its deadline still queued and the transaction that would leave the queue finds, after its own catch-up, a grant to the waiter (its slot time passed, or the holder released, in between)
+- **THEN** it writes no leave and exits 0 granted, naming `agentboard renew T1` and the acceptance deadline
+
+#### Scenario: Hand-off racing the deadline
+- **WHEN** `merger-1` hands T1 to the waiting `merger-2` just as `merger-2`'s deadline passes, so only the ending transaction's catch-up sees it
+- **THEN** `merger-2` writes nothing and exits 0 as a retried claim, holding T1
+
+#### Scenario: Grant or hand-off racing an interrupt
+- **WHEN** a waiter receives SIGINT or SIGTERM and the ending transaction's catch-up finds T1 granted or handed to it
+- **THEN** it writes a `ticket.release` (so the next waiter is granted), exits 4 with reason `wait-interrupted`, and its message says it released the ticket it was given
+
+#### Scenario: Unqueue racing the deadline
+- **WHEN** the waiter's actor runs `unqueue T1` elsewhere just as the waiter's deadline passes
+- **THEN** the waiter writes nothing more and exits 4 with reason `wait-timeout`
+
+#### Scenario: Busy leave
+- **WHEN** the transaction that ends a wait fails with exit 5 `busy`
+- **THEN** it is attempted once more; when that succeeds the wait ends as usual, and when it fails too the command exits 5 with reason `busy`, the actor still queued, and the message names `agentboard unqueue T1 --as <actor>`
+
+#### Scenario: Wall clock stepped during a wait
+- **WHEN** the wall clock is stepped back or forward by an hour while a waiter with `--timeout 30s` waits
+- **THEN** it times out 30 seconds after it started, by the monotonic clock
 
 #### Scenario: Waiter no longer queued
 - **WHEN** `merger-2` is waiting on T1, still held by `merger-1`, and `unqueue T1 --as merger-2` runs from another shell
@@ -497,7 +546,9 @@ the same `--wait` form. The `holder-changed`, `invalid-queue` and
 from `renew` SHALL hint `agentboard show <id>` and say the lock was lost.
 `wait-timeout` SHALL hint `agentboard inbox --as <actor>`.
 `wait-interrupted` SHALL say the actor left the queue and name the same
-`--wait` form to wait again.
+`--wait` form to wait again. `busy` from `claim` SHALL say that a waiting
+actor is still in the queue and name `agentboard unqueue <id> --as
+<actor>`.
 
 #### Scenario: Hint for a live lease
 - **WHEN** `claim T1 --as merger-2` is refused because `merger-1` holds a live lease
