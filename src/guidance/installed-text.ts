@@ -19,7 +19,9 @@
  * this module changes (not on every package release). Written into every
  * installed artifact's marker and compared by `agents check`. Version 2
  * adds the ad hoc rule (add-adhoc-ticket-lifecycle), so `agents check`
- * reports a version 1 installation `stale`.
+ * reports a version 1 installation `stale`. Version 3 adds the mutex
+ * recipe (add-claim-leases, board-agent-guidance: "Mutex ticket recipe"),
+ * so a version 2 installation is `stale`: this constant is 3.
  */
 export const GUIDANCE_VERSION = 2;
 
@@ -96,7 +98,11 @@ export function skillMarker(version: number): string {
  * `version` (default `GUIDANCE_VERSION`): YAML frontmatter (`name:
  * agentboard` and `SKILL_DESCRIPTION`), which Claude Code requires at the
  * very top, then the marker line `skillMarker(version)`, then the intro,
- * the rules and the pointer. Ends with one newline. Pure.
+ * the rules, a section headed `## Mutex tickets` with the short mutex
+ * recipe (board-agent-guidance: "Mutex ticket recipe": the worker rules and
+ * the backticked claim with `--ttl`, renew, claim with `--ttl --wait
+ * --timeout` and release commands, each with `--as <you>`), and the
+ * pointer. At most 45 lines. Ends with one newline. Pure.
  */
 export function renderSkill(version: number = GUIDANCE_VERSION): string {
   return `${[
@@ -133,7 +139,10 @@ export const BLOCK_END = '<!-- agentboard:end -->';
 
 /**
  * The managed AGENTS.md block for guidance version `version` (default
- * `GUIDANCE_VERSION`): from the first byte of `blockStart(version)` to the
+ * `GUIDANCE_VERSION`), with the intro, the rules, a paragraph introduced
+ * by the line `Mutex tickets:` holding the same short mutex recipe as the
+ * skill, and the pointer, at most 40 lines: from the first byte of
+ * `blockStart(version)` to the
  * last byte of `BLOCK_END`, lines joined by `\n`, with NO trailing newline
  * (the installer owns the markers and what lies between them, not the line
  * break after the end marker). Pure.

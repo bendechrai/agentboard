@@ -50,7 +50,15 @@ function describeClose(body: TicketCloseBody): string {
  * - `ticket.create`: `created <title>`
  * - `ticket.comment`: `commented: <text>`
  * - `ticket.move`: `moved to <to>`
- * - `ticket.claim`: `claimed`
+ * - `ticket.claim`: `took over from <supersedes.holder> (lease expired)`
+ *   when the body has `supersedes` (with or without a lease); else
+ *   `claimed (lease <ttl>)` when it has a `lease`, with `lease.ttl` (the
+ *   requested ttl, never the grace); else `claimed`
+ * - `ticket.renew`: `renewed lease (<ttl>)`
+ * - `ticket.queue.join`: `joined the queue`
+ * - `ticket.queue.leave`: `left the queue`
+ * - `ticket.grant`: `granted to <to> (accept within <window>)`
+ * - `ticket.release.force`: `force-released from <holder>: <reason>`
  * - `ticket.release`: `released`
  * - `ticket.assign`: `assigned to <to>`
  * - `ticket.handoff`: `handed off to <to> (<status>): <note>`
@@ -74,6 +82,12 @@ function describeClose(body: TicketCloseBody): string {
  * - `ticket.supersede`: `superseded: <reason>`
  * - `board.meta`: `set <key>`
  * - a kind this version does not define: `unknown kind <kind>`
+ *
+ * A `<ttl>` or `<window>` (milliseconds) is written in the largest unit of
+ * `d`, `h`, `m` and `s` that divides it exactly, else in `ms`: 90000 is
+ * `90s`, 600000 `10m`, 7200000 `2h`, 604800000 `7d`, 30500 `30500ms` (the
+ * rule of `formatDuration` in `src/board/leases.ts`; this module must stay
+ * browser-safe).
  *
  * Text taken from the event (title, comment text, note, actor names,
  * paths, keys) is inserted verbatim, except that every line break (each

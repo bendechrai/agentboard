@@ -126,7 +126,29 @@ export const GUIDE_MAX_LINES = 180;
  *    `--change` and `--group`, `new` with `--adhoc`, `move <id> merged`
  *    with `--unplanned`, `link` with `--task` (a ticket linked earlier
  *    needs nothing more at merge), `import-change` and `claim`.
- * 8. `Using the MCP tools`: when the board's MCP server is connected, use
+ * 8. `Mutex tickets` (board-agent-guidance: "Mutex ticket recipe"): one
+ *    standing ad hoc ticket per lock, never closed while the lock is in
+ *    use; acquire with a `claim` command line with `--ttl`, then `renew` as
+ *    the first action of real work (an unconfirmed claim lapses after the
+ *    grace period), a ttl longer than the critical section, renewing at
+ *    about half the ttl and before the critical step, stopping when `renew`
+ *    fails with `not-assignee`; `release` when done, including on failure;
+ *    the worker rules (never wait on a mutex in a loop, never claim from a
+ *    background process; wait in the foreground, CLI only, with a `claim`
+ *    command line with `--ttl`, `--wait` and `--timeout`, and renew on
+ *    return, or report ready and stop; over MCP `board_claim` with `wait`
+ *    only joins the queue and the grant arrives in `board_inbox`); the
+ *    orchestrator rules (the queue runner of a merge-style mutex,
+ *    dispatching one holder at a time and the next only when the ticket is
+ *    released or the holder's lease lapses; `queue.window` and
+ *    `lease.grace` with a `config set` command line; a stale hold waits for
+ *    the lease to lapse or gets a `release` command line with `--force` and
+ *    `--reason` after checking the holder is gone, never by impersonating
+ *    the holder with `--as`); across machines the lock is only as strong as
+ *    `sync` (sync before claiming and before the critical step), within one
+ *    machine it is exact. The phrases the spec delta lists appear with line
+ *    breaks read as spaces, ignoring case.
+ * 9. `Using the MCP tools`: when the board's MCP server is connected, use
  *    its tools instead of the shell: one tool per command named `board_`
  *    plus the command with spaces and hyphens as underscores (for example
  *    `board_claim`, `board_checklist_tick`), the same arguments without
@@ -139,7 +161,7 @@ export const GUIDE_MAX_LINES = 180;
  *    tools. It names
  *    at least `board_claim`, `board_inbox`, `board_handoff` and
  *    `board_checklist_tick`.
- * 9. `Exit codes and hints`: one line per exit code 0 to 5, each written
+ * 10. `Exit codes and hints`: one line per exit code 0 to 5, each written
  *    `  <code>  <meaning>` (two spaces, the digit, at least two spaces),
  *    agreeing with board-cli "Exit codes" and README.md: 0 success; 1 usage
  *    error, missing actor or refused text or close disposition; 2 board not
@@ -162,6 +184,7 @@ export const GUIDE_SECTIONS: readonly string[] = [
   'Handing off and blocking',
   'Decisions and closing',
   'Tickets and planning tasks',
+  'Mutex tickets',
   'Using the MCP tools',
   'Exit codes and hints',
 ];
@@ -212,6 +235,9 @@ export function renderGuide(version: string): string {
  *   saying to give the scope disposition of an ad hoc ticket when merging
  *   or closing it (the words `ad hoc`, `--task` and `--unplanned` appear;
  *   board-agent-guidance "Agent guide").
+ * - `orchestrator` also has a queue-runner step for mutex tickets (the
+ *   words `mutex`, `queue runner` and `one holder at a time` appear in it,
+ *   read with line breaks as spaces).
  * - `test-author`: claim, move to `tests`, write failing tests and stubs,
  *   hand off to the implementer with `--status implementing`.
  * - `implementer`: claim (or accept the handoff), make the tests pass
@@ -222,6 +248,12 @@ export function renderGuide(version: string): string {
  * - `reviewer`: claim, review against the spec, send back with
  *   `--status implementing` (or `tests`) and a note, or approve and link
  *   the pull request (`agentboard link <id> --pr <pr> --as <actor>`).
+ * - `test-author`, `implementer` and `reviewer` each have a worker step for
+ *   mutex tickets (the words `mutex`, `in a loop`, `background process`
+ *   and `report ready` appear in it, read with line breaks as spaces).
+ *
+ * The orchestrator output (guide plus checklist) is the longest and stays
+ * within `GUIDE_MAX_LINES`.
  *
  * Plain ASCII, no trailing spaces, ends with one newline. Pure.
  */
@@ -328,6 +360,11 @@ export const GUIDE_SUMMARY_MAX_CHARS = 2000;
  *   text that looks like one is refused.
  * - Errors: a failed call returns `exitCode`, `reason`, `message` and
  *   `hint`, and the hint names what to do next.
+ * - Mutex tickets, in one or two sentences: never wait on a mutex in a
+ *   loop or claim one from a background process; `board_claim` with `wait`
+ *   only joins the queue and the grant arrives in `board_inbox` (the
+ *   phrases `never wait on a mutex`, `in a loop`, `background process` and
+ *   `only joins the queue` appear, read with line breaks as spaces).
  * - Role checklists: the text `agentboard://guide/<role>` names the
  *   checklist resources, with the four roles.
  * - It never names the task-link refusal ADR 0013 removed and never says
