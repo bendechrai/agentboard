@@ -2130,7 +2130,7 @@ argument and `agentboard mcp --as <actor>`.
 `agentboard mcp` serves the board to MCP clients over stdio, with one tool
 per command, named `board_<command>` with spaces and hyphens turned into
 underscores: `board_new`, `board_show`, `board_list`, `board_claim`,
-`board_release`, `board_move`, `board_comment`, `board_handoff`,
+`board_renew`, `board_release`, `board_move`, `board_comment`, `board_handoff`,
 `board_link`, `board_checklist_tick`, `board_checklist_untick`,
 `board_close`, `board_inbox`, `board_import_change`,
 `board_close_merged` and `board_health`. `init`, `watch`, `serve`, `top`, `rebuild`, `sync`,

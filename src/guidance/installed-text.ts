@@ -76,7 +76,7 @@ const POINTER: readonly string[] = [
  * Paragraph shared by the skill and the AGENTS.md block: the short mutex
  * recipe (board-agent-guidance: "Mutex ticket recipe"). Every command is in
  * backticks with `--as <you>`, so the drift guard parses it; the only tools
- * it names are `board_claim` and `board_inbox`.
+ * it names are `board_claim`, `board_inbox` and `board_renew`.
  */
 const MUTEX_RECIPE: readonly string[] = [
   'A mutex (a merge lock, say) is one standing ad hoc ticket, never closed',
@@ -89,7 +89,7 @@ const MUTEX_RECIPE: readonly string[] = [
   '`agentboard claim <id> --ttl 30m --wait --timeout 10m --as <you>` and renew',
   'on return, or report ready to the orchestrator and stop. Over MCP,',
   '`board_claim` with `wait` only joins the queue; the grant arrives in',
-  '`board_inbox`.',
+  '`board_inbox` and is accepted with `board_renew` within the accept window.',
 ];
 
 /** The rules as a numbered Markdown list, one line per rule. */

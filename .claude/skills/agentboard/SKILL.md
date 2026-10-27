@@ -33,7 +33,7 @@ never claim one from a background process: wait in the foreground with
 `agentboard claim <id> --ttl 30m --wait --timeout 10m --as <you>` and renew
 on return, or report ready to the orchestrator and stop. Over MCP,
 `board_claim` with `wait` only joins the queue; the grant arrives in
-`board_inbox`.
+`board_inbox` and is accepted with `board_renew` within the accept window.
 
 ## Everything else
 

@@ -98,7 +98,7 @@ function describeClose(body: TicketCloseBody): string {
  * A `<ttl>` or `<window>` (milliseconds) is written in the largest unit of
  * `d`, `h`, `m` and `s` that divides it exactly, else in `ms`: 90000 is
  * `90s`, 600000 `10m`, 7200000 `2h`, 604800000 `7d`, 30500 `30500ms` (the
- * rule of `formatDuration` in `src/board/leases.ts`; this module must stay
+ * rule of `formatDuration` in `src/view/time.ts`; this module must stay
  * browser-safe).
  *
  * Text taken from the event (title, comment text, note, actor names,
