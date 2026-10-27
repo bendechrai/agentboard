@@ -162,6 +162,25 @@ const SOURCE_RECORD = 'agentboard-source';
 const HEAD_RECORD = 'agentboard-source-head';
 
 /**
+ * The file in a temporary worktree's git directory that records the
+ * source tip the worktree has integrated: the full object name and a
+ * newline of the value `MIGRATING_REF` is set to for it. Written right
+ * after `HEAD_RECORD` (the worktree is checked out at that value),
+ * rewritten whenever the move advances `MIGRATING_REF` for this worktree
+ * (after the replay of what reached the board since), and written on
+ * adoption when the worktree lacks it, with the value it was judged by.
+ * It exists because `MIGRATING_REF` is one ref for the whole host: a
+ * worktree whose pid looks alive is skipped by a run, which makes its own
+ * worktree and sets the ref, so once that pid is dead a later run would
+ * judge the older worktree against the newer one's tip (review round 2).
+ * Read by the rules of `HEAD_RECORD`; a worktree without it (made before
+ * the record existed) is judged against `MIGRATING_REF` only when it is
+ * the only entry under `migrating/` before the run removes any leftover,
+ * else it is not adoptable (see `belongsToBoard`).
+ */
+const TIP_RECORD = 'agentboard-source-tip';
+
+/**
  * The file in a temporary worktree's git directory that records a replay
  * in progress (round 4 ruling 2): its two lines are the worktree's HEAD
  * when the `cherry-pick` started and the tip of `MIGRATING_FETCH_REF` it
@@ -788,15 +807,22 @@ export interface IntoHostResult extends InitResult {
  * an ancestor of, or equal to, that repository's HEAD (the test of step
  * 6, so a board replaced at the same path even where the file system
  * reuses the inode, or one whose history was rewritten since, is another
- * board) and the tip it integrated (`MIGRATING_REF`) is an ancestor of,
+ * board) and the tip it integrated, recorded in its own file
+ * `agentboard-source-tip` (the value `MIGRATING_REF` was set to for it,
+ * rewritten when the move advances the ref for it), is an ancestor of,
  * or equal to, the repository's source tip (so a remote force-reset past
  * what the temporary integrated, or a replacement forked from the board
  * at or after the recorded HEAD, is another board too); a recorded HEAD
- * that is not a full object name, that the repository lacks or that
- * cannot be read counts as not an ancestor. Both records are written
- * atomically (a temporary file in the git directory renamed onto the
- * record), at step 3 and when an adopted temporary gains the ones it
- * lacks. One of another board is never adopted: without rebase
+ * or tip that is not a full object name, that the repository lacks or
+ * that cannot be read counts as not an ancestor. A temporary without a
+ * tip record (made before the record existed) is judged against the
+ * shared `MIGRATING_REF` only when it is the only entry under
+ * `migrating/` before the run removes any leftover, else it is not
+ * adoptable, because another run may have set the ref while this one's
+ * pid looked alive. All three records are written atomically (a
+ * temporary file in the git directory renamed onto the record), at step
+ * 3 and when an adopted temporary gains the ones it lacks. One of another
+ * board is never adopted: without rebase
  * or cherry-pick state it is removed like a dead leftover and the message
  * names it, saying it was left by a move of another board (not the one at
  * `dir`, or one whose history no longer holds where that move began);
@@ -1378,8 +1404,20 @@ function lockedMove(
   // removed, one left by a move of another board is removed, and a
   // finished rebase of this board is adopted.
   const board = gitRunner(dir, { env });
+  // Every entry under `migrating/` before this run removes any leftover: a
+  // temporary without a `TIP_RECORD` is judged against the shared
+  // `MIGRATING_REF` only when it is the only one, since a leftover of any
+  // kind may be the one that last set the ref.
+  const entriesBefore = findMigratingWorktrees(hostRoot, { env }).map((w) => w.path);
   const belongs = (path: string): boolean =>
-    belongsToBoard(host, board, path, plan, refValue(host, MIGRATING_REF));
+    belongsToBoard(
+      host,
+      board,
+      path,
+      plan,
+      refValue(host, MIGRATING_REF),
+      entriesBefore.length === 1 && entriesBefore[0] === path,
+    );
   for (const interrupted of findMigratingWorktrees(hostRoot, { env }).filter(
     (w) =>
       dead(w) &&
@@ -1427,8 +1465,11 @@ function lockedMove(
       if (!sourceRecord(host, candidate.path).present) {
         writeRecord(host, candidate.path, SOURCE_RECORD, plan.gitDir ?? '');
       }
-      if (!headRecord(host, candidate.path, plan.head.length).present) {
+      if (!nameRecord(host, candidate.path, HEAD_RECORD, plan.head.length).present) {
         writeRecord(host, candidate.path, HEAD_RECORD, `${plan.head}\n`);
+      }
+      if (!nameRecord(host, candidate.path, TIP_RECORD, plan.head.length).present) {
+        writeRecord(host, candidate.path, TIP_RECORD, `${oldSource}\n`);
       }
     } else {
       removeLeftoverWorktree(host, candidate.path);
@@ -1480,6 +1521,7 @@ function lockedMove(
     }
     writeRecord(host, temp, SOURCE_RECORD, plan.gitDir ?? '');
     writeRecord(host, temp, HEAD_RECORD, `${plan.head}\n`);
+    writeRecord(host, temp, TIP_RECORD, `${refValue(host, MIGRATING_REF)}\n`);
   } else {
     temp = adoptable.path;
   }
@@ -1512,6 +1554,9 @@ function lockedMove(
       replayFreshCommits(host, worktree, dir, temp, integrated, fresh);
     }
     host.run('update-ref', MIGRATING_REF, fresh);
+    // The tip the worktree has integrated is now `fresh`: the record
+    // follows the ref, so a later run judges this worktree by its own tip.
+    writeRecord(host, temp, TIP_RECORD, `${fresh}\n`);
     removeRecord(host, temp, REPLAY_RECORD);
   }
   const old = refValue(host, BOARD_REF);
@@ -1933,22 +1978,33 @@ function stoppedInTemporary(
  *
  * A `SOURCE_RECORD` that cannot be read equals no identity, so the
  * worktree is another board's in both rows that have one.
+ *
+ * The tip the worktree integrated is what its `TIP_RECORD` names (a
+ * present but malformed or unreadable record names none, so the check
+ * fails). A worktree without the record, made before the record existed,
+ * has only the shared `MIGRATING_REF` (`sharedTip`) to go by, and that is
+ * its own tip only when it is the only entry under `migrating/` (`alone`:
+ * nothing else can have set the ref since it was made); beside any other
+ * entry its tip is unknown and it is not adoptable.
  */
 function belongsToBoard(
   host: GitRunner,
   board: GitRunner,
   path: string,
   plan: MovePlan,
-  integrated: string,
+  sharedTip: string,
+  alone: boolean,
 ): boolean {
   const record = sourceRecord(host, path);
+  if (record.present && record.identity !== (plan.gitDir ?? '')) {
+    return false;
+  }
+  const tip = nameRecord(host, path, TIP_RECORD, plan.head.length);
+  const integrated = tip.present ? tip.name : alone ? sharedTip : null;
   if (!record.present) {
     return integratedTipInBoard(board, plan, integrated);
   }
-  if (record.identity !== (plan.gitDir ?? '')) {
-    return false;
-  }
-  const head = headRecord(host, path, plan.head.length);
+  const head = nameRecord(host, path, HEAD_RECORD, plan.head.length);
   if (!head.present) {
     return integratedTipInBoard(board, plan, integrated);
   }
@@ -1959,9 +2015,13 @@ function belongsToBoard(
   );
 }
 
-/** Round 5 ruling 5: whether the tip a temporary integrated is an ancestor of, or equal to, the board's source tip. */
-function integratedTipInBoard(board: GitRunner, plan: MovePlan, integrated: string): boolean {
-  return integrated !== '' && isAncestor(board, integrated, plan.sourceTip);
+/**
+ * Round 5 ruling 5 and test 3: whether `integrated`, the tip a temporary
+ * integrated, is an ancestor of, or equal to, the board's source tip;
+ * false when the tip is unknown (null or empty), so no git command runs.
+ */
+function integratedTipInBoard(board: GitRunner, plan: MovePlan, integrated: string | null): boolean {
+  return integrated !== null && integrated !== '' && isAncestor(board, integrated, plan.sourceTip);
 }
 
 /**
@@ -1987,27 +2047,28 @@ function sourceRecord(
 }
 
 /**
- * The `HEAD_RECORD` of the temporary worktree at `path`: absent, or
- * present with `name` the recorded HEAD when it is well formed and null
- * when it is not. Well formed is the file's content, with at most one
- * trailing newline removed, being exactly `hashLength` lowercase
- * hexadecimal digits (a full object name of the board's hash algorithm):
- * an abbreviated name, a ref name, a revision expression, a second line or
- * a file that cannot be read is malformed, and never reaches a git
- * command.
+ * The record `record` (`HEAD_RECORD` or `TIP_RECORD`) of the temporary
+ * worktree at `path`: absent, or present with `name` the recorded object
+ * name when it is well formed and null when it is not. Well formed is the
+ * file's content, with at most one trailing newline removed, being
+ * exactly `hashLength` lowercase hexadecimal digits (a full object name
+ * of the board's hash algorithm): an abbreviated name, a ref name, a
+ * revision expression, a second line or a file that cannot be read is
+ * malformed, and never reaches a git command.
  */
-function headRecord(
+function nameRecord(
   host: GitRunner,
   path: string,
+  record: string,
   hashLength: number,
 ): { present: false } | { present: true; name: string | null } {
   const gitDir = worktreeGitDir(host, path);
-  if (gitDir === null || !existsSync(join(gitDir, HEAD_RECORD))) {
+  if (gitDir === null || !existsSync(join(gitDir, record))) {
     return { present: false };
   }
   let content: string;
   try {
-    content = readFileSync(join(gitDir, HEAD_RECORD), 'utf8');
+    content = readFileSync(join(gitDir, record), 'utf8');
   } catch {
     return { present: true, name: null };
   }
