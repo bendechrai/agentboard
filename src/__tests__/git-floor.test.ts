@@ -47,7 +47,8 @@ const FLOOR = `${String(HOST_MODEL_GIT_FLOOR.major)}.${String(HOST_MODEL_GIT_FLO
 /**
  * The sharing test files that `SHARING_TESTS` must name, relative to the
  * repository root: every test file of groups 1 to 5 that runs git on a
- * board, the `init --remote` no-echo tests (no-echo-refusals group 2),
+ * board, the no-echo tests of `init --remote` and of git lines quoted
+ * from remote commands (no-echo-refusals group 2),
  * plus this file.
  */
 const REQUIRED_SHARING_TESTS = [
@@ -60,6 +61,7 @@ const REQUIRED_SHARING_TESTS = [
   'src/board/__tests__/standalone-sync-fixture.test.ts',
   'src/board/__tests__/init-remote.test.ts',
   'src/board/__tests__/init-remote-no-echo.test.ts',
+  'src/board/__tests__/remote-line-no-echo.test.ts',
   'src/board/__tests__/into-host.test.ts',
   'src/board/__tests__/remote.test.ts',
   'src/cli/__tests__/init-cli.test.ts',
@@ -67,6 +69,7 @@ const REQUIRED_SHARING_TESTS = [
   'src/cli/__tests__/host-sync-cli.test.ts',
   'src/cli/__tests__/init-remote-cli.test.ts',
   'src/cli/__tests__/init-remote-no-echo-cli.test.ts',
+  'src/cli/__tests__/sync-no-echo-cli.test.ts',
   'src/cli/__tests__/into-host-cli.test.ts',
   'src/cli/__tests__/remote-cli.test.ts',
   'src/__tests__/host-sync-clones.test.ts',

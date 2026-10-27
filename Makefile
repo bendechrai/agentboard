@@ -33,6 +33,7 @@ SHARING_TESTS := \
 	src/board/__tests__/standalone-sync-fixture.test.ts \
 	src/board/__tests__/init-remote.test.ts \
 	src/board/__tests__/init-remote-no-echo.test.ts \
+	src/board/__tests__/remote-line-no-echo.test.ts \
 	src/board/__tests__/into-host.test.ts \
 	src/board/__tests__/remote.test.ts \
 	src/cli/__tests__/init-cli.test.ts \
@@ -40,6 +41,7 @@ SHARING_TESTS := \
 	src/cli/__tests__/host-sync-cli.test.ts \
 	src/cli/__tests__/init-remote-cli.test.ts \
 	src/cli/__tests__/init-remote-no-echo-cli.test.ts \
+	src/cli/__tests__/sync-no-echo-cli.test.ts \
 	src/cli/__tests__/into-host-cli.test.ts \
 	src/cli/__tests__/remote-cli.test.ts \
 	src/__tests__/host-sync-clones.test.ts \
