@@ -61,7 +61,7 @@ many processes opening a board with no cache at once all succeed.
 
 #### Scenario: Upgrade delivers an event the old version did not apply
 - **WHEN** a 0.2.0 cache recorded a `ticket.supersede` event as an unknown kind, an actor's cursor is more than an hour of event time past it, and this version runs `inbox --as` that actor
-- **THEN** the returned events include the `ticket.supersede` event, and no event sorting before it that the actor was already given is returned
+- **THEN** the returned events include the `ticket.supersede` event, and no event that the actor was already given is returned when it sorts before the greatest effective event preceding the `ticket.supersede` and is more than an hour of event time before that event
 
 #### Scenario: Upgrade delivers an event the old cache had not recorded
 - **WHEN** an event file with a timestamp more than an hour before an actor's cursor is added to `events/` after the 0.2.0 cache last caught up, and this version runs `inbox --as` that actor
