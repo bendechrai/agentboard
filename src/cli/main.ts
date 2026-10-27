@@ -394,7 +394,13 @@ function argvActor(argv: readonly string[]): string | undefined {
  * `runCli` for the executable (`src/cli.ts`): identical to `runCli`, with
  * the same output and exit codes, for every command without `stream`.
  *
- * For a streaming command (`watch`, `serve`, `top`): steps 1 and 2 of
+ * A command streams when it has `stream` and either has no `streams`
+ * predicate or `streams(values)` is true for the parsed values (`claim`
+ * streams only with `--wait`); a command that does not stream is run
+ * exactly as `runCli` runs it, without asking for a stop signal.
+ *
+ * For a streaming command (`watch`, `serve`, `top`, `claim --wait`):
+ * steps 1 and 2 of
  * `runCli` (parse, resolve the actor; failures exit 1 before any board
  * lookup), then, for a command whose spec has `terminal` true (`top`)
  * only, `terminal = await io.terminal?.()`, then `io.stopSignal()`, then
@@ -424,7 +430,7 @@ export async function runCliAsync(io: AsyncCliIo): Promise<ExitCode> {
     return runCli(io);
   }
   const { command, values } = parsed;
-  if (command.stream === undefined) {
+  if (command.stream === undefined || command.streams?.(values) === false) {
     return runCli(io);
   }
   const opened = cliBoard(io);

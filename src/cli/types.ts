@@ -337,4 +337,13 @@ export interface CommandSpec {
    * synchronous `runCli`, throws `BoardError(1, 'streaming-command')`.
    */
   stream?(ctx: RunContext, values: ArgValues, io: StreamIo): Promise<void>;
+  /**
+   * For a command that streams only with some arguments (`claim`, which
+   * blocks only with `--wait`): `runCliAsync` calls `stream` when this
+   * returns true for the parsed values, and otherwise behaves exactly as
+   * `runCli` (calling `run`, never asking for a stop signal). Absent, a
+   * command with `stream` always streams (`watch`, `serve`, `top`).
+   * Present only together with `stream`.
+   */
+  streams?(values: ArgValues): boolean;
 }

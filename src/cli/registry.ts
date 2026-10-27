@@ -19,8 +19,10 @@ import {
   scopeDispositionFromArgs,
   setChecklistItem,
   unqueueTicket,
+  type ClaimedOutcome,
   type DispositionArgs,
   type LinkTarget,
+  type QueuedOutcome,
 } from '../board/actions.js';
 import { SETTING_KEYS, getConfig, setConfig } from '../board/config.js';
 import { formatDuration, isoTime, parseSetting, parseTimeout, parseTtl } from '../board/leases.js';
@@ -38,6 +40,7 @@ import { TASK_RULE } from '../board/text.js';
 import { parseTaskFilter, taskRefFromArgs, type TaskFilter } from '../board/resolve.js';
 import { listTickets, newTicket, showRaw, showTicket } from '../board/tickets.js';
 import type { WriteOutcome } from '../board/types.js';
+import { waitForGrant } from '../board/wait.js';
 import { watchInbox } from '../board/watch.js';
 import { STATUSES, type Status } from '../events/schema.js';
 import { existsSync } from 'node:fs';
@@ -400,6 +403,28 @@ function written(outcome: WriteOutcome, before = '', after = ''): CommandOutput 
   return { json: outcome, text: `${before}${line}\n${after}` };
 }
 
+/** The human line of a `claim --wait` that joined or found itself queued. */
+function queuedLine(out: QueuedOutcome): string {
+  return `queued for ${out.ticket} at position ${String(out.position)}, held by ${out.holder === null ? '-' : asciiText(out.holder)}\n`;
+}
+
+/**
+ * The output of a claim that holds the ticket: a retried claim says so, a
+ * claim with a lease names the `renew` that confirms it and by when.
+ */
+function claimedOutput(out: ClaimedOutcome, actor: string): CommandOutput {
+  const { lease } = out.ticket;
+  if (out.hash === null) {
+    const expiry = lease === null ? '' : ` (lease expires ${isoTime(lease.expiresAt)})`;
+    return written(out, `already claimed by ${asciiText(actor)}${expiry}\n`);
+  }
+  const confirm =
+    lease === null
+      ? ''
+      : `confirm the lease with 'agentboard renew ${out.ticket.id} --as ${asciiText(actor)}' before ${isoTime(lease.expiresAt)}\n`;
+  return written(out, '', confirm);
+}
+
 /** The target of `link`. */
 function linkTarget(values: ArgValues): LinkTarget {
   const pr = str(values, 'pr');
@@ -657,7 +682,30 @@ function checklistRun(done: boolean): CommandSpec['run'] {
  *   `queued for <full id> at position <n>, held by <holder or ->`.
  *   Times are `isoTime`, actors through `asciiText`. Over MCP, `timeout`
  *   is not an argument (`ArgSpec.cliOnly`), so `board_claim` with `wait`
- *   joins and returns at once.
+ *   joins and returns at once. `run` with `--timeout` given (only the
+ *   command line can give it), after the validation above, throws
+ *   `BoardError(1, 'streaming-command')` saying that claim --wait blocks
+ *   until the ticket is granted and runs only from the agentboard
+ *   executable, writing nothing: the synchronous `runCli` never blocks.
+ *   `streams` is true exactly when `--wait` is given, so `runCliAsync`
+ *   runs `stream` for `claim --wait` (the parser has already required
+ *   `--timeout` with it) and `run` otherwise. `stream` validates exactly
+ *   as `run` does, before `ctx.board()` (so its refusals are the same exit
+ *   1 errors, and none writes anything), then runs `waitForGrant(board,
+ *   actor, { id, ttl, timeout }, { signal: io.signal, onQueued, onWarning
+ *   })` (`src/board/wait.ts`). Human output: `onQueued` prints the queued
+ *   line above; a `ClaimedOutcome` result prints exactly the text `run`
+ *   prints for it (the `list` line, with `already claimed by <actor>`
+ *   before it when nothing was written, or the confirm line after it); a
+ *   `GrantedOutcome` prints the `list` line of its ticket
+ *   (`renderListLine(ticket)`) and then
+ *   `accept the grant with 'agentboard renew <full id> --as <actor>' before <isoTime(acceptBy)>`.
+ *   With `--json`, `onQueued` prints the `QueuedOutcome` as one JSON line
+ *   and the result is printed as one more JSON line (the `ClaimedOutcome`
+ *   or the `GrantedOutcome` as it is), like `watch --json`; a refusal is
+ *   the error document `runCliAsync` prints after them. `onWarning` lines
+ *   go to stderr as `agentboard: <line>`. A claim that holds the ticket
+ *   at once prints exactly what `run` prints for it, nothing more.
  * - `renew [--ttl <duration>]`: `--ttl` parsed with `parseTtl` before
  *   `ctx.board()`; `renewTicket`; `WriteOutcome` and the `list` line.
  * - `unqueue`: `unqueueTicket`; `WriteOutcome` and the `list` line.
@@ -1078,7 +1126,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'claim',
     summary: 'Assign an unassigned ticket to yourself',
     description:
-      'Assigns an unassigned ticket to the actor. Claim a ticket before starting work on it. If another actor holds it the claim is refused (exit 4, already-assigned) naming the holder and, when it holds a lease, when the lease expires and from when the ticket can be claimed; a claim by the current holder succeeds without writing anything, so retrying a claim is safe. With --ttl the claim holds a lease: it starts as a grace lease (the board setting lease.grace, 2 minutes by default) and must be confirmed with agentboard renew <id> before the grace ends, or it lapses; a lease that lapsed more than 60 seconds ago can be taken over by a claim with --ttl. With --wait (and --ttl, and on the command line --timeout) a ticket that is held, or has waiters, is not refused: the actor joins its queue and the ticket is granted to the waiters in the order they joined (exit 4, queued, for a claim without --wait while others wait; exit 4, wait-timeout, when the timeout passes first).',
+      'Assigns an unassigned ticket to the actor. Claim a ticket before starting work on it. If another actor holds it the claim is refused (exit 4, already-assigned) naming the holder and, when it holds a lease, when the lease expires and from when the ticket can be claimed; a claim by the current holder succeeds without writing anything, so retrying a claim is safe. With --ttl the claim holds a lease: it starts as a grace lease (the board setting lease.grace, 2 minutes by default) and must be confirmed with agentboard renew <id> before the grace ends, or it lapses; a lease that lapsed more than 60 seconds ago can be taken over by a claim with --ttl. With --wait (and --ttl, and on the command line --timeout) a ticket that is held, or has waiters, is not refused: the actor joins its queue and the ticket is granted to the waiters in the order they joined (exit 4, queued, for a claim without --wait while others wait). On the command line the claim then blocks in the foreground: it prints its position in the queue and waits until the ticket is granted to it, then exits 0 and prints the agentboard renew command that accepts the grant and the time by which to run it. When --timeout passes first it leaves the queue and exits 4 (wait-timeout); interrupted (SIGINT or SIGTERM) it leaves the queue and exits 4 (wait-interrupted), never 0, so exit 0 always means the actor holds the ticket. Over MCP board_claim with wait never blocks: it joins and returns, and the grant arrives in the inbox.',
     group: 'lifecycle',
     examples: [
       { command: 'agentboard claim 01J9K3 --as impl', summary: 'Claim ticket 01J9K3 as impl' },
@@ -1113,6 +1161,16 @@ export const COMMANDS: readonly CommandSpec[] = [
         reason: 'wait-timeout',
         meaning: 'The --timeout passed before the ticket was granted; the actor left the queue',
       },
+      {
+        code: 4,
+        reason: 'wait-interrupted',
+        meaning: 'The wait was interrupted (SIGINT or SIGTERM); the actor left the queue',
+      },
+      {
+        code: 4,
+        reason: 'invalid-queue',
+        meaning: 'While waiting, the actor left the queue elsewhere or its grant passed on',
+      },
       EXIT_UNKNOWN_TICKET,
       EXIT_INTEGRITY,
     ],
@@ -1145,24 +1203,69 @@ export const COMMANDS: readonly CommandSpec[] = [
           'claim --wait needs --ttl <duration>, the lease to ask for once the ticket is granted',
         );
       }
+      if (timeout !== undefined) {
+        // Only `runCliAsync` (the executable) can block; see `stream`.
+        throw new BoardError(
+          1,
+          'streaming-command',
+          'agentboard claim --wait --timeout blocks in the foreground and runs only from the agentboard executable',
+        );
+      }
       const actor = actorOf(ctx);
       const out = claimTicket(ctx.board(), actor, { id: req(values, 'id'), ttl, wait });
       if (out.queued === true) {
-        return {
+        return { json: out, text: queuedLine(out) };
+      }
+      return claimedOutput(out, actor);
+    },
+    streams: (values) => bool(values, 'wait'),
+    stream: async (ctx, values, io) => {
+      // The same checks in the same order as `run`: --ttl, --timeout, then
+      // --wait without --ttl, so both entry points give the same first error.
+      const ttlText = str(values, 'ttl');
+      const ttl = ttlText === undefined ? undefined : parseTtl(ttlText);
+      const timeoutText = str(values, 'timeout');
+      const timeout = timeoutText === undefined ? undefined : parseTimeout(timeoutText);
+      if (ttl === undefined) {
+        throw new BoardError(
+          1,
+          'usage',
+          'claim --wait needs --ttl <duration>, the lease to ask for once the ticket is granted',
+        );
+      }
+      if (timeout === undefined) {
+        throw new BoardError(
+          1,
+          'usage',
+          'claim --wait needs --timeout <duration> on the command line, how long to wait at most',
+        );
+      }
+      const actor = actorOf(ctx);
+      const print = (output: CommandOutput): void => {
+        io.stdout(io.json ? `${JSON.stringify(output.json)}\n` : output.text);
+      };
+      const out = await waitForGrant(
+        ctx.board(),
+        actor,
+        { id: req(values, 'id'), ttl, timeout },
+        {
+          signal: io.signal,
+          onQueued: (queued) => {
+            print({ json: queued, text: queuedLine(queued) });
+          },
+          onWarning: (line) => {
+            io.stderr?.(`agentboard: ${line}\n`);
+          },
+        },
+      );
+      if ('grant' in out) {
+        print({
           json: out,
-          text: `queued for ${out.ticket} at position ${String(out.position)}, held by ${out.holder === null ? '-' : asciiText(out.holder)}\n`,
-        };
+          text: `${renderListLine(out.ticket)}\naccept the grant with 'agentboard renew ${out.ticket.id} --as ${asciiText(actor)}' before ${isoTime(out.acceptBy)}\n`,
+        });
+        return;
       }
-      const { lease } = out.ticket;
-      if (out.hash === null) {
-        const expiry = lease === null ? '' : ` (lease expires ${isoTime(lease.expiresAt)})`;
-        return written(out, `already claimed by ${asciiText(actor)}${expiry}\n`);
-      }
-      const confirm =
-        lease === null
-          ? ''
-          : `confirm the lease with 'agentboard renew ${out.ticket.id} --as ${asciiText(actor)}' before ${isoTime(lease.expiresAt)}\n`;
-      return written(out, '', confirm);
+      print(claimedOutput(out, actor));
     },
   },
   {

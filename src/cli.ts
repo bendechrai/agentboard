@@ -68,7 +68,15 @@ const argv = process.argv.slice(2);
 const { runCliAsync } = await import('./cli/main.js');
 const { parseArgs } = await import('./cli/parse.js');
 
-/** One `AbortController` aborted by SIGINT or SIGTERM; handlers installed on call. */
+/** Removes the signal handlers `stopSignal` installed; a no-op until it ran. */
+let removeStopHandlers = (): void => undefined;
+
+/**
+ * One `AbortController` aborted by SIGINT or SIGTERM; handlers installed on
+ * call and removed by `removeStopHandlers` once the command has returned,
+ * so a signal arriving while the process is still exiting (flushing stdout,
+ * closing the board) gets Node's default behaviour again.
+ */
 function stopSignal(): AbortSignal {
   const controller = new AbortController();
   const stop = (): void => {
@@ -76,6 +84,10 @@ function stopSignal(): AbortSignal {
   };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
+  removeStopHandlers = () => {
+    process.off('SIGINT', stop);
+    process.off('SIGTERM', stop);
+  };
   return controller.signal;
 }
 
@@ -124,4 +136,5 @@ if (mcp !== null) {
       return processTerminal();
     },
   });
+  removeStopHandlers();
 }

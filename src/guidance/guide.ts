@@ -538,7 +538,7 @@ const GUIDE_BODY: readonly string[] = [
   '  1  usage error, missing actor, refused text or close disposition, or rebuild --check found a difference',
   '  2  board not found or unreadable',
   '  3  sync problem that needs a human',
-  '  4  rejected by board state: invalid-transition, already-assigned, queued, wait-timeout, not-assignee, invalid-queue, unknown-ticket, duplicate-create, needs-scope-disposition, already-linked, checklist-index, reconcile-blocked, reconcile-ambiguous, unsynced (init --into-host on a board with events not committed or not pushed)',
+  '  4  rejected by board state: invalid-transition, already-assigned, queued, wait-timeout, wait-interrupted, not-assignee, invalid-queue, unknown-ticket, duplicate-create, needs-scope-disposition, already-linked, checklist-index, reconcile-blocked, reconcile-ambiguous, unsynced (init --into-host on a board with events not committed or not pushed)',
   '  5  event log or cache integrity problem, or the cache is busy',
   'Every refusal also prints a line starting with hint: on stderr (the hint',
   'field over MCP) naming what to run next. For the arguments of a command:',
