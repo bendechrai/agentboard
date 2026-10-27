@@ -7,11 +7,13 @@ import {
   formatTaskRef,
   isKnownEvent,
   type BoardEvent,
+  type TicketClaimBody,
   type TicketLinkBody,
   type TicketCloseBody,
   type TicketReconcileBody,
   type UnknownKindEvent,
 } from '../events/schema.js';
+import { formatDuration } from './time.js';
 
 /** Replaces every line break (`\r\n`, `\n` or `\r`) with one space. */
 function oneLine(text: string): string {
@@ -35,6 +37,16 @@ function describeReconcile(body: TicketReconcileBody): string {
   const renamed = body.title === undefined ? '' : ', renamed';
   const forced = body.forced ? ', forced' : '';
   return `reconciled with tasks (${counts}${renamed}${forced})`;
+}
+
+function describeClaim(body: TicketClaimBody): string {
+  if (body.supersedes !== undefined) {
+    return `took over from ${oneLine(body.supersedes.holder)} (lease expired)`;
+  }
+  if (body.lease !== undefined) {
+    return `claimed (lease ${formatDuration(body.lease.ttl)})`;
+  }
+  return 'claimed';
 }
 
 function describeClose(body: TicketCloseBody): string {
@@ -107,7 +119,7 @@ export function describeEvent(event: BoardEvent | UnknownKindEvent): string {
     case 'ticket.move':
       return `moved to ${event.body.to}`;
     case 'ticket.claim':
-      return 'claimed';
+      return describeClaim(event.body);
     case 'ticket.release':
       return 'released';
     case 'ticket.assign':
@@ -133,13 +145,14 @@ export function describeEvent(event: BoardEvent | UnknownKindEvent): string {
     case 'ticket.unplanned':
       return `recorded as unplanned: ${oneLine(event.body.reason)}`;
     case 'ticket.renew':
+      return `renewed lease (${formatDuration(event.body.ttl)})`;
     case 'ticket.release.force':
+      return `force-released from ${oneLine(event.body.holder)}: ${oneLine(event.body.reason)}`;
     case 'ticket.queue.join':
+      return 'joined the queue';
     case 'ticket.queue.leave':
+      return 'left the queue';
     case 'ticket.grant':
-      // Provisional: the kind itself, until the lease, queue and grant
-      // summaries of board-view-model are written (add-claim-leases 6.2).
-      // It must not throw: this module is bundled into the web client.
-      return event.kind;
+      return `granted to ${oneLine(event.body.to)} (accept within ${formatDuration(event.body.window)})`;
   }
 }

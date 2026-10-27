@@ -23,7 +23,7 @@
  * recipe (add-claim-leases, board-agent-guidance: "Mutex ticket recipe"),
  * so a version 2 installation is `stale`: this constant is 3.
  */
-export const GUIDANCE_VERSION = 2;
+export const GUIDANCE_VERSION = 3;
 
 /** The command every installed artifact points to for the full guide. */
 export const GUIDE_COMMAND = 'agentboard help agents';
@@ -70,6 +70,26 @@ const POINTER: readonly string[] = [
   'the OpenSpec flow and the MCP tools. The installed agentboard prints it,',
   'so it always matches the commands you can run. `agentboard help <command>`',
   'shows any command with its arguments, exit codes and examples.',
+];
+
+/**
+ * Paragraph shared by the skill and the AGENTS.md block: the short mutex
+ * recipe (board-agent-guidance: "Mutex ticket recipe"). Every command is in
+ * backticks with `--as <you>`, so the drift guard parses it; the only tools
+ * it names are `board_claim` and `board_inbox`.
+ */
+const MUTEX_RECIPE: readonly string[] = [
+  'A mutex (a merge lock, say) is one standing ad hoc ticket, never closed',
+  'while in use. Claim it with a lease, `agentboard claim <id> --ttl 30m --as <you>`,',
+  'then run `agentboard renew <id> --as <you>` as the first action of real work',
+  '(an unconfirmed claim lapses) and again at about half the ttl; when `renew`',
+  'is refused the lock is lost: stop. Release when done, including on failure:',
+  '`agentboard release <id> --as <you>`. Never wait on a mutex in a loop and',
+  'never claim one from a background process: wait in the foreground with',
+  '`agentboard claim <id> --ttl 30m --wait --timeout 10m --as <you>` and renew',
+  'on return, or report ready to the orchestrator and stop. Over MCP,',
+  '`board_claim` with `wait` only joins the queue; the grant arrives in',
+  '`board_inbox`.',
 ];
 
 /** The rules as a numbered Markdown list, one line per rule. */
@@ -120,6 +140,10 @@ export function renderSkill(version: number = GUIDANCE_VERSION): string {
     '',
     ...numberedRules(),
     '',
+    '## Mutex tickets',
+    '',
+    ...MUTEX_RECIPE,
+    '',
     '## Everything else',
     '',
     ...POINTER,
@@ -157,6 +181,9 @@ export function renderAgentsBlock(version: number = GUIDANCE_VERSION): string {
     'Rules you must never break:',
     '',
     ...numberedRules(),
+    '',
+    'Mutex tickets:',
+    ...MUTEX_RECIPE,
     '',
     ...POINTER,
     BLOCK_END,
