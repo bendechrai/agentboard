@@ -157,6 +157,51 @@ export function firstErrorLine(failure: GitFailure): string {
   return asciiText(line);
 }
 
+/**
+ * Every URL configured for the remotes of the git repository at `dir`
+ * (no-echo-refusals: "Git lines quoted from remote commands"): for each
+ * remote `git remote` lists, every raw `remote.<name>.url` and
+ * `remote.<name>.pushurl` value (`git config --get-all`), and every URL
+ * git resolves for it after `url.<base>.insteadOf` and `pushInsteadOf`
+ * rewrites (`git remote get-url --all <name>` and `git remote get-url
+ * --push --all <name>`). Deduplicated, longest first, empty values
+ * dropped. A repository with no remotes, or one git cannot read, gives
+ * `[]`; never throws. Runs git with the sanitised environment of
+ * `GitRunnerOptions.env` (`env` defaults to `process.env`); contacts no
+ * remote.
+ */
+export function configuredRemoteUrls(dir: string, env?: Env): string[] {
+  void dir;
+  void env;
+  throw new Error('not implemented');
+}
+
+/**
+ * `line`, a git line quoted from a failing git command that talks to a
+ * remote (`ls-remote`, `fetch`, `pull`, `push`, and the `remote:` lines a
+ * refusing remote prints), with every URL in `urls` treated as
+ * `sanitizeGitLine` (`src/board/init-remote.ts`) treats the value given:
+ * each URL, and each URL without its user information, replaced by
+ * `<url>` (longest first over all of them); the user information of each
+ * URL, as configured and percent-decoded, replaced by `<redacted>`
+ * wherever it appears; then the user information of every other
+ * `<scheme>://<userinfo>@` in the line replaced by `<scheme>://<redacted>@`.
+ * With `urls` empty only the last step applies. Pure; never throws.
+ *
+ * `urls` is what `configuredRemoteUrls` gives for the repository the
+ * command ran in (the board repository for a standalone board, the host
+ * repository for a host-model board), plus the URL a command was given
+ * when it has one. `sanitizeGitLine(line, given, passed)` gives the same
+ * result as `sanitizeRemoteLine(line, [given, passed])`, so the two may
+ * share one implementation (`sanitizeGitLine` may move here and be
+ * re-exported from `init-remote.ts`).
+ */
+export function sanitizeRemoteLine(line: string, urls: readonly string[]): string {
+  void line;
+  void urls;
+  throw new Error('not implemented');
+}
+
 /** Options of `gitRunner`. */
 export interface GitRunnerOptions {
   /**
