@@ -498,6 +498,54 @@ function elementDepth(root: Element): number {
   return deepest;
 }
 
+/**
+ * The nesting a deep input reaches in the deterministic case: eight times
+ * the cap. The parser's time grows faster than linearly with the nesting
+ * of lists and inline chains, so this stays far beyond the cap without
+ * costing seconds a case.
+ */
+const FAR_BEYOND_DEPTH = 8 * MAX_MARKDOWN_DEPTH;
+
+/** `unit` repeated `n` times around `a`, closed where the unit needs closing. */
+function repeatedUnit(unit: string, n: number): string {
+  const close =
+    unit === '*' ? '*'.repeat(n) : unit === '[' ? '](https://example.com)'.repeat(n) : '';
+  return unit.repeat(n) + 'a' + close;
+}
+
+/**
+ * The shapes of deeply nested input, each made at a given nesting `n`. The
+ * repeated units nest as containers; a run of `~~` is not one (from three
+ * tildes on it opens a code fence), so it is left out. Runs of `*` alone
+ * parse as strong with at most one emphasis, so the inline chains
+ * alternate the delimiters for emphasis-only and strong-only nesting.
+ */
+const DEEP_SHAPES: readonly { name: string; make: (n: number) => string }[] = [
+  ...['> ', '- ', '*', '[', '> - ', '1. ', '> *'].map((unit) => ({
+    name: JSON.stringify(unit),
+    make: (n: number) => repeatedUnit(unit, n),
+  })),
+  { name: 'emphasis chain', make: (n: number) => nestedInline(['*', '_'], n) },
+  { name: 'strong chain', make: (n: number) => nestedInline(['**', '__'], n) },
+];
+
+/**
+ * Renders `source` (short enough to be parsed, not shown whole as text) to a
+ * vnode tree and a DOM, and expects both within the rules and the DOM no
+ * deeper than the cap allows. A throw from `renderMarkdown` or from Preact's
+ * `render` fails the caller.
+ */
+function expectCappedRender(source: string, label: string): void {
+  expect(source.length, label).toBeLessThanOrEqual(MAX_MARKDOWN_LENGTH);
+  const tree = renderMarkdown(source);
+  expect(vnodeViolations(tree), label).toEqual([]);
+  const root = document.createElement('div');
+  render(tree, root);
+  expect(domViolations(root), label).toEqual([]);
+  expect(elementDepth(root), label).toBeLessThanOrEqual(MAX_MARKDOWN_DEPTH + 2);
+  expect(root.textContent, label).toContain('a');
+}
+
 describe('renderMarkdown renders what it is given', () => {
   it('keeps the text of plain words and lines exactly (a renderer that drops content fails)', () => {
     const word = fc.stringMatching(/^[a-z0-9]{1,10}$/);
@@ -528,40 +576,24 @@ describe('renderMarkdown renders what it is given', () => {
 });
 
 describe('renderMarkdown on deep and long input', () => {
+  it('renders each deep shape nested far beyond the depth cap into a DOM without throwing, capped', () => {
+    for (const { name, make } of DEEP_SHAPES) {
+      expectCappedRender(make(FAR_BEYOND_DEPTH), name);
+    }
+  });
+
   it(
-    'renders input nested far beyond the depth cap into a DOM without throwing, capped',
+    'renders input nested beyond the depth cap into a DOM without throwing, capped, at any depth',
     () => {
-      const repeated = fc
+      const deep = fc
         .tuple(
-          // Units that nest as containers. A run of `~~` is not one: from three
-          // tildes on it opens a code fence, so it is left out.
-          fc.constantFrom('> ', '- ', '*', '[', '> - ', '1. ', '> *'),
-          fc.integer({ min: MAX_MARKDOWN_DEPTH, max: 1500 }),
+          fc.constantFrom(...DEEP_SHAPES),
+          fc.integer({ min: MAX_MARKDOWN_DEPTH, max: 4 * MAX_MARKDOWN_DEPTH }),
         )
-        .map(([unit, n]) => {
-          const close =
-            unit === '*' ? '*'.repeat(n) : unit === '[' ? '](https://example.com)'.repeat(n) : '';
-          return unit.repeat(n) + 'a' + close;
-        });
-      // Emphasis-only and strong-only chains: runs of `*` alone parse as
-      // strong with at most one emphasis, so these alternate the delimiters.
-      const inline = fc
-        .tuple(
-          fc.constantFrom<[string, string]>(['*', '_'], ['**', '__']),
-          fc.integer({ min: MAX_MARKDOWN_DEPTH, max: 1500 }),
-        )
-        .map(([pair, n]) => nestedInline(pair, n));
-      const deep = fc.oneof(repeated, inline);
+        .map(([{ make }, n]) => make(n));
       fc.assert(
         fc.property(deep, (source) => {
-          // A throw from renderMarkdown or from Preact's render fails the property.
-          const tree = renderMarkdown(source);
-          expect(vnodeViolations(tree)).toEqual([]);
-          const root = document.createElement('div');
-          render(tree, root);
-          expect(domViolations(root)).toEqual([]);
-          expect(elementDepth(root)).toBeLessThanOrEqual(MAX_MARKDOWN_DEPTH + 2);
-          expect(root.textContent).toContain('a');
+          expectCappedRender(source, source.slice(0, 40));
         }),
         { numRuns: 25 },
       );
