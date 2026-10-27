@@ -35,13 +35,15 @@ where inode numbers are reused. The adoption rule has no such guard.
 - A temporary records, beside the git directory identity it records
   today, the HEAD commit of the standalone board at step 1 of the move
   that made it.
-- A dead temporary that integrated something is adopted only when both
-  hold: the recorded identity names the board's git directory now (the
-  cheap first check, unchanged), and the recorded HEAD is an ancestor of,
-  or equal to, the board's HEAD now (the step 6 test). A board replaced
-  at the same path, whether or not its git directory reuses the old
-  inode, and a board whose history was rewritten so that it no longer
-  contains that HEAD, are another board: the temporary is removed and
+- A dead temporary that integrated something is adopted only when all
+  three hold: the recorded identity names the board's git directory now
+  (the cheap first check, unchanged), the recorded HEAD is an ancestor of,
+  or equal to, the board's HEAD now (the step 6 test), and the tip the
+  temporary integrated is in the board's source tip (the check that
+  already judges a temporary without a record). A board replaced at the
+  same path, whether or not its git directory reuses the old inode, and a
+  board whose history, or its remote's, was rewritten so that it no
+  longer contains that HEAD or that tip, are another board: the temporary is removed and
   named (no rebase or cherry-pick state) or is the `sync-in-progress`
   refusal saying so (with such state), as today for a mismatched
   identity.

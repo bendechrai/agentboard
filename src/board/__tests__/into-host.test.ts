@@ -2363,3 +2363,1101 @@ describe('resuming after the worktree is in place, and cleaning dead temporaries
     expectKept(String(result.keptAt), tip, files);
   });
 });
+
+/**
+ * guard-stale-temporary group 1 (board-concurrency "Moving a board into
+ * the host repository loses no event", the leftover rule; design.md of
+ * that change): every temporary records the HEAD of the standalone board
+ * at step 1 in `agentboard-source-head` beside the git directory identity
+ * in `agentboard-source`, and a dead temporary that integrated something
+ * is adopted only when the identity is the board's and that HEAD is an
+ * ancestor of, or equal to, the board's HEAD now. Inode reuse is never
+ * left to the file system: a test rewrites the temporary's
+ * `agentboard-source` to the replacement's identity (tasks.md, preamble),
+ * so the tests fail the same way on tmpfs, ext4 and every CI runner. A
+ * temporary of 0.2.0 is one without `agentboard-source-head`, one of older
+ * code has neither record.
+ */
+describe('guard-stale-temporary: adoption guarded by the HEAD the move began from', () => {
+  const SOURCE_RECORD = 'agentboard-source';
+  const HEAD_RECORD = 'agentboard-source-head';
+
+  /** The path of the record `name` in the git directory of the temporary worktree at `temporary`. */
+  function recordPath(temporary: string, name: string): string {
+    return join(git(temporary, 'rev-parse', '--absolute-git-dir').trim(), name);
+  }
+
+  /** The content of the record `name` of `temporary`, or null when it has none. */
+  function readRecordFile(temporary: string, name: string): string | null {
+    const path = recordPath(temporary, name);
+    return existsSync(path) ? readFileSync(path, 'utf8') : null;
+  }
+
+  /** The git directory identity of the repository at `repo` as the move computes it: `<realpath>:<dev>:<ino>`. */
+  function gitDirIdentity(repo: string): string {
+    const path = fs.realpathSync(git(repo, 'rev-parse', '--absolute-git-dir').trim());
+    const stats = fs.statSync(path);
+    return `${path}:${String(stats.dev)}:${String(stats.ino)}`;
+  }
+
+  /**
+   * Makes the temporary at `temporary` record the identity of the board at
+   * `dir` now, as a file system that gave the replacement's git directory
+   * the freed inode of the old one would (the PR #99 reproduction).
+   */
+  function simulateInodeReuse(temporary: string, dir: string): void {
+    writeFileSync(recordPath(temporary, SOURCE_RECORD), gitDirIdentity(dir));
+  }
+
+  /** design.md "Reporting": the line naming a removed temporary of another board. */
+  function removedAsAnotherBoard(temporary: string, dir: string): string {
+    return (
+      `removed ${temporary}, left by a move of another board (not the one at ${dir}, or one ` +
+      'whose history no longer holds where that move began), so nothing of it was adopted'
+    );
+  }
+
+  /** design.md "Reporting": the parenthesis of the `sync-in-progress` refusal for a temporary of another board. */
+  function anotherBoardParenthesis(dir: string): string {
+    return (
+      ` (that worktree was left by a move of another board, not the one at ${dir} now or one ` +
+      'whose history no longer holds where that move began, so finishing it moves nothing of this board)'
+    );
+  }
+
+  /**
+   * A move of the standalone board in `root` that integrated a local
+   * `refs/agentboard/board` (c1, one event of another host board) and lost
+   * the compare-and-swap to c2 (c1 plus a second event): exit 3
+   * `sync-failed`, the temporary kept with its HEAD off
+   * `refs/agentboard/migrating`, so a re-run on the same board adopts it.
+   */
+  function interruptedMove(root: string, env: Env): { temporary: string; c2: string; fromHost: string[] } {
+    const other = hostBoard(env);
+    const h1 = commitHostEvent(other.dir, ev(P.create(T2, 'From the host ref'), 'x', 2000), env);
+    git(root, 'fetch', '-q', other.root, `${BOARD_REF}:${BOARD_REF}`);
+    const c1 = String(refCommit(root));
+    const h2 = commitHostEvent(other.dir, ev(P.comment(T2, 'second'), 'x', 2100), env);
+    git(root, 'fetch', '-q', other.root, `${BOARD_REF}:refs/test/c2`);
+    const c2 = git(root, 'rev-parse', 'refs/test/c2').trim();
+    const racing = withGitShimBefore(
+      env,
+      ['update-ref', BOARD_REF],
+      `"$GIT" -C '${root}' update-ref ${BOARD_REF} ${c2} ${c1}`,
+    );
+    expectBoardError(() => move(root, racing), 3, 'sync-failed');
+    const [temporary] = registeredMigrating(root);
+    expect(registeredMigrating(root)).toHaveLength(1);
+    expect(revParse(String(temporary))).not.toBe(refCommit(root, MIGRATING_REF));
+    return { temporary: String(temporary), c2, fromHost: [`${h1}.json`, `${h2}.json`] };
+  }
+
+  /** Replaces the board at `<root>/.board` by an unrelated standalone board with two events of its own and its own remote. */
+  function replaceBoard(root: string, dir: string, env: Env): { tip: string; files: string[] } {
+    rmSync(dir, { recursive: true, force: true });
+    const { tip } = syncedStandalone(root, env, 2, bareRemote(), 'other');
+    return { tip, files: eventFiles(dir) };
+  }
+
+  /** Asserts no commit of `ref` in `repo` ever added any of `files` (`<hash>.json`) under `events/`. */
+  function expectNeverIn(repo: string, files: readonly string[], ref: string = BOARD_REF): void {
+    for (const file of files) {
+      expect(git(repo, 'log', '--format=%H', ref, '--', `events/${file}`).trim(), file).toBe('');
+    }
+  }
+
+  describe('1.1 the records', () => {
+    it('a move stopped on a conflict leaves a temporary whose agentboard-source-head is the board HEAD at the start of that move (a full object name and a newline) and whose agentboard-source is the identity as before (no newline)', () => {
+      const env = syncEnv();
+      const { bRoot, bDir } = conflictingClones(env);
+      const head = revParse(bDir);
+      const identity = gitDirIdentity(bDir);
+
+      expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+
+      const [temporary] = registeredMigrating(bRoot);
+      expect(readRecordFile(String(temporary), HEAD_RECORD)).toBe(`${head}\n`);
+      expect(head).toMatch(/^[0-9a-f]{40}$/);
+      expect(readRecordFile(String(temporary), SOURCE_RECORD)).toBe(identity);
+      expect(identity).toMatch(/^\/.+:\d+:\d+$/);
+    });
+
+    it('a move that lost the compare-and-swap leaves both records too, the HEAD record naming the board HEAD step 1 saw', () => {
+      const env = syncEnv();
+      const { root, dir, tip } = standaloneProject(env, 3);
+      const identity = gitDirIdentity(dir);
+
+      const { temporary } = interruptedMove(root, env);
+
+      expect(readRecordFile(temporary, HEAD_RECORD)).toBe(`${tip}\n`);
+      expect(readRecordFile(temporary, SOURCE_RECORD)).toBe(identity);
+    });
+
+    it.each([
+      ['made by 0.2.0 (agentboard-source only)', [HEAD_RECORD]],
+      ['made by older code (no record)', [SOURCE_RECORD, HEAD_RECORD]],
+    ])(
+      'a temporary %s adopted by a run that a replay conflict interrupts carries both records with the adopting run identity and HEAD, and the next run judges it by the full test',
+      (_label, removedRecords) => {
+        const env = syncEnv();
+        const fx = conflictingClones(env);
+        const { bRoot, bDir } = fx;
+        expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+        const temporary = String(registeredMigrating(bRoot)[0]);
+        resolveIgnoreConflicts(temporary);
+        const resolvedHead = revParse(temporary);
+        for (const name of removedRecords) {
+          rmSync(recordPath(temporary, name), { force: true });
+        }
+        expect(readRecordFile(temporary, HEAD_RECORD)).toBeNull();
+        thirdCloneRewritesIgnore(fx, env);
+        const adoptingHead = revParse(bDir);
+
+        // The adoption: the temporary is this board's (its integrated tip
+        // is in the board's history), so the replay of the third clone's
+        // commits runs in it and stops on .gitignore.
+        const adopting = expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+
+        expect(adopting.message).toContain('git cherry-pick --continue');
+        expect(cherryPickInProgress(temporary)).toBe(true);
+        expect(String(readRecordFile(temporary, SOURCE_RECORD)).replace(/\n$/, '')).toBe(gitDirIdentity(bDir));
+        expect(readRecordFile(temporary, HEAD_RECORD)).toBe(`${adoptingHead}\n`);
+
+        // The human abandons the replay (back at the resolution), and the
+        // board's branch is reset behind the HEAD the adoption recorded
+        // while its remote still has it: the identity matches and the
+        // integrated tip is still in the source tip, so only the recorded
+        // HEAD tells that the board's history no longer holds where the
+        // adoption began. Judged by the full test, the temporary is
+        // another board's: removed, and a fresh temporary stops on the
+        // rebase of step 3 (judged as 0.2.0 it would be adopted again and
+        // stop on the replay's cherry-pick).
+        git(temporary, 'cherry-pick', '--abort');
+        git(temporary, 'checkout', '--', '.gitignore');
+        expect(revParse(temporary)).toBe(resolvedHead);
+        git(bDir, 'reset', '-q', '--hard', 'HEAD~1');
+        expect(isAncestor(bDir, adoptingHead, 'HEAD')).toBe(false);
+        expect(isAncestor(bDir, adoptingHead, 'refs/remotes/origin/main')).toBe(true);
+
+        const next = expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+
+        expect(next.message).toContain('git rebase --continue');
+        expect(next.message).not.toContain('cherry-pick');
+        const [fresh] = registeredMigrating(bRoot);
+        expect(registeredMigrating(bRoot)).toHaveLength(1);
+        expect(rebaseInProgress(String(fresh))).toBe(true);
+        expect(cherryPickInProgress(String(fresh))).toBe(false);
+        expect(refCommit(bRoot)).toBeNull();
+      },
+    );
+
+    it.each([
+      ['no record (killed right after worktree add)', 'none'],
+      ['agentboard-source only (killed between the two writes)', 'source'],
+      ['agentboard-source and a torn agentboard-source-head (killed during the second write)', 'torn'],
+      ['agentboard-source and an unreadable agentboard-source-head', 'unreadable'],
+      ['both records (killed right after the second write)', 'both'],
+    ])(
+      'a dead temporary whose HEAD is still at refs/agentboard/migrating with %s is removed as a plain leftover, its records never judged, and the move starts again',
+      (_label, records) => {
+        const env = syncEnv();
+        const { root, dir, tip } = standaloneProject(env, 2);
+        const files = eventFiles(dir);
+        git(root, 'fetch', '-q', dir, `+refs/heads/main:${MIGRATING_REF}`);
+        mkdirSync(join(agentboardDir(root), MIGRATING_DIR), { recursive: true });
+        const leftover = join(agentboardDir(root), MIGRATING_DIR, String(DEAD_PID));
+        git(root, 'worktree', 'add', '-q', '--detach', leftover, MIGRATING_REF);
+        if (records !== 'none') {
+          writeFileSync(recordPath(leftover, SOURCE_RECORD), gitDirIdentity(dir));
+        }
+        if (records === 'torn') {
+          writeFileSync(recordPath(leftover, HEAD_RECORD), tip.slice(0, 7));
+        } else if (records === 'unreadable') {
+          mkdirSync(recordPath(leftover, HEAD_RECORD));
+        } else if (records === 'both') {
+          writeFileSync(recordPath(leftover, HEAD_RECORD), `${tip}\n`);
+        }
+
+        const result = move(root, env);
+
+        expect(result.action).toBe('moved');
+        expect(result.message).toContain(`removed ${leftover}, left by an interrupted move`);
+        expect(result.message).not.toContain('another board');
+        expectMoved(root, env);
+        expect(eventFiles(dir)).toEqual(files);
+        expectKept(String(result.keptAt), tip, files);
+      },
+    );
+  });
+
+  describe('1.2 belonging: the same git directory and the same history', () => {
+    it('scenario: Temporary of a replaced board whose git directory reuses the inode: the replacement is moved with exit 0, the temporary removed and named, nothing of the old board in .board/events or refs/agentboard/board', () => {
+      const env = syncEnv();
+      const { root, dir } = standaloneProject(env, 3);
+      const oldFiles = eventFiles(dir);
+      const { temporary, c2, fromHost } = interruptedMove(root, env);
+      const replacement = replaceBoard(root, dir, env);
+      expect(replacement.files.some((f) => oldFiles.includes(f))).toBe(false);
+      simulateInodeReuse(temporary, dir);
+
+      const result = move(root, env);
+
+      expect(result).toMatchObject({ action: 'moved', events: 4 });
+      expect(result.message).toContain(removedAsAnotherBoard(temporary, dir));
+      expectMoved(root, env);
+      const all = [...replacement.files, ...fromHost].sort();
+      expect(eventFiles(dir)).toEqual(all);
+      expect(refEvents(root)).toEqual(all);
+      expectNeverIn(root, oldFiles);
+      expect(isAncestor(root, c2, BOARD_REF)).toBe(true);
+      expect(git(root, 'for-each-ref', '--format=%(refname)', 'refs/agentboard/')).toBe(`${BOARD_REF}\n`);
+      expect(migratingEntries(root)).toEqual([]);
+      expectKept(String(result.keptAt), replacement.tip, replacement.files);
+      expectCheckClean(root, env);
+    });
+
+    it('scenario: Stopped temporary of a replaced board whose git directory reuses the inode: exit 3 sync-in-progress naming the temporary as left by a move of another board; the temporary, .board and the host refs unchanged, nothing removed', () => {
+      const env = syncEnv();
+      const { bRoot, bDir } = conflictingClones(env);
+      expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+      const temporary = String(registeredMigrating(bRoot)[0]);
+      replaceBoard(bRoot, bDir, env);
+      simulateInodeReuse(temporary, bDir);
+      const before = untouched(bRoot, bDir);
+      const temporaryFiles = snapshotDir(temporary);
+
+      const err = expectBoardError(() => move(bRoot, env), 3, 'sync-in-progress');
+
+      expect(err.message).toContain(`temporary worktree at ${temporary}${anotherBoardParenthesis(bDir)}; resolve`);
+      expect(err.message).toContain('git rebase --continue');
+      expectUntouched(bRoot, bDir, before);
+      expect(snapshotDir(temporary)).toEqual(temporaryFiles);
+      expect(rebaseInProgress(temporary)).toBe(true);
+      expect(registeredMigrating(bRoot)).toEqual([temporary]);
+      expect(migratingEntries(bRoot)).toHaveLength(1);
+      expect(refCommit(bRoot)).toBeNull();
+      expect(keptRepositories(bRoot)).toEqual([]);
+    });
+
+    it('a stopped temporary of this board whose history was rewritten since (the same git directory, its branch reset behind the recorded HEAD): sync-in-progress saying another board, nothing removed', () => {
+      const env = syncEnv();
+      const { bRoot, bDir } = conflictingClones(env);
+      const head = revParse(bDir);
+      expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+      const temporary = String(registeredMigrating(bRoot)[0]);
+      git(bDir, 'reset', '-q', '--hard', 'HEAD~1');
+      expect(isAncestor(bDir, head, 'HEAD')).toBe(false);
+      const before = untouched(bRoot, bDir);
+      const temporaryFiles = snapshotDir(temporary);
+
+      const err = expectBoardError(() => move(bRoot, env), 3, 'sync-in-progress');
+
+      expect(err.message).toContain(`temporary worktree at ${temporary}${anotherBoardParenthesis(bDir)}; resolve`);
+      expectUntouched(bRoot, bDir, before);
+      expect(snapshotDir(temporary)).toEqual(temporaryFiles);
+      expect(rebaseInProgress(temporary)).toBe(true);
+      expect(registeredMigrating(bRoot)).toEqual([temporary]);
+    });
+
+    it('a stopped temporary of 0.2.0 on this board: sync-in-progress without another board in its text', () => {
+      const env = syncEnv();
+      const { bRoot, bDir } = conflictingClones(env);
+      expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+      const temporary = String(registeredMigrating(bRoot)[0]);
+      rmSync(recordPath(temporary, HEAD_RECORD), { force: true });
+
+      const err = expectBoardError(() => move(bRoot, env), 3, 'sync-in-progress');
+
+      expect(err.message).toContain(`temporary worktree at ${temporary}; resolve`);
+      expect(err.message).not.toContain('another board');
+      expect(rebaseInProgress(temporary)).toBe(true);
+      expect(detectBoardModel(bDir, { env }).model).toBe('standalone');
+    });
+
+    it('a stopped temporary of 0.2.0 on a replaced board whose git directory reuses the inode: sync-in-progress saying another board, nothing removed', () => {
+      const env = syncEnv();
+      const { bRoot, bDir } = conflictingClones(env);
+      expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+      const temporary = String(registeredMigrating(bRoot)[0]);
+      rmSync(recordPath(temporary, HEAD_RECORD), { force: true });
+      replaceBoard(bRoot, bDir, env);
+      simulateInodeReuse(temporary, bDir);
+      const before = untouched(bRoot, bDir);
+
+      const err = expectBoardError(() => move(bRoot, env), 3, 'sync-in-progress');
+
+      expect(err.message).toContain(`temporary worktree at ${temporary}${anotherBoardParenthesis(bDir)}; resolve`);
+      expectUntouched(bRoot, bDir, before);
+      expect(rebaseInProgress(temporary)).toBe(true);
+      expect(registeredMigrating(bRoot)).toEqual([temporary]);
+    });
+
+    it('scenario: Board history rewritten since the interrupted move (no remote): the temporary is removed and named, the move completes from the board as it is now, no event added only by the removed commits anywhere', () => {
+      const env = syncEnv();
+      const { root } = project();
+      const { dir } = syncedStandalone(root, env, 2);
+      const [dropped] = writeEvents(dir, 1, 'orch', 50);
+      syncStandalone(dir, env);
+      const head = revParse(dir);
+      const { temporary, fromHost } = interruptedMove(root, env);
+      expect(readRecordFile(temporary, HEAD_RECORD)).toBe(`${head}\n`);
+      git(dir, 'reset', '-q', '--hard', 'HEAD~1');
+      const resetTip = revParse(dir);
+      const files = eventFiles(dir);
+      expect(files).not.toContain(`${String(dropped)}.json`);
+
+      const result = move(root, env);
+
+      expect(result).toMatchObject({ action: 'moved', events: 4 });
+      expect(result.message).toContain(removedAsAnotherBoard(temporary, dir));
+      expectMoved(root, env);
+      const all = [...files, ...fromHost].sort();
+      expect(eventFiles(dir)).toEqual(all);
+      expect(refEvents(root)).toEqual(all);
+      expectNeverIn(root, [`${String(dropped)}.json`]);
+      expect(isAncestor(root, head, BOARD_REF)).toBe(false);
+      expectKept(String(result.keptAt), resetTip, files);
+      expectCheckClean(root, env);
+    });
+
+    it('a board with a remote whose branch was reset behind the recorded HEAD (its remote still has it) is another board too: the comparison is with the board HEAD, not its source tip (design.md, Alternatives)', () => {
+      const env = syncEnv();
+      const { root, dir } = standaloneProject(env, 2);
+      writeEvents(dir, 1, 'orch', 50);
+      syncStandalone(dir, env);
+      const head = revParse(dir);
+      const { temporary } = interruptedMove(root, env);
+      git(dir, 'reset', '-q', '--hard', 'HEAD~1');
+      expect(isAncestor(dir, head, 'HEAD')).toBe(false);
+      expect(isAncestor(dir, head, 'refs/remotes/origin/main')).toBe(true);
+
+      const result = move(root, env);
+
+      expect(result.action).toBe('moved');
+      expect(result.message).toContain(removedAsAnotherBoard(temporary, dir));
+      expectMoved(root, env);
+    });
+
+    it('scenario: Board that only grew since the interrupted move is adopted: the resolution is an ancestor of refs/agentboard/board, both new events are in it, and the temporary is not named as removed', () => {
+      const env = syncEnv();
+      const { bRoot, bDir, remote } = conflictingClones(env);
+      const head = revParse(bDir);
+      expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+      const temporary = String(registeredMigrating(bRoot)[0]);
+      expect(readRecordFile(temporary, HEAD_RECORD)).toBe(`${head}\n`);
+      resolveIgnoreConflicts(temporary);
+      const resolvedHead = revParse(temporary);
+      const grown = writeEvents(bDir, 2, 'b', 300);
+      syncStandalone(bDir, env);
+      expect(isAncestor(bDir, head, 'HEAD')).toBe(true);
+      expect(revParse(bDir)).not.toBe(head);
+
+      const result = move(bRoot, env);
+
+      expect(result).toMatchObject({ action: 'moved', joined: true });
+      expect(result.message).not.toContain(temporary);
+      expect(result.message).not.toContain('another board');
+      expectMoved(bRoot, env);
+      expect(isAncestor(bRoot, resolvedHead, BOARD_REF)).toBe(true);
+      for (const hash of grown) {
+        expect(refEvents(bRoot)).toContain(`${hash}.json`);
+        expect(refEvents(remote)).toContain(`${hash}.json`);
+      }
+      expectCheckClean(bRoot, env);
+    });
+
+    it('a replacement that is a clone of the same board at a reused inode holds the recorded HEAD and is adopted (design.md, "A rewritten history is another board")', () => {
+      const env = syncEnv();
+      const { bRoot, bDir, boardRemote } = conflictingClones(env);
+      expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+      const temporary = String(registeredMigrating(bRoot)[0]);
+      resolveIgnoreConflicts(temporary);
+      const resolvedHead = revParse(temporary);
+      rmSync(bDir, { recursive: true, force: true });
+      git(bRoot, 'clone', '-q', boardRemote, bDir);
+      simulateInodeReuse(temporary, bDir);
+
+      const result = move(bRoot, env);
+
+      expect(result.action).toBe('moved');
+      expect(result.message).not.toContain(temporary);
+      expectMoved(bRoot, env);
+      expect(isAncestor(bRoot, resolvedHead, BOARD_REF)).toBe(true);
+      expectCheckClean(bRoot, env);
+    });
+
+    it('scenario: Temporary of an earlier version on this board is adopted: a 0.2.0 temporary holding a finished resolution completes the move with exit 0, the resolution kept, every event in the ref', () => {
+      const env = syncEnv();
+      const { bRoot, bDir, remote, shared, fromA, fromB } = conflictingClones(env);
+      expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+      const temporary = String(registeredMigrating(bRoot)[0]);
+      const resolved = resolveIgnoreConflicts(temporary);
+      const resolvedHead = revParse(temporary);
+      rmSync(recordPath(temporary, HEAD_RECORD), { force: true });
+      expect(readRecordFile(temporary, SOURCE_RECORD)).toBe(gitDirIdentity(bDir));
+
+      const result = move(bRoot, env);
+
+      expect(result).toMatchObject({ action: 'moved', joined: true, events: 3 });
+      expect(result.message).not.toContain(temporary);
+      expectMoved(bRoot, env);
+      const all = [...shared, `${fromA}.json`, ...fromB.map((h) => `${h}.json`)].sort();
+      expect(eventFiles(bDir)).toEqual(all);
+      expect(refEvents(bRoot)).toEqual(all);
+      expect(refEvents(remote)).toEqual(all);
+      expect(isAncestor(bRoot, resolvedHead, BOARD_REF)).toBe(true);
+      expect(readFileSync(join(bDir, '.gitignore'), 'utf8')).toBe(resolved);
+      expectCheckClean(bRoot, env);
+    });
+
+    it('scenario: Temporary of an earlier version on a replaced board whose git directory reuses the inode: removed and named, the new board moved with exit 0, nothing of the old board in refs/agentboard/board', () => {
+      const env = syncEnv();
+      const { root, dir } = standaloneProject(env, 3);
+      const oldFiles = eventFiles(dir);
+      const { temporary, fromHost } = interruptedMove(root, env);
+      rmSync(recordPath(temporary, HEAD_RECORD), { force: true });
+      const replacement = replaceBoard(root, dir, env);
+      simulateInodeReuse(temporary, dir);
+      expect(isAncestor(dir, String(refCommit(root, MIGRATING_REF)), 'HEAD')).toBe(false);
+
+      const result = move(root, env);
+
+      expect(result).toMatchObject({ action: 'moved', events: 4 });
+      expect(result.message).toContain(removedAsAnotherBoard(temporary, dir));
+      expectMoved(root, env);
+      const all = [...replacement.files, ...fromHost].sort();
+      expect(eventFiles(dir)).toEqual(all);
+      expect(refEvents(root)).toEqual(all);
+      expectNeverIn(root, oldFiles);
+      expectKept(String(result.keptAt), replacement.tip, replacement.files);
+      expectCheckClean(root, env);
+    });
+
+    it('a temporary without agentboard-source is judged by the round 5 ruling 5 check whatever its agentboard-source-head says (design.md table, last row): adopted when its integrated tip is in the board history', () => {
+      const env = syncEnv();
+      const { root, dir, tip } = standaloneProject(env, 3);
+      const { temporary } = interruptedMove(root, env);
+      rmSync(recordPath(temporary, SOURCE_RECORD));
+      writeFileSync(recordPath(temporary, HEAD_RECORD), `${'f'.repeat(40)}\n`);
+      expect(isAncestor(dir, String(refCommit(root, MIGRATING_REF)), tip)).toBe(true);
+
+      const result = move(root, env);
+
+      expect(result.action).toBe('moved');
+      expect(result.message).not.toContain(temporary);
+      expectMoved(root, env);
+    });
+
+    // Each row rewrites the HEAD record of an otherwise adoptable temporary
+    // of this board (identity equal, integrated tip in its history). Only a
+    // full object name of the board's hash algorithm, with at most one
+    // trailing newline, is read as a recorded HEAD; anything else, and a
+    // name the board's repository does not have as a commit, is not an
+    // ancestor, so the temporary is removed and named (design.md, "When in
+    // doubt the move does not adopt").
+    it.each<[string, boolean, (tip: string, dir: string) => string | null]>([
+      ['the full HEAD the move began from (control)', true, (tip) => `${tip}\n`],
+      ['empty', false, () => ''],
+      ['a newline only', false, () => '\n'],
+      ['not hexadecimal', false, () => 'not-a-commit\n'],
+      ['a ref name (HEAD)', false, () => 'HEAD\n'],
+      ['a branch name (main)', false, () => 'main\n'],
+      ['an abbreviated object name of that HEAD', false, (tip) => `${tip.slice(0, 12)}\n`],
+      ['a revision expression on that HEAD', false, (tip) => `${tip}^0\n`],
+      ['that HEAD followed by a second line', false, (tip) => `${tip}\n${tip}\n`],
+      ['64 hexadecimal digits in a SHA-1 repository', false, (tip) => `${tip}${'0'.repeat(24)}\n`],
+      ['a full name the board repository does not have', false, () => `${'f'.repeat(40)}\n`],
+      ['the full name of a tree, not a commit', false, (tip, dir) => `${git(dir, 'rev-parse', `${tip}^{tree}`).trim()}\n`],
+      ['unreadable (a directory)', false, () => null],
+      ['that HEAD in upper-case hexadecimal', false, (tip) => `${tip.toUpperCase()}\n`],
+      ['that HEAD with a leading space', false, (tip) => ` ${tip}\n`],
+      ['that HEAD with a trailing space', false, (tip) => `${tip} \n`],
+      ['that HEAD after a leading newline', false, (tip) => `\n${tip}\n`],
+      ['that HEAD with two trailing newlines', false, (tip) => `${tip}\n\n`],
+      ['that HEAD with a carriage return before the newline', false, (tip) => `${tip}\r\n`],
+      ['that HEAD without a trailing newline', true, (tip) => tip],
+    ])('a temporary of this board whose agentboard-source-head is %s: adopted %s', (_label, adopted, content) => {
+      const env = syncEnv();
+      const { root, dir, tip } = standaloneProject(env, 3);
+      const { temporary } = interruptedMove(root, env);
+      const path = recordPath(temporary, HEAD_RECORD);
+      rmSync(path, { recursive: true, force: true });
+      const text = content(tip, dir);
+      if (text === null) {
+        mkdirSync(path);
+      } else {
+        writeFileSync(path, text);
+      }
+
+      const result = move(root, env);
+
+      expect(result.action).toBe('moved');
+      expectMoved(root, env);
+      if (adopted) {
+        expect(result.message).not.toContain(temporary);
+      } else {
+        expect(result.message).toContain(removedAsAnotherBoard(temporary, dir));
+      }
+    });
+
+    it('the identity is checked first: with an agentboard-source naming another git directory, no git command is given the recorded HEAD', () => {
+      const env = syncEnv();
+      const { root, dir } = standaloneProject(env, 3);
+      const { temporary } = interruptedMove(root, env);
+      const sentinel = 'e'.repeat(40);
+      writeFileSync(recordPath(temporary, HEAD_RECORD), `${sentinel}\n`);
+      // A real replacement at another inode (the old board is moved aside
+      // and removed only once the replacement exists, as in the round 4
+      // ruling 3 test), so the identity differs.
+      const oldGitDir = fs.statSync(join(dir, '.git'));
+      const aside = join(tempDir(), 'replaced-board');
+      fs.renameSync(dir, aside);
+      syncedStandalone(root, env, 2, bareRemote(), 'other');
+      rmSync(aside, { recursive: true, force: true });
+      const newGitDir = fs.statSync(join(dir, '.git'));
+      expect([newGitDir.dev, newGitDir.ino]).not.toEqual([oldGitDir.dev, oldGitDir.ino]);
+      const { env: recording, calls } = withRecordingGitShim(env);
+
+      const result = move(root, recording);
+
+      expect(result.action).toBe('moved');
+      expect(result.message).toContain(removedAsAnotherBoard(temporary, dir));
+      expect(calls().length).toBeGreaterThan(0);
+      expect(calls().filter((c) => c.includes(sentinel))).toEqual([]);
+    });
+  });
+
+  /**
+   * Review round 1 (orchestrator ruling on reviewer-gst-2; design.md
+   * "Adopt only on the same git directory and the same history", test 3,
+   * and "Record the step-1 HEAD beside the identity", atomic writes).
+   */
+  describe('1.4 review round 1: the integrated tip, atomic records, unreadable identity', () => {
+    /**
+     * A move of the board in a fresh project whose source tip (its
+     * remote-tracking `origin/main`) is ahead of its HEAD: another clone
+     * synced two events X to the board's remote that this clone never
+     * pulled. The move integrates X and loses the compare-and-swap, so a
+     * temporary that integrated X stays, recording the clone's HEAD.
+     */
+    function interruptedMoveWithRemoteAhead(env: Env): {
+      root: string;
+      dir: string;
+      boardRemote: string;
+      head: string;
+      xFiles: string[];
+      temporary: string;
+    } {
+      const { root, remote, dir, boardRemote, tip } = standaloneProject(env, 3);
+      const other = cloneWithStandalone(remote, boardRemote, 'other');
+      const x = writeEvents(other.dir, 2, 'xavier', 50);
+      syncStandalone(other.dir, env);
+      expect(revParse(dir)).toBe(tip);
+      const { temporary } = interruptedMove(root, env);
+      const xFiles = x.map((h) => `${h}.json`);
+      for (const file of xFiles) {
+        expect(existsSync(join(temporary, 'events', file))).toBe(true);
+      }
+      return { root, dir, boardRemote, head: tip, xFiles, temporary };
+    }
+
+    it('scenario: Board remote rewritten since the interrupted move: the temporary that integrated the dropped events is removed and named, and neither dropped event reaches refs/agentboard/board', () => {
+      const env = syncEnv();
+      const fx = interruptedMoveWithRemoteAhead(env);
+      // The remote is force-reset to the HEAD the move began from, dropping
+      // X on purpose; the board then syncs a new event (HEAD only grows).
+      git(fx.boardRemote, 'update-ref', 'refs/heads/main', fx.head);
+      writeEvents(fx.dir, 1, 'yolanda', 70);
+      syncStandalone(fx.dir, env);
+      expect(isAncestor(fx.dir, fx.head, 'HEAD')).toBe(true);
+      expect(eventFiles(fx.dir).some((f) => fx.xFiles.includes(f))).toBe(false);
+      const files = eventFiles(fx.dir);
+
+      const result = move(fx.root, env);
+
+      expect(result.action).toBe('moved');
+      expect(result.message).toContain(removedAsAnotherBoard(fx.temporary, fx.dir));
+      expectMoved(fx.root, env);
+      expectNeverIn(fx.root, fx.xFiles);
+      for (const file of files) {
+        expect(refEvents(fx.root)).toContain(file);
+      }
+      expect(eventFiles(fx.dir).some((f) => fx.xFiles.includes(f))).toBe(false);
+      expectCheckClean(fx.root, env);
+    });
+
+    it('scenario: Temporary of a replaced board forked at or after the HEAD the move began from: the fork is moved with exit 0, the temporary removed and named, nothing it alone held in refs/agentboard/board', () => {
+      const env = syncEnv();
+      const fx = interruptedMoveWithRemoteAhead(env);
+      // .board becomes B: a fork of A at the recorded HEAD, with a remote of
+      // its own and an event of its own, at a reused inode (simulated).
+      rmSync(fx.dir, { recursive: true, force: true });
+      git(fx.root, 'clone', '-q', fx.boardRemote, fx.dir);
+      git(fx.dir, 'reset', '-q', '--hard', fx.head);
+      git(fx.dir, 'remote', 'set-url', 'origin', bareRemote());
+      git(fx.dir, 'push', '-q', 'origin', 'main');
+      git(fx.dir, 'fetch', '-q', 'origin');
+      git(fx.dir, 'branch', '-q', '-u', 'origin/main');
+      const [own] = writeEvents(fx.dir, 1, 'zed', 90);
+      syncStandalone(fx.dir, env);
+      simulateInodeReuse(fx.temporary, fx.dir);
+      expect(isAncestor(fx.dir, fx.head, 'HEAD')).toBe(true);
+
+      const result = move(fx.root, env);
+
+      expect(result.action).toBe('moved');
+      expect(result.message).toContain(removedAsAnotherBoard(fx.temporary, fx.dir));
+      expectMoved(fx.root, env);
+      expectNeverIn(fx.root, fx.xFiles);
+      expect(refEvents(fx.root)).toContain(`${String(own)}.json`);
+      expectCheckClean(fx.root, env);
+    });
+
+    /**
+     * Runs `run` with every write that targets a record file by its own
+     * name (`writeFileSync`, `appendFileSync`, or `openSync` for writing)
+     * simulated as torn by a kill: the file is left empty, as a truncating
+     * write leaves it, and the call throws. An atomic write (a temporary
+     * file in the same directory renamed onto the record) never triggers
+     * it. Returns the record paths written in place and what `run` threw.
+     */
+    function withTornRecordWrites<T>(run: () => T): { inPlace: string[]; thrown: unknown; value: T | undefined } {
+      const names = new Set([SOURCE_RECORD, HEAD_RECORD]);
+      const inPlace: string[] = [];
+      const real = {
+        writeFileSync: fs.writeFileSync,
+        appendFileSync: fs.appendFileSync,
+        openSync: fs.openSync,
+      };
+      const target = (file: unknown): string | null =>
+        (typeof file === 'string' || file instanceof URL || Buffer.isBuffer(file)) &&
+        names.has(basename(file instanceof URL ? file.pathname : String(file)))
+          ? String(file)
+          : null;
+      const tear = (path: string): never => {
+        inPlace.push(path);
+        real.writeFileSync(path, '');
+        throw new Error(`simulated kill during the in-place write of ${path}`);
+      };
+      fs.writeFileSync = ((file: fs.PathOrFileDescriptor, ...rest: unknown[]): void => {
+        const path = target(file);
+        if (path !== null) {
+          tear(path);
+        }
+        (real.writeFileSync as (...a: unknown[]) => void)(file, ...rest);
+      }) as typeof fs.writeFileSync;
+      fs.appendFileSync = ((file: fs.PathOrFileDescriptor, ...rest: unknown[]): void => {
+        const path = target(file);
+        if (path !== null) {
+          tear(path);
+        }
+        (real.appendFileSync as (...a: unknown[]) => void)(file, ...rest);
+      }) as typeof fs.appendFileSync;
+      fs.openSync = ((file: fs.PathLike, flags?: fs.OpenMode, mode?: fs.Mode | null): number => {
+        const path = target(file);
+        const writing =
+          typeof flags === 'string'
+            ? /[wa+]/.test(flags)
+            : typeof flags === 'number' && (flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR)) !== 0;
+        if (path !== null && writing) {
+          tear(path);
+        }
+        return real.openSync(file, flags ?? 'r', mode);
+      }) as typeof fs.openSync;
+      syncBuiltinESMExports();
+      try {
+        return { inPlace, thrown: undefined, value: run() };
+      } catch (error) {
+        return { inPlace, thrown: error, value: undefined };
+      } finally {
+        fs.writeFileSync = real.writeFileSync;
+        fs.appendFileSync = real.appendFileSync;
+        fs.openSync = real.openSync;
+        syncBuiltinESMExports();
+      }
+    }
+
+    it('the records an adopted 0.2.0 or record-less temporary gains are written atomically: no write of a record in place, so a kill there cannot leave an empty record that loses the resolution', () => {
+      const env = syncEnv();
+      for (const removedRecords of [[HEAD_RECORD], [SOURCE_RECORD, HEAD_RECORD]]) {
+        const label = removedRecords.join('+');
+        const { bRoot, bDir } = conflictingClones(env);
+        expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+        const temporary = String(registeredMigrating(bRoot)[0]);
+        resolveIgnoreConflicts(temporary);
+        const resolvedHead = revParse(temporary);
+        for (const name of removedRecords) {
+          rmSync(recordPath(temporary, name), { force: true });
+        }
+        const head = revParse(bDir);
+        const identity = gitDirIdentity(bDir);
+
+        const run = withTornRecordWrites(() => move(bRoot, env));
+
+        expect(run.inPlace, label).toEqual([]);
+        expect(run.thrown, label).toBeUndefined();
+        expect(run.value?.action, label).toBe('moved');
+        expect(run.value?.message, label).not.toContain(temporary);
+        expectMoved(bRoot, env, 1, label);
+        expect(isAncestor(bRoot, resolvedHead, BOARD_REF), label).toBe(true);
+        // The adopted temporary is .board now; its git directory holds the records.
+        expect(readRecordFile(bDir, HEAD_RECORD), label).toBe(`${head}\n`);
+        expect(String(readRecordFile(bDir, SOURCE_RECORD)).replace(/\n$/, ''), label).toBe(identity);
+      }
+    });
+
+    it('the records of a fresh temporary are written atomically too (step 3): no write of a record in place', () => {
+      const env = syncEnv();
+      const { bRoot } = conflictingClones(env);
+
+      const run = withTornRecordWrites(() => move(bRoot, env));
+
+      expect(run.inPlace).toEqual([]);
+      expect(run.thrown).toBeInstanceOf(Error);
+      expect((run.thrown as { reason?: unknown }).reason).toBe('sync-conflict');
+      const temporary = String(registeredMigrating(bRoot)[0]);
+      expect(readRecordFile(temporary, HEAD_RECORD)).toMatch(/^[0-9a-f]{40}\n$/);
+      expect(readRecordFile(temporary, SOURCE_RECORD)).toMatch(/^\/.+:\d+:\d+$/);
+    });
+
+    it('an unreadable agentboard-source (a directory) names another board: the temporary is removed and named and the move completes, no raw file error', () => {
+      const env = syncEnv();
+      const { root, dir } = standaloneProject(env, 3);
+      const { temporary } = interruptedMove(root, env);
+      rmSync(recordPath(temporary, SOURCE_RECORD), { force: true });
+      mkdirSync(recordPath(temporary, SOURCE_RECORD));
+
+      const result = move(root, env);
+
+      expect(result.action).toBe('moved');
+      expect(result.message).toContain(removedAsAnotherBoard(temporary, dir));
+      expectMoved(root, env);
+    });
+
+    it('an unreadable agentboard-source of a stopped temporary: the sync-in-progress refusal saying another board, nothing removed, no raw file error', () => {
+      const env = syncEnv();
+      const { bRoot, bDir } = conflictingClones(env);
+      expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+      const temporary = String(registeredMigrating(bRoot)[0]);
+      rmSync(recordPath(temporary, SOURCE_RECORD), { force: true });
+      mkdirSync(recordPath(temporary, SOURCE_RECORD));
+
+      const err = expectBoardError(() => move(bRoot, env), 3, 'sync-in-progress');
+
+      expect(err.message).toContain(`temporary worktree at ${temporary}${anotherBoardParenthesis(bDir)}; resolve`);
+      expect(rebaseInProgress(temporary)).toBe(true);
+      expect(registeredMigrating(bRoot)).toEqual([temporary]);
+    });
+
+    it('the identity check applies to a 0.2.0 temporary (mutant M8): one recording another git directory is removed and named although the tip it integrated is in the board history', () => {
+      const env = syncEnv();
+      const { root, dir } = standaloneProject(env, 3);
+      const { temporary } = interruptedMove(root, env);
+      rmSync(recordPath(temporary, HEAD_RECORD), { force: true });
+      const [path, dev, ino] = gitDirIdentity(dir).split(/:(?=\d+:\d+$)|:(?=\d+$)/);
+      writeFileSync(recordPath(temporary, SOURCE_RECORD), `${String(path)}:${String(dev)}:${String(Number(ino) + 1)}`);
+      expect(isAncestor(dir, String(refCommit(root, MIGRATING_REF)), 'refs/remotes/origin/main')).toBe(true);
+
+      const result = move(root, env);
+
+      expect(result.action).toBe('moved');
+      expect(result.message).toContain(removedAsAnotherBoard(temporary, dir));
+      expectMoved(root, env);
+    });
+  });
+
+  /**
+   * Review round 2 (orchestrator ruling on reviewer-gst-2 R1 and
+   * reviewer-gst-1's low; design.md "Record the tip the temporary
+   * integrated" and "Temporaries of earlier versions"). A pid that looks
+   * alive is made deterministic by naming a temporary after this test
+   * process's parent (`process.ppid`, alive for the whole test and never
+   * this process's own pid, which the move treats as dead); its death by
+   * moving the worktree to a name no process has (`DEAD_PID - 1`, which
+   * sorts before `DEAD_PID`, so the older temporary is judged first).
+   */
+  describe('1.5 review round 2: the integrated tip recorded per temporary', () => {
+    const TIP_RECORD = 'agentboard-source-tip';
+    const EARLIER_DEAD_PID = DEAD_PID - 1;
+
+    /** Moves the temporary worktree at `from` to `migrating/<pid>` beside it; returns the new path. */
+    function renameTemporary(root: string, from: string, pid: number): string {
+      const to = join(agentboardDir(root), MIGRATING_DIR, String(pid));
+      git(root, 'worktree', 'move', from, to);
+      return to;
+    }
+
+    /**
+     * Another move of the board in `root` that integrates a local
+     * `refs/agentboard/board` and loses the compare-and-swap to a commit
+     * made on top of it, beside temporaries that already exist. Returns
+     * the new temporary (named by this process's pid).
+     */
+    function loseCasAgain(root: string, env: Env, at: number): string {
+      const before = new Set(registeredMigrating(root));
+      const other = hostBoard(env);
+      commitHostEvent(other.dir, ev(P.create(T3, `host ${String(at)}`), 'h', at), env);
+      git(root, 'fetch', '-q', '-f', other.root, `${BOARD_REF}:refs/test/base-${String(at)}`);
+      const old = refCommit(root);
+      const base = git(root, 'rev-parse', `refs/test/base-${String(at)}`).trim();
+      if (old === null) {
+        git(root, 'update-ref', BOARD_REF, base);
+      }
+      const c1 = String(refCommit(root));
+      // c2 descends from c1: the local ref with one more commit.
+      const tree = git(root, 'rev-parse', `${c1}^{tree}`).trim();
+      const c2 = git(root, '-c', 'user.name=h', '-c', 'user.email=h@localhost', 'commit-tree', tree, '-p', c1, '-m', `race ${String(at)}`).trim();
+      const racing = withGitShimBefore(
+        env,
+        ['update-ref', BOARD_REF],
+        `"$GIT" -C '${root}' update-ref ${BOARD_REF} ${c2} ${c1}`,
+      );
+      expectBoardError(() => move(root, racing), 3, 'sync-failed');
+      const fresh = registeredMigrating(root).filter((p) => !before.has(p));
+      expect(fresh).toHaveLength(1);
+      const temporary = String(fresh[0]);
+      expect(revParse(temporary)).not.toBe(refCommit(root, MIGRATING_REF));
+      return temporary;
+    }
+
+    /**
+     * Board A in a fresh project with a remote another clone put two
+     * events X ahead of A's HEAD on; A's move integrates X and loses the
+     * compare-and-swap. Its temporary is then renamed to look alive.
+     */
+    function aliveTemporaryWithRemoteAhead(env: Env): {
+      root: string;
+      dir: string;
+      boardRemote: string;
+      head: string;
+      xFiles: string[];
+      alive: string;
+    } {
+      const { root, remote, dir, boardRemote, tip } = standaloneProject(env, 3);
+      const other = cloneWithStandalone(remote, boardRemote, 'other');
+      const xFiles = writeEvents(other.dir, 2, 'xavier', 50).map((h) => `${h}.json`);
+      syncStandalone(other.dir, env);
+      const { temporary } = interruptedMove(root, env);
+      expect(readRecordFile(temporary, HEAD_RECORD)).toBe(`${tip}\n`);
+      const alive = renameTemporary(root, temporary, process.ppid);
+      expect(findMigratingWorktrees(root, { env }).find((w) => w.path === alive)?.alive).toBe(true);
+      return { root, dir, boardRemote, head: tip, xFiles, alive };
+    }
+
+    it('scenario: Temporary that looked alive while a fork of the board moved: once its pid is dead it is removed and named, and nothing only it held reaches refs/agentboard/board', () => {
+      const env = syncEnv();
+      const fx = aliveTemporaryWithRemoteAhead(env);
+      // .board becomes B, a fork of A at A's HEAD with its own remote and
+      // event, at a reused inode (simulated); B's move loses the swap too,
+      // overwriting the host's refs/agentboard/migrating with B's tip.
+      rmSync(fx.dir, { recursive: true, force: true });
+      git(fx.root, 'clone', '-q', fx.boardRemote, fx.dir);
+      git(fx.dir, 'reset', '-q', '--hard', fx.head);
+      git(fx.dir, 'remote', 'set-url', 'origin', bareRemote());
+      git(fx.dir, 'push', '-q', 'origin', 'main');
+      git(fx.dir, 'fetch', '-q', 'origin');
+      git(fx.dir, 'branch', '-q', '-u', 'origin/main');
+      const [own] = writeEvents(fx.dir, 1, 'zed', 90);
+      syncStandalone(fx.dir, env);
+      simulateInodeReuse(fx.alive, fx.dir);
+      const forkTemporary = loseCasAgain(fx.root, env, 3000);
+      expect(existsSync(fx.alive)).toBe(true);
+      // A's pid dies; A's temporary is judged first.
+      const stale = renameTemporary(fx.root, fx.alive, EARLIER_DEAD_PID);
+      renameTemporary(fx.root, forkTemporary, DEAD_PID);
+
+      const result = move(fx.root, env);
+
+      expect(result.action).toBe('moved');
+      expect(result.message).toContain(removedAsAnotherBoard(stale, fx.dir));
+      expectMoved(fx.root, env);
+      expectNeverIn(fx.root, fx.xFiles);
+      expect(refEvents(fx.root)).toContain(`${String(own)}.json`);
+      expectCheckClean(fx.root, env);
+    });
+
+    it("scenario: Temporary that looked alive while its board's remote was rewritten: once its pid is dead it is removed and named, and neither dropped event reaches refs/agentboard/board", () => {
+      const env = syncEnv();
+      const fx = aliveTemporaryWithRemoteAhead(env);
+      git(fx.boardRemote, 'update-ref', 'refs/heads/main', fx.head);
+      writeEvents(fx.dir, 1, 'yolanda', 70);
+      syncStandalone(fx.dir, env);
+      expect(eventFiles(fx.dir).some((f) => fx.xFiles.includes(f))).toBe(false);
+      const second = loseCasAgain(fx.root, env, 3000);
+      const stale = renameTemporary(fx.root, fx.alive, EARLIER_DEAD_PID);
+      renameTemporary(fx.root, second, DEAD_PID);
+
+      const result = move(fx.root, env);
+
+      expect(result.action).toBe('moved');
+      expect(result.message).toContain(removedAsAnotherBoard(stale, fx.dir));
+      expectMoved(fx.root, env);
+      expectNeverIn(fx.root, fx.xFiles);
+      expect(eventFiles(fx.dir).some((f) => fx.xFiles.includes(f))).toBe(false);
+      expectCheckClean(fx.root, env);
+    });
+
+    it('scenario: Board whose remote is ahead of its HEAD is adopted: the tip it integrated, beyond HEAD, is in its source tip', () => {
+      const env = syncEnv();
+      const fx = conflictingClones(env);
+      const { bRoot, bDir } = fx;
+      // A third clone syncs an event to the old remote; B fetches it
+      // without merging, so B's source tip is ahead of its HEAD.
+      const c = cloneWithStandalone(fx.remote, fx.boardRemote, 'c');
+      const [fromC] = writeEvents(c.dir, 1, 'carol', 400);
+      syncStandalone(c.dir, env);
+      git(bDir, 'fetch', '-q', 'origin');
+      const head = revParse(bDir);
+      expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+      const integrated = String(refCommit(bRoot, MIGRATING_REF));
+      expect(integrated).not.toBe(head);
+      expect(isAncestor(bDir, head, integrated)).toBe(true);
+      expect(isAncestor(bDir, integrated, 'HEAD')).toBe(false);
+      const temporary = String(registeredMigrating(bRoot)[0]);
+      resolveIgnoreConflicts(temporary);
+      const resolvedHead = revParse(temporary);
+
+      const result = move(bRoot, env);
+
+      expect(result.action).toBe('moved');
+      expect(result.message).not.toContain(temporary);
+      expect(result.message).not.toContain('another board');
+      expectMoved(bRoot, env);
+      expect(isAncestor(bRoot, resolvedHead, BOARD_REF)).toBe(true);
+      expect(refEvents(bRoot)).toContain(`${String(fromC)}.json`);
+      expectCheckClean(bRoot, env);
+    });
+
+    it('a fresh temporary records the tip it integrated (the value of refs/agentboard/migrating it is checked out at) at step 3', () => {
+      const env = syncEnv();
+      const { bRoot } = conflictingClones(env);
+
+      expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+
+      const temporary = String(registeredMigrating(bRoot)[0]);
+      expect(readRecordFile(temporary, TIP_RECORD)).toBe(`${String(refCommit(bRoot, MIGRATING_REF))}\n`);
+    });
+
+    it('the record follows the tip when an adopted temporary integrates more (a replay), seen when that run then loses the compare-and-swap', () => {
+      const env = syncEnv();
+      const fx = conflictingClones(env);
+      const { bRoot, boardRemote } = fx;
+      expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+      const temporary = String(registeredMigrating(bRoot)[0]);
+      resolveIgnoreConflicts(temporary);
+      const before = String(refCommit(bRoot, MIGRATING_REF));
+      const c = cloneWithStandalone(fx.remote, boardRemote, 'c');
+      writeEvents(c.dir, 1, 'carol', 400);
+      syncStandalone(c.dir, env);
+      const fresh = git(boardRemote, 'rev-parse', 'main').trim();
+      expect(fresh).not.toBe(before);
+      const mainCommit = git(bRoot, 'rev-parse', 'main').trim();
+      const racing = withGitShimBefore(
+        env,
+        ['update-ref', BOARD_REF],
+        `"$GIT" -C '${bRoot}' update-ref ${BOARD_REF} ${mainCommit}`,
+      );
+
+      expectBoardError(() => move(bRoot, racing), 3, 'sync-failed');
+
+      expect(registeredMigrating(bRoot)).toEqual([temporary]);
+      expect(refCommit(bRoot, MIGRATING_REF)).toBe(fresh);
+      expect(readRecordFile(temporary, TIP_RECORD)).toBe(`${fresh}\n`);
+    });
+
+    it.each([
+      ['both other records (made by this change before the tip record)', [TIP_RECORD]],
+      ['agentboard-source only (0.2.0)', [TIP_RECORD, HEAD_RECORD]],
+      ['no record (older code)', [TIP_RECORD, HEAD_RECORD, SOURCE_RECORD]],
+    ])(
+      'a temporary without agentboard-source-tip that is the only temporary on the host, with %s, is judged against refs/agentboard/migrating, adopted, and gains the record',
+      (_label, removedRecords) => {
+        const env = syncEnv();
+        const { root, dir } = standaloneProject(env, 3);
+        const { temporary } = interruptedMove(root, env);
+        for (const name of removedRecords) {
+          rmSync(recordPath(temporary, name), { force: true });
+        }
+        const integrated = String(refCommit(root, MIGRATING_REF));
+
+        const result = move(root, env);
+
+        expect(result.action).toBe('moved');
+        expect(result.message).not.toContain(temporary);
+        expectMoved(root, env);
+        // The adopted temporary is .board now; its git directory holds the records.
+        expect(readRecordFile(dir, TIP_RECORD)).toBe(`${integrated}\n`);
+      },
+    );
+
+    it.each([
+      ['both other records, beside a temporary whose pid is alive', [TIP_RECORD], 'alive'],
+      ['both other records, beside a plain leftover of a dead move', [TIP_RECORD], 'leftover'],
+      ['agentboard-source only (0.2.0), beside a plain leftover of a dead move', [TIP_RECORD, HEAD_RECORD], 'leftover'],
+      ['no record (older code), beside a temporary whose pid is alive', [TIP_RECORD, HEAD_RECORD, SOURCE_RECORD], 'alive'],
+    ])(
+      'a temporary without agentboard-source-tip with %s is not adoptable: refs/agentboard/migrating may be the other temporary tip',
+      (_label, removedRecords, beside) => {
+        const env = syncEnv();
+        const { root, dir } = standaloneProject(env, 3);
+        const { temporary } = interruptedMove(root, env);
+        for (const name of removedRecords) {
+          rmSync(recordPath(temporary, name), { force: true });
+        }
+        const otherPath = join(agentboardDir(root), MIGRATING_DIR, String(beside === 'alive' ? process.ppid : EARLIER_DEAD_PID));
+        git(root, 'worktree', 'add', '-q', '--detach', otherPath, beside === 'alive' ? 'main' : MIGRATING_REF);
+
+        const result = move(root, env);
+
+        expect(result.action).toBe('moved');
+        expect(result.message).toContain(removedAsAnotherBoard(temporary, dir));
+        if (beside === 'alive') {
+          expect(existsSync(otherPath)).toBe(true);
+        } else {
+          expect(result.message).toContain(`removed ${otherPath}, left by an interrupted move`);
+          expectMoved(root, env);
+        }
+      },
+    );
+
+    // Each row rewrites the tip record of an otherwise adoptable temporary
+    // of this board; the record is read by the HEAD record's rules.
+    it.each<[string, boolean, (integrated: string, dir: string) => string | null]>([
+      ['the tip it integrated (control)', true, (tip) => `${tip}\n`],
+      ['that tip without a trailing newline', true, (tip) => tip],
+      ['empty', false, () => ''],
+      ['not hexadecimal', false, () => 'not-a-commit\n'],
+      ['a ref name (HEAD)', false, () => 'HEAD\n'],
+      ['an abbreviated object name of that tip', false, (tip) => `${tip.slice(0, 12)}\n`],
+      ['that tip in upper-case hexadecimal', false, (tip) => `${tip.toUpperCase()}\n`],
+      ['that tip with a leading space', false, (tip) => ` ${tip}\n`],
+      ['that tip with two trailing newlines', false, (tip) => `${tip}\n\n`],
+      ['that tip followed by a second line', false, (tip) => `${tip}\n${tip}\n`],
+      ['a full name the board repository does not have', false, () => `${'f'.repeat(40)}\n`],
+      ['unreadable (a directory)', false, () => null],
+    ])('a temporary of this board whose agentboard-source-tip is %s: adopted %s', (_label, adopted, content) => {
+      const env = syncEnv();
+      const { root, dir } = standaloneProject(env, 3);
+      const { temporary } = interruptedMove(root, env);
+      const integrated = String(refCommit(root, MIGRATING_REF));
+      const path = recordPath(temporary, TIP_RECORD);
+      rmSync(path, { recursive: true, force: true });
+      const text = content(integrated, dir);
+      if (text === null) {
+        mkdirSync(path);
+      } else {
+        writeFileSync(path, text);
+      }
+
+      const result = move(root, env);
+
+      expect(result.action).toBe('moved');
+      expectMoved(root, env);
+      if (adopted) {
+        expect(result.message).not.toContain(temporary);
+      } else {
+        expect(result.message).toContain(removedAsAnotherBoard(temporary, dir));
+      }
+    });
+  });
+});
