@@ -82,6 +82,26 @@ export interface WaitOptions {
   readonly pollMs?: number;
   /** When false, no directory watcher is started (`runTicker`'s `fsWatch`). */
   readonly fsWatch?: boolean;
+  /**
+   * The monotonic clock the deadline is measured on, in milliseconds from
+   * any origin; defaults to `performance.now`. The deadline is its reading
+   * at the start of the wait plus `timeout`, and "the deadline has passed"
+   * is decided on it alone, so a wall clock (`now`) stepped back or
+   * forward never delays or advances the end of the wait. `now` is still
+   * the clock of every catch-up and command (grant slot times are walls).
+   */
+  readonly monotonic?: () => number;
+  /**
+   * A test seam, called synchronously immediately before each step that
+   * catches up: `'wake'` before a wake's catch-up, `'claim'` before the
+   * claim a wake makes instead (step 3d), and `'end'` before each attempt
+   * of the transaction that ends a wait at the deadline or on a signal
+   * (step 3c). An error it throws is that step's error (so a test throws
+   * `BoardError(5, 'busy')` to simulate a step that could not take the
+   * write lock), and events it writes are what that step's catch-up finds.
+   * Defaults to none.
+   */
+  readonly beforeStep?: (step: 'wake' | 'claim' | 'end') => void;
 }
 
 /**
@@ -120,7 +140,8 @@ export type WaitOutcome = ClaimedOutcome | GrantedOutcome;
  *
  * Then:
  *
- * 1. Reads the clock once; the deadline is that reading plus `timeout`.
+ * 1. Reads the monotonic clock once; the deadline is that reading plus
+ *    `timeout` (see `WaitOptions.monotonic`).
  *    Runs `claimTicket(board, actor, { id, ttl, wait: true }, { now })`.
  *    When that holds the ticket (claimed at once, or a retried claim by
  *    the assignee), resolves with its `ClaimedOutcome` at once, leaving no
@@ -150,19 +171,40 @@ export type WaitOutcome = ClaimedOutcome | GrantedOutcome;
  *    b. the assignee is the actor otherwise (a hand-off or assign to a
  *       waiter): resolves with `{ hash: null, events: [], ticket, queued:
  *       false }`, writing nothing;
- *    c. the clock has reached the deadline (`now >= deadline`), or
- *       `signal` has aborted: when the actor is still queued, writes
- *       `ticket.queue.leave` (`unqueueTicket` with `{ now }`); then
- *       rejects with `BoardError(4, 'wait-timeout')` at the deadline, or
- *       `BoardError(4, 'wait-interrupted')` on abort, each naming the
- *       ticket id in its message. Because (a) is checked first, a grant
- *       due exactly at the deadline is written by that wake's catch-up and
+ *    c. the monotonic clock has reached the deadline, or `signal` has
+ *       aborted: the wait ends with one more transaction (`runCommand`,
+ *       clock `now`) that decides after its own catch-up, because that
+ *       catch-up can write a grant to the actor or fold a hand-off to it
+ *       that the wake did not see:
+ *       - the actor is now the assignee, at the deadline: no event; the
+ *         wait resolves as (a) or (b) would (exit 0: the actor holds the
+ *         ticket and must renew);
+ *       - the actor is now the assignee, on a signal: writes
+ *         `ticket.release` (a plain release by the assignee, so the next
+ *         waiter is granted) and rejects with `BoardError(4,
+ *         'wait-interrupted')` whose message is exactly
+ *         `the wait for ticket <id> was interrupted after the ticket was given to you; you released it, so it passes to the next waiter`;
+ *       - the actor is still queued: writes `ticket.queue.leave` and
+ *         rejects with `BoardError(4, 'wait-timeout')` at the deadline or
+ *         `BoardError(4, 'wait-interrupted')` on a signal, each naming the
+ *         ticket id;
+ *       - otherwise (it left the queue elsewhere meanwhile): no event, and
+ *         the same rejection.
+ *       A transaction that fails `BoardError(5, 'busy')` is attempted once
+ *       more (the board's busy policy: the busy timeout and one retry);
+ *       if that fails too the wait rejects with `BoardError(5, 'busy')`
+ *       whose message names `agentboard unqueue <id> --as <actor>`, the
+ *       actor still queued. Because (a) is checked first, a grant due
+ *       exactly at the deadline is written by that wake's catch-up and
  *       wins;
  *    d. the actor is neither queued nor the assignee, and the ticket is
  *       unassigned with an empty queue (its join was rejected, for example
  *       because a release with an earlier wall arrived late): claims
  *       instead, `claimTicket(board, actor, { id, ttl, wait: true }, {
- *       now })`, and resolves with that `ClaimedOutcome`;
+ *       now })`, and resolves with that `ClaimedOutcome`; when that claim
+ *       joins instead (another actor took the ticket meanwhile), the actor
+ *       is queued again and the wait goes on (`onQueued` is not called
+ *       again);
  *    e. the actor is neither queued nor the assignee otherwise: rejects
  *       with `BoardError(4, 'invalid-queue')`, writing nothing.
  *    Otherwise the wait goes on.
@@ -264,6 +306,7 @@ export async function waitForGrant(
     }
     const t = now();
     try {
+      options.beforeStep?.('wake');
       catchUp(board, { now: t });
     } catch (error) {
       if (error instanceof BoardError && error.exitCode === 5 && error.reason === 'busy') {
@@ -291,6 +334,7 @@ export async function waitForGrant(
       }
       const queued = ticket.queue.some((waiter) => waiter.actor === actor);
       if (signal.aborted || t >= deadline) {
+        options.beforeStep?.('end');
         if (queued) {
           leaveQueue(board, actor, id, now);
         }
@@ -309,6 +353,7 @@ export async function waitForGrant(
       }
       if (!queued) {
         if (ticket.assignee === null && ticket.queue.length === 0) {
+          options.beforeStep?.('claim');
           const claimed = claimTicket(board, actor, { id, ttl, wait: true }, { now });
           if (claimed.queued !== true) {
             finish({ value: claimed });
