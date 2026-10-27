@@ -852,7 +852,9 @@ function selectTargets(
  *   `wanted` (rewritten as above): `updated`.
  *
  * @throws BoardError exit 1 `usage` (an `mcpCommand` that is empty or
- * contains `\n`, checked first, then an unknown target) or `no-targets`
+ * contains `\n`, checked first, then an unknown target, exactly `unknown
+ * target given with --target; expected one of claude, agents-md,
+ * openspec, mcp-json`, which does not repeat the target) or `no-targets`
  * (no `--target`, nothing detected and no `mcpCommand`).
  */
 export function installGuidance(options: InstallOptions): InstallResult {

@@ -185,7 +185,8 @@ export interface BoardMcpServer {
    * throws, every failure is a tool error.
    *
    * 1. `findTool(name)`; an unknown or excluded name is a tool error with
-   *    exit code 1, reason `usage`, naming the tool.
+   *    exit code 1, reason `usage`, exactly `unknown tool; call tools/list
+   *    for the tool names`, which does not repeat the name.
    * 2. `toolArguments(command, args)`.
    * 3. The actor, for a command that writes or tracks a per-actor cursor
    *    (as `runCli` decides): `resolveActor(given, options.env)`, the

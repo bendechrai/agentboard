@@ -51,7 +51,9 @@ export interface TreePath {
  *   resolved form, so a path through an in-tree symlink records the real
  *   in-tree location.
  * - When the result is the root itself or lies outside it,
- *   `BoardError(1, 'path-outside-tree')` naming `text`.
+ *   `BoardError(1, 'path-outside-tree')`, exactly `the path given is
+ *   outside the working tree <root>` (`<root>` the resolved root through
+ *   `asciiText`), which does not repeat `text`.
  * - Otherwise returns the absolute path and the root-relative path with
  *   `/` separators. Existence is not checked here.
  *

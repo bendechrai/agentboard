@@ -56,10 +56,18 @@ export interface ImportTarget {
  * - With `:`, the text before the first `:` is the source and the rest is
  *   the ref (`speckit:001-photo-albums`), the same `<source>:<ref>` form
  *   `list --task` accepts. The source must match `TASK_SOURCE_PATTERN`,
- *   otherwise `BoardError(1, 'malformed-task-ref')` naming it. A `#` in
- *   the text is `BoardError(1, 'malformed-task-ref')` (an import names a
- *   whole ref, never one item).
- * - An empty text or empty ref is `BoardError(1, 'usage')`.
+ *   otherwise `BoardError(1, 'malformed-task-ref')`, exactly `the task
+ *   source given to import-change must match /^[a-z][a-z0-9-]*$/`. A `#`
+ *   in the text (checked first) is `BoardError(1, 'malformed-task-ref')`,
+ *   exactly `the change given to import-change names an item (it contains
+ *   #); import-change takes a whole change or <source>:<ref>` (an import
+ *   names a whole ref, never one item).
+ * - An empty text is `BoardError(1, 'usage')` (`import-change needs a
+ *   change name or <source>:<ref>`) and an empty ref is
+ *   `BoardError(1, 'usage')`, exactly `the change given to import-change
+ *   names no ref after its source`.
+ * No message repeats the text given (board-cli "Refusals never repeat the
+ * refused input").
  *
  * Whether the source has an adapter is not checked here (`importChange`
  * does).
@@ -775,8 +783,10 @@ export class ImportRefusedError extends BoardError {
  * Checks, in order, before anything is written:
  * 1. `actor` empty: `BoardError(1, 'missing-actor')`.
  * 2. No adapter for `target.source` (`sourceAdapter`):
- *    `BoardError(1, 'unsupported-source')` whose message names the source
- *    and says only `openspec` can be imported by this version.
+ *    `BoardError(1, 'unsupported-source')`, exactly `the task source given
+ *    has no adapter in this version; only openspec can be imported` (the
+ *    adapters of `SOURCE_ADAPTERS` joined by `, `), which does not repeat
+ *    the source.
  * 3. The units, `adapter.listUnits(dirname(board.dir), target.ref)`:
  *    `usage`, `tasks-not-found` (naming the tasks file path) or
  *    `malformed-tasks` from the adapter propagate unchanged.

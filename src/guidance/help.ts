@@ -333,8 +333,8 @@ export function overviewDocument(source: HelpSource): CommandHelpDocument[] {
  *   prints the help of `config set` and then of `config get`.
  * - two words whose first alone is a command name (`['claim', 'extra']`):
  *   throws `BoardError(1, 'usage')` with exactly
- *   `<command> has no help subtopic <word>; run 'agentboard help <command>'`
- *   (`<word>` passed through `asciiText`).
+ *   `<command> has no help subtopic of that name; run 'agentboard help <command>'`
+ *   (the second word is not repeated).
  * - anything else: throws `BoardError(1, 'usage',
  *   unknownCommandMessage(topic, source.commands))`, so `help clam`
  *   suggests `claim` and points to `agentboard help`.

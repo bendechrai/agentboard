@@ -86,10 +86,12 @@ export function suggestFlags(name: string, flags: readonly ArgSpec[]): string[] 
 }
 
 /**
- * The unknown command named in an error for `argv`: the first argument, or,
+ * The unknown command word(s) of `argv`: the first argument, or,
  * when the first argument is the first word of a command of several words
  * and a second argument exists, the first two arguments joined by a space
- * (`checklist tik`). Passed through `asciiText`. Pure.
+ * (`checklist tik`). Passed through `asciiText`. No refusal message uses
+ * it (an unknown command is never repeated; see `unknownCommandMessage`).
+ * Pure.
  */
 export function unknownCommandToken(
   argv: readonly string[],
@@ -107,12 +109,14 @@ export function unknownCommandToken(
  * The message of the exit 1 `usage` error for an unknown command (argv
  * non-empty, matching no command), exactly:
  * - with suggestions:
- *   `unknown command <token>; did you mean <list>? run 'agentboard help' to list the commands`
+ *   `unknown command; did you mean <list>? run 'agentboard help' to list the commands`
  * - without:
- *   `unknown command <token>; run 'agentboard help' to list the commands`
- * where `<token>` is `unknownCommandToken(argv, commands)` and `<list>` is
- * `suggestCommands(argv, commands)` written `a`, `a or b`, or `a, b or c`.
- * Pure.
+ *   `unknown command; run 'agentboard help' to list the commands`
+ * where `<list>` is `suggestCommands(argv, commands)` written `a`, `a or
+ * b`, or `a, b or c`. The message never contains the unknown token or any
+ * other argument (board-cli "Refusals never repeat the refused input";
+ * board-agent-guidance "Unknown command suggestions"): a token pasted into
+ * the command position must not land in a terminal or a log. Pure.
  */
 export function unknownCommandMessage(
   argv: readonly string[],
@@ -124,22 +128,29 @@ export function unknownCommandMessage(
 
 /**
  * The message of the exit 1 `usage` error for an unknown flag `--<name>`
- * given to `command`, where `flags` are the flags it accepts (its own and
- * the global ones), exactly:
+ * given to `command`, where `name` is the flag's name without its dashes
+ * and before any `=` (it is used only to compute the suggestions),
+ * `position` is the flag's 1-based position among the arguments after the
+ * program name (`list --stauts todo` has it at 2), and `flags` are the
+ * flags `command` accepts (its own and the global ones), exactly:
  * - with suggestions:
- *   `unknown flag --<name> for <command>; did you mean <list>? run 'agentboard help <command>' to list its flags`
+ *   `unknown flag at argument <position> for <command>; did you mean <list>? run 'agentboard help <command>' to list its flags`
  * - without:
- *   `unknown flag --<name> for <command>; run 'agentboard help <command>' to list its flags`
- * where `<name>` is passed through `asciiText`, `<command>` is the command
- * name and `<list>` is `suggestFlags(name, flags)` written as in
- * `unknownCommandMessage`. Pure.
+ *   `unknown flag at argument <position> for <command>; run 'agentboard help <command>' to list its flags`
+ * where `<command>` is the command name and `<list>` is
+ * `suggestFlags(name, flags)` written as in `unknownCommandMessage`. The
+ * message never contains `name`, nor the value of a `--name=value`
+ * argument (board-cli "Refusals never repeat the refused input"). Pure.
  */
 export function unknownFlagMessage(
   name: string,
+  position: number,
   command: CommandSpec,
   flags: readonly ArgSpec[],
 ): string {
   const suggestions = didYouMean(suggestFlags(name, flags));
+  // Stub (no-echo-refusals group 1, test author): the implementer writes the
+  // message above; until then the old text is kept and `position` unused.
   return `unknown flag --${asciiText(name)} for ${command.name}; ${suggestions}run 'agentboard help ${command.name}' to list its flags`;
 }
 

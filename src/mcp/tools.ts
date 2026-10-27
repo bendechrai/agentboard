@@ -248,6 +248,10 @@ export function findTool(
  * and an exclusive group that names a CLI-only flag (`claim`'s `--wait`
  * with `--timeout`) is not checked, so `wait` alone is accepted.
  *
+ * An unknown property (including `json`) is refused with
+ * `unknownArgumentMessage(command)`; the unknown property's name is never
+ * repeated (board-cli "Refusals never repeat the refused input").
+ *
  * @throws BoardError exit 1: reason `usage` naming the property for a
  *   non-object `args`, an unknown property (including `json`), a value of
  *   the wrong type, or a missing required argument; or the reason of a
@@ -356,6 +360,20 @@ function argumentValue(
       }
       return value ? true : null;
   }
+}
+
+/**
+ * The message of the refusal of an unknown tool argument of `command`'s
+ * tool, exactly `unknown argument for <tool>; its arguments are <names>`,
+ * where `<tool>` is `toolName(command.name)` and `<names>` the keys of
+ * `toolInputSchema(command).properties` in schema order joined by `, `
+ * (`unknown argument for board_show; its arguments are id, raw, as`).
+ * Built only from the registry, so it never repeats the unknown name.
+ * Pure.
+ */
+export function unknownArgumentMessage(command: CommandSpec): string {
+  // Stub (no-echo-refusals group 1, test author); the implementer writes it.
+  throw new Error(`unknownArgumentMessage is not implemented (${command.name})`);
 }
 
 function usage(message: string): BoardError {

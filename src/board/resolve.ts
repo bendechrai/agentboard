@@ -12,6 +12,34 @@ import { BoardError } from '../store/errors.js';
 export const MIN_PREFIX_LENGTH = 6;
 
 /**
+ * True when `text` has the shape of a ticket id or id prefix (board-cli
+ * "Ticket ids in refusals"): after upper-casing, it matches
+ * `^[0-9A-HJKMNP-TV-Z]{1,26}$`, that is 1 to 26 characters of Crockford
+ * base32 (the digits and the letters other than I, L, O and U). So
+ * `01j9k3` and `01J9K3ZZZZ` are id-shaped, and the empty string, `01NOPE`
+ * (an `O`), a 27-character run, and anything with `_`, `-`, `:` or `/`
+ * are not.
+ *
+ * Only an id-shaped text given as a ticket id may be repeated in a
+ * refusal or a hint; `resolveTicketId` and `renderHint`
+ * (`src/guidance/hints.ts`) decide with this. Pure.
+ */
+export function isIdShaped(text: string): boolean {
+  // Stub (no-echo-refusals group 1, test author); the implementer writes it.
+  throw new Error(`isIdShaped is not implemented (${String(text.length)})`);
+}
+
+/**
+ * The message of the `unknown-ticket` refusal for a ticket id that is not
+ * id-shaped (`isIdShaped` false), which names the id form and not the
+ * text given.
+ */
+export const NOT_AN_ID_MESSAGE =
+  'no ticket matches the id given, which is not a ticket id: an id is 26 characters of ' +
+  'Crockford base32 (digits and letters other than I, L, O and U), or a unique prefix of ' +
+  'at least 6 of them';
+
+/**
  * Resolves a full ticket id or a unique prefix against `state.tickets`
  * (closed tickets included). Pure.
  *
@@ -19,11 +47,18 @@ export const MIN_PREFIX_LENGTH = 6;
  * case-insensitive). Then, in order:
  * - an exact id match is returned as is;
  * - shorter than `MIN_PREFIX_LENGTH`: `BoardError(1, 'id-too-short')`
- *   naming the minimum length;
+ *   naming the minimum length, exactly `ticket id prefix <text> is too
+ *   short: give at least 6 characters` when `isIdShaped(text)`, else
+ *   `the ticket id given is too short: give at least 6 characters`;
  * - exactly one id starts with it: that id;
- * - none: `BoardError(4, 'unknown-ticket')` naming the text;
- * - several: `BoardError(1, 'ambiguous-id')` whose message lists every
- *   matching full id, in ascending order.
+ * - none: `BoardError(4, 'unknown-ticket')`, exactly `no ticket matches
+ *   <text>` when `isIdShaped(text)`, else `NOT_AN_ID_MESSAGE`;
+ * - several: `BoardError(1, 'ambiguous-id')` whose message names the
+ *   prefix and lists every matching full id, in ascending order (a prefix
+ *   that matches an id is always id-shaped).
+ * `<text>` is the text as given (not upper-cased), through `asciiText`.
+ * Text that is not id-shaped is never repeated (board-cli "Refusals never
+ * repeat the refused input").
  */
 export function resolveTicketId(state: BoardState, text: string): string {
   const wanted = text.toUpperCase();
@@ -72,9 +107,9 @@ export interface TaskArgs {
  * of the three is given. Pure.
  *
  * - `task` alone: `parseTaskRef(task)`; when that is null,
- *   `BoardError(1, 'malformed-task-ref')` whose message quotes the text and
- *   shows the form `TASK_REF_FORM` with an example
- *   (`openspec:add-board-core#3`).
+ *   `BoardError(1, 'malformed-task-ref')`, exactly `malformed task
+ *   reference: --task expects <source>:<ref>#<item>, for example
+ *   openspec:add-board-core#3`.
  * - `change` and `group` together: exactly `{ source: 'openspec', ref:
  *   change, item: group }`, the same reference as `--task
  *   openspec:<change>#<group>`. `group` must be a positive decimal integer
@@ -137,8 +172,9 @@ export interface TaskFilter {
  * Parses a `list --task` value: `<source>:<ref>#<item>` (exact match) or
  * `<source>:<ref>` (any item). The second form is recognised when the text
  * has no `#`; `source` must match `TASK_SOURCE_PATTERN` and `ref` be
- * non-empty. Anything else is `BoardError(1, 'malformed-task-ref')` showing
- * `<source>:<ref>[#<item>]`. Pure.
+ * non-empty. Anything else is `BoardError(1, 'malformed-task-ref')`,
+ * exactly `malformed task filter: --task expects <source>:<ref>[#<item>]`,
+ * which does not repeat the text. Pure.
  */
 export function parseTaskFilter(text: string): TaskFilter {
   if (text.includes('#')) {

@@ -52,6 +52,8 @@ export interface HintContext {
   /**
    * The ticket id argument exactly as the caller gave it (a full id or a
    * prefix), when the command has one and it was parsed; else undefined.
+   * Callers fill it whatever its shape; `renderHint` writes it only when
+   * it is id-shaped (`isIdShaped`) and writes `<id>` otherwise.
    */
   readonly id?: string;
   /**
@@ -326,7 +328,10 @@ export function hintStep(
  * newline, no leading or trailing space), not starting with `hint:`, whose
  * suggested commands are written with `hintStep`. In it, `<id>` stands for
  * `context.id` and `<actor>` for `context.actor` whenever those are
- * unknown; a known id or actor always replaces its placeholder.
+ * unknown; a known actor always replaces its placeholder, and so does a
+ * known id when it is id-shaped (`isIdShaped`, `src/board/resolve.ts`). A
+ * `context.id` that is not id-shaped is never written: the hint writes
+ * `<id>` for it (board-cli "Ticket ids in refusals").
  *
  * Contract per reason (I is the id or `<id>`, A the actor or `<actor>`; a
  * step `X` below means `hintStep(context.surface, ...)` of it, so on MCP

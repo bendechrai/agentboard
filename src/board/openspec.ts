@@ -160,8 +160,13 @@ function listChangeUnits(hostRoot: string, ref: string): TaskUnit[] {
  * - `listUnits(hostRoot, ref)`: reads `<hostRoot>/<tasksPath(ref)>` as
  *   UTF-8 and returns `parseOpenSpecTasks(text, tasksPath(ref))`. A missing
  *   or unreadable file (including a missing change directory) is
- *   `BoardError(1, 'tasks-not-found')` whose message names
- *   `openspec/changes/<ref>/tasks.md`.
+ *   `BoardError(1, 'tasks-not-found')`, exactly `cannot read the tasks
+ *   file of the change given: import-change reads
+ *   openspec/changes/<name>/tasks.md; is the name an OpenSpec change?`
+ *   (`<name>` literally: the ref given is not repeated).
+ * - A `ref` that is not a single directory name is `BoardError(1,
+ *   'usage')`, exactly `the OpenSpec change name given is not a single
+ *   directory name`.
  * - `locate(hostRoot, ref, item, index)`: the path, and the `line` of the
  *   `index`-th entry of the unit `item` from `listUnits`, or null when that
  *   throws (missing or malformed file) or has no such unit or entry

@@ -268,9 +268,9 @@ export function renderRoleChecklist(role: Role): string {
  * - a role in `ROLES`: text `renderGuide(version) + renderRoleChecklist(role)`
  *   (the guide unchanged, then the checklist), json with that `role`.
  * - any other role (including an empty string): throws
- *   `BoardError(1, 'usage')` whose message names the role given (through
- *   `asciiText`) and lists the four valid roles, for example
- *   `unknown role tester; the roles are orchestrator, test-author, implementer, reviewer`.
+ *   `BoardError(1, 'usage')`, exactly
+ *   `unknown role given with --role; the roles are orchestrator, test-author, implementer, reviewer`,
+ *   which does not repeat the role given.
  *
  * Needs no board and no actor. Pure.
  */

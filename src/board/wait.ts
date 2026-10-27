@@ -136,8 +136,11 @@ export type WaitOutcome = ClaimedOutcome | GrantedOutcome;
  * (board-cli: "Waiting on the command line").
  *
  * Checks before the board is read, each `BoardError(1, ...)` and writing
- * nothing: an empty actor (`missing-actor`); `ttl` out of range (`usage`);
- * `timeout` out of range (`usage`).
+ * nothing: an empty actor (`missing-actor`); `ttl` out of range (`usage`,
+ * exactly `invalid ttl: a ttl is a whole number of milliseconds from 30000
+ * (30s) to 604800000 (7d)`); `timeout` out of range (`usage`, exactly
+ * `invalid timeout: a timeout is a whole number of milliseconds from 1000
+ * (1s) to 86400000 (1d)`). Neither repeats the number given.
  *
  * Then:
  *

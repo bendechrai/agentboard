@@ -117,7 +117,9 @@ class ClaimNoWrite extends NoWrite {
 
 /**
  * `ttl` must be a safe integer in `TTL_MIN_MS`..`TTL_MAX_MS` (milliseconds),
- * else `BoardError(1, 'usage')`; the command line parser has already
+ * else `BoardError(1, 'usage')`, exactly `invalid ttl: a ttl is a whole
+ * number of milliseconds from 30000 (30s) to 604800000 (7d)`, which does
+ * not repeat the number given; the command line parser has already
  * refused a malformed duration, so this covers library callers.
  */
 function checkTtl(ttl: number): void {
@@ -964,7 +966,9 @@ export type CloseInput = (
  * - `decisionRecordedIn`: resolved with `treePath` (`cwd`, `env`); outside
  *   the working tree is `BoardError(1, 'path-outside-tree')`; the
  *   resolved file must exist, otherwise `BoardError(1,
- *   'decision-path-missing')` naming the path as given. The event records
+ *   'decision-path-missing')`, exactly `the decision record given with
+ *   --decision-recorded-in does not exist`, which does not repeat the
+ *   path. The event records
  *   the root-relative `recorded` form (with `/` separators), so a close run
  *   from a subdirectory records the same path as one run from the root.
  * - `noDecision`: refused with `BoardError(1, 'unpromoted-decision')` when

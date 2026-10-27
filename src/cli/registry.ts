@@ -376,7 +376,15 @@ function bool(values: ArgValues, name: string): boolean {
   return values[name] === true;
 }
 
-/** A status argument; anything but one of `STATUSES` is a usage error. */
+/**
+ * A status argument; anything but one of `STATUSES` is a usage error that
+ * names the argument and lists the statuses but never repeats the value:
+ * exactly `choicesMessage(command, argument, STATUSES)`, that is `move
+ * takes <status> as one of todo, tests, implementing, review, merged,
+ * blocked` for `move <status>`, and `handoff takes --status as one of
+ * ...` and `list takes --status as one of ...` for those commands'
+ * `--status`.
+ */
 function status(text: string): Status {
   const found = STATUSES.find((s) => s === text);
   if (found === undefined) {
@@ -562,9 +570,9 @@ function noCacheOutput(cachePath: string): CommandOutput {
  * First, before the board is located or opened, each of `--stale-after`,
  * `--blocked-after` and `--unplanned-within` that is given is parsed, in
  * that order, with `parseDuration` (`src/view/health.ts`); a value it
- * refuses is `BoardError(1, 'usage')` whose message names the flag, the
- * value given (through `asciiText`) and the accepted forms, for example:
- * `invalid --stale-after 2hours: a duration is <n>m, <n>h or <n>d with <n> a positive integer of at most 5 digits (for example 30m, 2h or 1d)`.
+ * refuses is `BoardError(1, 'usage')` whose message names the flag and the
+ * accepted forms but not the value given, exactly:
+ * `invalid --stale-after: a duration is <n>m, <n>h or <n>d with <n> a positive integer of at most 5 digits (for example 30m, 2h or 1d)`.
  * When several are invalid, the first in that order is reported. So a
  * malformed duration exits 1 even where there is no board.
  *

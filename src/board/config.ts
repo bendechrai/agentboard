@@ -60,9 +60,15 @@ export interface ConfigSetResult {
  * the duration with `parseSetting`).
  *
  * Refused before anything is written, with `BoardError(1, 'usage')`:
- * - `key` not one of `SETTING_KEYS`: the message names the key given
- *   (through `asciiText`) and lists `lease.grace` and `queue.window`;
- * - `value` not a safe integer in `SETTING_MIN_MS`..`SETTING_MAX_MS`.
+ * - `key` not one of `SETTING_KEYS`: exactly `unknown setting: the keys
+ *   are lease.grace and queue.window`;
+ * - `value` not a safe integer in `SETTING_MIN_MS`..`SETTING_MAX_MS`:
+ *   exactly `invalid value for <key>: a setting is a whole number of
+ *   milliseconds from 30000 (30s) to 600000 (10m)` (the key is checked by
+ *   then).
+ * Neither message repeats the key or the number given (board-cli
+ * "Refusals never repeat the refused input"): the library entry point
+ * follows the same rule as the command line parsers that refuse first.
  *
  * Setting a key to the value it already has still writes an event (the
  * history records every setting). The new value applies to claims written
