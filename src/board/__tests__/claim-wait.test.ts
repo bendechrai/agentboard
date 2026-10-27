@@ -1157,6 +1157,59 @@ describe('review round 1: a busy ending transaction', () => {
   });
 });
 
+describe('a non-busy error inside the ending transaction (group 5, from reviewer-4-1 re-check nit B)', () => {
+  /*
+   * Only `busy` is retried. Any other error of the transaction that ends
+   * the wait (at the deadline or on a signal) ends the wait with that very
+   * error after one attempt, writes nothing (the actor stays queued; its
+   * grant, if one comes, lapses after its window like a killed waiter's),
+   * and leaves no timer, watcher or abort listener behind.
+   */
+  const cases = [
+    { name: 'an unexpected Error', error: (): Error => new Error('disk on fire') },
+    {
+      name: 'a BoardError other than busy (exit 5 integrity)',
+      error: (): Error => new BoardError(5, 'integrity', 'event file unreadable'),
+    },
+  ];
+
+  for (const { name, error } of cases) {
+    for (const trigger of ['deadline', 'signal'] as const) {
+      it(`${name} at the ${trigger}: rejects with it after one attempt, nothing written, cleaned up`, async () => {
+        const id = lock();
+        held(id);
+        const thrown = error();
+        const steps: string[] = [];
+        const tracked = start(id, 5000, {
+          beforeStep: (step) => {
+            steps.push(step);
+            if (step === 'end') {
+              throw thrown;
+            }
+          },
+        });
+        await flush();
+        const before = eventNames(board.eventsDir);
+        if (trigger === 'deadline') {
+          await at(T0 + 5000);
+        } else {
+          controller.abort();
+          await flush();
+        }
+        expect(tracked.done).toBe(true);
+        expect(tracked.error).toBe(thrown);
+        expect(steps.filter((x) => x === 'end')).toHaveLength(1);
+        expect(eventNames(board.eventsDir)).toEqual(before);
+        expect(ticketNow(id).queue.map((w) => w.actor)).toEqual(['merger-2']);
+        expect(ticketNow(id).assignee).toBe('merger-1');
+        expect(clock.pending).toBe(0);
+        expect(watch.open).toBe(0);
+        expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+      });
+    }
+  }
+});
+
 describe('review round 1: the other paths of a wake (already correct at 090db5f)', () => {
   it('a busy catch-up is a warning and the wait carries on to its grant', async () => {
     const id = lock();
