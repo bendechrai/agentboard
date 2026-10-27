@@ -1,15 +1,21 @@
 /**
  * Shared fixtures of the lease, queue and grant process tests
- * (add-claim-leases group 5: `lease-race-processes.test.ts`,
- * `lease-queue-processes.test.ts`, `lease-crash-processes.test.ts` and the
- * `lease-replicas-*.test.ts` files): the repetition count, the lease
- * constants, `show` and `rebuild --check` through the built CLI, waiting
- * for a `claim --wait` child's queued line, reading an events directory in
- * fold order, and `expectExclusion`, an independent walk of the fold that
- * checks mutual exclusion at every fold position.
+ * (add-claim-leases group 5): the repetition count, the lease constants,
+ * commands through the built CLI on a chosen clock (`cli`, `show`,
+ * `rebuild --check`), waiting for a `claim --wait` child's queued line,
+ * reading an events directory in fold order, `expectExclusion` (an
+ * independent walk of the fold that checks mutual exclusion at every fold
+ * position), and for the replica tests two clones of a standalone board
+ * sharing a bare remote (`twoClones`), `sync`, and a join that stays
+ * because its waiter is killed (`joinAndDie`).
  *
  * The scenarios are split over several files so vitest runs them in
- * parallel workers: each one repeats its scenario `RUNS` times.
+ * parallel workers, one or two scenarios per file, each repeated `RUNS`
+ * times: `lease-race-processes`, `lease-queue-processes`,
+ * `lease-lapse-processes` and `lease-crash-processes` (task 5.1), and
+ * `lease-replicas-converge`, `lease-replicas-skew`,
+ * `lease-replicas-late-takeover` and `lease-replicas-late-grant` (task
+ * 5.2, the last two through `late-renew.ts`).
  *
  * Time: walls are taken from the real clock when a board is seeded, and a
  * child that must see a later time runs with the harness's clock offset
@@ -32,7 +38,13 @@ import {
   type Ticket,
 } from '../../events/fold.js';
 import { validateEvent, type BoardEvent } from '../../events/schema.js';
-import { eventNames } from '../../store/__tests__/helpers.js';
+import {
+  bareRemote,
+  cloneMachine,
+  initMachine,
+  syncEnv,
+} from '../../board/__tests__/sync-helpers.js';
+import { P, ev, eventNames, putEvent } from '../../store/__tests__/helpers.js';
 import {
   oneDocument,
   startCli,
@@ -271,4 +283,67 @@ export function expectExclusion(inputs: readonly FoldInput[], ticket = T1): Walk
 /** `expectExclusion` over the event files of `eventsDir`. */
 export function expectExclusionIn(eventsDir: string, ticket = T1): WalkSummary {
   return expectExclusion(foldInputs(eventsDir), ticket);
+}
+
+/** Two clones of one standalone board (`twoClones`). */
+export interface Clones {
+  remote: string;
+  /** Host root (the cwd of its commands) and board directory of clone A. */
+  a: { root: string; dir: string; eventsDir: string };
+  /** The same for clone B. */
+  b: { root: string; dir: string; eventsDir: string };
+  /** The environment every command of both clones runs with (`syncEnv`). */
+  env: RunEnv;
+}
+
+/**
+ * Clones A and B of one standalone board sharing a bare remote, with T1
+ * created in A a second ago and synced to both. A is the board made by
+ * `init` (pushed by its first sync), B a `git clone` of the remote.
+ */
+export async function twoClones(): Promise<Clones> {
+  const env = syncEnv();
+  const remote = bareRemote();
+  const a = initMachine(env, remote);
+  putEvent(join(a.dir, 'events'), ev(P.create(T1, 'Merge lock'), 'orch', Date.now() - 1000));
+  await cliOk(['sync', '--json'], a.root, null, env);
+  const b = cloneMachine(remote);
+  await cliOk(['sync', '--json'], b.root, null, env);
+  return {
+    remote,
+    a: { ...a, eventsDir: join(a.dir, 'events') },
+    b: { ...b, eventsDir: join(b.dir, 'events') },
+    env,
+  };
+}
+
+/** `sync --json` in `root` on `clock`, which must succeed. */
+export async function syncOk(root: string, env: RunEnv, clock: Clock = null): Promise<void> {
+  await cliOk(['sync', '--json'], root, clock, env);
+}
+
+/**
+ * Joins T1's queue as `actor` from a child: `claim --wait` on `clock`,
+ * killed with SIGKILL once it has printed its queued line, so the join
+ * stays (the scenario "Killed waiter stays queued").
+ */
+export async function joinAndDie(
+  root: string,
+  actor: string,
+  clock: Clock = null,
+  env?: RunEnv,
+): Promise<void> {
+  const proc = startCli(
+    {
+      argv: ['claim', T1, '--ttl', '30m', '--wait', '--timeout', '1d', '--as', actor],
+      ...clockOf(clock),
+      ...(env === undefined ? {} : { env }),
+    },
+    root,
+  );
+  await queuedLine(proc);
+  const killed = await proc.kill();
+  expect(killed.signal, `${actor} was granted before it could be killed: ${killed.stdout}`).toBe(
+    'SIGKILL',
+  );
 }
