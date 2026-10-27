@@ -42,7 +42,13 @@
  * loads. The CLI reads its clock only through `Date.now`, so the child
  * behaves exactly as on a machine whose clock is that far ahead (or behind,
  * for a negative offset). The variable is read by the preload module only,
- * never by agentboard itself.
+ * never by agentboard itself. `Invocation.clockFixedMs` uses the same
+ * preload to stop the child's clock instead: `Date.now` always returns that
+ * value (from `AGENTBOARD_HARNESS_CLOCK_FIXED_MS`), so a test can place a
+ * single-shot command exactly at a boundary such as a grant's slot time
+ * minus one millisecond, however long the child takes to start. A stopped
+ * clock never advances, so it is only for commands that do not wait on
+ * the clock (not `claim --wait` or `watch`).
  *
  * Read log: a child started with `Invocation.readLog` (a file path)
  * preloads a module that wraps `fs.readFileSync` and `fs.openSync` (and
@@ -52,6 +58,18 @@
  * order. Listing the events directory is not logged. `readLogLines` reads
  * the file back. Like the clock offset, the variable is read by the
  * preload only.
+ *
+ * Lock gate: `startLockGated` holds N children at the moment each asks for
+ * the cache's write lock, so the lock itself is raced and not only the
+ * start. Each child preloads a module that wraps `exec` of `node:sqlite`'s
+ * `DatabaseSync` (every write lock is taken by `exec('BEGIN IMMEDIATE')`):
+ * at its first `BEGIN IMMEDIATE` the child marks itself ready and blocks
+ * until a `go` file appears, then asks for the lock. It records when it
+ * asked, when it got the lock and when that transaction ended (`COMMIT`
+ * or `ROLLBACK` returned), on `performance.timeOrigin + performance.now()`
+ * (shared by all processes and not moved by the clock preload), and writes
+ * them when it exits (`LockTimes`). The variable is read by the preload
+ * only.
  *
  * Temporary directories made here (`boardProject`, the gate) are removed
  * after the test file (afterAll), not after each test, so one scenario can
@@ -79,7 +97,7 @@ import { BUILT_CLI, cliEnv, type RunEnv } from '../../cli/__tests__/cli-helpers.
 
 export { BUILT_CLI, cliEnv, type RunEnv };
 
-/** Every child is killed with SIGKILL after this long. */
+/** Every child is killed with SIGKILL after this long, unless `Invocation.timeoutMs` says otherwise. */
 export const CHILD_TIMEOUT_MS = 30_000;
 
 /** How a child ended, with everything it printed. */
@@ -103,6 +121,13 @@ export interface Invocation {
    * preload; omitted, the child runs on the real clock with no preload.
    */
   clockOffsetMs?: number;
+  /**
+   * The value the child's `Date.now` always returns, through the clock
+   * preload (see the module comment); not together with `clockOffsetMs`.
+   */
+  clockFixedMs?: number;
+  /** Milliseconds after which the child is killed with SIGKILL; defaults to `CHILD_TIMEOUT_MS`. */
+  timeoutMs?: number;
   /**
    * Path of a file the read-log preload writes when the child exits: one
    * line per event file the child opened (see the module comment).
@@ -191,10 +216,20 @@ export function startCli(
 ): CliProcess {
   const cli = requireBuiltCli();
   const offset = invocation.clockOffsetMs;
-  const clockArgs = offset === undefined ? [] : ['--import', pathToFileURL(clockPath()).href];
+  const fixed = invocation.clockFixedMs;
+  if (offset !== undefined && fixed !== undefined) {
+    throw new Error('an invocation takes clockOffsetMs or clockFixedMs, not both');
+  }
+  const clockArgs =
+    offset === undefined && fixed === undefined
+      ? []
+      : ['--import', pathToFileURL(clockPath()).href];
   const env = definedEnv(invocation.env ?? cliEnv());
   if (offset !== undefined) {
     env[CLOCK_OFFSET_ENV] = String(offset);
+  }
+  if (fixed !== undefined) {
+    env[CLOCK_FIXED_ENV] = String(fixed);
   }
   const { readLog } = invocation;
   const readArgs =
@@ -222,7 +257,7 @@ export function startCli(
       listener();
     }
   });
-  const timer = setTimeout(() => child.kill('SIGKILL'), CHILD_TIMEOUT_MS);
+  const timer = setTimeout(() => child.kill('SIGKILL'), invocation.timeoutMs ?? CHILD_TIMEOUT_MS);
   let done = false;
   const exited = new Promise<ProcessResult>((resolve, reject) => {
     child.on('error', (error) => {
@@ -299,8 +334,15 @@ export function runCliAsync(
 /** Environment variable holding the clock offset of a child, read by the clock preload. */
 export const CLOCK_OFFSET_ENV = 'AGENTBOARD_HARNESS_CLOCK_OFFSET_MS';
 
+/** Environment variable holding the stopped clock of a child, read by the clock preload. */
+export const CLOCK_FIXED_ENV = 'AGENTBOARD_HARNESS_CLOCK_FIXED_MS';
+
 const CLOCK_MODULE = `const offset = Number(process.env.${CLOCK_OFFSET_ENV} ?? '0');
-if (Number.isFinite(offset) && offset !== 0) {
+const fixed = process.env.${CLOCK_FIXED_ENV};
+if (fixed !== undefined && fixed !== '') {
+  const at = Number(fixed);
+  Date.now = () => at;
+} else if (Number.isFinite(offset) && offset !== 0) {
   const real = Date.now.bind(Date);
   Date.now = () => real() + offset;
 }
@@ -469,6 +511,8 @@ export async function startGated(
         argv: inv.argv,
         env: { ...(inv.env ?? cliEnv()), [GATE_ENV]: gateDir, [PRELOAD_ENV]: preload },
         ...(inv.clockOffsetMs === undefined ? {} : { clockOffsetMs: inv.clockOffsetMs }),
+        ...(inv.clockFixedMs === undefined ? {} : { clockFixedMs: inv.clockFixedMs }),
+        ...(inv.timeoutMs === undefined ? {} : { timeoutMs: inv.timeoutMs }),
         ...(inv.readLog === undefined ? {} : { readLog: inv.readLog }),
       },
       cwd,
@@ -511,6 +555,133 @@ export async function runTogether(
   const opened = gated.open();
   const results = await Promise.all(gated.procs.map((p) => p.exited));
   return { results, elapsedMs: Date.now() - opened, readyAtGate: gated.readyAtGate };
+}
+
+/** Environment variable naming the lock-gate directory of a child, read by the lock-gate preload. */
+export const LOCK_GATE_ENV = 'AGENTBOARD_HARNESS_LOCK_GATE';
+
+const LOCK_GATE_MODULE = `import { existsSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+const dir = process.env.${LOCK_GATE_ENV};
+if (dir) {
+  const clock = () => performance.timeOrigin + performance.now();
+  const exec = DatabaseSync.prototype.exec;
+  let gated = false;
+  let open = false;
+  const times = { asked: null, acquired: null, ended: null };
+  DatabaseSync.prototype.exec = function (sql) {
+    const text = String(sql).trim().toUpperCase();
+    if (text === 'BEGIN IMMEDIATE' && !gated) {
+      gated = true;
+      writeFileSync(join(dir, 'ready-' + String(process.pid)), '');
+      const cell = new Int32Array(new SharedArrayBuffer(4));
+      while (!existsSync(join(dir, 'go'))) {
+        Atomics.wait(cell, 0, 0, 1);
+      }
+      times.asked = clock();
+      const result = exec.call(this, sql);
+      times.acquired = clock();
+      open = true;
+      return result;
+    }
+    const result = exec.call(this, sql);
+    if (open && (text === 'COMMIT' || text === 'ROLLBACK')) {
+      open = false;
+      times.ended = clock();
+    }
+    return result;
+  };
+  process.on('exit', () => {
+    writeFileSync(join(dir, 'times-' + String(process.pid) + '.json'), JSON.stringify(times));
+  });
+}
+`;
+
+let lockGateModule: string | null = null;
+
+/** Path of the lock-gate preload module, written once per test file. */
+function lockGatePath(): string {
+  if (lockGateModule === null) {
+    lockGateModule = join(scratchDir(), 'lock-gate.mjs');
+    writeFileSync(lockGateModule, LOCK_GATE_MODULE);
+  }
+  return lockGateModule;
+}
+
+/**
+ * When a lock-gated child asked for the write lock, got it and ended that
+ * transaction, in milliseconds on `performance.timeOrigin +
+ * performance.now()`; null for a step it never reached.
+ */
+export interface LockTimes {
+  asked: number | null;
+  acquired: number | null;
+  ended: number | null;
+}
+
+/** Children blocked at one lock gate (`startLockGated`). */
+export interface LockGated {
+  /** One child per invocation, in the order given. */
+  procs: CliProcess[];
+  /** Number of children blocked at the lock gate when `open` is called (all of them). */
+  readyAtLock: number;
+  /** Lets every child ask for the write lock now. */
+  open(): void;
+  /** The `LockTimes` of each child, in the order given; call after all have exited. */
+  times(): LockTimes[];
+}
+
+/**
+ * Starts every invocation in `cwd` with the lock-gate preload and resolves
+ * once all of them are blocked at their first `BEGIN IMMEDIATE`, without
+ * letting them ask for the lock. Rejects, killing them, if they are not
+ * all there within `readyTimeoutMs` (a child that exits first, for
+ * example because it refused before taking the lock, never gets there).
+ */
+export async function startLockGated(
+  invocations: readonly Invocation[],
+  cwd: string,
+  readyTimeoutMs = 30_000,
+): Promise<LockGated> {
+  const gateDir = scratchDir();
+  const nodeArgs = ['--import', pathToFileURL(lockGatePath()).href];
+  const procs = invocations.map((inv) =>
+    startCli(
+      {
+        ...inv,
+        env: { ...(inv.env ?? cliEnv()), [LOCK_GATE_ENV]: gateDir },
+      },
+      cwd,
+      nodeArgs,
+    ),
+  );
+  const readyCount = (): number =>
+    readdirSync(gateDir).filter((name) => name.startsWith('ready-')).length;
+  const deadline = Date.now() + readyTimeoutMs;
+  while (readyCount() < procs.length) {
+    if (Date.now() > deadline) {
+      await Promise.all(procs.map((p) => p.kill()));
+      throw new Error(
+        `only ${String(readyCount())} of ${String(procs.length)} reached the lock gate`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return {
+    procs,
+    readyAtLock: readyCount(),
+    open: () => {
+      writeFileSync(join(gateDir, 'go'), '');
+    },
+    times: () =>
+      procs.map(
+        (proc) =>
+          JSON.parse(
+            readFileSync(join(gateDir, `times-${String(proc.pid)}.json`), 'utf8'),
+          ) as LockTimes,
+      ),
+  };
 }
 
 /** The `AGENTBOARD_TEST_PAUSE` points (see `src/store/transaction.ts`). */

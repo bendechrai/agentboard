@@ -19,8 +19,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { Ticket } from '../../events/fold.js';
 import { openBoard } from '../../store/board.js';
-import { readTicket } from '../../store/cache.js';
-import { eventNames, tempDir } from '../../store/__tests__/helpers.js';
+import { openCache, readTicket } from '../../store/cache.js';
+import { P, ev, eventNames, putEvent, tempDir } from '../../store/__tests__/helpers.js';
 import { createMcpServer, type BoardMcpServer } from '../../mcp/server.js';
 import { isoTime } from '../../board/leases.js';
 import { runCliAsync, type AsyncCliIo } from '../main.js';
@@ -421,4 +421,46 @@ describe('review round 1 addendum: stream and run validate in the same order', (
       expect({ code: out.code, stdout: out.stdout, stderr: out.stderr }).toEqual(sync);
     }
   });
+});
+
+describe('a busy wake during a wait (group 5, from reviewer-4-1 re-check nit A)', () => {
+  it(
+    'prints the busy warning on stderr as one agentboard: line, never on stdout, and waits on to its grant',
+    { timeout: 60_000 },
+    async () => {
+      const { root, boardDir, id } = board();
+      const controller = new AbortController();
+      const running = startAsync(WAIT(id), root, controller.signal);
+      await until(() => running.out.stdout.includes('queued for'), 'the queued line');
+      const locker = openCache(join(boardDir, 'cache.sqlite'));
+      try {
+        // A second connection to the cache, in this same process, holds
+        // the write lock while a new event file appears, so the wake's
+        // catch-up cannot fold it: the busy timeout and its retry run out
+        // (blocking this process, the wait's and the locker's alike, since
+        // both run here), and the wait warns and carries on.
+        locker.exec('BEGIN IMMEDIATE');
+        putEvent(join(boardDir, 'events'), ev(P.comment(id, 'while locked'), 'remote', Date.now()));
+        await until(() => running.out.stderr !== '', 'a busy warning');
+        locker.exec('COMMIT');
+      } finally {
+        if (locker.isTransaction) {
+          locker.exec('ROLLBACK');
+        }
+        locker.close();
+      }
+      // A poll can wake it again before the commit, so the warning may repeat.
+      const BUSY = 'agentboard: the board cache stayed locked by another process; try again';
+      expect(lines(running.out.stderr).length).toBeGreaterThan(0);
+      expect(new Set(lines(running.out.stderr))).toEqual(new Set([BUSY]));
+      expect(running.out.stdout).not.toContain('locked');
+      const released = run(['release', id, '--as', 'merger-1'], root);
+      expect(released.code, released.stderr).toBe(0);
+      const out = await running.done;
+      expect(out.code, out.stderr).toBe(0);
+      expect(out.stdout).toContain(`agentboard renew ${id} --as merger-2`);
+      expect(out.stdout).not.toContain('locked');
+      expect(new Set(lines(out.stderr))).toEqual(new Set([BUSY]));
+    },
+  );
 });

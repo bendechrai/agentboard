@@ -19,6 +19,7 @@ import {
   runTogether,
   scratchDir,
   startCli,
+  startLockGated,
   waitForPause,
   type ProcessResult,
 } from './harness/processes.js';
@@ -88,6 +89,86 @@ describe('the multi-process harness', () => {
     expect(result?.code, result?.stderr).toBe(0);
     expect(wallOf(result)).toBeGreaterThanOrEqual(before + 2 * offset);
   }, 30_000);
+
+  it('runs a child on a stopped clock through the clock preload, gated or not', async () => {
+    const { root } = boardProject();
+    const wallOf = (result: ProcessResult | undefined): number => {
+      if (result === undefined) {
+        throw new Error('no result');
+      }
+      expect(result.code, result.stderr).toBe(0);
+      return (oneDocument(result) as { ticket: { createdAt: { wall: number } } }).ticket.createdAt
+        .wall;
+    };
+    const at = Date.now() + 7_200_000;
+    const direct = await startCli(
+      { argv: ['new', 'Stopped', '--adhoc', 'clock', '--as', 'orch', '--json'], clockFixedMs: at },
+      root,
+    ).exited;
+    expect(wallOf(direct)).toBe(at);
+    const gated = await runTogether(
+      [
+        {
+          argv: ['new', 'Gated', '--adhoc', 'clock', '--as', 'orch', '--json'],
+          clockFixedMs: at + 5,
+        },
+      ],
+      root,
+    );
+    expect(wallOf(gated.results[0])).toBe(at + 5);
+    expect(() => startCli({ argv: ['list'], clockFixedMs: at, clockOffsetMs: 1 }, root)).toThrow(
+      /not both/,
+    );
+  }, 30_000);
+
+  it('kills a child after its own timeout when one is given', async () => {
+    const { root } = boardProject();
+    const proc = startCli(
+      {
+        argv: ['new', 'Hung', '--adhoc', 'timeout', '--as', 'orch'],
+        env: cliEnv({ AGENTBOARD_TEST_PAUSE: 'after-rename' }),
+        // Long enough for the child to reach its pause on a loaded host.
+        timeoutMs: 10_000,
+      },
+      root,
+    );
+    // Paused forever after its rename, it ends only through the timeout.
+    const result = await proc.exited;
+    expect(result.signal).toBe('SIGKILL');
+    expect(result.stderr).toMatch(/^agentboard: paused at after-rename /m);
+  }, 30_000);
+
+  it('holds children at their first write lock request until the lock gate opens', async () => {
+    const { root, eventsDir } = boardProject();
+    expect((await runCliAsync(['list'], root)).code).toBe(0);
+    const gated = await startLockGated(
+      ['a', 'b', 'c'].map((actor) => ({
+        argv: ['new', `Gated ${actor}`, '--adhoc', 'lock gate', '--as', actor],
+      })),
+      root,
+    );
+    expect(gated.readyAtLock).toBe(3);
+    // All three are at the lock and none has written.
+    expect(readdirSync(eventsDir).filter((name) => name.endsWith('.json'))).toEqual([]);
+    expect(gated.procs.every((proc) => proc.stdout() === '')).toBe(true);
+    gated.open();
+    const results = await Promise.all(gated.procs.map((proc) => proc.exited));
+    expect(results.map((r) => r.code)).toEqual([0, 0, 0]);
+    expect(readdirSync(eventsDir).filter((name) => name.endsWith('.json'))).toHaveLength(3);
+    const times = gated.times();
+    for (const t of times) {
+      expect(t.asked).not.toBeNull();
+      expect(t.acquired ?? 0).toBeGreaterThanOrEqual(t.asked ?? Infinity);
+      expect(t.ended ?? 0).toBeGreaterThanOrEqual(t.acquired ?? Infinity);
+    }
+    // One holder at a time: the transactions do not overlap.
+    const spans = times
+      .map((t) => [t.acquired ?? 0, t.ended ?? 0] as const)
+      .sort((x, y) => x[0] - y[0]);
+    for (let n = 1; n < spans.length; n += 1) {
+      expect(spans[n]?.[0] ?? 0).toBeGreaterThanOrEqual(spans[n - 1]?.[1] ?? Infinity);
+    }
+  }, 60_000);
 
   it('logs the event files a child opens through the read-log preload', async () => {
     const { root, eventsDir } = boardProject();
