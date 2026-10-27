@@ -207,7 +207,8 @@ describe('refusals through the CLI carry a hint', () => {
 
     expect(out.code).toBe(3);
     expect(out.stdout).toBe('');
-    expect(out.stderr).toContain(url);
+    expect(out.stderr).toContain('the repository given with --remote');
+    expect(out.stderr).not.toContain(url);
     expect(out.stderr).toMatch(/create/);
     const hint = hintOf(out);
     expect(hint).toBe(renderHint('remote-unreachable', { surface: 'cli', command: 'init' }));
@@ -246,7 +247,8 @@ describe('refusals through the CLI carry a hint', () => {
 
     expect(out.code).toBe(1);
     expect(out.stderr).toContain(first);
-    expect(out.stderr).toContain(other);
+    expect(out.stderr).not.toContain(other);
+    expect(out.stderr).toContain('remote set-url origin <url>');
     expect(hintOf(out)).toContain('remote set-url');
     expect(errorOf(initRemote(root, env, other))).toMatchObject({
       exitCode: 1,
