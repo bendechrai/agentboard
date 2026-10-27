@@ -120,7 +120,8 @@ them on it (see "Known gaps").
   Temporaries of 0.2.0 and older stay resumable. The removal line and the
   `sync-in-progress` text name such a temporary. Delivered in PR #104
   (ticket 01M5XPHX2V5DHQY0RB6M5JWRD6) and documented in README "Moving a
-  board into the host repository".
+  board into the host repository" (PR #111); the change is archived as
+  `openspec/changes/archive/2026-10-27-guard-stale-temporary`.
 
 ## What is next
 
