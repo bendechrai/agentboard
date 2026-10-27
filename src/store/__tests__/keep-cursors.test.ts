@@ -335,7 +335,7 @@ describe('openCache carries the cursor tables of an earlier schema version (1.1)
         INSERT INTO cursors VALUES ('erin', NULL, 0, 'impl', 'h');
         INSERT INTO cursor_seen VALUES ('erin', 'eeee', 1);
         INSERT INTO cursors VALUES ('fay', 1, 0, 'impl', X'00');
-        INSERT INTO cursors VALUES (7, 1, 0, 'impl', 'h');
+        INSERT INTO cursors VALUES (X'07', 1, 0, 'impl', 'h');
         INSERT INTO cursors VALUES ('frank', NULL, NULL, NULL, NULL);
         INSERT INTO cursor_seen VALUES ('frank', 'ffff', 5);
         INSERT INTO cursor_seen VALUES ('ghost', 'gggg', 1);
