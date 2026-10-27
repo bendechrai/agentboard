@@ -1,0 +1,258 @@
+## ADDED Requirements
+
+### Requirement: Refusals never repeat the refused input
+A refusal SHALL NOT contain any part of the input it refuses, on any
+surface: not in the message, not in the hint, not in any field of the
+CLI's `--json` error document, the MCP tool error or the web app's action
+error, and not in the `agentboard: <message>` line the CLI or the MCP
+server writes to stderr. The refused input is the value, flag name,
+command word, tool name or tool argument name whose check failed (it is
+unknown, malformed, out of range, not one of the choices, or names no
+ticket, event, file or tasks file). It SHALL NOT be shortened, masked or
+partially shown instead. The refusal SHALL name the argument it refuses
+(the flag, as `--task`; the positional, as `<status>`; or, for an unknown
+flag or an extra positional, its 1-based position among the arguments
+after the program name) and SHALL state the expected form or list the
+valid choices, so that a token pasted into the wrong argument never lands
+in a terminal, a log or a transcript and the caller can still correct the
+call.
+
+Input of the same call that was not refused MAY be repeated (the actor,
+a decision path that passed its checks, a ticket id resolved on the
+board), and so MAY board data and configuration. The one exception to
+the rule is a ticket id of the id shape (see "Ticket ids in refusals").
+
+Exit codes, reasons and the fields of the error documents are unchanged
+by this rule; only message and hint text are.
+
+#### Scenario: Unknown status
+- **WHEN** `agentboard move T1 <token> --as orch` runs with a token-shaped value, with and without `--json`
+- **THEN** it exits 1 with reason `usage`, the message is `move takes <status> as one of todo, tests, implementing, review, merged, blocked`, no event is written, and the token appears nowhere in stdout or stderr
+
+#### Scenario: Unknown status over MCP
+- **WHEN** `board_move` is called with `{"id": "<T1>", "status": "<token>", "as": "orch"}` and `board_handoff` with `status` `<token>`
+- **THEN** each returns a tool error with `exitCode` 1 and `reason` `usage` whose message lists the statuses, and the token appears nowhere in the tool result (text or structured content) or in the server's stderr
+
+#### Scenario: Extra and non-integer arguments
+- **WHEN** `agentboard comment T1 --as a hello <token>` (unquoted text) and `agentboard checklist tick T1 <token> --as a` run
+- **THEN** the first exits 1 with reason `usage` naming position 6, `comment` and its arguments `<id> <text>`, the second exits 1 with reason `usage` saying `index must be an integer`, and the token appears in neither output
+
+#### Scenario: Malformed task reference, change name, group and filter
+- **WHEN** `new "x" --task <token> --as a`, `link T1 --change <token>#1 --group 1 --as a`, `link T1 --change c --group <token> --as a` and `list --task <token>` run
+- **THEN** each exits 1 with reason `malformed-task-ref`, each message names the flag and its form (`<source>:<ref>#<item>`, non-empty without `#`, a positive decimal number, `<source>:<ref>[#<item>]`), and the token appears in no output
+
+#### Scenario: Health duration
+- **WHEN** `agentboard health --stale-after <token>` runs
+- **THEN** it exits 1 with reason `usage`, the message names `--stale-after` and the duration form, and the token appears in no output
+
+#### Scenario: Unknown inbox cursor
+- **WHEN** `agentboard inbox --as a --since <token>` runs
+- **THEN** it exits 1 with reason `unknown-cursor`, the message names `--since`, and the token appears in no output
+
+#### Scenario: Decision path outside the working tree
+- **WHEN** `agentboard link T1 --decision ../<token> --as a` runs
+- **THEN** it exits 1 with reason `path-outside-tree`, the message names the working tree's root, and the token appears in no output
+
+#### Scenario: Import target
+- **WHEN** `agentboard import-change <token>#1 --as orch`, `import-change <token> --as orch` (no such change) and `import-change Bad_Source:<token> --as orch` run
+- **THEN** they exit 1 with reasons `malformed-task-ref`, `tasks-not-found` and `malformed-task-ref`, the second message names `openspec/changes/<name>/tasks.md`, and the token appears in no output
+
+#### Scenario: Guidance arguments
+- **WHEN** `agentboard help claim <token>`, `agentboard help agents --role <token>` and `agentboard agents install --target <token>` run
+- **THEN** each exits 1 with reason `usage`; the role refusal lists the four roles and the target refusal lists the targets; and the token appears in no output
+
+#### Scenario: Unknown tool and unknown tool argument
+- **WHEN** an MCP client calls the tool `<token>`, and calls `board_show` with the argument `{"id": "<T1>", "<token>": true}`
+- **THEN** both return tool errors with `exitCode` 1 and `reason` `usage`; the second names `board_show` and its arguments; and the token appears in neither result nor in the server's stderr
+
+#### Scenario: Web action
+- **WHEN** a writable `agentboard serve --as orch` receives `POST /api/actions/move` with the body `{"id": "<T1>", "status": "<token>"}` from its own page
+- **THEN** the response is 400 with reason `usage`, its body lists the statuses, and the token appears nowhere in the body or in the server's output
+
+### Requirement: Ticket ids in refusals
+A ticket id argument (the positional `<id>`, or the tool argument `id`)
+whose text, upper-cased, matches `^[0-9A-HJKMNP-TV-Z]{1,26}$` (1 to 26
+Crockford base32 characters) MAY be repeated in a refusal and in its
+hint, even when it matches no ticket. Any other text given as a ticket
+id SHALL NOT be repeated anywhere in a refusal: an unknown id is refused
+with its usual exit code and reason (`unknown-ticket`, or `id-too-short`
+below 6 characters) by a message that says the text given is not a
+ticket id and states the id form, and every hint writes the placeholder
+`<id>` in its place.
+
+#### Scenario: Ticket id that is not an id
+- **WHEN** `agentboard show <token>` and `agentboard move <token> review --as orch` run with a token that is not id-shaped, on the CLI with and without `--json`, and `board_move` is called with that `id`
+- **THEN** each exits 4 (or returns `exitCode` 4) with reason `unknown-ticket`, the message says the text given is not a ticket id and states the id form, and the token appears in no output
+
+#### Scenario: Hint for an id that is not an id
+- **WHEN** `agentboard close <token> --as orch` runs with neither `--decision-recorded-in` nor `--no-decision` and a token that is not id-shaped, and `board_close` is called with that `id` and no decision argument
+- **THEN** each is refused with reason `no-disposition`, the hint names the `close` step with `<id>` in place of the id, and the token appears in no output
+
+#### Scenario: Unknown ticket id that is id-shaped
+- **WHEN** `agentboard show 01NOPE0000` runs and no ticket id starts with it
+- **THEN** it exits 4 with reason `unknown-ticket` and the message names `01J9K3ZZZZ`
+
+## MODIFIED Requirements
+
+### Requirement: Close requires a decision disposition
+`close` SHALL require exactly one of `--decision-recorded-in <path>` (a path
+that exists in the host project, expected to be a spec delta, ADR or tasks
+file) or `--no-decision`. A relative decision path SHALL be resolved against
+the current directory, SHALL lie inside the current working tree (the output
+of `git rev-parse --show-toplevel`, or the current directory outside git),
+and SHALL be recorded relative to that root with `/` separators, so the
+recorded path means the same thing in every worktree and clone; a path
+outside the working tree SHALL exit 1 with reason `path-outside-tree`,
+naming the working tree's root but not the path given. A decision path
+that does not exist SHALL exit 1 with reason `decision-path-missing`,
+naming `--decision-recorded-in` but not the path given (see "Refusals
+never repeat the refused input"). `link --decision` SHALL record its
+path the same way but SHALL NOT require it to exist. `close` SHALL be permitted only from `merged` or
+`blocked`. Closed tickets SHALL be excluded from `list` unless `--closed` is
+given.
+
+#### Scenario: Close without disposition is refused
+- **WHEN** `agentboard close T1 --as orch` runs with neither flag
+- **THEN** the command exits 1 and explains the rule that decisions made in a ticket must be recorded in a spec or ADR
+
+#### Scenario: Close with a missing decision path
+- **WHEN** `--decision-recorded-in docs/adr/0099.md` names a file that does not exist
+- **THEN** the command exits 1 with reason `decision-path-missing`, naming `--decision-recorded-in`, and `0099` appears nowhere in stdout or stderr
+
+### Requirement: Board in a separate repository
+`agentboard init --remote <url>` SHALL set up a standalone board shared
+through the repository at `<url>`, need no actor, and leave the host
+repository's refs untouched:
+
+- When `.board` does not exist: if `<url>` is a local path (an absolute or
+  relative path, or a `file://` URL) that does not exist, it SHALL first
+  create a bare repository there. If the repository at `<url>` cannot be
+  read, it SHALL exit 3 with reason `remote-unreachable`, quoting git's
+  error and telling the user to create an empty repository at `<url>` (for
+  example on their git host) and check their access, and SHALL create
+  nothing. If the repository has a branch, it SHALL clone it into `.board`
+  (its default branch) and fold the events; when that branch has no
+  `events/` directory it SHALL exit 1 with reason `not-a-board` and leave
+  no `.board` behind. If the repository has no refs, it SHALL create a
+  standalone board, add `<url>` as `origin`, and `sync` (which pushes and
+  sets the upstream).
+- When `.board` is a standalone board with no remote, it SHALL add `<url>`
+  as `origin` and `sync`.
+- When `.board` is a standalone board whose chosen remote already has the
+  URL `<url>`, it SHALL change nothing and exit 0. When the remote has
+  another URL, it SHALL exit 1 with reason `remote-mismatch`, naming the
+  remote's URL and `git -C .board remote set-url`.
+- When `.board` is a host-model board, it SHALL exit 1 with reason
+  `board-in-host` and change nothing.
+- When `.board` is a standalone board with several remotes and none chosen
+  by the rules of board-concurrency "Sync converges", it SHALL exit 1 with
+  reason `ambiguous-remote` and change nothing.
+- When `.board` exists and is not a board (a directory holding any entry
+  but no `events/`, a regular file, or a symbolic link that does not
+  resolve to a board directory), it SHALL exit 2 with reason
+  `board-not-a-repository` before any write (no bare repository, no
+  temporary directory, no host `.gitignore` entry), telling the user to
+  move it aside; whatever it holds is left byte for byte. An empty
+  directory counts as absent.
+
+`<url>` SHALL be checked before anything runs: an empty value, a value
+that starts with `-`, or a `file://` URL whose host part is neither empty
+nor `localhost` SHALL exit 1 with reason `usage`, and no git command SHALL
+be given the value (in particular the host repository's own remote is
+never contacted). Every git command that takes `<url>` SHALL pass it
+after `--`. A relative local path SHALL be resolved against the host
+repository's top level when the board was found through a git repository
+(the same directory from every linked worktree), else against the current
+directory, and the `origin` URL stored SHALL be the absolute path;
+`file://localhost/x` and `file:///x` both name the path `/x`; a `file://`
+URL and a non-local URL SHALL be stored as given. The matching-URL
+comparison SHALL use the raw `remote.<name>.url` as well as the URL
+`git remote get-url` prints, so a URL rewritten by `url.<base>.insteadOf`
+is not reported as `remote-mismatch`; a matching URL SHALL run no `sync`.
+The `remote-mismatch` message SHALL name `git -C .board remote set-url`
+only when the remote exists; when `agentboard.remote` names a remote the
+board repository does not have, it SHALL name `agentboard.remote` instead.
+
+No refusal of `init --remote` (`usage`, `remote-unreachable`,
+`not-a-board`, `remote-mismatch`) SHALL repeat the value given to
+`--remote` (see "Refusals never repeat the refused input"): it says "the
+value", "the repository given with --remote" or "the URL given", and a
+suggested command writes `<url>` for it. A remote's URL read from the
+board repository's configuration MAY be named. Git's error, where it is
+quoted, SHALL be quoted with every occurrence of the value given
+replaced by `<url>` and the user information of every URL in it
+(`<scheme>://<userinfo>@`) replaced by `<scheme>://<redacted>@`.
+
+A board is cloned into a temporary sibling of `.board` named
+`.board-clone-<random>`, renamed to `.board` only once its working tree
+holds `events/`. A clone that fails after `ls-remote` succeeded (a remote
+whose objects are missing) SHALL exit 3 with reason `remote-unreachable`
+and leave nothing behind. When the remote's HEAD names a branch the remote
+does not have and the remote has exactly one branch, that branch SHALL be
+checked out first; when that checkout fails, `init` SHALL exit 1 with
+reason `not-a-board` and leave nothing behind. A `.board-clone-*` left by
+an interrupted run SHALL be removed by the next `init --remote`, which
+names it in its message.
+
+When the `sync` that `init --remote` runs fails, `init` SHALL exit with that
+failure's code and reason, keeping the board and the remote it set.
+
+#### Scenario: Init with a remote that has a board
+- **WHEN** a standalone board with three events has been pushed to `<url>` and `agentboard init --remote <url>` runs in another clone with no `.board`
+- **THEN** `.board` is a clone of `<url>`, `agentboard list` shows the three events' tickets, and `sync` exits 0
+
+#### Scenario: Init with an empty remote
+- **WHEN** `agentboard init --remote <url>` runs with no `.board`, and `<url>` is an empty repository
+- **THEN** `.board` is a standalone board with `origin` set to `<url>`, and `<url>` has a branch holding `.gitignore` and `events/.gitkeep`
+
+#### Scenario: Init with a local path that does not exist
+- **WHEN** `agentboard init --remote ../boards/project.git` runs and `../boards/project.git` does not exist
+- **THEN** `../boards/project.git` is created as a bare repository, the board is pushed to it, and the command exits 0
+
+#### Scenario: Init with a non-local URL that does not exist
+- **WHEN** `agentboard init --remote https://git.example.com/me/missing.git` runs and the repository cannot be read
+- **THEN** the command exits 3 with reason `remote-unreachable`, the message tells the user to create the empty repository, and no `.board` directory or host `.gitignore` entry was created
+
+#### Scenario: Credentials in an unreachable URL
+- **WHEN** `agentboard init --remote https://agent:<token>@git.example.com/me/missing.git` runs, with and without `--json`, and the repository cannot be read
+- **THEN** it exits 3 with reason `remote-unreachable`, quotes git's error, and neither the token nor the URL given appears in stdout or stderr
+
+#### Scenario: Init with a remote on an existing board without one
+- **WHEN** a standalone board with unsynced events and no remote exists and `agentboard init --remote <empty url>` runs
+- **THEN** `origin` is set to the URL, the events are committed and pushed, and the command exits 0
+
+#### Scenario: Init with a remote on a host-model board
+- **WHEN** `.board` is a host-model board and `agentboard init --remote <url>` runs
+- **THEN** it exits 1 with reason `board-in-host` and nothing changes
+
+#### Scenario: Remote flags are exclusive
+- **WHEN** `agentboard init --remote <url> --into-host` runs
+- **THEN** it exits 1 with reason `usage` and nothing changes
+
+#### Scenario: Remote URL that is an option
+- **WHEN** `agentboard init --remote '--upload-pack=touch PWNED;:x'` runs in a clone whose host repository has an `origin`
+- **THEN** it exits 1 with reason `usage`, no git command received the value, `origin` was not contacted, no file was created, nothing changes, and `PWNED` appears nowhere in stdout or stderr
+
+#### Scenario: Remote mismatch does not repeat the URL given
+- **WHEN** a standalone board's `origin` is `https://host/d.git` and `agentboard init --remote https://host/<token>.git` runs
+- **THEN** it exits 1 with reason `remote-mismatch`, the message names `origin`, `https://host/d.git` and `remote set-url origin <url>`, and the token appears nowhere in stdout or stderr
+
+#### Scenario: Existing directory that is not a board
+- **WHEN** `.board` is a directory holding `notes.txt` and no `events/`, and `agentboard init --remote <url>` runs, whether `<url>` holds a board or is empty
+- **THEN** it exits 2 with reason `board-not-a-repository` telling the user to move the directory aside, `notes.txt` is unchanged, and no bare repository, temporary directory or host `.gitignore` entry was created
+
+#### Scenario: Init with a remote on a board with several remotes
+- **WHEN** `.board` is a standalone board with the remotes `fork` and `upstream`, no `origin`, no upstream and no `agentboard.remote`, and `agentboard init --remote <url>` runs
+- **THEN** it exits 1 with reason `ambiguous-remote` naming both remotes and `agentboard init`, and nothing changes
+
+#### Scenario: Matching URL rewritten by insteadOf
+- **WHEN** a standalone board's `origin` is `https://host/d.git`, the board repository has `url.<path>.insteadOf=https://host/`, and `agentboard init --remote https://host/d.git` runs
+- **THEN** it exits 0 reporting that nothing changed, and runs no `sync`
+
+#### Scenario: Clone fails after ls-remote
+- **WHEN** `agentboard init --remote file://<path>` runs against a repository whose tip commit object is missing
+- **THEN** it exits 3 with reason `remote-unreachable` quoting git, and no `.board` or temporary directory is left behind
+
+#### Scenario: Leftover clone directory
+- **WHEN** `.board-clone-abc123` was left by an interrupted run and `agentboard init --remote <url>` runs
+- **THEN** the leftover is removed, the message names it, and the command otherwise completes as it would have
