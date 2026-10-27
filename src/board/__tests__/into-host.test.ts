@@ -1691,8 +1691,18 @@ describe('refusals of steps 3 to 6 (ruling B, D and F)', () => {
     expect(revParse(String(temporary))).not.toBe(refCommit(root, MIGRATING_REF));
     // The user replaces the board with another standalone board (its own
     // repository, its own history and events) before running the move again.
-    rmSync(dir, { recursive: true, force: true });
+    // The old board is moved aside and removed only once the replacement
+    // exists: the identity the temporary records is the git directory's
+    // realpath, device and inode, and a file system that reuses inode
+    // numbers (ext4 does) could otherwise give the new `.board/.git` the
+    // inode of the old one, which the recorded identity cannot tell apart.
+    const oldGitDir = fs.statSync(join(dir, '.git'));
+    const aside = join(tempDir(), 'replaced-board');
+    fs.renameSync(dir, aside);
     const replacement = syncedStandalone(root, env, 2, bareRemote(), 'other');
+    rmSync(aside, { recursive: true, force: true });
+    const newGitDir = fs.statSync(join(dir, '.git'));
+    expect([newGitDir.dev, newGitDir.ino]).not.toEqual([oldGitDir.dev, oldGitDir.ino]);
     const newFiles = eventFiles(dir);
     expect(newFiles.some((f) => oldFiles.includes(f))).toBe(false);
 
