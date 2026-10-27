@@ -15,7 +15,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { cpSync, existsSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
@@ -25,20 +25,17 @@ import { describe, expect, it } from 'vitest';
 import { BoardError } from '../store/errors.js';
 import { openCache } from '../store/cache.js';
 import {
-  V020_FIXTURES,
   cacheHashes,
   carriedApplied,
   cursorRows,
-  fixtureEvents,
   hasTable,
-  minuteOf,
   readOldRows,
+  type FixtureEvent,
   withDb,
   type FixtureName,
   type OldRows,
 } from '../store/__tests__/v020-cache.js';
 import {
-  boardProject,
   cliEnv,
   oneDocument,
   requireBuiltCli,
@@ -47,44 +44,19 @@ import {
   startGated,
   type ProcessResult,
 } from './harness/processes.js';
+import {
+  advanceTarget,
+  fixtureProject,
+  inboxDoc,
+  minutesOf,
+  oldAdvance,
+} from './harness/upgrade.js';
 
 /** How many times each scenario runs. */
 const ROUNDS = 20;
 
 /** Generous: twenty rounds of up to ten processes on a loaded host. */
 const SLOW = { timeout: 900_000 };
-
-interface InboxDoc {
-  actor: string;
-  entries: { hash: string; ts: { wall: number } }[];
-  cursor: string | null;
-  advanced: boolean;
-}
-
-/** A project holding a copy of fixture `name` (events and 0.2.0 cache). */
-function project(name: FixtureName): {
-  root: string;
-  boardDir: string;
-  cache: string;
-  old: OldRows;
-  events: ReturnType<typeof fixtureEvents>;
-} {
-  const { root, boardDir, eventsDir } = boardProject();
-  const source = join(V020_FIXTURES, name);
-  cpSync(join(source, 'events'), eventsDir, { recursive: true });
-  const cache = join(boardDir, 'cache.sqlite');
-  cpSync(join(source, 'cache.sqlite'), cache);
-  return { root, boardDir, cache, old: readOldRows(cache), events: fixtureEvents(eventsDir) };
-}
-
-function inboxDoc(result: ProcessResult): InboxDoc {
-  expect(result.code, result.stderr).toBe(0);
-  return oneDocument(result) as InboxDoc;
-}
-
-function minutesOf(doc: InboxDoc): number[] {
-  return doc.entries.map((e) => minuteOf(e.ts.wall));
-}
 
 function seenOf(old: OldRows, actor: string): Set<string> {
   return new Set(old.seen.filter((r) => r.actor === actor).map((r) => String(r.hash)));
@@ -98,7 +70,7 @@ function expectedMinutes(
   name: FixtureName,
   actor: string,
   old: OldRows,
-  events: ReturnType<typeof fixtureEvents>,
+  events: FixtureEvent[],
 ): number[] {
   const all = events.map((e) => e.minute);
   if (!old.cursors.some((r) => r.actor === actor)) {
@@ -119,7 +91,7 @@ function expectedMinutes(
 function expectedCursors(
   name: FixtureName,
   old: OldRows,
-  events: ReturnType<typeof fixtureEvents>,
+  events: FixtureEvent[],
 ): OldRows['cursors'] {
   if (name === 'plain') {
     return old.cursors;
@@ -147,7 +119,7 @@ describe('ten processes open a 0.2.0 cache at once (1.3)', () => {
     async () => {
       for (let round = 0; round < ROUNDS; round++) {
         const name: FixtureName = round % 2 === 0 ? 'unknown' : 'plain';
-        const { root, cache, old, events } = project(name);
+        const { root, cache, old, events } = fixtureProject(name);
         const gated = await startGated(
           TEN.map((actor) => ({ argv: ['inbox', '--peek', '--as', actor, '--json'] })),
           root,
@@ -230,7 +202,7 @@ describe('a process killed between the recreate and its first catch-up (1.3)', (
     async () => {
       for (let round = 0; round < ROUNDS; round++) {
         const name: FixtureName = 'unknown';
-        const { root, cache, old, events } = project(name);
+        const { root, cache, old, events } = fixtureProject(name);
         const opener = openAndBlock(cache);
         await opener.opened;
         await opener.kill();
@@ -257,98 +229,6 @@ describe('a process killed between the recreate and its first catch-up (1.3)', (
   );
 });
 
-/**
- * A child that, once `go` exists, advances alice's cursor as an `inbox` of
- * the old version would: in one BEGIN IMMEDIATE transaction (waiting on
- * the busy timeout), alice's position moves to `target` and her seen set
- * becomes `target.seen`, as `advanceCursor` leaves them after delivering
- * every event up to the target. The tables it writes have the same shape before
- * and after the recreate, so the advance lands in whichever cache is
- * current when it gets the lock. Prints `advanced <schema_version>`.
- */
-function oldAdvance(
-  cache: string,
-  gateDir: string,
-  target: {
-    hash: string;
-    wall: number;
-    counter: number;
-    actor: string;
-    seen: { hash: string; wall: number }[];
-  },
-): { ready: Promise<void>; exited: Promise<string> } {
-  const script = `import { existsSync, writeFileSync } from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
-const [cache, gate, hash, wall, counter, actor, seen] = process.argv.slice(1);
-const db = new DatabaseSync(cache);
-db.exec('PRAGMA busy_timeout = 30000');
-writeFileSync(gate + '/ready-old', '');
-const cell = new Int32Array(new SharedArrayBuffer(4));
-while (!existsSync(gate + '/go')) { Atomics.wait(cell, 0, 0, 1); }
-for (;;) {
-  try {
-    db.exec('BEGIN IMMEDIATE');
-    break;
-  } catch (error) {
-    if (!/busy|locked/i.test(String(error))) { throw error; }
-  }
-}
-const version = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get().value;
-db.prepare('UPDATE cursors SET last_wall = ?, last_counter = ?, last_actor = ?, last_hash = ? WHERE actor = ?')
-  .run(Number(wall), Number(counter), actor, hash, 'alice');
-db.prepare("DELETE FROM cursor_seen WHERE actor = 'alice'").run();
-for (const s of JSON.parse(seen)) {
-  db.prepare("INSERT INTO cursor_seen (actor, hash, wall) VALUES ('alice', ?, ?)").run(s.hash, s.wall);
-}
-db.exec('COMMIT');
-db.close();
-process.stdout.write('advanced ' + version + '\\n');
-`;
-  const child = spawn(
-    process.execPath,
-    [
-      '--input-type=module',
-      '-e',
-      script,
-      cache,
-      gateDir,
-      target.hash,
-      String(target.wall),
-      String(target.counter),
-      target.actor,
-      JSON.stringify(target.seen),
-    ],
-    { env: { ...process.env, NODE_NO_WARNINGS: '1' }, stdio: ['ignore', 'pipe', 'pipe'] },
-  );
-  const timer = setTimeout(() => child.kill('SIGKILL'), 60_000);
-  let out = '';
-  let err = '';
-  child.stdout.setEncoding('utf8');
-  child.stderr.setEncoding('utf8');
-  child.stdout.on('data', (c: string) => (out += c));
-  child.stderr.on('data', (c: string) => (err += c));
-  const exited = new Promise<string>((resolve, reject) => {
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        resolve(out);
-      } else {
-        reject(new Error(`old advance failed (${String(code)}): ${err}`));
-      }
-    });
-  });
-  const ready = (async (): Promise<void> => {
-    const deadline = Date.now() + 60_000;
-    while (!existsSync(join(gateDir, 'ready-old'))) {
-      if (Date.now() > deadline) {
-        throw new Error(`the old advance never got ready: ${err}`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-  })();
-  return { ready, exited };
-}
-
 describe('an inbox advance racing the recreate (1.3)', () => {
   it(
     'an old-version advance is either carried or applied after the recreate, never lost',
@@ -356,20 +236,11 @@ describe('an inbox advance racing the recreate (1.3)', () => {
     async () => {
       const outcomes = new Set<string>();
       for (let round = 0; round < ROUNDS; round++) {
-        const { root, cache, events } = project('plain');
-        const last = events.at(-1);
-        expect(last?.minute).toBe(190);
-        const target = {
-          hash: last?.hash ?? '',
-          wall: last?.event.ts.wall ?? 0,
-          counter: last?.event.ts.counter ?? 0,
-          actor: last?.event.ts.actor ?? '',
-          seen: events
-            .filter((e) => e.event.ts.wall >= (last?.event.ts.wall ?? 0) - 3_600_000)
-            .map((e) => ({ hash: e.hash, wall: e.event.ts.wall })),
-        };
+        const { root, cache, events } = fixtureProject('plain');
+        expect(events.at(-1)?.minute).toBe(190);
+        const target = advanceTarget(events);
         const gateDir = scratchDir();
-        const advance = oldAdvance(cache, gateDir, target);
+        const advance = oldAdvance(cache, target, gateDir);
         await advance.ready;
         const gated = await startGated(
           ['bob', 'carol', 'dave'].map((actor) => ({
@@ -409,7 +280,7 @@ describe('an inbox advance racing the recreate (1.3)', () => {
     SLOW,
     async () => {
       for (let round = 0; round < ROUNDS; round++) {
-        const { root, cache, events } = project('plain');
+        const { root, cache, events } = fixtureProject('plain');
         const gated = await startGated(
           [
             { argv: ['inbox', '--as', 'alice', '--json'] },
@@ -445,7 +316,7 @@ describe('an inbox advance racing the recreate (1.3)', () => {
 describe('read-only paths and later versions (1.3)', () => {
   it('scenario: cache of a later schema version is recreated as before', SLOW, async () => {
     for (let round = 0; round < ROUNDS; round++) {
-      const { root, cache, events } = project('plain');
+      const { root, cache, events } = fixtureProject('plain');
       withDb(cache, (db) => {
         db.exec("UPDATE meta SET value = '6' WHERE key = 'schema_version'");
       });
@@ -469,7 +340,7 @@ describe('read-only paths and later versions (1.3)', () => {
     SLOW,
     async () => {
       for (let round = 0; round < ROUNDS; round++) {
-        const { root, cache, old } = project('plain');
+        const { root, cache, old } = fixtureProject('plain');
         const before = cacheHashes(cache);
         const result = await runCliAsync(['rebuild', '--check', '--json'], root, cliEnv());
         expect(result.code).toBe(1);
@@ -493,7 +364,7 @@ describe('read-only paths and later versions (1.3)', () => {
     SLOW,
     async () => {
       for (let round = 0; round < ROUNDS; round++) {
-        const { root, cache } = project('plain');
+        const { root, cache } = fixtureProject('plain');
         // The first command upgrades and folds.
         expect((await runCliAsync(['list', '--json'], root, cliEnv())).code).toBe(0);
         withDb(cache, (db) => {
@@ -512,7 +383,7 @@ describe('read-only paths and later versions (1.3)', () => {
 
   it('openCache(path, { prepare: false }) on the 0.2.0 cache throws schema-mismatch and leaves the file unchanged', () => {
     for (let round = 0; round < ROUNDS; round++) {
-      const { cache, old } = project(round % 2 === 0 ? 'plain' : 'unknown');
+      const { cache, old } = fixtureProject(round % 2 === 0 ? 'plain' : 'unknown');
       const before = cacheHashes(cache);
       let thrown: unknown = null;
       try {
