@@ -63,16 +63,19 @@ describe('the command registry', () => {
     ]);
   });
 
-  it('marks exactly inbox and watch as tracking a cursor, and watch, serve and top as streaming', () => {
+  it('marks exactly inbox and watch as tracking a cursor, and claim (with --wait only), watch, serve and top as streaming', () => {
     expect(COMMANDS.filter((c) => c.tracksCursor === true).map((c) => c.name)).toEqual([
       'inbox',
       'watch',
     ]);
     expect(COMMANDS.filter((c) => c.stream !== undefined).map((c) => c.name)).toEqual([
+      'claim',
       'watch',
       'serve',
       'top',
     ]);
+    // Only claim streams conditionally.
+    expect(COMMANDS.filter((c) => c.streams !== undefined).map((c) => c.name)).toEqual(['claim']);
     // top is the one command given a terminal.
     expect(COMMANDS.filter((c) => c.terminal === true).map((c) => c.name)).toEqual(['top']);
     expect(command('inbox').operation).toBe('readInbox');

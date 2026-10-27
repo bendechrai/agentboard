@@ -117,6 +117,8 @@ const PINNED: Readonly<Record<string, number>> = {
   // init --into-host on a standalone board with events not committed or not pushed (add-board-sharing group 5).
   unsynced: 4,
   usage: 1,
+  // claim --wait stopped by SIGINT or SIGTERM (add-claim-leases task 4.1, listed in claim's exit codes).
+  'wait-interrupted': 4,
   // claim --wait gave up at its --timeout (add-claim-leases; thrown by task 4.1, listed in claim's exit codes).
   'wait-timeout': 4,
 };
