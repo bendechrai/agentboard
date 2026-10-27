@@ -46,8 +46,8 @@ by this rule; only message and hint text are.
 - **THEN** it exits 1 with reason `usage`, the message names `--stale-after` and the duration form, and the token appears in no output
 
 #### Scenario: Unknown inbox cursor
-- **WHEN** `agentboard inbox --as a --since <token>` runs
-- **THEN** it exits 1 with reason `unknown-cursor`, the message names `--since`, and the token appears in no output
+- **WHEN** `agentboard inbox --as a --since <token>` runs with a token of 64 lowercase hex characters (the only shape that passes the form check) that names no event
+- **THEN** it exits 1 with reason `unknown-cursor`, the message names `--since`, and the token appears in no output; a token of any other shape is refused with reason `usage` by the unchanged form message, which names no value either
 
 #### Scenario: Decision path outside the working tree
 - **WHEN** `agentboard link T1 --decision ../<token> --as a` runs
@@ -89,8 +89,12 @@ ticket id and states the id form, and every hint writes the placeholder
 - **THEN** each is refused with reason `no-disposition`, the hint names the `close` step with `<id>` in place of the id, and the token appears in no output
 
 #### Scenario: Unknown ticket id that is id-shaped
-- **WHEN** `agentboard show 01NOPE0000` runs and no ticket id starts with it
+- **WHEN** `agentboard show 01J9K3ZZZZ` runs and no ticket id starts with it
 - **THEN** it exits 4 with reason `unknown-ticket` and the message names `01J9K3ZZZZ`
+
+#### Scenario: Unknown ticket id with a letter outside the id alphabet
+- **WHEN** `agentboard show 01NOPE0000` runs (`O` is not a Crockford base32 letter)
+- **THEN** it exits 4 with reason `unknown-ticket`, the message says the text given is not a ticket id, and `01NOPE0000` appears in no output
 
 ## MODIFIED Requirements
 

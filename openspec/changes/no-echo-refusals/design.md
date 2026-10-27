@@ -154,7 +154,7 @@ board or the working tree, never from the refused input.
 |---|---|---|---|---|---|---|
 | 1 | Unknown command (`selectCommand`, `unknownCommandMessage`; also `help <topic>`) | `usage` | the first argument, or the first two for a two-word command | raw | low: the suggestions carry it | `unknown command; did you mean <list>? run 'agentboard help' to list the commands` (without suggestions: `unknown command; run 'agentboard help' to list the commands`) |
 | 2 | Unknown flag (`unknownFlagMessage`) | `usage` | the flag name (before any `=`) | raw | low: suggestions and position carry it | `unknown flag at argument <n> for <command>; did you mean <list>? run 'agentboard help <command>' to list its flags` (without suggestions likewise, without the `did you mean` part) |
-| 3 | Extra positional (`parseArgs`) | `usage` | the extra argument (often unquoted free text) | raw | no | `unexpected argument at position <n> for <command>; it takes <positionals>, and text with spaces must be quoted` where `<positionals>` is the synopsis of its positionals (`<id> <text>`) |
+| 3 | Extra positional (`parseArgs`) | `usage` | the extra argument (often unquoted free text) | raw | no | `unexpected argument at position <n> for <command>; it takes <positionals>, and text with spaces must be quoted` where `<positionals>` is the synopsis of its positionals (`<id> <text>`); for a command with no positionals `unexpected argument at position <n> for <command>; it takes no positional arguments` (built by `unexpectedArgumentMessage`) |
 | 4 | Integer expected (`parseInteger`: `checklist tick` index, `--port`) | `usage` | the value | raw | no | `--<name> must be an integer` for a flag, `<name> must be an integer` for a positional (the MCP form) |
 | 5 | Not a choice (`parseArgs`, `config set`/`get` key) | `usage` | nothing (add-claim-leases) | - | - | unchanged: `<command> takes <<name>> as one of <choices>` |
 | 6 | Help subtopic (`help.ts`) | `usage` | the subtopic word | raw | low | `<command> has no help subtopic of that name; run 'agentboard help <command>'` |
@@ -166,7 +166,7 @@ board or the working tree, never from the refused input.
 
 | # | Refusal (where) | Reason | Echoes today | Shape when built | Useful? | Proposed message |
 |---|---|---|---|---|---|---|
-| 10 | Unknown status (`registry.ts status()`: `move <status>`, `handoff --status`, `list --status`) | `usage` | the status | raw | no: statuses are listed | `move takes <status> as one of todo, tests, implementing, review, merged, blocked`; `handoff takes --status as one of ...`; `list takes --status as one of ...` |
+| 10 | Unknown status (`registry.ts status()`: `move <status>`, `handoff --status`, `list --status`) | `usage` | the status | raw | no: statuses are listed | `move takes <status> as one of todo, tests, implementing, review, merged, blocked`; `handoff takes --status as one of ...`; `list takes --status as one of ...` (built by `choicesMessage`, which the choices refusal of row 5 also uses) |
 | 11 | `health` durations (`durationFlag`: `--stale-after`, `--blocked-after`, `--unplanned-within`) | `usage` | the value | raw | no | `invalid --<name>: a duration is <n>m, <n>h or <n>d with <n> a positive integer of at most 5 digits (for example 30m, 2h or 1d)` |
 | 12 | Malformed task reference (`taskRefFromArgs`: `--task` of `new`, `link`, `move`, `close`) | `malformed-task-ref` | the reference | raw | no: the form is shown | `malformed task reference: --task expects <source>:<ref>#<item>, for example openspec:add-board-core#3` |
 | 13 | Malformed change name (`taskRefFromArgs`; `listTaskFilter` in the registry) | `malformed-task-ref` | the name | raw | no | `malformed change name: --change must be non-empty and contain no #` |
@@ -199,7 +199,7 @@ board or the working tree, never from the refused input.
 | # | Refusal (where) | Reason | Echoes today | Useful? | Proposed message |
 |---|---|---|---|---|---|
 | 32 | Unknown tool name (`server.ts`) | `usage` | the name, through `JSON.stringify` only | no: `tools/list` has them | `unknown tool; call tools/list for the tool names` |
-| 33 | Unknown argument name (`toolArguments`) | `usage` | the argument name | no | `unknown argument for <tool>; its arguments are <names>` (the schema's property names in schema order) |
+| 33 | Unknown argument name (`toolArguments`) | `usage` | the argument name | no | `unknown argument for <tool>; its arguments are <names>` (the schema's property names in schema order, joined by `, `; built by `unknownArgumentMessage`) |
 | 34 | Wrong type, missing argument, not an object | `usage` | registry names only | - | unchanged |
 | 35 | Every value refusal above (statuses, references, ids, ...) | as above | as above | - | as above: `toolArguments` builds an argument list and runs `parseArgs` and the same command code |
 
@@ -255,6 +255,59 @@ they were checked (rows 5, 9, 18, 34, 35 as a pointer, 37-39).
   (`malformed-tasks` line numbers and group items), and the `DECISION:`
   comments `unpromoted-decision` quotes.
 - The web API's `after` cursor refusal already names no value.
+
+## Rulings during the tests (group 1)
+
+The test author of group 1 ruled on these points (DECISION comments on
+ticket 01M5YAB4P61Q911JF44AEKVQ30):
+
+- The board-cli scenario "Unknown ticket id that is id-shaped" ran
+  `show 01NOPE0000` and expected the message to name `01J9K3ZZZZ`. `O` is
+  not a Crockford base32 letter, so `01NOPE0000` is not id-shaped and is
+  not named; the scenario runs `show 01J9K3ZZZZ`, and a second scenario
+  covers `01NOPE0000`. Existing tests that expected `no ticket matches
+  01NOPE00` change accordingly.
+- "Unknown inbox cursor": only 64 lowercase hex characters pass the form
+  check of `--since` and reach `unknown-cursor`; the fixture for it is a
+  64-character hex string. Any other value gets the unchanged `usage`
+  refusal, which already names no value.
+- The three new messages that are built from the registry are message
+  builders with their own contracts, so that the source scan can allow
+  them by name: `choicesMessage(command, argument, choices)`
+  (`src/board/text.ts`, re-exported from `src/cli/parse.ts`; rows 5 and
+  10), `unexpectedArgumentMessage(command, position)` (`src/cli/parse.ts`;
+  row 3) and `unknownArgumentMessage(command)` (`src/mcp/tools.ts`; row
+  33). `unknownFlagMessage` takes the flag's position as a new second
+  parameter.
+- Positions count every argument after the program name, including the
+  command words, flags, flag values and a lone `--`.
+- The web app's unknown body property is refused by the same
+  `unknownArgumentMessage` as the MCP tool, so its list of arguments
+  includes `as` and `allow-secret-like`, which the web app refuses with
+  their own message; that is accepted, the list being the tool schema.
+- The source scan (task 1.6) collects the message of every `new
+  BoardError`, every `super(code, reason, message)` of a subclass and its
+  construction sites, and every `usage(...)` call, splits it into the
+  values it interpolates, and requires each to be allowed for its file
+  and enclosing function, with a reason; the method is documented on the
+  test (`src/__tests__/no-echo-source-scan.test.ts`). Hint templates are
+  covered by a behavioural test instead (every reason, both surfaces,
+  every command, every fixture as the id). `src/board/init-remote.ts` is
+  left out of the scan on the group 1 branch because group 2 rewrites its
+  refusals; whichever group merges second adds it.
+- Two echoes found by the scan or the review are out of scope here: the
+  `port-in-use` refusal names the `--port` number, which passed the
+  integer and range checks and cannot hold a token, and is allowed; and an
+  MCP `resources/read` of an unknown URI is refused with the SDK's own
+  text `Resource <uri> not found`, a JSON-RPC error rather than a tool
+  error, which repeats the URI. The second is left for a follow-up
+  ticket, since it changes a recorded decision (board-agent-guidance
+  "Guide over MCP").
+- The token fixtures (`src/__tests__/harness/secret-fixtures.ts`) add a
+  64-character hex string to the five of "Testing approach", compare
+  without regard to case, and apply the eight-character substring rule
+  of the URL with credentials to its user information only, so that a
+  message naming another URL's scheme or host does not count as a leak.
 
 ## Compatibility
 
