@@ -109,16 +109,29 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
 (`agentboard agents check` reports both current). Machines that share
 this repository's board should run a build with leases before anyone uses
 them on it (see "Known gaps").
+- **Guard on leftover temporaries** (`board-concurrency`): `init
+  --into-host` adopts a temporary worktree left by an interrupted move
+  only when it comes from the board's own history: the git directory it
+  recorded is the one at `.board` now, and its recorded starting HEAD and
+  integrated tip (three atomic records in the temporary's git directory)
+  are both in that board's history, so a replacement board that reuses
+  the old git directory's inode, or a board whose history was rewritten,
+  is another board and its events never reach `refs/agentboard/board`.
+  Temporaries of 0.2.0 and older stay resumable. The removal line and the
+  `sync-in-progress` text name such a temporary. Delivered in PR #104
+  (ticket 01M5XPHX2V5DHQY0RB6M5JWRD6) and documented in README "Moving a
+  board into the host repository".
 
 ## What is next
 
-1. `guard-stale-temporary` (in progress, in `openspec/changes/`, proposed
-   in PR #100): `init --into-host` adopts a leftover temporary only when
-   it was made from the board at `.board` now, checked by the recorded
-   HEAD as well as the git directory's identity, which a file system that
-   reuses inode numbers cannot tell apart (ticket
-   01M5XPHX2V5DHQY0RB6M5JWRD6). Its implementation group is in review;
-   its documentation group follows.
+1. `keep-cursors-on-upgrade` (in progress, in `openspec/changes/`,
+   proposed in PR #106): a cache schema upgrade keeps each actor's inbox
+   position instead of replaying the whole board (ticket
+   01M5Y0T56JQ1HS04A3N042Y2Z4). Its implementation is in review (PR #108).
+2. `no-echo-refusals` (in progress, in `openspec/changes/`, proposed in
+   PR #110): no refusal or hint repeats the input it refuses, and `init
+   --remote` never repeats the URL given or its credentials (ticket
+   01M5X7EGBFRQA4BH7R0A35ZW50). Both task groups are being written.
 
 ## Known gaps
 
