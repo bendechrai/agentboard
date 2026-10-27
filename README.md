@@ -1508,8 +1508,26 @@ run replays the pick again for you to resolve; committing it instead
 makes the replayed pick conflict with your commit, a second stop for the
 same conflict. A worktree left
 by a move of a board that was
-replaced since (another standalone board at `.board`) is never adopted:
-it is removed and named. Leftovers of a dead move that hold nothing are
+replaced since (another standalone board at `.board`) is never adopted,
+even when the replacement's git directory reuses the old one's inode
+number, as ext4 usually does; and a board whose history was rewritten
+since, so that it no longer holds the commit the move began from or the
+tip the worktree integrated, counts as another board. Briefly: a worktree
+is adopted only when the git directory it recorded is the one at `.board`
+now and both its recorded starting HEAD and its integrated tip are in that
+board's history. One that is not adopted is removed and named:
+
+```
+removed /path/to/project/.git/agentboard/migrating/4242, left by a move of another board (not the one at /path/to/project/.board, or one whose history no longer holds where that move began), so nothing of it was adopted
+```
+
+When a rebase or cherry-pick is stopped in such a worktree, the
+`sync-in-progress` refusal says so instead (same exit code, reason and
+hint), with `(that worktree was left by a move of another board, not the
+one at /path/to/project/.board now or one whose history no longer holds
+where that move began, so finishing it moves nothing of this board)` after
+the path, and removes nothing. Worktrees made by 0.2.0 are still adopted
+when they are this board's. Leftovers of a dead move that hold nothing are
 removed and named
 (plain `agentboard init` removes them too, and reports a move whose
 `sync` has not completed without finishing it), and a move that is still
