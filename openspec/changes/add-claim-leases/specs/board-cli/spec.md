@@ -336,8 +336,14 @@ first of these that applies ends the wait:
    ignored. When that transaction fails with exit 5 `busy` it SHALL be
    attempted once more (the busy timeout and one retry), and when that
    fails too it SHALL exit 5 with reason `busy` and a message naming
-   `agentboard unqueue <id> --as <actor>`, the actor still queued. A
-   grant due at the deadline itself is therefore written and wins. The
+   `agentboard unqueue <id> --as <actor>`, the actor still queued. Any
+   other error of that transaction SHALL end the wait with that error
+   after one attempt, writing nothing (the actor stays queued, and a
+   grant it is later given lapses after its window). A
+   grant due at the deadline itself is therefore written and wins. A wake
+   that already sees the actor holding the ticket ends as in 1 or 2 even
+   if a signal arrives in the same wake; only a hold found by the ending
+   transaction is released on a signal. The
    wait never exits non-zero while the actor holds the ticket, and an
    interrupted wait never exits 0 unless it holds the ticket, because
    exit 0 means the actor holds it and a script may go on to the
