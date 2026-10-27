@@ -469,6 +469,8 @@ function readCarry(db: DatabaseSync): Carry | null {
       .map((row) => String(row.hash));
     return { cursors, seen, applied };
   } catch (error) {
+    // Under the write lock no reader can be busy; if SQLite ever reports it
+    // anyway, it is the open's retry that must handle it, not the fallback.
     if (isBusy(error)) {
       throw error;
     }

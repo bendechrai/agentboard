@@ -889,6 +889,9 @@ export function recordedFlags(db: DatabaseSync): Map<string, number> {
   );
 }
 
+/** The prior of an incremental fold on a cache that has folded: nothing recorded applies to its inputs. */
+const EMPTY_PRIOR: ReadonlyMap<string, number> = new Map();
+
 /**
  * The prior applied set of a fold (keep-cursors-on-upgrade design.md:
  * "Remember what the old cache applied until the first fold"): what the
@@ -907,8 +910,11 @@ export function recordedFlags(db: DatabaseSync): Map<string, number> {
  *
  * Read-only: never drops `carried_applied` or writes any row; the fold
  * that records events drops it in its own transaction. Reads on `db` as it
- * is (the caller holds the transaction). Used by both paths of `foldNew`
- * and by `refoldWithCursors`.
+ * is (the caller holds the transaction). Used by `refoldWithCursors` and
+ * by `foldNew` on its refold path and on its first fold after a recreate
+ * (`last_position` null); an incremental fold on a cache that has folded
+ * before does not call it, so such a fold reads `folded` once (to find the
+ * unrecorded files) and never a second time for the prior.
  */
 export function priorApplied(db: DatabaseSync): ReadonlyMap<string, number> {
   const recorded = recordedFlags(db);
@@ -1056,11 +1062,17 @@ function foldNew(
   const { db } = board;
   const last = readLastPosition(db);
   const late = last !== null && inputs.some((input) => compareToPosition(input, last) < 0);
-  // What the cache had applied before this fold: the folded flags, or, in
-  // the first fold after a recreate that carried the cursors, the old
-  // cache's applied set (`carried_applied`), so that an event the old
-  // cache had applied and delivered is not treated as newly effective.
-  const prior = priorApplied(db);
+  // What the cache had applied before this fold, read only where it can
+  // matter: a refold needs the recorded flags to tell which events it made
+  // effective, and the first fold after a recreate that carried the
+  // cursors (`last_position` null, `folded` empty) needs the old cache's
+  // applied set (`carried_applied`), so that an event the old cache had
+  // applied and delivered is not treated as newly effective. An
+  // incremental fold on a cache that has folded before needs no prior: its
+  // inputs are unrecorded by contract, so no recorded flag applies to
+  // them, and `folded` is not read again (keep-cursors-on-upgrade, the
+  // cost guard of task 1.2).
+  const prior = late || last === null ? priorApplied(db) : EMPTY_PRIOR;
   if (!late) {
     const batch = applyBatch(db, inputs, malformed);
     const applied = new Set(batch.applied);

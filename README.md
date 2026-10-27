@@ -1021,10 +1021,16 @@ keeps each actor's inbox position, so the next `inbox` returns only what
 that actor has not been given, and the first `inbox` after it also returns
 any event the old version did not apply (an event of a kind it did not
 know, synced from a machine that was upgraded first), wherever that event
-sits relative to the cursor. Downgrading to an older version, or a cache
-whose cursor tables are not in the shape the running version expects,
-still loses the cursors, and each actor's next `inbox` then returns the
-whole board once; no event is ever skipped either way.
+sits relative to the cursor. Before the new version first runs on a
+machine, stop every long-running process of the old version there
+(`watch`, `serve`, `top`, `mcp`): one left running keeps its connection
+to the cache and can fold the rebuilt cache with the old version's rules,
+and the events it does not know are then delivered only after
+`agentboard rebuild`. Downgrading to an older version, or a cache whose
+cursor tables are not in the shape the running version expects, still
+loses the cursors, and each actor's next `inbox` then returns the whole
+board once. With the old version's processes stopped, no event is skipped
+either way.
 
 ## Decisions and closing tickets
 
