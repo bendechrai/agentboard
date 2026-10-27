@@ -140,24 +140,11 @@ export function parseSetting(text: string): number {
 }
 
 /**
- * A duration in milliseconds written in the largest unit that divides it
- * exactly, among `d`, `h`, `m` and `s` (board-view-model: "Activity feed
- * entries", the ttl rule), else in `ms`: 604800000 is `7d`, 7200000 `2h`,
- * 1800000 `30m`, 90000 `90s`, 30500 `30500ms`, 0 `0s`. Used for ttls,
- * windows and settings in `show`, `config get` and `config set`. Pure.
+ * `formatDuration` of the browser-safe view-model (`src/view/time.ts`),
+ * re-exported for the board layer: the ttl rule shared with the feed
+ * summaries (board-view-model: "Activity feed entries").
  */
-export function formatDuration(ms: number): string {
-  if (ms === 0) {
-    return '0s';
-  }
-  for (const unit of ['d', 'h', 'm', 's']) {
-    const size = UNIT_MS[unit] ?? 1;
-    if (ms % size === 0) {
-      return `${String(ms / size)}${unit}`;
-    }
-  }
-  return `${String(ms)}ms`;
-}
+export { formatDuration } from '../view/time.js';
 
 /**
  * The remaining time of a live lease, for the `list` assignee token

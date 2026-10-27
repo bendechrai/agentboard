@@ -58,11 +58,11 @@ describe('the guidance version', () => {
     expect(GUIDANCE_VERSION).toBeGreaterThan(0);
   });
 
-  it('is one higher than before the ad hoc rule was added (task 5.2)', () => {
-    // The text shipped at version 1; the sixth rule raises it by one
-    // (design.md section 9: 2 unless add-claim-leases lands its guidance
-    // first, in which case this pin moves to 3).
-    expect(GUIDANCE_VERSION).toBe(2);
+  it('is 3: the ad hoc rule made it 2 and the mutex recipe makes it 3 (add-claim-leases 6.1)', () => {
+    // The text shipped at version 1; the sixth rule raised it to 2
+    // (add-adhoc-ticket-lifecycle task 5.2) and the mutex recipe to 3
+    // (board-agent-guidance "Mutex ticket recipe").
+    expect(GUIDANCE_VERSION).toBe(3);
   });
 
   it('marks the skill and the AGENTS.md block as the design fixes', () => {
@@ -179,7 +179,9 @@ describe('the Claude Code skill', () => {
     expect(skill).toMatch(ASCII);
     expect(skill.endsWith('\n')).toBe(true);
     expect(skill.endsWith('\n\n')).toBe(false);
-    expect(lines.length).toBeLessThanOrEqual(40);
+    // At most 45 lines with the mutex recipe (board-agent-guidance "Mutex
+    // ticket recipe").
+    expect(lines.length).toBeLessThanOrEqual(45);
     for (const line of lines) {
       expect(line).toBe(line.trimEnd());
     }
@@ -228,7 +230,9 @@ describe('the AGENTS.md block', () => {
 
   it('is short plain ASCII and differs between versions only in the start marker', () => {
     expect(block).toMatch(ASCII);
-    expect(lines.length).toBeLessThanOrEqual(30);
+    // At most 40 lines with the mutex recipe (board-agent-guidance "Mutex
+    // ticket recipe").
+    expect(lines.length).toBeLessThanOrEqual(40);
     expect(renderAgentsBlock(9)).toBe(
       block.replace(blockStart(GUIDANCE_VERSION), '<!-- agentboard:start v9 -->'),
     );
