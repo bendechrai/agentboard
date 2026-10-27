@@ -182,6 +182,7 @@ export const HINT_REASONS: readonly string[] = [
   'unsupported-source',
   'unsynced',
   'usage',
+  'wait-interrupted',
   'wait-timeout',
 ];
 
@@ -261,6 +262,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'unsupported-source': 1,
   unsynced: 4,
   usage: 1,
+  'wait-interrupted': 4,
   'wait-timeout': 4,
 };
 
@@ -494,6 +496,10 @@ export function hintStep(
  * - `wait-timeout`: exactly
  *   `the wait timed out and you left the queue; see what happened with <inbox>, then wait again or report ready`,
  *   where `<inbox>` is step `inbox` with `as` A.
+ * - `wait-interrupted` (a waiting `claim --wait` stopped by SIGINT or
+ *   SIGTERM): exactly
+ *   `the wait was interrupted and you left the queue; to wait again run <W>`,
+ *   W as for `already-assigned`.
  * - `needs-scope-disposition` (board-agent-guidance: "Error hints",
  *   scenario "Missing disposition hint"; design.md section 9): both forms
  *   of the refused command, each a step, and the text "do not create an
@@ -989,6 +995,8 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     `another import changed the ticket first; see what is left to change with ${importDryRun(h)}`,
   queued: (h) =>
     `other actors are waiting for this ticket and have priority; wait in its queue with ${waitStep(h)}`,
+  'wait-interrupted': (h) =>
+    `the wait was interrupted and you left the queue; to wait again run ${waitStep(h)}`,
   'wait-timeout': (h) =>
     `the wait timed out and you left the queue; see what happened with ${h.step('inbox', [['as', h.actor]])}, then wait again or report ready`,
   'needs-scope-disposition': needsScopeDispositionHint,
