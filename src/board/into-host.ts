@@ -149,12 +149,15 @@ const SOURCE_RECORD = 'agentboard-source';
  * at `.board` now, the test step 6 applies before the rename, so a board
  * replaced at the same path whose git directory reuses the old one's
  * inode, or a board whose history was rewritten, never has its temporary
- * adopted. A worktree with `SOURCE_RECORD` and no `HEAD_RECORD` was made
- * by 0.2.0 and is judged by the tip it integrated instead; an adopted
- * worktree gains the records it lacks. Both records are written before
- * anything is integrated, so a kill between or during the writes leaves a
- * worktree whose HEAD is still `MIGRATING_REF`, removed as a plain
- * leftover without its records being read.
+ * adopted, and only when the tip it integrated is in that repository's
+ * source tip (`belongsToBoard`). A worktree with `SOURCE_RECORD` and no
+ * `HEAD_RECORD` was made by 0.2.0 and is judged by the tip it integrated
+ * instead; an adopted worktree gains the records it lacks. Both records
+ * are written before anything is integrated, so a kill between or during
+ * the writes leaves a worktree whose HEAD is still `MIGRATING_REF`,
+ * removed as a plain leftover without its records being read; every
+ * record write, there and on adoption, is atomic (`writeRecord`), so no
+ * kill leaves an empty or partial record.
  */
 const HEAD_RECORD = 'agentboard-source-head';
 
@@ -780,13 +783,20 @@ export interface IntoHostResult extends InitResult {
  * and then the HEAD commit that repository had at step 1 (the full object
  * name and a newline in the file `agentboard-source-head` beside it). It
  * belongs when the identity names the repository at `dir` now (round 4
- * ruling 3; checked first, and no git command runs when it differs) and
- * the recorded HEAD is an ancestor of, or equal to, that repository's
- * HEAD (the test of step 6, so a board replaced at the same path even
- * where the file system reuses the inode, or one whose history was
- * rewritten since, is another board); a recorded HEAD that is not a full
- * object name, that the repository lacks or that cannot be read counts as
- * not an ancestor. One of another board is never adopted: without rebase
+ * ruling 3; checked first, and no git command runs when it differs; a
+ * record that cannot be read names no repository), the recorded HEAD is
+ * an ancestor of, or equal to, that repository's HEAD (the test of step
+ * 6, so a board replaced at the same path even where the file system
+ * reuses the inode, or one whose history was rewritten since, is another
+ * board) and the tip it integrated (`MIGRATING_REF`) is an ancestor of,
+ * or equal to, the repository's source tip (so a remote force-reset past
+ * what the temporary integrated, or a replacement forked from the board
+ * at or after the recorded HEAD, is another board too); a recorded HEAD
+ * that is not a full object name, that the repository lacks or that
+ * cannot be read counts as not an ancestor. Both records are written
+ * atomically (a temporary file in the git directory renamed onto the
+ * record), at step 3 and when an adopted temporary gains the ones it
+ * lacks. One of another board is never adopted: without rebase
  * or cherry-pick state it is removed like a dead leftover and the message
  * names it, saying it was left by a move of another board (not the one at
  * `dir`, or one whose history no longer holds where that move began);
@@ -1414,7 +1424,7 @@ function lockedMove(
   )) {
     if (adoptable === undefined && belongs(candidate.path)) {
       adoptable = candidate;
-      if (sourceRecord(host, candidate.path) === null) {
+      if (!sourceRecord(host, candidate.path).present) {
         writeRecord(host, candidate.path, SOURCE_RECORD, plan.gitDir ?? '');
       }
       if (!headRecord(host, candidate.path, plan.head.length).present) {
@@ -1897,10 +1907,18 @@ function stoppedInTemporary(
  *
  * - `SOURCE_RECORD` and `HEAD_RECORD`: the identity equals that
  *   repository's git directory identity (round 4 ruling 3; checked first,
- *   so no git command runs when it differs), and the recorded HEAD is an
+ *   so no git command runs when it differs), the recorded HEAD is an
  *   ancestor of, or equal to, the repository's HEAD (`plan.head`), the
- *   test step 6 applies before the rename. A recorded HEAD that is not a
- *   full object name of the repository's hash algorithm (the length of
+ *   test step 6 applies before the rename, and the tip the worktree
+ *   integrated is in the repository's source tip (the check of the rows
+ *   below). The third test is needed because the worktree integrated the
+ *   source tip, the remote-tracking ref when the board has a remote,
+ *   which may be ahead of HEAD, and the recorded HEAD says nothing about
+ *   the commits between the two: without it a remote force-reset past
+ *   those commits since the move began, or a replacement forked from the
+ *   board at or after the recorded HEAD, would have commits only the
+ *   worktree holds published in the host ref. A recorded HEAD that is not
+ *   a full object name of the repository's hash algorithm (the length of
  *   `plan.head`), that the repository does not have as a commit, or that
  *   cannot be read counts as not an ancestor: in doubt the move does not
  *   adopt.
@@ -1912,6 +1930,9 @@ function stoppedInTemporary(
  * - no `SOURCE_RECORD` (made by older code; round 5 ruling 5): the tip it
  *   integrated is in the source tip's history, whatever `HEAD_RECORD`
  *   says.
+ *
+ * A `SOURCE_RECORD` that cannot be read equals no identity, so the
+ * worktree is another board's in both rows that have one.
  */
 function belongsToBoard(
   host: GitRunner,
@@ -1921,17 +1942,21 @@ function belongsToBoard(
   integrated: string,
 ): boolean {
   const record = sourceRecord(host, path);
-  if (record === null) {
+  if (!record.present) {
     return integratedTipInBoard(board, plan, integrated);
   }
-  if (record !== (plan.gitDir ?? '')) {
+  if (record.identity !== (plan.gitDir ?? '')) {
     return false;
   }
   const head = headRecord(host, path, plan.head.length);
   if (!head.present) {
     return integratedTipInBoard(board, plan, integrated);
   }
-  return head.name !== null && isAncestor(board, head.name, plan.head);
+  return (
+    head.name !== null &&
+    isAncestor(board, head.name, plan.head) &&
+    integratedTipInBoard(board, plan, integrated)
+  );
 }
 
 /** Round 5 ruling 5: whether the tip a temporary integrated is an ancestor of, or equal to, the board's source tip. */
@@ -1939,9 +1964,26 @@ function integratedTipInBoard(board: GitRunner, plan: MovePlan, integrated: stri
   return integrated !== '' && isAncestor(board, integrated, plan.sourceTip);
 }
 
-/** The content of `SOURCE_RECORD` of the temporary worktree at `path`, or null when it has none. */
-function sourceRecord(host: GitRunner, path: string): string | null {
-  return readRecord(host, path, SOURCE_RECORD);
+/**
+ * The `SOURCE_RECORD` of the temporary worktree at `path`: absent, or
+ * present with `identity` its content (a trailing newline removed), null
+ * when the file cannot be read (a directory, a permission error), which
+ * equals no identity and so names another board rather than throwing a
+ * raw file error.
+ */
+function sourceRecord(
+  host: GitRunner,
+  path: string,
+): { present: false } | { present: true; identity: string | null } {
+  const gitDir = worktreeGitDir(host, path);
+  if (gitDir === null || !existsSync(join(gitDir, SOURCE_RECORD))) {
+    return { present: false };
+  }
+  try {
+    return { present: true, identity: readFileSync(join(gitDir, SOURCE_RECORD), 'utf8').replace(/\n$/, '') };
+  } catch {
+    return { present: true, identity: null };
+  }
 }
 
 /**
@@ -1980,11 +2022,23 @@ function worktreeGitDir(host: GitRunner, path: string): string | null {
   return isGitFailure(out) ? null : out.trim();
 }
 
-/** Writes `content` to the file `name` in the git directory of the worktree at `path`. */
+/**
+ * Writes `content` to the file `name` in the git directory of the worktree
+ * at `path`, atomically: the content goes to a temporary file in that
+ * directory, renamed onto `name`, so a reader sees the old state or the
+ * whole new record and never an empty or partial one. A kill in the
+ * middle of a truncating write of an adopted temporary's record would
+ * otherwise leave an empty `HEAD_RECORD`, judged malformed by the next
+ * run, which would remove the temporary, with the human's resolution, as
+ * another board's. The temporary file's name is never a record's name,
+ * so a leftover of an interrupted write is never read as one.
+ */
 function writeRecord(host: GitRunner, path: string, name: string, content: string): void {
   const gitDir = worktreeGitDir(host, path);
   if (gitDir !== null) {
-    writeFileSync(join(gitDir, name), content);
+    const partial = join(gitDir, `.tmp-${name}-${String(process.pid)}`);
+    writeFileSync(partial, content);
+    renameSync(partial, join(gitDir, name));
   }
 }
 
