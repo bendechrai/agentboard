@@ -73,12 +73,43 @@ parse against the registry:
   claiming and before the critical step), while within one machine it is
   exact.
 
+The section SHALL follow `Tickets and planning tasks` and precede `Using
+the MCP tools`, and its command lines SHALL pass `--as`. Read with line
+breaks as spaces and ignoring case, it SHALL contain these phrases:
+`standing`, `ad hoc`, `never close` (as in never closed), `first action of
+real work`, `grace period`, `longer than the critical section`, `half the
+ttl`, `before the critical step`, `not-assignee`, `on failure`, `never wait
+on a mutex in a loop`, `background process`, `foreground`, `CLI only`,
+`report ready`, `only joins the queue`, `board_claim`, `board_inbox`,
+`queue runner`, `one holder at a time`, `lapse`, `queue.window`,
+`lease.grace`, `impersonat` (as in never by impersonating the holder),
+`sync`, `before claiming` and `exact`. The worker step of the test-author,
+implementer and reviewer checklists SHALL contain `mutex`, `in a loop`,
+`background process` and `report ready`; the queue-runner step of the
+orchestrator checklist SHALL contain `mutex`, `queue runner` and `one
+holder at a time`.
+
 The installed `claude` and `agents-md` guidance SHALL contain a short form
 of the recipe (the worker rules, the claim, renew, wait and release
 commands, and the pointer to `agentboard help agents`), the MCP server
 `instructions` summary SHALL contain the worker rules in one or two
 sentences while staying within 2000 characters, and the guidance version
 SHALL be 3, so `agents check` reports version 2 installations as `stale`.
+In `SKILL.md` the short form is a section headed `## Mutex tickets` after
+the rules and before `## Everything else`; in the AGENTS.md block it is a
+paragraph introduced by the line `Mutex tickets:` after the rules and
+before the pointer to the full guide. Both contain, with line breaks as
+spaces and ignoring case, `never wait on a mutex in a loop`, `background
+process`, `report ready`, `first action of real work`, `only joins the
+queue` and `board_inbox`, and in backticks a `claim` with `--ttl`, a
+`renew`, a `claim` with `--ttl`, `--wait` and `--timeout`, and a
+`release`, each passing `--as`. The skill stays at most 45 lines and the
+block at most 40. The summary contains `never wait on a mutex`, `in a
+loop`, `background process` and `only joins the queue`.
+
+#### Scenario: Mutex lines in every role checklist
+- **WHEN** `agentboard help agents --role <role>` runs for each role
+- **THEN** the test-author, implementer and reviewer checklists each have a step with the worker rules, and the orchestrator checklist a step saying to act as the queue runner of a mutex, dispatching one holder at a time
 
 #### Scenario: Recipe commands parse
 - **WHEN** every line beginning with `agentboard ` in the mutex section is parsed against the registry

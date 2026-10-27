@@ -16,9 +16,15 @@ queue`, `left the queue`, `granted to <actor> (accept within <window>)`,
 `checked <n>` or `unchecked <n>` (1-based line number), `added <k>
 checklist line(s)`, `reconciled with tasks (<u> updated, <r> removed, <a>
 added[, renamed][, forced])`, `renumbered from group <n> to <m>`,
-`superseded: <reason>`, and `set <key>` for `board.meta`. A ttl in a summary
-SHALL be written in the largest unit that divides it exactly (`90s`,
-`10m`, `2h`). Filters by change,
+`superseded: <reason>`, and `set <key>` for `board.meta`. A ttl or window
+in a summary SHALL be written in the largest unit of `d`, `h`, `m` and `s`
+that divides it exactly (`90s`, `10m`, `2h`, `7d`), or in milliseconds
+(`30500ms`) when none does. A claim carrying `supersedes` SHALL be
+summarised as the takeover, naming `supersedes.holder`, whether or not it
+carries a lease; a claim with a lease and no `supersedes` as `claimed
+(lease <ttl>)` with the lease's requested `ttl` (not its grace); a renew
+with its own `ttl`; and a grant with its `to` and `window`. Reasons and
+actor names are put on one line like every other text. Filters by change,
 by actor and by a set of kinds SHALL be combined with AND. An entry SHALL
 be marked `late` when the consumer's model recorded it as a late arrival.
 
@@ -33,6 +39,22 @@ be marked `late` when the consumer's model recorded it as a late arrival.
 #### Scenario: Unplanned summary
 - **WHEN** `orch` runs `move T1 merged --unplanned "hotfix"`
 - **THEN** the feed has, newest first, `moved to merged` and then `recorded as unplanned: hotfix`, both by `orch`
+
+#### Scenario: Lease claim summary
+- **WHEN** `merger-1` claims T1 with a ttl of 90000 (its grace is 120000)
+- **THEN** its entry's summary is `claimed (lease 90s)`, and a claim with no lease is still `claimed`
+
+#### Scenario: Renew summary
+- **WHEN** the holder of T1 renews with a ttl of 7200000
+- **THEN** its entry's summary is `renewed lease (2h)`
+
+#### Scenario: Queue summaries
+- **WHEN** `merger-2` joins the queue of T1 and later leaves it
+- **THEN** the entries' summaries are `joined the queue` and `left the queue`
+
+#### Scenario: Rejected and stale events have no entry
+- **WHEN** a renew by an actor that does not hold T1 is rejected `not-assignee`, and a grant that does not equal the derived one is rejected `stale-grant`
+- **THEN** neither has a feed entry
 
 #### Scenario: Forced release summary
 - **WHEN** `orchestrator` force-releases T1 from `merger-1` with reason `stalled`
