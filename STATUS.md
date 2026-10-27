@@ -137,6 +137,21 @@ them on it (see "Known gaps").
   `release --force` or `config set` (README, "Upgrading a board shared
   between machines"); the release notes for the version that ships it
   must say so.
+- A cache schema upgrade drops inbox cursors: on a `schema_version`
+  mismatch the cache drops every table, the non-derivable `cursors` and
+  `cursor_seen` included, so after upgrading (0.2.0 to 0.3.0 moves the
+  cache schema from 4 to 5) every actor's next `inbox` returns the whole
+  board once, and an agent following the guidance may act on stale
+  events: ticket 01M5Y0T56JQ1HS04A3N042Y2Z4. A fix is being proposed as
+  the OpenSpec change `keep-cursors-on-upgrade`.
+- The `agentboard` on PATH on the maintainer's machine is the published
+  0.2.0 (guidance version 2) until 0.3.0 is installed. Run from this
+  repository it reports the version 3 guidance as `stale` and suggests
+  `agents install`, which would downgrade it, so check and install
+  guidance with a build of `staging` (`node dist/cli.js agents check`)
+  until then. Agents on this repository's board that call it are writers
+  that do not understand leases, the mixed-version case README
+  "Upgrading a board shared between machines" describes.
 - The guide is at its limit: the orchestrator output of `help agents
   --role orchestrator` is exactly 180 lines, the limit the ad hoc
   lifecycle and `add-claim-leases` share, so the next change that adds

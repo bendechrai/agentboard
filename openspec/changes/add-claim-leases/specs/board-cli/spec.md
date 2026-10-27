@@ -295,7 +295,12 @@ state SHALL never be stored in the cache.
 `claim <id> --as <actor> --ttl <duration> --wait --timeout <duration>`
 SHALL claim at once, as `claim --ttl`, when the ticket is unassigned with
 no waiters, and SHALL then print exactly what `claim --ttl` prints.
-Otherwise it SHALL write a `ticket.queue.join` with the ttl (unless the
+`--wait` SHALL never take over a lease: on a ticket held by another actor
+it SHALL join the queue even when the holder's lease is already
+claimable, and the ticket then passes to it through a grant from the
+queue, due at the join's wall plus 1 when the lapse lies before the join
+(see board-events "Grants"). The same holds for `board_claim` with `wait`
+over MCP. Otherwise it SHALL write a `ticket.queue.join` with the ttl (unless the
 actor is already queued), print the actor's position (the line `queued
 for <id> at position <n>, held by <holder or ->`), and block in the
 foreground on the watch machinery until the wait ends. The deadline SHALL
@@ -381,6 +386,10 @@ which names the form and never repeats the value given. `unqueue <id> --as
 #### Scenario: Waiter is granted on release
 - **WHEN** `merger-1` holds T1, `claim T1 --as merger-2 --ttl 30m --wait --timeout 10m` is blocking, and `merger-1` runs `release T1`
 - **THEN** the waiting command writes or observes the grant to `merger-2`, exits 0 within 3 seconds of the release, and names `agentboard renew T1`
+
+#### Scenario: Wait on a lapsed lease joins instead of taking over
+- **WHEN** `merger-1` claimed T1 with `--ttl 30m` and never renewed, the lease is claimable, the queue is empty, and `claim T1 --as merger-2 --ttl 30m --wait --timeout 10m` runs
+- **THEN** it writes a `ticket.queue.join`, not a claim with `supersedes`, prints `queued for <T1> at position 1, held by merger-1`, then writes or observes the grant to `merger-2` whose `after` names `merger-1`'s lease and whose wall is the join's wall plus 1, and exits 0 naming `agentboard renew T1`
 
 #### Scenario: Wait times out
 - **WHEN** a waiter's `--timeout 30s` passes (on the fake clock) with the holder still holding T1
@@ -561,8 +570,9 @@ The command registry SHALL define `renew`, `unqueue` and the `--ttl`,
 gains optional `ttl` and `wait` and `board_release` gains optional `force`
 and `reason`, validated as on the CLI. `--timeout` SHALL be a CLI-only
 flag, absent from the tool schema. `board_claim` with `wait` SHALL never
-block: when the ticket is claimable at once it SHALL return the ordinary
-claim result with `queued` false; otherwise it SHALL write the join and
+block: when the ticket is unassigned with no waiters it SHALL return the
+ordinary claim result with `queued` false; otherwise (a held ticket,
+including one whose lease is claimable, or one with waiters) it SHALL write the join and
 return `{queued: true, position, holder, ticket}` at once. The grant SHALL
 be delivered only through `board_inbox` as a `ticket.grant` entry.
 
