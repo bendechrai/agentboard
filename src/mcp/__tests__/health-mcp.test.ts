@@ -199,7 +199,7 @@ describe('scenario: Unplanned scope over MCP and JSON', () => {
     };
     expect(error).toMatchObject({ exitCode: 1, reason: 'usage' });
     expect(error.message).toContain('--unplanned-within');
-    expect(error.message).toContain('7days');
+    expect(error.message).not.toContain('7days');
     expect(error.message).toContain('<n>d');
     expect(error.hint).toBe(renderHint('usage', { surface: 'mcp', command: 'health' }));
   });

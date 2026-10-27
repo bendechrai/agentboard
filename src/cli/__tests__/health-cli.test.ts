@@ -314,9 +314,10 @@ describe('scenario: Malformed duration', () => {
       for (const form of ['<n>m', '<n>h', '<n>d']) {
         expect(first).toContain(form);
       }
-      if (value !== '') {
-        expect(first).toContain(value);
-      }
+      // No-echo-refusals: the flag and the forms, never the value.
+      expect(first).toBe(
+        'agentboard: invalid --stale-after: a duration is <n>m, <n>h or <n>d with <n> a positive integer of at most 5 digits (for example 30m, 2h or 1d)',
+      );
       expect(out.stderr.trimEnd().split('\n').at(-1)).toBe(
         `hint: ${renderHint('usage', { surface: 'cli', command: 'health' }) ?? ''}`,
       );
@@ -330,7 +331,7 @@ describe('scenario: Malformed duration', () => {
     const error = errorOf(out);
     expect(error).toMatchObject({ exitCode: 1, reason: 'usage' });
     expect(error.message).toContain('--blocked-after');
-    expect(error.message).toContain('2hours');
+    expect(error.message).not.toContain('2hours');
     expect(error.message).toContain('<n>h');
     expect(error.hint).toBe(renderHint('usage', { surface: 'cli', command: 'health' }));
     expect(error.hint).toContain("'agentboard help health'");

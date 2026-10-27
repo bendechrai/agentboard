@@ -685,7 +685,7 @@ describe('config set and config get', () => {
     );
     expect(err.message).toContain('lease.grace');
     expect(err.message).toContain('queue.window');
-    expect(err.message).toContain('columns');
+    expect(err.message).not.toContain('columns');
     const get = expectBoardError(() => getConfig(board, 'columns'), 1, 'usage');
     expect(get.message).toContain('lease.grace');
   });

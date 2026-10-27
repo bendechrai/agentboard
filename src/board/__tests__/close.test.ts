@@ -135,7 +135,12 @@ describe('closeTicket: dispositions', () => {
       1,
       'decision-path-missing',
     );
-    expect(err.message).toContain('docs/adr/0099.md');
+    // board-cli "Close with a missing decision path" (no-echo-refusals):
+    // named by its flag, never by the path given.
+    expect(err.message).toBe(
+      'the decision record given with --decision-recorded-in does not exist',
+    );
+    expect(err.message).not.toContain('0099');
     expect(eventCount(board)).toBe(before);
   });
 
@@ -213,7 +218,8 @@ describe('closeTicket: decision paths inside the working tree', () => {
       1,
       'path-outside-tree',
     );
-    expect(err.message).toContain('../outside.md');
+    expect(err.message).toBe(`the path given is outside the working tree ${root}`);
+    expect(err.message).not.toContain('outside.md');
     expect(eventCount(board)).toBe(before);
   });
 });

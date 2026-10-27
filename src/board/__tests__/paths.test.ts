@@ -50,7 +50,8 @@ describe('treePath inside a git repository', () => {
         1,
         'path-outside-tree',
       );
-      expect(err.message).toContain(text);
+      // No-echo-refusals: the root is named, the path given never is.
+      expect(err.message).toBe(`the path given is outside the working tree ${root}`);
     },
   );
 

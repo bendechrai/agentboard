@@ -527,7 +527,10 @@ describe('import-change: refusals write nothing', () => {
       1,
       'tasks-not-found',
     );
-    expect(err.message).toContain('openspec/changes/no-such-change/tasks.md');
+    expect(err.message).toBe(
+      'cannot read the tasks file of the change given: import-change reads openspec/changes/<name>/tasks.md; is the name an OpenSpec change?',
+    );
+    expect(err.message).not.toContain('no-such-change');
     expect(eventCount(board)).toBe(0);
   });
 
@@ -538,7 +541,9 @@ describe('import-change: refusals write nothing', () => {
       1,
       'unsupported-source',
     );
-    expect(err.message).toContain('speckit');
+    expect(err.message).toBe(
+      'the task source given has no adapter in this version; only openspec can be imported',
+    );
     expect(eventCount(board)).toBe(0);
   });
 

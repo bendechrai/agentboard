@@ -241,7 +241,10 @@ describe('input schemas', () => {
 
   it('refuses two scope dispositions and a partial shorthand on board_move and board_close', () => {
     for (const c of [command('move'), command('close')]) {
-      const base = c.name === 'close' ? { id: '01J9K3', 'no-decision': true } : { id: '01J9K3', status: 'merged' };
+      const base =
+        c.name === 'close'
+          ? { id: '01J9K3', 'no-decision': true }
+          : { id: '01J9K3', status: 'merged' };
       expectBoardError(
         () => toolArguments(c, { ...base, task: 'openspec:x#1', unplanned: 'y', as: 'a' }),
         1,
@@ -255,7 +258,9 @@ describe('input schemas', () => {
         change: 'x',
         group: '1',
       });
-      expect(toolArguments(c, { ...base, unplanned: 'y', 'allow-secret-like': true })).toMatchObject({
+      expect(
+        toolArguments(c, { ...base, unplanned: 'y', 'allow-secret-like': true }),
+      ).toMatchObject({
         'allow-secret-like': true,
       });
     }
@@ -424,7 +429,8 @@ describe('toolArguments', () => {
       1,
       'usage',
     );
-    expect(unknown.message).toContain('bogus');
+    expect(unknown.message).toMatch(/^unknown argument for board_claim; its arguments are /);
+    expect(unknown.message).not.toContain('bogus');
     expectBoardError(() => toolArguments(command('list'), { json: true }), 1, 'usage');
   });
 

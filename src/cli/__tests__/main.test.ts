@@ -580,14 +580,15 @@ describe('writing commands through the CLI', () => {
     expect(out.stderr).toContain(CLOSE_RULE);
   });
 
-  it('scenario: close with a missing decision path exits 1 naming it; an existing one closes', () => {
+  it('scenario: close with a missing decision path exits 1 naming its flag; an existing one closes', () => {
     const { root, boardDir } = project();
     const id = newTicket(root);
     run(['move', id, 'blocked', ...AS], root);
     const before = count(boardDir);
     const out = run(['close', id, '--decision-recorded-in', 'docs/adr/0099.md', ...AS], root);
     expect(out.code).toBe(1);
-    expect(out.stderr).toContain('docs/adr/0099.md');
+    expect(out.stderr).toContain('--decision-recorded-in does not exist');
+    expect(out.stdout + out.stderr).not.toContain('0099');
     expect(count(boardDir)).toBe(before);
     mkdirSync(join(root, 'docs', 'adr'), { recursive: true });
     writeFileSync(join(root, 'docs', 'adr', '0099.md'), '# x\n');
@@ -705,7 +706,8 @@ describe('decision paths are recorded relative to the working tree root', () => 
     );
     expect(out.code).toBe(1);
     expect(errorOf(out).reason).toBe('path-outside-tree');
-    expect(out.stderr).toContain('../outside.md');
+    expect(out.stderr).toContain('the path given is outside the working tree');
+    expect(out.stdout + out.stderr).not.toContain('outside.md');
     expect(count(join(root, '.board'))).toBe(before);
   });
 

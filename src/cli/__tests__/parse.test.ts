@@ -319,15 +319,19 @@ describe('parseArgs: command selection', () => {
     expect(parsed.json).toBe(false);
   });
 
-  // An unknown command names the token, suggests close commands and points
-  // to `agentboard help` (which lists them all) instead of listing every
-  // command; an empty argv is the overview (help-cli.test.ts).
+  // An unknown command suggests close commands and points to `agentboard
+  // help` (which lists them all) instead of listing every command, and never
+  // names the token (no-echo-refusals); an empty argv is the overview
+  // (help-cli.test.ts).
   it.each([[['nope']], [['checklist']], [['checklist', 'toggle', 'x', '1']], [['--json']]])(
     'refuses %j with a usage error pointing to agentboard help',
     (argv) => {
       const err = expectBoardError(() => parseArgs(argv), 1, 'usage');
-      expect(err.message).toMatch(/^unknown command /);
+      expect(err.message).toMatch(/^unknown command; /);
       expect(err.message).toContain("run 'agentboard help' to list the commands");
+      for (const word of argv.filter((a) => a !== 'checklist')) {
+        expect(err.message).not.toContain(word);
+      }
     },
   );
 
@@ -412,11 +416,15 @@ describe('parseArgs: flags and positionals', () => {
   });
 
   it.each([
-    ['an unknown flag', ['list', '--colour', 'red'], '--colour'],
+    ['an unknown flag', ['list', '--colour', 'red'], 'unknown flag at argument 2 for list'],
     ['a value on a boolean flag', ['list', '--closed=yes'], '--closed'],
     ['a missing flag value', ['list', '--status'], '--status'],
     ['a repeated single flag', ['list', '--status', 'todo', '--status', 'tests'], '--status'],
-    ['too many positionals', ['comment', 'T1ABCD', 'hello', 'world'], 'world'],
+    [
+      'too many positionals',
+      ['comment', 'T1ABCD', 'hello', 'world'],
+      'unexpected argument at position 4 for comment',
+    ],
     ['a missing positional', ['comment', 'T1ABCD'], 'text'],
     ['a missing required flag', ['handoff', 'T1ABCD', '--to', 'r', '--status', 'review'], '--note'],
     ['a non-integer index', ['checklist', 'tick', 'T1ABCD', 'two'], 'index'],

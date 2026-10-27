@@ -134,7 +134,9 @@ describe('scenario: Unplanned merges in text output', () => {
       '\nunplanned scope: 1 in the last 36h (1 in all)\n',
     );
     const narrow = ok(run(['health', '--unplanned-within', '90m'], root)).stdout;
-    expect(narrow).toContain('\nunplanned scope: 0 in the last 90m (1 in all)\ncache check: not run\n');
+    expect(narrow).toContain(
+      '\nunplanned scope: 0 in the last 90m (1 in all)\ncache check: not run\n',
+    );
     expect(narrow).not.toContain('unplanned: production hotfix');
   });
 
@@ -175,7 +177,9 @@ describe('scenario: Information, not a failure', () => {
 describe('scenario: Unplanned scope over MCP and JSON (the JSON side)', () => {
   it('prints thresholds.unplannedWithin and unplannedScope with --unplanned-within 30d', () => {
     const { root } = mergedBoard();
-    const doc = oneJson(ok(run(['health', '--unplanned-within', '30d', '--json'], root))) as HealthReport;
+    const doc = oneJson(
+      ok(run(['health', '--unplanned-within', '30d', '--json'], root)),
+    ) as HealthReport;
     expect(doc.thresholds).toEqual({
       staleAfter: DEFAULT_THRESHOLDS.staleAfter,
       blockedAfter: DEFAULT_THRESHOLDS.blockedAfter,
@@ -202,7 +206,9 @@ describe('scenario: Unplanned scope over MCP and JSON (the JSON side)', () => {
 
   it('keeps the total with a window that lists nothing', () => {
     const { root } = mergedBoard();
-    const doc = oneJson(ok(run(['health', '--unplanned-within', '2h', '--json'], root))) as HealthReport;
+    const doc = oneJson(
+      ok(run(['health', '--unplanned-within', '2h', '--json'], root)),
+    ) as HealthReport;
     expect(doc.thresholds.unplannedWithin).toBe(2 * HOUR);
     expect(doc.unplannedScope).toEqual({ total: 1, tickets: [] });
   });
@@ -236,9 +242,10 @@ describe('scenario: Malformed --unplanned-within', () => {
       for (const form of ['<n>m', '<n>h', '<n>d']) {
         expect(first).toContain(form);
       }
-      if (value !== '') {
-        expect(first).toContain(value);
-      }
+      // No-echo-refusals: the flag and the forms, never the value.
+      expect(first).toBe(
+        'agentboard: invalid --unplanned-within: a duration is <n>m, <n>h or <n>d with <n> a positive integer of at most 5 digits (for example 30m, 2h or 1d)',
+      );
       expect(out.stderr.trimEnd().split('\n').at(-1)).toBe(
         `hint: ${renderHint('usage', { surface: 'cli', command: 'health' }) ?? ''}`,
       );
@@ -252,14 +259,17 @@ describe('scenario: Malformed --unplanned-within', () => {
     const error = errorOf(out);
     expect(error).toMatchObject({ exitCode: 1, reason: 'usage' });
     expect(error.message).toContain('--unplanned-within');
-    expect(error.message).toContain('7days');
+    expect(error.message).not.toContain('7days');
     expect(error.message).toContain('<n>d');
     expect(error.hint).toBe(renderHint('usage', { surface: 'cli', command: 'health' }));
   });
 
   it('is checked before the board is looked for, after the other two durations', () => {
     expect(run(['health', '--unplanned-within', '7days'], tempDir()).code).toBe(1);
-    const both = run(['health', '--stale-after', '2hours', '--unplanned-within', '7days'], tempDir());
+    const both = run(
+      ['health', '--stale-after', '2hours', '--unplanned-within', '7days'],
+      tempDir(),
+    );
     expect(both.code).toBe(1);
     expect(both.stderr.split('\n')[0]).toContain('--stale-after');
     expect(both.stderr.split('\n')[0]).not.toContain('--unplanned-within');
@@ -273,7 +283,9 @@ describe('scenario: Malformed --unplanned-within', () => {
 
   it('accepts the bounds 1m and 99999d', () => {
     const { root } = mergedBoard();
-    const low = oneJson(ok(run(['health', '--unplanned-within', '1m', '--json'], root))) as HealthReport;
+    const low = oneJson(
+      ok(run(['health', '--unplanned-within', '1m', '--json'], root)),
+    ) as HealthReport;
     expect(low.thresholds.unplannedWithin).toBe(MINUTE);
     const high = oneJson(
       ok(run(['health', '--unplanned-within', '99999d', '--json'], root)),
@@ -302,7 +314,8 @@ function goldenCard(index: number, unplanned: { reason: string } | null): Card {
     title: ticket.title,
     status: ticket.status,
     assignee: null,
-    task: ticket.task === null ? null : `${ticket.task.source}:${ticket.task.ref}#${ticket.task.item}`,
+    task:
+      ticket.task === null ? null : `${ticket.task.source}:${ticket.task.ref}#${ticket.task.item}`,
     adhoc: ticket.adhoc !== null,
     unplanned,
     labels: [],
@@ -421,12 +434,7 @@ describe('golden health output on the fixture board of task 2.3', () => {
 });
 
 /** A card for the pure `renderHealth` cases. */
-function card(
-  id: string,
-  title: string,
-  status: Card['status'],
-  extra: Partial<Card> = {},
-): Card {
+function card(id: string, title: string, status: Card['status'], extra: Partial<Card> = {}): Card {
   return {
     id,
     shortId: id.slice(0, 10),
@@ -466,7 +474,9 @@ describe('renderHealth: the unplanned scope section (pure)', () => {
   it('writes the heading from the listed count, the window and the total', () => {
     const report = emptyReport(90 * MINUTE);
     report.unplannedScope.total = 5;
-    expect(renderHealth(report).split('\n')[7]).toBe('unplanned scope: 0 in the last 90m (5 in all)');
+    expect(renderHealth(report).split('\n')[7]).toBe(
+      'unplanned scope: 0 in the last 90m (5 in all)',
+    );
     expect(renderHealth(emptyReport(36 * HOUR)).split('\n')[7]).toBe(
       'unplanned scope: 0 in the last 36h (0 in all)',
     );
@@ -557,8 +567,8 @@ describe('renderHealth: the unplanned scope section (pure)', () => {
     expect(text).toMatch(/^[\x20-\x7e\n]*$/);
     const lines = text.split('\n');
     expect(lines[8]?.endsWith('merged 1h ago, unplanned: caf\\u00E9 outage')).toBe(true);
-    expect(lines[9]?.endsWith('closed 1h ago, no reason recorded (ad hoc: r\\u00E9sum\\u00E9)')).toBe(
-      true,
-    );
+    expect(
+      lines[9]?.endsWith('closed 1h ago, no reason recorded (ad hoc: r\\u00E9sum\\u00E9)'),
+    ).toBe(true);
   });
 });
