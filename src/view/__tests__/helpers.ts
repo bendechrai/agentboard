@@ -14,7 +14,9 @@ import {
 } from '../../events/fold.js';
 import type {
   BoardEvent,
+  LeaseRef,
   Status,
+  TicketGrantBody,
   TaskRef,
   TicketChecklistAddItem,
   TicketReconcileBody,
@@ -81,6 +83,67 @@ export const E = {
   },
   claim(ticket: string, o: Opts = {}): FoldInput {
     return input({ v: 1, kind: 'ticket.claim', ticket, ...stamp(o), body: {} });
+  },
+  /**
+   * A `ticket.claim` with a lease of `ttl` and `grace` (default 120000):
+   * `expiresAt` is the event's wall plus `min(ttl, grace)`, as the schema
+   * requires. With `supersedes`, it is a takeover of that lease.
+   */
+  leaseClaim(
+    ticket: string,
+    ttl: number,
+    o: Opts & { grace?: number; supersedes?: LeaseRef } = {},
+  ): FoldInput {
+    const stamped = stamp(o);
+    const grace = o.grace ?? 120_000;
+    const lease = { ttl, grace, expiresAt: stamped.ts.wall + Math.min(ttl, grace) };
+    const body = o.supersedes === undefined ? { lease } : { lease, supersedes: o.supersedes };
+    return input({ v: 1, kind: 'ticket.claim', ticket, ...stamped, body });
+  },
+  /** A `ticket.claim` carrying `supersedes` and no lease (the fold accepts it). */
+  takeoverNoLease(ticket: string, supersedes: LeaseRef, o: Opts = {}): FoldInput {
+    return input({ v: 1, kind: 'ticket.claim', ticket, ...stamp(o), body: { supersedes } });
+  },
+  /** A `ticket.renew` of `ttl`: `expiresAt` is the event's wall plus `ttl`. */
+  renew(ticket: string, ttl: number, o: Opts = {}): FoldInput {
+    const stamped = stamp(o);
+    return input({
+      v: 1,
+      kind: 'ticket.renew',
+      ticket,
+      ...stamped,
+      body: { ttl, expiresAt: stamped.ts.wall + ttl },
+    });
+  },
+  forceRelease(ticket: string, holder: string, reason: string, o: Opts = {}): FoldInput {
+    return input({
+      v: 1,
+      kind: 'ticket.release.force',
+      ticket,
+      ...stamp(o),
+      body: { holder, reason },
+    });
+  },
+  join(ticket: string, ttl: number, o: Opts = {}): FoldInput {
+    return input({ v: 1, kind: 'ticket.queue.join', ticket, ...stamp(o), body: { ttl } });
+  },
+  leave(ticket: string, o: Opts = {}): FoldInput {
+    return input({ v: 1, kind: 'ticket.queue.leave', ticket, ...stamp(o), body: {} });
+  },
+  /**
+   * A `ticket.grant` with the given body, written by `agentboard` (the
+   * reserved actor) unless `o.actor` says otherwise. Whether the fold
+   * applies it depends on it equalling the derived grant; for a grant the
+   * fold applies, derive it with `dueGrants`.
+   */
+  grant(ticket: string, body: TicketGrantBody, o: Opts = {}): FoldInput {
+    return input({
+      v: 1,
+      kind: 'ticket.grant',
+      ticket,
+      ...stamp({ actor: 'agentboard', ...o }),
+      body,
+    });
   },
   release(ticket: string, o: Opts = {}): FoldInput {
     return input({ v: 1, kind: 'ticket.release', ticket, ...stamp(o), body: {} });

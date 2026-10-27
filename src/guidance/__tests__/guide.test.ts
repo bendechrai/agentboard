@@ -199,6 +199,7 @@ describe('the format', () => {
       'Handing off and blocking',
       'Decisions and closing',
       'Tickets and planning tasks',
+      'Mutex tickets',
       'Using the MCP tools',
       'Exit codes and hints',
     ]);
