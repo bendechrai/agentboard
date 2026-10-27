@@ -51,7 +51,11 @@ may run at any time; if it lands first, group 1 re-syncs the
 `board-events` "Event kinds" text it shares.
 Tests that depend on time use an injected clock in-process and the
 harness preload's clock offset for child processes, never a production
-environment variable.
+environment variable. A single-shot child that must stand exactly on a
+boundary (a slot time, `expiresAt + LEASE_SKEW_MS`) runs on the same
+preload's stopped clock (`clockFixedMs`) instead, so the boundary does
+not depend on how long the child takes to start; a child that waits on
+the clock (`claim --wait`, `watch`) never does.
 
 ## 1. Lease, queue and grant fold (`events/claim-leases`)
 
