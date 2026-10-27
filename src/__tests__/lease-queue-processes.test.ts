@@ -20,7 +20,6 @@ import { describe, expect, it } from 'vitest';
 import { P, ev, putEvent } from '../store/__tests__/helpers.js';
 import {
   RUNS,
-  SCENARIO_TIMEOUT_MS,
   T1,
   cliOk,
   eventsOfKind,
@@ -44,12 +43,20 @@ async function freshBoard(): Promise<{ root: string; eventsDir: string }> {
   return project;
 }
 
+/**
+ * Each run starts 30 children, 20 of them one after another, so this
+ * scenario is the slowest of the group: 355 s alone and 451 s with every
+ * group 5 file running at once on the reference host. Twice the group's
+ * scenario timeout keeps it clear of a loaded host.
+ */
+const TIMEOUT_MS = 1_200_000;
+
 const WAITERS = Array.from({ length: 10 }, (_, n) => `waiter-${String(n)}`);
 
 describe('scenario: concurrent joins and releases', () => {
   it(
     `every waiter is granted exactly once, in the fold order of its join (${String(RUNS)} runs)`,
-    { timeout: SCENARIO_TIMEOUT_MS },
+    { timeout: TIMEOUT_MS },
     async () => {
       for (let run = 1; run <= RUNS; run += 1) {
         const label = `run ${String(run)}`;
