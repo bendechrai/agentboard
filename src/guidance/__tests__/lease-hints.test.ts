@@ -134,6 +134,29 @@ describe('wait-timeout', () => {
   });
 });
 
+describe('wait-interrupted (add-claim-leases task 4.1)', () => {
+  it('is a hinted reason of exit 4', () => {
+    expect(HINT_REASONS).toContain('wait-interrupted');
+    expect(HINT_EXIT_CODES['wait-interrupted']).toBe(4);
+  });
+
+  it('says the actor left the queue and names the --wait form on both surfaces', () => {
+    expect(renderHint('wait-interrupted', ctx('cli', 'claim'))).toBe(
+      `the wait was interrupted and you left the queue; to wait again run ${CLI_WAIT}`,
+    );
+    expect(renderHint('wait-interrupted', ctx('mcp', 'claim'))).toBe(
+      `the wait was interrupted and you left the queue; to wait again run ${MCP_WAIT}`,
+    );
+  });
+
+  it('a BoardError(4, wait-interrupted) from claim gets that hint', () => {
+    const error = new BoardError(4, 'wait-interrupted', `wait on ticket ${ID} interrupted`);
+    expect(hintFor(error, ctx('cli', 'claim'))).toBe(
+      `the wait was interrupted and you left the queue; to wait again run ${CLI_WAIT}`,
+    );
+  });
+});
+
 describe('every suggested step parses', () => {
   const contexts: [string, HintContext][] = [
     ['already-assigned', ctx('cli', 'claim', { claimableAt: CLAIMABLE })],
@@ -144,6 +167,8 @@ describe('every suggested step parses', () => {
     ['not-assignee', ctx('mcp', 'renew')],
     ['wait-timeout', ctx('cli', 'claim')],
     ['wait-timeout', ctx('mcp', 'claim')],
+    ['wait-interrupted', ctx('cli', 'claim')],
+    ['wait-interrupted', ctx('mcp', 'claim')],
   ];
 
   it.each(contexts)('%s (%o)', (reason, context) => {
