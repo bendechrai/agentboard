@@ -96,6 +96,7 @@ agentboard                     # the overview: every command, grouped, with its 
 agentboard --help              # the same (so do -h and help)
 agentboard help claim          # one command's help
 agentboard claim --help        # the same
+agentboard help config         # both config commands (config set and config get)
 agentboard help --json         # the overview as a JSON array of registry entries
 agentboard help handoff --json # one command's registry entry as a JSON object
 ```
@@ -545,9 +546,13 @@ agentboard release 01M38YRHC3 --as impl-1
   else holds it exits 4 with reason `already-assigned` naming the holder;
   claiming a ticket you already hold exits 0 and writes nothing, so a
   retried claim is safe. When several agents race to claim one ticket,
-  exactly one wins.
+  exactly one wins. `--ttl` makes the claim a lease that lapses unless it
+  is renewed, and `--wait` joins the ticket's queue instead of failing (see
+  "Leases, the waiting queue and mutex tickets").
 - `release` clears the assignment; only the assignee may release (else
-  exit 4, `not-assignee`).
+  exit 4, `not-assignee`), except with `--force --reason <text>`, which
+  breaks another actor's hold and records who did it and why (see "Forced
+  release").
 - `handoff` does three things in one event: assigns `--to`, moves to
   `--status` (subject to the state machine; naming the current status only
   reassigns) and records `--note` as a comment by the actor. If the move is
@@ -600,7 +605,10 @@ appear. It never skips an event, including one that arrives by `sync` with
 a timestamp earlier than events already seen. `--peek` lists without
 advancing. `--since <hash>` lists the events after the named event (its
 full 64-character hash, from `--json` output) and implies `--peek`. An
-actor with no cursor yet receives every event on the board.
+actor with no cursor yet receives every event on the board. A line
+beginning `GRANTED: ` is a ticket granted to you from a queue, and one
+beginning `LOST: ` an event that took a ticket from you (see "Reading
+leases and queues").
 
 `agentboard watch --as <actor>` prints the same entries as they arrive
 (using `fs.watch` with a 2 second polling fallback) until stopped with
@@ -608,6 +616,406 @@ Ctrl-C. It never advances the cursor: watching is not acknowledging, so run
 `inbox` to acknowledge what you have acted on.
 To follow the whole board rather than one actor's inbox, use
 `agentboard top` (see "Watching the board in a terminal").
+
+## Leases, the waiting queue and mutex tickets
+
+A plain claim never ends on its own: only `release` by the holder,
+`handoff` or `assign` moves the ticket on. That is right for a task group,
+but not for a ticket used as a lock (a merge lock, say), where a holder
+that crashes, is killed or simply forgets stalls everyone behind it. For
+that, a claim can carry a **lease** that lapses unless the holder keeps
+showing it is acting, waiters can join a fair **queue**, and someone who is
+not the holder can break a stale hold with an audited **forced release**.
+None of this changes a ticket's status, and leases and the queue constrain
+only `claim`: every other command works on a leased ticket as before. A
+claim without `--ttl` writes the same event as it always did.
+
+If the board is shared between machines, upgrade every machine before
+anyone uses `--ttl`, `--wait`, `release --force` or `config set` (see
+"Upgrading a board shared between machines"), and note that a lock held
+across machines is only as strong as `sync` (see "Clocks, skew and several
+machines").
+
+### Leases: `claim --ttl` and `renew`
+
+```
+agentboard claim <id> --ttl 30m --as merger-1     # hold it under a 30 minute lease
+agentboard renew <id> --as merger-1               # confirm it: the first action of real work
+agentboard renew <id> --ttl 1h --as merger-1      # set it to an hour from now
+```
+
+`claim --ttl` asks for a lease, but the lease starts as a short **grace
+lease**: the board's `lease.grace` setting (2 minutes unless changed with
+`config`). Only the holder's first `renew` confirms it and extends it to
+the requested ttl. A claim that is never confirmed lapses after the grace
+period (the examples in this section ran on a board with `lease.grace`
+set to 30 seconds, see "Board settings"):
+
+```
+$ agentboard claim 01M5XZK37D --ttl 30m --as merger-1
+01M5XZK37D4090R6TRCNDZ332Q  todo  merger-1  [adhoc] Merge lock
+confirm the lease with 'agentboard renew 01M5XZK37D4090R6TRCNDZ332Q --as merger-1' before 2026-10-27T06:09:10.553Z
+```
+
+This is the liveness rule. A claim proves only that some process ran
+`claim`, not that anyone is about to do the work: a background polling
+loop can win a lock for an idle agent and sit on it. With a grace lease,
+such a claim protects the ticket for the grace period only, and a crashed
+or idle holder that did renew loses the lock when its ttl runs out. The
+pattern is: claim, then renew as the first action of real work, renew
+again at about half the ttl and immediately before the critical step, and
+pick a ttl longer than the critical section. There is no flag for "I am
+really acting now": the board could not check it, so it would be passed by
+habit (ADR 0014).
+
+`renew` sets (not extends) the lease to `--ttl` from now, or to the ttl
+the claim asked for, and confirms it. It is accepted from the assignee
+only: anyone else gets exit 4 `not-assignee` and the hint "the lock was
+lost", whatever the arguments, so a holder whose lock was taken over,
+granted on or force-released learns it from its next `renew` and stops.
+The assignee renewing a ticket that has no lease, without `--ttl`, gets
+exit 1 `usage`. A renew after the lease expired is still accepted as long
+as nobody has taken the ticket over or been granted it.
+
+A ttl is 1 to 5 digits followed by `s`, `m`, `h` or `d`, from 30 seconds
+to 7 days (`30s`, `10m`, `7d`; not `10min`, `29s` or `8d`). A refused ttl,
+timeout or setting is reported by its form and never repeated, so a token
+pasted into the wrong place does not end up in a terminal or a log.
+
+### Taking over a lapsed lease
+
+A lease has three states, computed from your clock when you read it:
+`live` before it expires, `expired` for the 60 seconds after that (the
+clock skew tolerance, see "Clocks, skew and several machines"), and then
+`claimable`. A claim with `--ttl` on a claimable ticket with nobody
+waiting takes it over:
+
+```
+$ agentboard list
+01M5XZK37D4090R6TRCNDZ332Q  todo  merger-1*!claimable  [adhoc] Merge lock
+$ agentboard claim 01M5XZK37D --ttl 30m --as merger-4
+01M5XZK37D4090R6TRCNDZ332Q  todo  merger-4  [adhoc] Merge lock
+confirm the lease with 'agentboard renew 01M5XZK37D4090R6TRCNDZ332Q --as merger-4' before 2026-10-27T06:12:35.242Z
+```
+
+The takeover claim records the lease it supersedes (holder, expiry and
+the event that set it), so it applies only to that exact lease: a holder
+that renewed in time keeps the lock, whatever order the events arrive in,
+and of several racing takeovers exactly one wins. A takeover needs
+`--ttl` (exit 1 `usage` without it), because a hold taken over without a
+lease would never lapse. Before the lease is claimable, a claim is refused
+with exit 4 `already-assigned`, naming the holder, the expiry and the time
+from which the ticket can be claimed:
+
+```
+$ agentboard claim 01M5XZK37D --ttl 30m --as merger-2
+agentboard: ticket 01M5XZK37D4090R6TRCNDZ332Q is already assigned to merger-1 (lease expires 2026-10-27T06:09:10.553Z, claimable from 2026-10-27T06:10:10.553Z)
+hint: another actor holds this ticket, so do not work on it: see who with 'agentboard show 01M5XZK37D', or find your own work with 'agentboard inbox --as merger-2'; it can be claimed from 2026-10-27T06:10:10.553Z, or wait in its queue with 'agentboard claim 01M5XZK37D --ttl <duration> --wait --timeout <duration> --as merger-2'
+```
+
+### The waiting queue and grants
+
+`claim --ttl <d> --wait` (and, on the command line, `--timeout`) on a
+ticket that is held, or has waiters, does not fail: the actor joins the
+ticket's queue. That holds even when the holder's lease is already
+claimable: the waiter joins rather than taking over, and its grant follows
+at once. Waiters are served in the order they joined, and while anyone is
+waiting, a claim without `--wait` (a takeover included) is refused with
+exit 4 `queued`: waiters have priority. `unqueue <id>` leaves the queue
+(exit 4 `invalid-queue` when you are not in it). A hand-off or assign to a
+waiter takes it out of the queue.
+
+When the ticket becomes available (released, force-released, or its lease
+lapsed), the head waiter is **granted** it. A grant is an event written by
+the reserved actor `agentboard` (no command accepts `--as agentboard`) that
+makes the waiter the holder with an unconfirmed lease of the board's
+`queue.window` (2 minutes by default). The grantee accepts by running
+`renew`, exactly like confirming a grace lease. If it does not, the grant
+lapses after the window plus the 60 second tolerance and passes to the next
+waiter, so a waiter that died never stalls the queue.
+
+There is no daemon. A grant is a pure function of the events and is written
+by whichever command next opens the board and catches up once it is due
+(every such command except `rebuild`, including `list`, `show`, `inbox` and
+a waiting `claim --wait`), timestamped with the moment it became due rather
+than the moment it was written. Every writer derives the same bytes, so two
+processes or two machines writing the same grant produce one file. A read
+command takes the write lock only when a grant is actually due. If nobody
+runs a command for a while, a grant can be written after its window has
+already passed, and the next grant follows straight away.
+
+### Waiting on the command line
+
+On the command line `--wait` also needs `--ttl` and `--timeout` (1 second
+to 1 day), and the claim blocks in the foreground until it ends:
+
+```
+$ agentboard claim 01M5XZK37D --ttl 30m --wait --timeout 5m --as merger-2
+queued for 01M5XZK37D4090R6TRCNDZ332Q at position 1, held by merger-1
+01M5XZK37D4090R6TRCNDZ332Q  todo  merger-2  [adhoc] Merge lock
+accept the grant with 'agentboard renew 01M5XZK37D4090R6TRCNDZ332Q --as merger-2' before 2026-10-27T06:12:10.554Z
+```
+
+- When the ticket is free with nobody waiting, it claims at once, exactly
+  as `claim --ttl`.
+- Otherwise it joins the queue, prints its position, and waits, waking on
+  new events (as `watch` does) and at the time the next grant falls due, so
+  it writes the grant to itself without any other process running.
+- Granted, it exits 0 and prints the `renew` that accepts the grant and the
+  time by which to run it. Exit 0 always means you hold the ticket; you
+  still have to `renew` within the window.
+- When `--timeout` passes first, it leaves the queue and exits 4
+  `wait-timeout`. SIGINT or SIGTERM leave the queue too and exit 4
+  `wait-interrupted`, never 0. If the ticket was granted or handed to it in
+  the same moment, it holds it at a timeout (and exits 0), and on a signal
+  it releases it again so the next waiter is served, and says so. So
+  `agentboard claim ... --wait --timeout 10m && merge` never merges without
+  the lock.
+- Killed with SIGKILL, it stays queued; its grant then lapses after one
+  window and passes on.
+- If it left the queue elsewhere (`unqueue` from another shell) or its
+  grant passed on, it exits 4 `invalid-queue`.
+
+The timeout is measured on a monotonic clock, so a wall clock stepped
+during the wait does not move it. With `--json` the waiting claim prints
+one JSON document per line, as `watch --json` does: the queued document
+`{queued, position, holder, ticket}`, then the claim result, the grant
+document `{queued: false, grant, acceptBy, ticket}` or the error.
+
+Over MCP nothing blocks: `board_claim` with `wait` (and `ttl`) joins the
+queue and returns `{queued: true, position, holder, ticket}` at once (or
+the ordinary claim result, with `queued` false, when it claimed), and has
+no `timeout` argument. The grant arrives through `board_inbox` as a
+`ticket.grant` entry whose `to` is the grantee, who accepts it by calling
+`board_renew` within the window.
+
+### Forced release
+
+```
+agentboard release <id> --force --reason "merger-1 crashed" --as orchestrator
+```
+
+`--force` with a non-empty `--reason` lets an actor that is not the holder
+break the hold. It is recorded as its own event kind,
+`ticket.release.force`, naming the actor, the previous holder and the
+reason; `show` displays it, and the previous holder's inbox gets it as a
+line beginning `LOST: `. With waiters, the head waiter is granted the
+ticket. `--force` without a reason, `--reason` without `--force`, and
+`--force` by the holder itself exit 1 `usage`; `--force` on a ticket
+nobody holds exits 4 `not-assignee`. The reason is checked for secrets like
+a comment (`--allow-secret-like` overrides), before the board is opened.
+
+Any actor may force a release: actors are self-asserted, so a list of
+allowed actors would only teach agents to pass `--as orchestrator`, the
+impersonation this replaces (ADR 0014). What it buys is the record of who
+broke the lock and why. Reserve it for the orchestrator or a human, after
+checking that the holder is really gone; often waiting for the lease to
+lapse is enough.
+
+### Board settings: `config`
+
+```
+agentboard config set queue.window 5m --as orchestrator
+agentboard config set lease.grace 1m --as orchestrator
+agentboard config get
+```
+
+`lease.grace` is the grace a `claim --ttl` gets before it must be
+confirmed, and `queue.window` the time a granted waiter has to accept.
+Both are from 30 seconds to 10 minutes (`<n>s` or `<n>m`), default 2
+minutes, and are stored as `board.meta` events, so every machine sharing
+the board gets them through `sync`. `config get` prints both (or one)
+and marks defaults:
+
+```
+$ agentboard config get
+lease.grace 30s
+queue.window 2m (default)
+```
+
+A claim records the grace in effect when it was written, and a grant uses
+the window in effect at its position in the log, so changing a setting
+never shortens a lease already granted. `config` needs a shell: it is not
+an MCP tool.
+
+### Reading leases and queues
+
+`list` keeps the assignee column as one token: the holder, `*` while the
+lease is unconfirmed, then `+<remaining>` for a live lease, or
+`!expired` or `!claimable`, then `^<n>` when `n` actors are waiting (`-^2`
+for a free ticket with waiters):
+
+```
+$ agentboard list
+01M5XZK37D4090R6TRCNDZ332Q  todo  merger-1*+20s^1  [adhoc] Merge lock
+01M5XZK3JBDJ0V696VBZGFPSND  todo  merger-a+29m^1  [adhoc] Release lock
+```
+
+`show` adds a `lease:` line (state, `(grace)` while unconfirmed, ttl,
+expiry and the time from which it can be claimed), the queue with join
+times, a `granted:` line while a grant is not yet accepted, a `next
+grant:` line naming the waiter the ticket goes to next if nothing changes
+(and from when), the last takeover and the last forced release:
+
+```
+$ agentboard show 01M5XZK3JB
+...
+assignee: merger-a
+lease: live, ttl 30m, expires 2026-10-27T06:40:41.372Z, claimable from 2026-10-27T06:41:41.372Z
+next grant: merger-b at 2026-10-27T06:41:41.373Z, accept by 2026-10-27T06:43:41.373Z
+queue:
+  1 merger-b (joined 2026-10-27T06:10:38.991Z, ttl 30m)
+```
+
+With `--json` a ticket carries `lease` (null, or `{ttl, expiresAt, event,
+confirmed, state, claimableAt}`) and `queue` (the waiters in order). The
+lease state is worked out from your clock when you read it and never
+stored. Inbox entries gain `affects`, the previous holder of a forced
+release, a takeover or a grant after a lapse; a grant's `to` is the
+grantee and a forced release's `note` its reason. Human inbox lines begin
+`GRANTED: ` for a grant to you and `LOST: ` when you are the one affected:
+
+```
+$ agentboard inbox --as merger-2
+...
+GRANTED: 01M5XZK37D4090R6TRCNDZ332Q  ticket.grant  agentboard  to merger-2
+$ agentboard inbox --as releaser-1
+...
+LOST: 01M5XZK3JBDJ0V696VBZGFPSND  ticket.release.force  orchestrator  note releaser-1 crashed mid-tag (pid gone)
+```
+
+The web app's activity feed and `top` describe the same events
+(`claimed (lease 30m)`, `renewed lease (30m)`, `joined the queue`, a grant,
+a takeover, a forced release), but have no lease or queue controls.
+
+### Mutex tickets
+
+A lock is one standing ad hoc ticket, created once and never closed while
+the lock is in use:
+
+```
+agentboard new "Merge lock" --adhoc "mutex for merges into staging" --as orchestrator
+```
+
+**CLI workers.** A worker that can block runs the critical section like
+this:
+
+```
+agentboard claim <lock> --ttl 30m --wait --timeout 10m --as impl-1 || exit 1
+trap 'agentboard release <lock> --as impl-1' EXIT
+trap 'exit 1' INT TERM
+agentboard renew <lock> --as impl-1 || exit 1
+npm test && agentboard renew <lock> --as impl-1 && gh pr merge 42 --squash
+```
+
+The wait exits 0 only when `impl-1` holds the lock. The first `renew`
+accepts the grant (or confirms the grace lease when the lock was free) as
+the first action of real work; the second comes immediately before the
+critical step, so a lock lost during the tests stops the merge; and the
+`trap` releases the lock when the script ends, whether the merge
+succeeded, failed or the script was interrupted.
+
+Exit 4 `wait-timeout` or `wait-interrupted` from the wait means the worker
+does not hold the lock: it does not run the critical step, and either waits
+again or reports. `renew` failing with `not-assignee` means the lock was
+lost (it lapsed and passed on, or was force-released): stop. Use a ttl
+longer than the critical section, and no longer than you can afford to lose
+the lock for if the script is killed: a `trap` does not run on SIGKILL or a
+crash, and then the lease, not `release`, is the backstop. Renew at about
+half the ttl if the section is long. Never wait on a mutex in a loop of
+plain claims and never claim from a background process: the first is unfair
+(whoever polls at the right moment wins) and the second is exactly the idle
+hold that leases exist to end.
+
+**An orchestrator running the queue over MCP.** Agents behind MCP cannot
+block, and an agent that has stopped does not read its inbox. There the
+orchestrator is the single queue runner, dispatching one holder at a time.
+A worker ready to merge either reports ready (a comment or a hand-off to
+the orchestrator) and stops, or joins the queue and stops:
+
+```
+board_claim {"id": "<lock>", "ttl": "30m", "wait": true, "as": "impl-1"}
+  -> {"queued": true, "position": 1, "holder": "impl-2", "ticket": "<lock>"}
+```
+
+On a free lock (unassigned, nobody waiting) the same call claims it at once
+and returns the ordinary claim result with `queued` false, holding a grace
+lease that lapses in `lease.grace` (2 minutes by default) unless renewed:
+the worker must then call `board_renew` straight away and go on with the
+critical step. With `queued` true it has joined the queue, stops, and waits
+for the grant to arrive in `board_inbox`.
+
+The orchestrator reads its own inbox (`board_inbox` returns every event on
+the board, grants to others included, and writes any grant that has fallen
+due) and, when it sees the `ticket.grant` with `to` `impl-1`, dispatches
+`impl-1` again, which accepts with `board_renew {"id": "<lock>", "as":
+"impl-1"}` as its first call, merges and calls `board_release`. If the
+dispatch takes longer than the window, the grant passes to the next waiter,
+so give dispatch time:
+
+```
+agentboard config set queue.window 10m --as orchestrator
+```
+
+For workers that only report ready, the orchestrator claims nothing
+itself: it dispatches the next ready worker (which claims with `--ttl` and
+renews as above) only once the lock is released or its holder's lease
+lapses. For a hold that looks stale it checks `show <lock>`, waits for
+the lease to become claimable or, after checking that the holder is gone,
+runs `release <lock> --force --reason "<why>"`, and never impersonates the
+holder with `--as`. `agentboard help agents` carries the same recipe for
+agents, and `agents install` puts a short form of it into a project's
+guidance.
+
+### Clocks, skew and several machines
+
+The fold never reads a clock. A lease lapsing, a takeover and a grant
+passing on are all decided from the timestamps written in the events,
+plus a fixed tolerance of 60 seconds: a takeover is valid only when its
+own timestamp is at least 60 seconds past the lease's expiry, and a grant
+after a lapse or a non-acceptance is due 60 seconds after the lease or
+window ran out. Your clock is read only to stamp new events, to decide
+whether a due grant or a takeover may be written yet, and to show a
+lease's state in `list` and `show`.
+
+- **On one machine** every timestamp comes from one clock, so leases,
+  takeovers and grants happen exactly at the stated times, never earlier,
+  and the lock is exact.
+- **Across machines** whose clocks differ by at most 60 seconds, a
+  takeover or grant is never written before the lease really lapsed, and a
+  grantee always gets at least its window of real time. A larger skew can
+  shorten a lease or a window by the excess; `show` displays the times
+  involved.
+- **The lock is only as strong as `sync`.** Each machine decides from the
+  events it has. A renew written in time on one machine but synced late
+  still wins: once both machines have synced, a takeover or grant another
+  machine wrote in the meantime is rejected (`already-assigned` or
+  `stale-grant`) on both, and the board converges, but for a while both
+  machines may have believed they held the lock. Sync before claiming and
+  again before the critical step.
+- **A known limit:** a waiter that leaves the queue (at its timeout, say)
+  on one machine can be overruled by a release synced late from another
+  machine with an earlier timestamp. The fold then grants the ticket to the
+  waiter that already left. Its command had already exited 4, so it never
+  ran the critical step; nobody accepts the grant, so it lapses after the
+  window and passes to the next waiter. The ticket sits idle for one
+  window plus the tolerance; the lock is never held twice.
+
+### Upgrading a board shared between machines
+
+Every machine that writes to a shared board must run a version that
+understands leases before any actor uses `--ttl`, `--wait`, `release
+--force` or `config set`. An older version reports a leased claim as
+malformed and keeps the new kinds (`ticket.renew`, `ticket.queue.join`,
+`ticket.queue.leave`, `ticket.grant`, `ticket.release.force`) as unknown
+events without folding them, so on that machine a leased ticket looks
+unassigned and a second actor could claim it there: the machines then
+disagree about who holds the lock. Nothing is lost: once the machine is
+upgraded, the same events fold as they do everywhere else, with no
+migration. Plain claims are unchanged, so a board where nobody uses the
+new flags works with mixed versions. The upgrade also changes the cache
+schema: the first command rebuilds the cache, and since inbox cursors live
+in the cache, each actor's next `inbox` returns the whole board once.
 
 ## Decisions and closing tickets
 
@@ -773,7 +1181,11 @@ release still refuses an ad hoc ticket's move into `implementing`, so on
 a machine running it the board folds differently (the ticket falls back
 to `tests` there) until it is upgraded; it keeps the `ticket.unplanned`
 event as an unknown kind, so nothing is lost, and once it is upgraded
-the board folds as it does everywhere else, with no migration.
+the board folds as it does everywhere else, with no migration. Leases,
+the queue, forced release and `config set` have the same requirement:
+upgrade every machine before anyone uses them (see "Upgrading a board
+shared between machines"), and remember that a lock held across machines
+is only as strong as `sync` ("Clocks, skew and several machines").
 
 `agentboard sync` stages only new event files and `.board/.gitignore`,
 commits them as the fixed identity `agentboard <agentboard@localhost>`
@@ -2069,7 +2481,9 @@ it made effective behind an actor's cursor (that cursor is moved back so
 `inbox` delivers the event). `rebuild --check` exits 1 when the cache
 differs from the events (naming the differing rows), when there is no cache
 file, or when the file is not a cache of the running version; it never
-modifies the cache.
+modifies the cache. Neither ever writes an event: they are the only
+commands that open the board without writing a queue grant that has
+fallen due (see "The waiting queue and grants").
 
 ## Error hints
 
@@ -2122,7 +2536,7 @@ argument and `agentboard mcp --as <actor>`.
 | 1 | usage error (including an unknown command or flag), missing actor, refused text or close disposition, `rebuild --check` found a difference, an `agents install` target was refused or nothing was detected, `agents check` found guidance that is not current, `serve` could not use its port (`port-in-use`) or was given an empty `--as` or both `--open` and `--no-open`, or `top` was not run in an interactive terminal (`not-a-tty`) |
 | 2 | board not found or unreadable |
 | 3 | sync problem that needs a human |
-| 4 | action rejected by board state: `invalid-transition`, `already-assigned`, `not-assignee`, `unknown-ticket`, `duplicate-create`, `needs-scope-disposition`, `already-linked`, `checklist-index`, `reconcile-blocked`, `reconcile-ambiguous` |
+| 4 | action rejected by board state: `invalid-transition`, `already-assigned`, `queued`, `not-assignee`, `invalid-queue`, `wait-timeout`, `wait-interrupted`, `unknown-ticket`, `duplicate-create`, `needs-scope-disposition`, `already-linked`, `checklist-index`, `reconcile-blocked`, `reconcile-ambiguous` |
 | 5 | event log or cache integrity problem, or the cache still locked after the busy timeout and one retry |
 
 ## MCP server
@@ -2130,13 +2544,15 @@ argument and `agentboard mcp --as <actor>`.
 `agentboard mcp` serves the board to MCP clients over stdio, with one tool
 per command, named `board_<command>` with spaces and hyphens turned into
 underscores: `board_new`, `board_show`, `board_list`, `board_claim`,
-`board_renew`, `board_release`, `board_move`, `board_comment`, `board_handoff`,
-`board_link`, `board_checklist_tick`, `board_checklist_untick`,
-`board_close`, `board_inbox`, `board_import_change`,
-`board_close_merged` and `board_health`. `init`, `watch`, `serve`, `top`, `rebuild`, `sync`,
-`remote`, `mcp`, `version`, `help`, `agents install` and `agents check` are
+`board_renew`, `board_unqueue`, `board_release`, `board_move`,
+`board_comment`, `board_handoff`, `board_link`, `board_checklist_tick`,
+`board_checklist_untick`, `board_close`, `board_inbox`,
+`board_import_change`, `board_close_merged` and `board_health`. `init`,
+`watch`, `serve`, `top`, `rebuild`, `sync`, `remote`, `config set`, `config
+get`, `mcp`, `version`, `help`, `agents install` and `agents check` are
 not exposed: they are run by a human or an orchestrator in a shell (`init`,
-`sync` and `remote` run git against the host's configuration, `agents
+`sync` and `remote` run git against the host's configuration, `config`
+changes settings for the whole board, `agents
 install` and `agents check` write and read files in the caller's working
 tree, which a tool call must not do, and the guide reaches MCP clients as
 described below instead of through `help`). Calling an unknown or excluded
@@ -2146,7 +2562,13 @@ hint to call `tools/list`.
 - Tool input schemas come from the same command registry as the CLI, with
   the same arguments (flag names without the leading `--`, for example
   `{"id": "01M38YRHC3", "as": "impl-1"}`), the same required fields and
-  the same validation; `--json` is implied.
+  the same validation; `--json` is implied. A flag the CLI marks as
+  command-line only (`claim --timeout`) is not in the schema, and passing
+  it is a tool error with `exitCode` 1 and `reason` `usage`.
+- No tool call blocks waiting on another actor: `board_claim` with `wait`
+  joins the queue and returns `{queued, position, holder, ticket}` at once,
+  and the grant arrives through `board_inbox` (see "Waiting on the command
+  line").
 - The actor of a call is, in order: the call's `as` argument, the default
   given to the server as `agentboard mcp --as <actor>`, then
   `AGENTBOARD_ACTOR` in the server's environment. With none of them a

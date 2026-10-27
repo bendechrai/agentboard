@@ -136,14 +136,19 @@ read at least `expiresAt + LEASE_SKEW_MS`, so the writer is never looser
 than the fold. The command fills `supersedes` itself.
 
 ### The waiting queue
-`claim --wait` on a ticket that is held (or granted, or free with
-waiters) writes `ticket.queue.join` with body `{ttl}`, the lease the
-waiter will ask for. The queue is the set of applied joins not yet
-granted or left, ordered by fold order of the join event, that is by
-(hybrid timestamp, then hash). `ticket.queue.leave` removes the actor.
-A join by the assignee or by an actor already queued, a leave by an
-actor not queued, and a join on a free ticket with an empty queue (claim
-it instead) are rejected `invalid-queue`.
+`claim --wait` on a ticket that is held (or granted, or free with waiters)
+writes `ticket.queue.join` with body `{ttl}`, the lease the waiter will ask
+for. The queue is the set of applied joins not yet granted or left, ordered
+by fold order of the join event, that is by (hybrid timestamp, then hash).
+`ticket.queue.leave` removes the actor. A held ticket includes one whose
+lease has lapsed and is claimable: `--wait` never takes over, it joins, and
+the lapse grant follows from the queue at once (its slot `max(F, J) + 1` is
+the join's wall plus 1, since `F` lies before the join). Taking over stays
+the plain `claim --ttl`; keeping the two apart means a waiter always
+reaches the ticket through the queue, the only path that serves waiters in
+order. A join by the assignee or by an actor already queued, a leave by an
+actor not queued, and a join on a free ticket with an empty queue (claim it
+instead) are rejected `invalid-queue`.
 
 While the queue is not empty, a plain claim or a takeover by anyone on
 that ticket is rejected `queued`: waiters have priority, and the only way
