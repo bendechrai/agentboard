@@ -89,6 +89,53 @@ describe('the multi-process harness', () => {
     expect(wallOf(result)).toBeGreaterThanOrEqual(before + 2 * offset);
   }, 30_000);
 
+  it('runs a child on a stopped clock through the clock preload, gated or not', async () => {
+    const { root } = boardProject();
+    const wallOf = (result: ProcessResult | undefined): number => {
+      if (result === undefined) {
+        throw new Error('no result');
+      }
+      expect(result.code, result.stderr).toBe(0);
+      return (oneDocument(result) as { ticket: { createdAt: { wall: number } } }).ticket.createdAt
+        .wall;
+    };
+    const at = Date.now() + 7_200_000;
+    const direct = await startCli(
+      { argv: ['new', 'Stopped', '--adhoc', 'clock', '--as', 'orch', '--json'], clockFixedMs: at },
+      root,
+    ).exited;
+    expect(wallOf(direct)).toBe(at);
+    const gated = await runTogether(
+      [
+        {
+          argv: ['new', 'Gated', '--adhoc', 'clock', '--as', 'orch', '--json'],
+          clockFixedMs: at + 5,
+        },
+      ],
+      root,
+    );
+    expect(wallOf(gated.results[0])).toBe(at + 5);
+    expect(() => startCli({ argv: ['list'], clockFixedMs: at, clockOffsetMs: 1 }, root)).toThrow(
+      /not both/,
+    );
+  }, 30_000);
+
+  it('kills a child after its own timeout when one is given', async () => {
+    const { root } = boardProject();
+    const proc = startCli(
+      {
+        argv: ['new', 'Hung', '--adhoc', 'timeout', '--as', 'orch'],
+        env: cliEnv({ AGENTBOARD_TEST_PAUSE: 'after-rename' }),
+        timeoutMs: 3_000,
+      },
+      root,
+    );
+    // Paused forever after its rename, it ends only through the timeout.
+    const result = await proc.exited;
+    expect(result.signal).toBe('SIGKILL');
+    expect(result.stderr).toMatch(/^agentboard: paused at after-rename /m);
+  }, 30_000);
+
   it('logs the event files a child opens through the read-log preload', async () => {
     const { root, eventsDir } = boardProject();
     const created = await runCliAsync(

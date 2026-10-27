@@ -42,7 +42,13 @@
  * loads. The CLI reads its clock only through `Date.now`, so the child
  * behaves exactly as on a machine whose clock is that far ahead (or behind,
  * for a negative offset). The variable is read by the preload module only,
- * never by agentboard itself.
+ * never by agentboard itself. `Invocation.clockFixedMs` uses the same
+ * preload to stop the child's clock instead: `Date.now` always returns that
+ * value (from `AGENTBOARD_HARNESS_CLOCK_FIXED_MS`), so a test can place a
+ * single-shot command exactly at a boundary such as a grant's slot time
+ * minus one millisecond, however long the child takes to start. A stopped
+ * clock never advances, so it is only for commands that do not wait on
+ * the clock (not `claim --wait` or `watch`).
  *
  * Read log: a child started with `Invocation.readLog` (a file path)
  * preloads a module that wraps `fs.readFileSync` and `fs.openSync` (and
@@ -79,7 +85,7 @@ import { BUILT_CLI, cliEnv, type RunEnv } from '../../cli/__tests__/cli-helpers.
 
 export { BUILT_CLI, cliEnv, type RunEnv };
 
-/** Every child is killed with SIGKILL after this long. */
+/** Every child is killed with SIGKILL after this long, unless `Invocation.timeoutMs` says otherwise. */
 export const CHILD_TIMEOUT_MS = 30_000;
 
 /** How a child ended, with everything it printed. */
@@ -103,6 +109,13 @@ export interface Invocation {
    * preload; omitted, the child runs on the real clock with no preload.
    */
   clockOffsetMs?: number;
+  /**
+   * The value the child's `Date.now` always returns, through the clock
+   * preload (see the module comment); not together with `clockOffsetMs`.
+   */
+  clockFixedMs?: number;
+  /** Milliseconds after which the child is killed with SIGKILL; defaults to `CHILD_TIMEOUT_MS`. */
+  timeoutMs?: number;
   /**
    * Path of a file the read-log preload writes when the child exits: one
    * line per event file the child opened (see the module comment).
@@ -191,10 +204,20 @@ export function startCli(
 ): CliProcess {
   const cli = requireBuiltCli();
   const offset = invocation.clockOffsetMs;
-  const clockArgs = offset === undefined ? [] : ['--import', pathToFileURL(clockPath()).href];
+  const fixed = invocation.clockFixedMs;
+  if (offset !== undefined && fixed !== undefined) {
+    throw new Error('an invocation takes clockOffsetMs or clockFixedMs, not both');
+  }
+  const clockArgs =
+    offset === undefined && fixed === undefined
+      ? []
+      : ['--import', pathToFileURL(clockPath()).href];
   const env = definedEnv(invocation.env ?? cliEnv());
   if (offset !== undefined) {
     env[CLOCK_OFFSET_ENV] = String(offset);
+  }
+  if (fixed !== undefined) {
+    env[CLOCK_FIXED_ENV] = String(fixed);
   }
   const { readLog } = invocation;
   const readArgs =
@@ -222,7 +245,7 @@ export function startCli(
       listener();
     }
   });
-  const timer = setTimeout(() => child.kill('SIGKILL'), CHILD_TIMEOUT_MS);
+  const timer = setTimeout(() => child.kill('SIGKILL'), invocation.timeoutMs ?? CHILD_TIMEOUT_MS);
   let done = false;
   const exited = new Promise<ProcessResult>((resolve, reject) => {
     child.on('error', (error) => {
@@ -299,8 +322,15 @@ export function runCliAsync(
 /** Environment variable holding the clock offset of a child, read by the clock preload. */
 export const CLOCK_OFFSET_ENV = 'AGENTBOARD_HARNESS_CLOCK_OFFSET_MS';
 
+/** Environment variable holding the stopped clock of a child, read by the clock preload. */
+export const CLOCK_FIXED_ENV = 'AGENTBOARD_HARNESS_CLOCK_FIXED_MS';
+
 const CLOCK_MODULE = `const offset = Number(process.env.${CLOCK_OFFSET_ENV} ?? '0');
-if (Number.isFinite(offset) && offset !== 0) {
+const fixed = process.env.${CLOCK_FIXED_ENV};
+if (fixed !== undefined && fixed !== '') {
+  const at = Number(fixed);
+  Date.now = () => at;
+} else if (Number.isFinite(offset) && offset !== 0) {
   const real = Date.now.bind(Date);
   Date.now = () => real() + offset;
 }
@@ -469,6 +499,8 @@ export async function startGated(
         argv: inv.argv,
         env: { ...(inv.env ?? cliEnv()), [GATE_ENV]: gateDir, [PRELOAD_ENV]: preload },
         ...(inv.clockOffsetMs === undefined ? {} : { clockOffsetMs: inv.clockOffsetMs }),
+        ...(inv.clockFixedMs === undefined ? {} : { clockFixedMs: inv.clockFixedMs }),
+        ...(inv.timeoutMs === undefined ? {} : { timeoutMs: inv.timeoutMs }),
         ...(inv.readLog === undefined ? {} : { readLog: inv.readLog }),
       },
       cwd,
