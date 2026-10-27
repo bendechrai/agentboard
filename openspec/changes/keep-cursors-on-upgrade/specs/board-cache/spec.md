@@ -33,7 +33,11 @@ applied it, so an actor's next `inbox` returns the events after its
 cursor (and the unseen ones inside its seen window), plus every event that
 the running version applies and the old version did not, wherever it sits
 relative to the cursor. The record of the old cache's applied events SHALL
-be discarded by that fold and SHALL NOT be compared by `rebuild --check`.
+be discarded by that fold and SHALL NOT be compared by `rebuild --check`. These
+guarantees assume that no process of the earlier version keeps running on
+the board across the upgrade: a long-running one (such as `watch` or
+`serve`) can fold the recreated cache with its own rules, and the events it
+does not know are then delivered only after `rebuild`.
 
 `rebuild` and `rebuild --check` SHALL NOT catch up before they run: `rebuild`
 refolds every event file itself (so late events are recorded, and reported,

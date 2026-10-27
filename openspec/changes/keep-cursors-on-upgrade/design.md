@@ -48,7 +48,9 @@ Goals:
   given, not the whole board.
 - Never a skipped event: an event this version applies that the actor
   was not given (because the old version did not apply it, or the old
-  cache had not recorded it yet) is still delivered.
+  cache had not recorded it yet) is still delivered, provided no process
+  of the old version keeps running on the board across the upgrade (see
+  "Mixed versions on one board").
 - Whenever the carry cannot be shown safe (unexpected shape, unreadable
   table, a later version's cache), fall back to today's behavior.
 - `rebuild --check` and the inspect-only open stay byte-for-byte
@@ -253,6 +255,18 @@ version is older, so the recreate drops the stale `carried_applied` with
 everything else before carrying afresh. A build of schema 5 from before
 this change (unreleased) never creates or reads `carried_applied`, and
 the stale-table rule above covers it leaving one behind.
+
+A long-running process of the old version (`watch`, `serve`, `top`,
+`mcp` of 0.2.0) left running across the upgrade is the exception to "never
+a skip". Its connection was prepared before the recreate and never
+re-checks the schema version, so it can fold the recreated cache with the
+old version's rules: the events it does not know are then recorded as
+unknown kinds in the new cache, and this version neither applies nor
+delivers them until `rebuild` refolds the event files. This is not
+introduced by the carry (a recreate without it behaves the same way), but
+the guarantee holds only when every process of the old version is
+stopped before the new version first runs, which the README's upgrade
+paragraph tells users.
 
 ### Read-only paths
 
