@@ -125,6 +125,16 @@ a conflict resolution they make again (no event of the board at `.board`
 is lost, they are all still in `.board`), while one wrongly adopted
 publishes another board's events in the host ref.
 
+A recorded HEAD is read as the file's content with at most one trailing
+newline removed, and it is well formed only when that is exactly a full
+lowercase hexadecimal object name of the board's hash algorithm (40
+digits for SHA-1, 64 for SHA-256). Anything git would resolve otherwise
+is malformed, and so not an ancestor, before any git command runs with
+it: an abbreviated name, a ref name such as `HEAD` or `main`, a revision
+expression such as `<name>^0`, and a second line. A well formed name the
+board's repository does not have as a commit (missing, or a tree) fails
+the ancestry test itself.
+
 The same two-part test decides the wording of the `sync-in-progress`
 refusal for a temporary with rebase or cherry-pick state, so its text
 says "another board" exactly when adoption would refuse it.
