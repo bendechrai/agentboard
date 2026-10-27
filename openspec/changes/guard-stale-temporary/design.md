@@ -94,6 +94,18 @@ writes leaves a temporary whose HEAD is still at
 removed as a plain leftover without its records being read; a torn
 record is never judged.
 
+Every write of `agentboard-source` and `agentboard-source-head`, both
+right after `worktree add` and when an adopted temporary gains the
+records it lacks, is atomic: the content goes to a temporary file in the
+same git directory, which is then renamed onto the record's name, so a
+reader sees the old state or the whole new record, never an empty or
+partial one. This matters on adoption, where the temporary has already
+integrated something: a kill in the middle of a truncating write there
+would leave an empty `agentboard-source-head`, which the next run would
+judge malformed and remove the temporary, with the human's resolution,
+as another board's. A leftover temporary file of an interrupted write is
+not a record and is never read as one.
+
 ### Adopt only on the same git directory and the same history
 
 A dead temporary with no rebase or cherry-pick state that integrated
@@ -104,7 +116,22 @@ something is adopted when, in this order:
 2. its `agentboard-source-head` names a commit that is an ancestor of, or
    equal to, the HEAD of the repository at `.board`
    (`git merge-base --is-ancestor <recorded> <MovePlan.head>` run in
-   `.board`).
+   `.board`), and
+3. the tip it integrated, the value of `refs/agentboard/migrating`, is an
+   ancestor of, or equal to, the board's source tip
+   (`MovePlan.sourceTip`), the check the 0.2.0 row uses.
+
+Test 3 is needed because a temporary integrates the board's source tip,
+the remote-tracking ref when the board has a remote, which step 1 lets be
+ahead of HEAD, and test 2 says nothing about the commits between the
+recorded HEAD and the integrated tip. Without test 3, a board whose
+remote was force-reset past those commits after the move began, and a
+replacement forked from the board at or after the recorded HEAD (with
+the identity matching), would both have the commits only the temporary
+holds published in `refs/agentboard/board` (review round 1,
+reviewer-gst-2 counterexamples A and B). The board the move began from
+passes test 3 while its remote only grows, as it passes test 2 while its
+HEAD only grows; a board without a remote has its branch as source tip.
 
 The ancestry test is step 6's, with the same reasoning: step 1 refuses a
 board whose branch has commits its remote lacks, so the HEAD a move
@@ -119,7 +146,10 @@ contained that commit.
 Any failure of the test counts as "not an ancestor": a recorded commit
 the board's repository does not have (the usual case for a replacement:
 `merge-base` exits 128), a file whose content is not a full hexadecimal
-object name of the board's hash algorithm, an unreadable file. When in
+object name of the board's hash algorithm, an unreadable file. An
+`agentboard-source` that cannot be read (a directory, a permission
+error) is judged the same way, as naming another board, never thrown as a
+raw file error. When in
 doubt the move does not adopt: a temporary wrongly removed costs a human
 a conflict resolution they make again (no event of the board at `.board`
 is lost, they are all still in `.board`), while one wrongly adopted
@@ -135,7 +165,7 @@ expression such as `<name>^0`, and a second line. A well formed name the
 board's repository does not have as a commit (missing, or a tree) fails
 the ancestry test itself.
 
-The same two-part test decides the wording of the `sync-in-progress`
+The same test decides the wording of the `sync-in-progress`
 refusal for a temporary with rebase or cherry-pick state, so its text
 says "another board" exactly when adoption would refuse it.
 
@@ -144,7 +174,8 @@ says "another board" exactly when adoption would refuse it.
 A `.board` whose history no longer contains the recorded HEAD (a
 `git reset` to an older commit, a rebase or filter of the standalone
 board, a force-push pulled in) fails test 2 even though its git directory
-is the same. It is treated as another board, as step 6 already treats it:
+is the same, and one whose remote was force-reset so that its source tip
+no longer holds what the temporary integrated fails test 3. It is treated as another board, as step 6 already treats it:
 the temporary was built on a history the board no longer has, and
 replaying onto it what the board holds now could reintroduce commits the
 human removed on purpose. The removal message says so (see "Reporting"),
@@ -152,7 +183,7 @@ so the user is not told the board was replaced when they only rewrote it.
 
 A replacement that is a clone of the same board (`rm -rf .board`, then
 `agentboard init --remote <the same remote>`), whose history contains the
-recorded HEAD and whose git directory reuses the inode, passes both tests
+recorded HEAD and whose git directory reuses the inode, passes every test
 and is adopted. That is correct: the temporary holds the same board's
 history, and adoption replays onto it what reached the board since, as it
 does for the original repository. Without inode reuse the identity
@@ -165,8 +196,8 @@ The judgement depends on which records a temporary carries:
 
 | `agentboard-source` | `agentboard-source-head` | belongs when |
 | --- | --- | --- |
-| present | present | identity equal, and recorded HEAD an ancestor of, or equal to, the board's HEAD |
-| present | missing (0.2.0) | identity equal, and the value of `refs/agentboard/migrating` an ancestor of, or equal to, the board's source tip |
+| present | present | identity equal, recorded HEAD an ancestor of, or equal to, the board's HEAD, and the value of `refs/agentboard/migrating` an ancestor of, or equal to, the board's source tip |
+| present | missing (0.2.0) | identity equal (an unreadable record is not equal), and the value of `refs/agentboard/migrating` an ancestor of, or equal to, the board's source tip |
 | missing (older code) | either | the value of `refs/agentboard/migrating` an ancestor of, or equal to, the board's source tip (round 5 ruling 5, unchanged) |
 
 The 0.2.0 row reuses the history check that already judges a temporary

@@ -56,14 +56,19 @@ SHALL be adopted only when it was made from the board at `.board` now:
 from the same standalone repository (the same git directory, by realpath,
 device and inode) and from the same history (the HEAD that board had when
 the move that made the temporary began is an ancestor of, or equal to, the
-board's HEAD now). A temporary left by a move of a board replaced since,
+board's HEAD now, and the tip the temporary integrated is an ancestor of,
+or equal to, the tip of the board's branch, as fetched from its remote
+when it has one). A temporary left by a move of a board replaced since,
 even one whose git directory has the same realpath, device and inode as
-the old one's, or by a move that began before the board's history was
-rewritten so that it no longer holds that HEAD, SHALL never be adopted,
+the old one's and whose history holds that HEAD, or by a move that began
+before the board's history or its remote's was rewritten so that it no
+longer holds that HEAD or that tip, SHALL never be adopted,
 and none of its commits or events SHALL reach `refs/agentboard/board`: it
 is removed and named as left by a move of another board, or, with rebase
 or cherry-pick state, it is the `sync-in-progress` refusal saying so,
-which removes nothing. A temporary made by an earlier version, which
+which removes nothing. A record of the temporary that cannot be read
+counts as naming another board, never as an error of the move. A
+temporary made by an earlier version, which
 recorded no starting HEAD, SHALL be judged by the tip it integrated
 instead: it is this board's when the git directory it recorded, if it
 recorded one, is the board's and that tip is an ancestor of, or equal to,
@@ -118,6 +123,18 @@ once adopted it is judged as one made by this version.
 #### Scenario: Board history rewritten since the interrupted move
 - **WHEN** a move of a standalone board without a remote stopped after its temporary integrated a commit, the board's branch is then reset to a commit older than its HEAD when that move began (the same git directory), and `agentboard init --into-host` runs
 - **THEN** the temporary is removed and named as left by a move of another board, and the move completes with exit 0 from the board as it is now: no event file added only by the commits the reset removed is in `.board/events` or `refs/agentboard/board`
+
+#### Scenario: Board remote rewritten since the interrupted move
+- **WHEN** another clone synced two events to the remote of a standalone board that this clone had not pulled, a move here integrated them from the remote-tracking tip and stopped after its temporary integrated a commit, the remote's branch was then force-reset to the HEAD this clone had when that move began (dropping the two events), this clone synced one new event (the same git directory, its HEAD a descendant of the one the move began from), and `agentboard init --into-host` runs
+- **THEN** the temporary is removed and named as left by a move of another board, the move completes with exit 0, and neither dropped event is in `.board/events` or in any commit of `refs/agentboard/board`
+
+#### Scenario: Temporary of a replaced board forked at or after the HEAD the move began from
+- **WHEN** a move of standalone board A integrated two events A's remote held beyond A's HEAD and stopped after its temporary integrated a commit, `.board` is then replaced by board B, a fork of A at that HEAD with a remote of its own and one event of its own, whose git directory has the same realpath, device and inode that A's had, and `agentboard init --into-host` runs
+- **THEN** it moves B with exit 0, the output names the temporary as left by a move of another board, and neither of the two events is in `.board/events` or in any commit of `refs/agentboard/board`
+
+#### Scenario: Unreadable record of a temporary
+- **WHEN** a dead temporary that integrated a commit has an `agentboard-source` record that cannot be read as a file, and `agentboard init --into-host` runs
+- **THEN** the temporary is removed and named as left by a move of another board and the move completes with exit 0, or, with rebase state, it is the `sync-in-progress` refusal saying so; no raw file error is reported
 
 #### Scenario: Board that only grew since the interrupted move is adopted
 - **WHEN** a move of a standalone board stopped on a conflict, a human finished the rebase in the temporary, the board then synced two new events (the same git directory, its HEAD a descendant of the one the move began from), and `agentboard init --into-host` runs
