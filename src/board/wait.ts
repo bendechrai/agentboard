@@ -10,9 +10,16 @@
  */
 
 import type { Ticket } from '../events/fold.js';
+import { TTL_MAX_MS, TTL_MIN_MS } from '../events/schema.js';
 import type { Board } from '../store/board.js';
-import type { ClaimedOutcome, QueuedOutcome } from './actions.js';
-import type { TickerTimers, WatchDir } from './ticker.js';
+import { catchUp, readTicket } from '../store/cache.js';
+import { readWatermark } from '../store/engine.js';
+import { BoardError } from '../store/errors.js';
+import { readEventFile } from '../store/eventfile.js';
+import { claimTicket, unqueueTicket, type ClaimedOutcome, type QueuedOutcome } from './actions.js';
+import { TIMEOUT_MAX_MS, TIMEOUT_MIN_MS } from './leases.js';
+import { requireActor } from './lookup.js';
+import { runTicker, type TickerTimers, type TimerHandle, type WatchDir } from './ticker.js';
 
 /** Input of `waitForGrant`. */
 export interface WaitInput {
@@ -174,15 +181,201 @@ export type WaitOutcome = ClaimedOutcome | GrantedOutcome;
  * `onWarning`, the wait carrying on) end the wait with that error, after
  * the same cleanup.
  */
-export function waitForGrant(
+export async function waitForGrant(
   board: Board,
   actor: string,
   input: WaitInput,
   options: WaitOptions,
 ): Promise<WaitOutcome> {
-  void board;
-  void actor;
-  void input;
-  void options;
-  return Promise.reject(new Error('not implemented'));
+  requireActor(actor);
+  const { ttl, timeout } = input;
+  if (!Number.isSafeInteger(ttl) || ttl < TTL_MIN_MS || ttl > TTL_MAX_MS) {
+    throw new BoardError(
+      1,
+      'usage',
+      `invalid ttl ${String(ttl)}: a ttl is a whole number of milliseconds from ${String(TTL_MIN_MS)} (30s) to ${String(TTL_MAX_MS)} (7d)`,
+    );
+  }
+  if (!Number.isSafeInteger(timeout) || timeout < TIMEOUT_MIN_MS || timeout > TIMEOUT_MAX_MS) {
+    throw new BoardError(
+      1,
+      'usage',
+      `invalid timeout ${String(timeout)}: a timeout is a whole number of milliseconds from ${String(TIMEOUT_MIN_MS)} (1s) to ${String(TIMEOUT_MAX_MS)} (1d)`,
+    );
+  }
+  const now = options.now ?? Date.now;
+  const timers = options.timers ?? globalTimers;
+  const { signal } = options;
+
+  // Step 1: the deadline, then the claim or join.
+  const deadline = now() + timeout;
+  const first = claimTicket(board, actor, { id: input.id, ttl, wait: true }, { now });
+  if (first.queued !== true) {
+    return first;
+  }
+  const id = first.ticket;
+  options.onQueued?.(first);
+
+  // Step 2: the wait. `settled` holds the outcome once a wake has decided it;
+  // `inner` stops the ticker, and the wait's own timeouts live here.
+  let settled: { value: WaitOutcome } | { error: unknown } | null = null;
+  const inner = new AbortController();
+  let deadlineTimer: TimerHandle | null = null;
+  let dueTimer: TimerHandle | null = null;
+
+  const clearDue = (): void => {
+    if (dueTimer !== null) {
+      timers.clearTimeout(dueTimer);
+      dueTimer = null;
+    }
+  };
+  const finish = (outcome: { value: WaitOutcome } | { error: unknown }): void => {
+    settled = outcome;
+    signal.removeEventListener('abort', wake);
+    clearDue();
+    if (deadlineTimer !== null) {
+      timers.clearTimeout(deadlineTimer);
+      deadlineTimer = null;
+    }
+    inner.abort();
+  };
+
+  /**
+   * Re-arms the due-grant timeout from the cache's grant watermark after a
+   * catch-up at `t`: a timeout for exactly the watermark when it falls
+   * before the deadline (the deadline timeout covers anything later, which
+   * is what clamps a far-off watermark), none otherwise.
+   */
+  const armDue = (t: number): void => {
+    clearDue();
+    const watermark = readWatermark(board.db);
+    if (watermark !== null && watermark > t && watermark < deadline) {
+      dueTimer = timers.setTimeout(() => {
+        dueTimer = null;
+        wake();
+      }, watermark - t);
+    }
+  };
+
+  /** One wake (step 3). Never throws: every error ends the wait or is a warning. */
+  function wake(): void {
+    if (settled !== null) {
+      return;
+    }
+    const t = now();
+    try {
+      catchUp(board, { now: t });
+    } catch (error) {
+      if (error instanceof BoardError && error.exitCode === 5 && error.reason === 'busy') {
+        options.onWarning?.(error.message);
+        return;
+      }
+      finish({ error });
+      return;
+    }
+    try {
+      const ticket = readTicket(board.db, id);
+      if (ticket === null) {
+        throw new BoardError(4, 'unknown-ticket', `ticket ${id} is no longer on the board`);
+      }
+      if (ticket.assignee === actor) {
+        const { lease } = ticket;
+        if (lease !== null && isGrant(board, lease.event)) {
+          finish({
+            value: { queued: false, grant: lease.event, acceptBy: lease.expiresAt, ticket },
+          });
+        } else {
+          finish({ value: { hash: null, events: [], ticket, queued: false } });
+        }
+        return;
+      }
+      const queued = ticket.queue.some((waiter) => waiter.actor === actor);
+      if (signal.aborted || t >= deadline) {
+        if (queued) {
+          unqueueTicket(board, actor, { id }, { now });
+        }
+        if (signal.aborted) {
+          throw new BoardError(
+            4,
+            'wait-interrupted',
+            `the wait for ticket ${id} was interrupted; you left its queue`,
+          );
+        }
+        throw new BoardError(
+          4,
+          'wait-timeout',
+          `the wait for ticket ${id} timed out after ${String(timeout)} ms; you left its queue`,
+        );
+      }
+      if (!queued) {
+        if (ticket.assignee === null && ticket.queue.length === 0) {
+          const claimed = claimTicket(board, actor, { id, ttl, wait: true }, { now });
+          if (claimed.queued !== true) {
+            finish({ value: claimed });
+            return;
+          }
+          // Another actor joined between the read and the claim: the actor
+          // is queued again and the wait goes on.
+        } else {
+          throw new BoardError(
+            4,
+            'invalid-queue',
+            `${actor} is no longer waiting for ticket ${id}: it left the queue elsewhere, or its grant lapsed and passed on`,
+          );
+        }
+      }
+      armDue(t);
+    } catch (error) {
+      finish({ error });
+    }
+  }
+
+  deadlineTimer = timers.setTimeout(() => {
+    deadlineTimer = null;
+    wake();
+  }, timeout);
+  signal.addEventListener('abort', wake);
+  try {
+    await runTicker({
+      signal: inner.signal,
+      examine: wake,
+      dir: board.eventsDir,
+      timers,
+      ...(options.watchDir === undefined ? {} : { watchDir: options.watchDir }),
+      ...(options.pollMs === undefined ? {} : { pollMs: options.pollMs }),
+      ...(options.fsWatch === undefined ? {} : { fsWatch: options.fsWatch }),
+    });
+  } catch (error) {
+    // Unreachable in practice: `wake` never throws. Cleanup all the same.
+    finish({ error });
+  }
+  // Read through a call: `settled` is assigned inside `finish`, which the
+  // compiler's narrowing of the variable itself does not see.
+  const result = (): { value: WaitOutcome } | { error: unknown } | null => settled;
+  const outcome = result() ?? {
+    // Unreachable: the ticker stops only through `finish`.
+    error: new Error(`the wait for ticket ${id} stopped without an outcome`),
+  };
+  if ('error' in outcome) {
+    throw outcome.error;
+  }
+  return outcome.value;
 }
+
+/** True when the event file `hash` is an applied-kind `ticket.grant`. */
+function isGrant(board: Board, hash: string): boolean {
+  const read = readEventFile(board.eventsDir, `${hash}.json`);
+  return read.status === 'ok' && read.input.event.kind === 'ticket.grant';
+}
+
+/** The global timers (the default `WaitOptions.timers`). */
+const globalTimers: TickerTimers = {
+  setInterval: (callback, ms) => setInterval(callback, ms),
+  clearInterval: (handle) => {
+    clearInterval(handle as NodeJS.Timeout);
+  },
+  setTimeout: (callback, ms) => setTimeout(callback, ms),
+  clearTimeout: (handle) => {
+    clearTimeout(handle as NodeJS.Timeout);
+  },
+};

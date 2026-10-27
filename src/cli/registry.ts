@@ -19,8 +19,10 @@ import {
   scopeDispositionFromArgs,
   setChecklistItem,
   unqueueTicket,
+  type ClaimedOutcome,
   type DispositionArgs,
   type LinkTarget,
+  type QueuedOutcome,
 } from '../board/actions.js';
 import { SETTING_KEYS, getConfig, setConfig } from '../board/config.js';
 import { formatDuration, isoTime, parseSetting, parseTimeout, parseTtl } from '../board/leases.js';
@@ -38,6 +40,7 @@ import { TASK_RULE } from '../board/text.js';
 import { parseTaskFilter, taskRefFromArgs, type TaskFilter } from '../board/resolve.js';
 import { listTickets, newTicket, showRaw, showTicket } from '../board/tickets.js';
 import type { WriteOutcome } from '../board/types.js';
+import { waitForGrant } from '../board/wait.js';
 import { watchInbox } from '../board/watch.js';
 import { STATUSES, type Status } from '../events/schema.js';
 import { existsSync } from 'node:fs';
@@ -398,6 +401,28 @@ function actorOf(ctx: RunContext): string {
 function written(outcome: WriteOutcome, before = '', after = ''): CommandOutput {
   const line = renderListLine(outcome.ticket);
   return { json: outcome, text: `${before}${line}\n${after}` };
+}
+
+/** The human line of a `claim --wait` that joined or found itself queued. */
+function queuedLine(out: QueuedOutcome): string {
+  return `queued for ${out.ticket} at position ${String(out.position)}, held by ${out.holder === null ? '-' : asciiText(out.holder)}\n`;
+}
+
+/**
+ * The output of a claim that holds the ticket: a retried claim says so, a
+ * claim with a lease names the `renew` that confirms it and by when.
+ */
+function claimedOutput(out: ClaimedOutcome, actor: string): CommandOutput {
+  const { lease } = out.ticket;
+  if (out.hash === null) {
+    const expiry = lease === null ? '' : ` (lease expires ${isoTime(lease.expiresAt)})`;
+    return written(out, `already claimed by ${asciiText(actor)}${expiry}\n`);
+  }
+  const confirm =
+    lease === null
+      ? ''
+      : `confirm the lease with 'agentboard renew ${out.ticket.id} --as ${asciiText(actor)}' before ${isoTime(lease.expiresAt)}\n`;
+  return written(out, '', confirm);
 }
 
 /** The target of `link`. */
@@ -1179,29 +1204,67 @@ export const COMMANDS: readonly CommandSpec[] = [
         );
       }
       if (timeout !== undefined) {
-        throw new Error('not implemented');
+        // Only `runCliAsync` (the executable) can block; see `stream`.
+        throw new BoardError(
+          1,
+          'streaming-command',
+          'agentboard claim --wait --timeout blocks in the foreground and runs only from the agentboard executable',
+        );
       }
       const actor = actorOf(ctx);
       const out = claimTicket(ctx.board(), actor, { id: req(values, 'id'), ttl, wait });
       if (out.queued === true) {
-        return {
-          json: out,
-          text: `queued for ${out.ticket} at position ${String(out.position)}, held by ${out.holder === null ? '-' : asciiText(out.holder)}\n`,
-        };
+        return { json: out, text: queuedLine(out) };
       }
-      const { lease } = out.ticket;
-      if (out.hash === null) {
-        const expiry = lease === null ? '' : ` (lease expires ${isoTime(lease.expiresAt)})`;
-        return written(out, `already claimed by ${asciiText(actor)}${expiry}\n`);
-      }
-      const confirm =
-        lease === null
-          ? ''
-          : `confirm the lease with 'agentboard renew ${out.ticket.id} --as ${asciiText(actor)}' before ${isoTime(lease.expiresAt)}\n`;
-      return written(out, '', confirm);
+      return claimedOutput(out, actor);
     },
     streams: (values) => bool(values, 'wait'),
-    stream: () => Promise.reject(new Error('not implemented')),
+    stream: async (ctx, values, io) => {
+      const ttlText = str(values, 'ttl');
+      const timeoutText = str(values, 'timeout');
+      if (ttlText === undefined) {
+        throw new BoardError(
+          1,
+          'usage',
+          'claim --wait needs --ttl <duration>, the lease to ask for once the ticket is granted',
+        );
+      }
+      if (timeoutText === undefined) {
+        throw new BoardError(
+          1,
+          'usage',
+          'claim --wait needs --timeout <duration> on the command line, how long to wait at most',
+        );
+      }
+      const ttl = parseTtl(ttlText);
+      const timeout = parseTimeout(timeoutText);
+      const actor = actorOf(ctx);
+      const print = (output: CommandOutput): void => {
+        io.stdout(io.json ? `${JSON.stringify(output.json)}\n` : output.text);
+      };
+      const out = await waitForGrant(
+        ctx.board(),
+        actor,
+        { id: req(values, 'id'), ttl, timeout },
+        {
+          signal: io.signal,
+          onQueued: (queued) => {
+            print({ json: queued, text: queuedLine(queued) });
+          },
+          onWarning: (line) => {
+            io.stderr?.(`agentboard: ${line}\n`);
+          },
+        },
+      );
+      if ('grant' in out) {
+        print({
+          json: out,
+          text: `${renderListLine(out.ticket)}\naccept the grant with 'agentboard renew ${out.ticket.id} --as ${asciiText(actor)}' before ${isoTime(out.acceptBy)}\n`,
+        });
+        return;
+      }
+      print(claimedOutput(out, actor));
+    },
   },
   {
     name: 'renew',
