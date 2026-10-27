@@ -430,7 +430,7 @@ export async function runCliAsync(io: AsyncCliIo): Promise<ExitCode> {
     return runCli(io);
   }
   const { command, values } = parsed;
-  if (command.stream === undefined) {
+  if (command.stream === undefined || command.streams?.(values) === false) {
     return runCli(io);
   }
   const opened = cliBoard(io);
