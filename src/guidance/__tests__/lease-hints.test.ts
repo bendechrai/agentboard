@@ -157,6 +157,23 @@ describe('wait-interrupted (add-claim-leases task 4.1)', () => {
   });
 });
 
+describe('busy from claim (review round 1: a wait whose leave stayed busy)', () => {
+  it('names unqueue on both surfaces', () => {
+    expect(renderHint('busy', ctx('cli', 'claim'))).toBe(
+      `another process held the board cache too long; if you were waiting, you are still in the queue: leave it with 'agentboard unqueue ${ID} --as merger-2', or run the command again`,
+    );
+    expect(renderHint('busy', ctx('mcp', 'claim'))).toBe(
+      `another process held the board cache too long; if you were waiting, you are still in the queue: leave it with board_unqueue {"id":"${ID}","as":"merger-2"}, or run the command again`,
+    );
+  });
+
+  it('from any other command it is unchanged', () => {
+    expect(renderHint('busy', ctx('cli', 'renew'))).toBe(
+      'another process held the board cache too long; run the command again',
+    );
+  });
+});
+
 describe('every suggested step parses', () => {
   const contexts: [string, HintContext][] = [
     ['already-assigned', ctx('cli', 'claim', { claimableAt: CLAIMABLE })],
@@ -169,6 +186,8 @@ describe('every suggested step parses', () => {
     ['wait-timeout', ctx('mcp', 'claim')],
     ['wait-interrupted', ctx('cli', 'claim')],
     ['wait-interrupted', ctx('mcp', 'claim')],
+    ['busy', ctx('cli', 'claim')],
+    ['busy', ctx('mcp', 'claim')],
   ];
 
   it.each(contexts)('%s (%o)', (reason, context) => {

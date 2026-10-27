@@ -399,3 +399,26 @@ describe('board_claim with wait stays non-blocking over MCP', () => {
     });
   });
 });
+
+describe('review round 1 addendum: stream and run validate in the same order', () => {
+  it.each([
+    ['--timeout 0s without --ttl', ['claim', '01J9K3', '--as', 'a', '--wait', '--timeout', '0s']],
+    [
+      '--ttl 5s and --timeout 0s',
+      ['claim', '01J9K3', '--as', 'a', '--ttl', '5s', '--wait', '--timeout', '0s'],
+    ],
+    [
+      '--ttl 10min without a valid --timeout',
+      ['claim', '01J9K3', '--as', 'a', '--ttl', '10min', '--wait', '--timeout', '2d'],
+    ],
+  ])('%s: the same first error from runCli and runCliAsync, with no board', async (_name, argv) => {
+    const cwd = tempDir();
+    for (const json of [false, true]) {
+      const args = json ? [...argv, '--json'] : argv;
+      const sync = run(args, cwd);
+      const out = await startAsync(args, cwd, new AbortController().signal).done;
+      expect(sync.code).toBe(1);
+      expect({ code: out.code, stdout: out.stdout, stderr: out.stderr }).toEqual(sync);
+    }
+  });
+});

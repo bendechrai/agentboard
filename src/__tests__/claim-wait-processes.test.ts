@@ -16,6 +16,10 @@
  * through the harness's clock preload, not by sleeping.
  */
 
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import { claimTicket, releaseTicket } from '../board/actions.js';
@@ -26,6 +30,7 @@ import {
   boardProject,
   oneDocument,
   runCliAsync,
+  scratchDir,
   startCli,
   type CliProcess,
 } from './harness/processes.js';
@@ -159,5 +164,60 @@ describe('scenario: killed waiter stays queued', PROCESSES, () => {
     expect(passed.queue).toEqual([]);
     const check = await runCliAsync(['rebuild', '--check'], root);
     expect(check.code, check.stderr).toBe(0);
+  });
+});
+
+/**
+ * A preload that, when the child exits, prints how many SIGINT and SIGTERM
+ * listeners the process still has (review round 1: the handlers the CLI
+ * installs for a waiting claim are removed once the command returns).
+ */
+function listenerProbe(): string[] {
+  const path = join(scratchDir(), 'listeners.mjs');
+  writeFileSync(
+    path,
+    "process.on('exit', () => { process.stderr.write(`listeners SIGINT=${String(process.listenerCount('SIGINT'))} SIGTERM=${String(process.listenerCount('SIGTERM'))}\\n`); });\n",
+  );
+  return ['--import', pathToFileURL(path).href];
+}
+
+describe(
+  'review round 1: the signal handlers are removed (already correct at 090db5f)',
+  PROCESSES,
+  () => {
+    it('after a wait that timed out', async () => {
+      const { root } = seed();
+      const argv = ['claim', T1, '--as', 'merger-2', '--ttl', '30m', '--wait', '--timeout', '1s'];
+      const result = await startCli({ argv }, root, listenerProbe()).exited;
+      expect(result.code, result.stderr).toBe(4);
+      expect(result.stderr).toContain('listeners SIGINT=0 SIGTERM=0\n');
+    });
+
+    it('after a wait that was granted', async () => {
+      const { root, boardDir } = seed();
+      const argv = ['claim', T1, '--as', 'merger-2', '--ttl', '30m', '--wait', '--timeout', '10m'];
+      const proc = startCli({ argv }, root, listenerProbe());
+      await queuedLine(proc);
+      withBoard(boardDir, (board) => releaseTicket(board, 'merger-1', { id: T1 }));
+      const result = await proc.exited;
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stderr).toContain('listeners SIGINT=0 SIGTERM=0\n');
+    });
+  },
+);
+
+describe('review round 1 addendum: the human hint of an interrupted wait', PROCESSES, () => {
+  it('SIGINT without --json: stderr names the wait-again command', async () => {
+    const { root } = seed();
+    const proc = waiter(root, 'merger-2');
+    await queuedLine(proc);
+    process.kill(proc.pid, 'SIGINT');
+    const result = await proc.exited;
+    expect(result.code, result.stderr).toBe(4);
+    expect(result.stdout).toBe(`queued for ${T1} at position 1, held by merger-1\n`);
+    expect(result.stderr).toMatch(/^agentboard: .*interrupted.*\n/m);
+    expect(result.stderr).toContain(
+      `hint: the wait was interrupted and you left the queue; to wait again run 'agentboard claim ${T1} --ttl <duration> --wait --timeout <duration> --as merger-2'\n`,
+    );
   });
 });
