@@ -87,16 +87,40 @@ made by the new code as another board's. With a separate file 0.2.0
 still reads its own record unchanged (and stays exposed to inode reuse,
 as it is today).
 
-Both records are written before anything is integrated in the temporary
-(the rebase of step 3 comes after), so a kill between or during the two
-writes leaves a temporary whose HEAD is still at
+The records of a fresh temporary (these two and `agentboard-source-tip`
+below) are written before anything is integrated in it (the rebase of
+step 3 comes after), so a kill between or during the writes leaves a temporary whose HEAD is still at
 `refs/agentboard/migrating`. Such a temporary holds nothing and is
 removed as a plain leftover without its records being read; a torn
 record is never judged.
 
-Every write of `agentboard-source` and `agentboard-source-head`, both
-right after `worktree add` and when an adopted temporary gains the
-records it lacks, is atomic: the content goes to a temporary file in the
+### Record the tip the temporary integrated
+
+A third file, `agentboard-source-tip`, holds the full object name of the
+source tip the temporary has integrated and a newline: the value
+`refs/agentboard/migrating` is set to for it. It is written right after
+`agentboard-source-head` (the temporary is checked out at that value, so
+the record names what it holds), rewritten whenever the move advances
+`refs/agentboard/migrating` for this temporary (after a replay of what
+reached the board since, round 4 ruling 1), and written on adoption when
+the temporary lacks it, with the value of `refs/agentboard/migrating`
+that the temporary was judged by (see "Temporaries of earlier
+versions"). It is read and judged well formed by the same rules as the
+HEAD record below.
+
+The record exists because `refs/agentboard/migrating` is one ref for the
+whole host, not a fact of one temporary (review round 2, reviewer-gst-2
+R1). A temporary whose pid is alive is skipped by every pass of a run,
+so a run can make its own temporary and overwrite the ref while an older
+temporary of another board, or of an older history, still exists; once
+that older temporary's pid is dead, a later run would judge it against
+the newer temporary's tip. The per-temporary record makes test 3 a fact
+recorded with the temporary, as tests 1 and 2 are.
+
+Every write of `agentboard-source`, `agentboard-source-head` and
+`agentboard-source-tip`, right after `worktree add`, when the tip
+advances, and when an adopted temporary gains the records it lacks, is
+atomic: the content goes to a temporary file in the
 same git directory, which is then renamed onto the record's name, so a
 reader sees the old state or the whole new record, never an empty or
 partial one. This matters on adoption, where the temporary has already
@@ -117,9 +141,10 @@ something is adopted when, in this order:
    equal to, the HEAD of the repository at `.board`
    (`git merge-base --is-ancestor <recorded> <MovePlan.head>` run in
    `.board`), and
-3. the tip it integrated, the value of `refs/agentboard/migrating`, is an
+3. the tip it integrated, named by its `agentboard-source-tip`, is an
    ancestor of, or equal to, the board's source tip
-   (`MovePlan.sourceTip`), the check the 0.2.0 row uses.
+   (`MovePlan.sourceTip`), the check the 0.2.0 row uses (for a temporary
+   without that record, see "Temporaries of earlier versions").
 
 Test 3 is needed because a temporary integrates the board's source tip,
 the remote-tracking ref when the board has a remote, which step 1 lets be
@@ -143,7 +168,7 @@ while a board created at the same path (by `init`, `init --remote` or a
 clone of an unrelated remote) does not, because its history never
 contained that commit.
 
-Any failure of the test counts as "not an ancestor": a recorded commit
+Any failure of tests 2 and 3 counts as "not an ancestor": a recorded commit
 the board's repository does not have (the usual case for a replacement:
 `merge-base` exits 128), a file whose content is not a full hexadecimal
 object name of the board's hash algorithm, an unreadable file. An
@@ -155,7 +180,7 @@ a conflict resolution they make again (no event of the board at `.board`
 is lost, they are all still in `.board`), while one wrongly adopted
 publishes another board's events in the host ref.
 
-A recorded HEAD is read as the file's content with at most one trailing
+A recorded HEAD, and a recorded tip, is read as the file's content with at most one trailing
 newline removed, and it is well formed only when that is exactly a full
 lowercase hexadecimal object name of the board's hash algorithm (40
 digits for SHA-1, 64 for SHA-256). Anything git would resolve otherwise
@@ -196,21 +221,36 @@ The judgement depends on which records a temporary carries:
 
 | `agentboard-source` | `agentboard-source-head` | belongs when |
 | --- | --- | --- |
-| present | present | identity equal, recorded HEAD an ancestor of, or equal to, the board's HEAD, and the value of `refs/agentboard/migrating` an ancestor of, or equal to, the board's source tip |
-| present | missing (0.2.0) | identity equal (an unreadable record is not equal), and the value of `refs/agentboard/migrating` an ancestor of, or equal to, the board's source tip |
-| missing (older code) | either | the value of `refs/agentboard/migrating` an ancestor of, or equal to, the board's source tip (round 5 ruling 5, unchanged) |
+| present | present | identity equal, recorded HEAD an ancestor of, or equal to, the board's HEAD, and its integrated tip an ancestor of, or equal to, the board's source tip |
+| present | missing (0.2.0) | identity equal (an unreadable record is not equal), and its integrated tip an ancestor of, or equal to, the board's source tip |
+| missing (older code) | either | its integrated tip an ancestor of, or equal to, the board's source tip (round 5 ruling 5) |
 
-The 0.2.0 row reuses the history check that already judges a temporary
-with no record. It is sound because the value of
-`refs/agentboard/migrating` is the integrated tip of the one temporary
-being judged: a run judges leftovers before it creates a temporary, and
-every dead temporary without rebase state that integrated something is
-then either adopted (no new temporary is made) or removed, while one with
-rebase state stops the run with `sync-in-progress` before anything is
-made. So at most one dead, non-stopped temporary that integrated
-something exists at a time, and the ref is its own. A replacement board
-does not have the old board's source tip in its history, so the stale
-temporary fails the check even when the identity matches.
+Its integrated tip is what its `agentboard-source-tip` names; a present
+but malformed or unreadable record fails the check. A temporary without
+the record (made before this change: by 0.2.0, by older code, or by this
+change's own earlier form) has only the shared `refs/agentboard/migrating`
+to go by, and that ref is its integrated tip only when it is the only
+temporary on the host: the run judges it against the ref when no other
+entry, of any pid, alive or dead, registered or not, with or without
+rebase state, is found under `<host git common dir>/agentboard/migrating/`
+before the run removes any leftover; otherwise the temporary fails the
+check and is not adopted.
+
+An earlier form of this design held that the ref is always the judged
+temporary's own, because "at most one dead, non-stopped temporary that
+integrated something exists at a time". That is false: a temporary whose
+pid is alive during a run is skipped by it, so that run makes its own
+temporary and overwrites the ref, and the older temporary is dead and
+judged at a later run (review round 2, reviewer-gst-2 R1: a temporary of
+board A looking alive while a fork of A replaces `.board` and its move
+loses the compare-and-swap; once A's pid is dead, A's temporary passed
+every test against the fork's tip and published the events only A's
+remote held). The property does hold when the temporary is the only one
+on the host: nothing else has set the ref since it was made, because
+every run that sets the ref leaves a temporary or removes it together
+with the ref. A replacement board does not have the old board's source
+tip in its history, so the stale temporary fails the check even when the
+identity matches.
 
 The board's source tip is `MovePlan.sourceTip` (the remote-tracking ref
 of its branch when it has a remote, else the branch), as round 5 ruling 5
@@ -218,12 +258,17 @@ uses it. The 0.2.0 row could compare with HEAD instead, but the source
 tip is what the integrated tip was taken from, and both rows without a
 recorded HEAD then share one check.
 
-A temporary of an earlier version is never refused for its format: the
-user would have no way to tell the new code "this one is mine" short of
-running the old version again. When such a temporary is adopted, the run
+A temporary of an earlier version is never refused for its format alone:
+the user would have no way to tell the new code "this one is mine" short
+of running the old version again. The one exception is the tip check
+above, which it fails when another temporary exists, because its
+integrated tip is then unknown; the user then resolves the conflict
+again in a fresh temporary. When such a temporary is adopted, the run
 writes the records it lacks (`agentboard-source` with the current
-identity, as today, and `agentboard-source-head` with `MovePlan.head` of
-the adopting run), so a later run judges it by the full test. The
+identity, as today, `agentboard-source-head` with `MovePlan.head` of the
+adopting run, and `agentboard-source-tip` with the value of
+`refs/agentboard/migrating` it was judged by), so a later run judges it
+by the full test. The
 adopting run's HEAD is a correct record: the temporary has just been
 shown to belong to this board, and later legitimate HEADs descend from
 it.
