@@ -16,8 +16,9 @@ GIT_FLOOR := 2.32
 
 # The test files that exercise board sharing (add-board-sharing): the git
 # layer and its version floor, model detection, host-model init, join and
-# repair, host-model sync, init --remote, init --into-host and the remote
-# command, in process, through the built CLI and as child processes.
+# repair, host-model sync, init --remote (and its no-echo refusals),
+# init --into-host and the remote command, in process, through the built
+# CLI and as child processes.
 # check-git-floor runs exactly these on git $(GIT_FLOOR). Paths only, no
 # patterns: src/__tests__/git-floor.test.ts checks that every file listed
 # exists and that none of the sharing test files is missing from the list,
@@ -31,12 +32,14 @@ SHARING_TESTS := \
 	src/board/__tests__/host-sync.test.ts \
 	src/board/__tests__/standalone-sync-fixture.test.ts \
 	src/board/__tests__/init-remote.test.ts \
+	src/board/__tests__/init-remote-no-echo.test.ts \
 	src/board/__tests__/into-host.test.ts \
 	src/board/__tests__/remote.test.ts \
 	src/cli/__tests__/init-cli.test.ts \
 	src/cli/__tests__/sync-cli.test.ts \
 	src/cli/__tests__/host-sync-cli.test.ts \
 	src/cli/__tests__/init-remote-cli.test.ts \
+	src/cli/__tests__/init-remote-no-echo-cli.test.ts \
 	src/cli/__tests__/into-host-cli.test.ts \
 	src/cli/__tests__/remote-cli.test.ts \
 	src/__tests__/host-sync-clones.test.ts \
