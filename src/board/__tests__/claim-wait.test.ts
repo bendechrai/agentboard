@@ -18,6 +18,7 @@
  * window 120000), not from the implementation.
  */
 
+import { getEventListeners } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -28,7 +29,7 @@ import { validateEvent, type BoardEvent } from '../../events/schema.js';
 import type { Board } from '../../store/board.js';
 import { readTicket } from '../../store/cache.js';
 import { BoardError } from '../../store/errors.js';
-import { eventNames, ev, putEvent } from '../../store/__tests__/helpers.js';
+import { P, eventNames, ev, putEvent } from '../../store/__tests__/helpers.js';
 import {
   claimTicket,
   handoffTicket,
@@ -236,6 +237,7 @@ function start(
     {
       signal: controller.signal,
       now: clock.now,
+      monotonic: () => clock.t,
       timers: clock,
       watchDir: watch.watchDir,
       pollMs: NO_POLL,
@@ -908,5 +910,418 @@ describe('no busy loop', () => {
     expect(clock.fired).toBeLessThanOrEqual(2);
     expect(clock.pending).toBe(0);
     expect(eventsOf('ticket.grant')).toEqual([]);
+  });
+});
+
+/*
+ * Review round 1 (orchestrator ruling on reviewer-4-2's findings): the
+ * transaction that ends a wait decides after its own catch-up, the
+ * deadline is monotonic, a busy end is retried once, and the cleanup and
+ * error paths are pinned. Races are injected through
+ * `WaitOptions.beforeStep`, which runs immediately before the step it
+ * names, so what it writes is exactly what that step's catch-up finds.
+ */
+
+/** The `beforeStep` seam running `inject` once, at the first `step`; records every step. */
+function seam(
+  on: 'wake' | 'claim' | 'end',
+  inject: () => void,
+): { steps: string[]; beforeStep: (step: 'wake' | 'claim' | 'end') => void } {
+  const steps: string[] = [];
+  let done = false;
+  return {
+    steps,
+    beforeStep: (step) => {
+      steps.push(step);
+      if (step === on && !done) {
+        done = true;
+        inject();
+      }
+    },
+  };
+}
+
+/** An event written by another process at `wall`, as a late file. */
+function late(proposed: Parameters<typeof ev>[0], actor: string, wall: number): string {
+  return putEvent(board.eventsDir, ev(proposed, actor, wall));
+}
+
+const RELEASED = (id: string): string =>
+  `the wait for ticket ${id} was interrupted after the ticket was given to you; you released it, so it passes to the next waiter`;
+
+describe('review round 1: the ending transaction decides after its own catch-up', () => {
+  it('a grant whose slot passes between the deadline wake and the leave: exit 0 granted, no leave', async () => {
+    const id = lock();
+    leased(id);
+    const slot = T0 + GRACE + SKEW + 1;
+    clock.jumpTo(T0 + 1000);
+    const hook = seam('end', () => {
+      clock.jumpTo(slot);
+    });
+    const tracked = start(id, slot - 1 - (T0 + 1000), { beforeStep: hook.beforeStep });
+    await flush();
+    await at(slot - 1);
+    expect(hook.steps).toContain('end');
+    const out = resolved(tracked);
+    expect(out).toMatchObject({ queued: false, acceptBy: slot + WINDOW });
+    expect(eventsOf('ticket.queue.leave')).toEqual([]);
+    expect(eventsOf('ticket.grant').map((g) => g.ts.wall)).toEqual([slot]);
+    expect(ticketNow(id).assignee).toBe('merger-2');
+  });
+
+  it('a release by another process landing before the leave at the deadline: exit 0 granted', async () => {
+    const id = lock();
+    held(id);
+    clock.jumpTo(T0 + 1000);
+    const deadline = T0 + 31_000;
+    const hook = seam('end', () => {
+      late({ kind: 'ticket.release', ticket: id, body: {} }, 'merger-1', deadline - 5);
+    });
+    const tracked = start(id, 30_000, { beforeStep: hook.beforeStep });
+    await flush();
+    await at(deadline);
+    expect(hook.steps).toContain('end');
+    expect(resolved(tracked)).toMatchObject({
+      queued: false,
+      acceptBy: deadline - 5 + 1 + WINDOW,
+    });
+    expect(eventsOf('ticket.queue.leave')).toEqual([]);
+    expect(ticketNow(id).assignee).toBe('merger-2');
+  });
+
+  it('scenario: hand-off racing the deadline: exit 0 as a retried claim, nothing written', async () => {
+    const id = lock();
+    held(id);
+    clock.jumpTo(T0 + 1000);
+    const deadline = T0 + 31_000;
+    const hook = seam('end', () => {
+      late(P.handoff(id, 'merger-2', 'todo', 'yours'), 'merger-1', deadline - 5);
+    });
+    const tracked = start(id, 30_000, { beforeStep: hook.beforeStep });
+    await flush();
+    const before = eventNames(board.eventsDir).length + 1;
+    await at(deadline);
+    expect(hook.steps).toContain('end');
+    expect(resolved(tracked)).toMatchObject({ hash: null, events: [], queued: false });
+    expect(eventNames(board.eventsDir)).toHaveLength(before);
+    expect(ticketNow(id).assignee).toBe('merger-2');
+  });
+
+  it('scenario: grant racing SIGINT: releases it to the next waiter and exits 4 wait-interrupted saying so', async () => {
+    const id = lock();
+    held(id);
+    clock.jumpTo(T0 + 1000);
+    const hook = seam('end', () => {
+      late({ kind: 'ticket.release', ticket: id, body: {} }, 'merger-1', clock.t - 5);
+    });
+    const tracked = start(id, 600_000, { beforeStep: hook.beforeStep });
+    await flush();
+    clock.jumpTo(T0 + 1500);
+    claimTicket(other, 'merger-3', { id, ttl: TTL, wait: true });
+    clock.jumpTo(T0 + 5000);
+    controller.abort();
+    await flush();
+    expect(hook.steps).toContain('end');
+    const err = rejected(tracked, 4, 'wait-interrupted');
+    expect(err.message).toBe(RELEASED(id));
+    const releases = eventsOf('ticket.release').filter((e) => e.actor === 'merger-2');
+    expect(releases).toHaveLength(1);
+    expect(eventsOf('ticket.queue.leave')).toEqual([]);
+    // The next command grants the ticket to the next waiter.
+    clock.jumpTo(T0 + 6000);
+    claimTicket(other, 'merger-4', { id, ttl: TTL, wait: true });
+    const grants = eventsOf('ticket.grant');
+    expect(grants.map((g) => (g.body as { to: string }).to)).toEqual(['merger-2', 'merger-3']);
+    expect(readTicket(other.db, id)?.assignee).toBe('merger-3');
+  });
+
+  it('scenario: hand-off racing SIGTERM: releases it and exits 4 wait-interrupted saying so', async () => {
+    const id = lock();
+    held(id);
+    clock.jumpTo(T0 + 1000);
+    const hook = seam('end', () => {
+      late(P.handoff(id, 'merger-2', 'todo', 'yours'), 'merger-1', clock.t - 5);
+    });
+    const tracked = start(id, 600_000, { beforeStep: hook.beforeStep });
+    await flush();
+    clock.jumpTo(T0 + 5000);
+    controller.abort();
+    await flush();
+    const err = rejected(tracked, 4, 'wait-interrupted');
+    expect(err.message).toBe(RELEASED(id));
+    expect(eventsOf('ticket.release').filter((e) => e.actor === 'merger-2')).toHaveLength(1);
+    expect(ticketNow(id).assignee).toBeNull();
+  });
+
+  it('scenario: unqueue racing the deadline: exit 4 wait-timeout, nothing more written (already correct at 090db5f)', async () => {
+    const id = lock();
+    held(id);
+    clock.jumpTo(T0 + 1000);
+    const deadline = T0 + 31_000;
+    const hook = seam('end', () => {
+      late({ kind: 'ticket.queue.leave', ticket: id, body: {} }, 'merger-2', deadline - 1);
+    });
+    const tracked = start(id, 30_000, { beforeStep: hook.beforeStep });
+    await flush();
+    await at(deadline);
+    expect(hook.steps).toContain('end');
+    rejected(tracked, 4, 'wait-timeout');
+    expect(eventsOf('ticket.queue.leave')).toHaveLength(1);
+    expect(eventsOf('ticket.release')).toEqual([]);
+    expect(ticketNow(id)).toMatchObject({ assignee: 'merger-1', queue: [] });
+  });
+});
+
+describe('review round 1: the deadline is monotonic', () => {
+  it('a wall clock stepped back an hour does not delay it', async () => {
+    const id = lock();
+    held(id);
+    clock.jumpTo(T0 + 1000);
+    let back = 0;
+    const tracked = start(id, 30_000, { now: () => clock.now() - back });
+    await flush();
+    back = 3_600_000;
+    await at(T0 + 31_000 - 1);
+    expect(tracked.done).toBe(false);
+    await at(T0 + 31_000);
+    rejected(tracked, 4, 'wait-timeout');
+    expect(ticketNow(id).queue).toEqual([]);
+    expect(clock.pending).toBe(0);
+  });
+
+  it('a wall clock stepped forward an hour does not advance it', async () => {
+    const id = lock();
+    held(id);
+    clock.jumpTo(T0 + 1000);
+    let ahead = 0;
+    const tracked = start(id, 30_000, { now: () => clock.now() + ahead });
+    await flush();
+    ahead = 3_600_000;
+    watch.notify();
+    await at(T0 + 2000);
+    expect(tracked.done).toBe(false);
+    expect(eventsOf('ticket.queue.leave')).toEqual([]);
+    await at(T0 + 31_000 - 1);
+    expect(tracked.done).toBe(false);
+    await at(T0 + 31_000);
+    rejected(tracked, 4, 'wait-timeout');
+  });
+});
+
+describe('review round 1: a busy ending transaction', () => {
+  const busy = (): BoardError =>
+    new BoardError(5, 'busy', 'the board cache stayed locked by another process; try again');
+
+  it('busy once: retried, the leave is written and the wait times out as usual', async () => {
+    const id = lock();
+    held(id);
+    let fails = 1;
+    const steps: string[] = [];
+    const tracked = start(id, 5000, {
+      beforeStep: (step) => {
+        steps.push(step);
+        if (step === 'end' && fails > 0) {
+          fails -= 1;
+          throw busy();
+        }
+      },
+    });
+    await flush();
+    await at(T0 + 5000);
+    expect(steps.filter((x) => x === 'end')).toHaveLength(2);
+    rejected(tracked, 4, 'wait-timeout');
+    expect(eventsOf('ticket.queue.leave')).toHaveLength(1);
+  });
+
+  it('busy twice: exit 5 busy naming unqueue, still queued, no third attempt', async () => {
+    const id = lock();
+    held(id);
+    const steps: string[] = [];
+    const tracked = start(id, 5000, {
+      beforeStep: (step) => {
+        steps.push(step);
+        if (step === 'end') {
+          throw busy();
+        }
+      },
+    });
+    await flush();
+    await at(T0 + 5000);
+    const err = rejected(tracked, 5, 'busy');
+    expect(err.message).toContain(`agentboard unqueue ${id} --as merger-2`);
+    expect(steps.filter((x) => x === 'end')).toHaveLength(2);
+    expect(eventsOf('ticket.queue.leave')).toEqual([]);
+    expect(ticketNow(id).queue.map((w) => w.actor)).toEqual(['merger-2']);
+    expect(clock.pending).toBe(0);
+    expect(watch.open).toBe(0);
+  });
+});
+
+describe('review round 1: the other paths of a wake (already correct at 090db5f)', () => {
+  it('a busy catch-up is a warning and the wait carries on to its grant', async () => {
+    const id = lock();
+    held(id);
+    clock.jumpTo(T0 + 1000);
+    const warnings: string[] = [];
+    let wakes = 0;
+    const tracked = start(id, 600_000, {
+      onWarning: (line) => {
+        warnings.push(line);
+      },
+      beforeStep: (step) => {
+        if (step === 'wake') {
+          wakes += 1;
+          if (wakes === 2) {
+            throw new BoardError(
+              5,
+              'busy',
+              'the board cache stayed locked by another process; try again',
+            );
+          }
+        }
+      },
+    });
+    await flush();
+    watch.notify();
+    await at(T0 + 1000 + FS_SETTLE_MS);
+    expect(warnings).toEqual(['the board cache stayed locked by another process; try again']);
+    expect(tracked.done).toBe(false);
+    clock.jumpTo(T0 + 5000);
+    releaseTicket(other, 'merger-1', { id });
+    watch.notify();
+    await at(T0 + 5000 + FS_SETTLE_MS);
+    expect(resolved(tracked)).toMatchObject({ queued: false, acceptBy: T0 + 5001 + WINDOW });
+  });
+
+  it('any other error of a wake ends the wait with it, leaving nothing behind', async () => {
+    const id = lock();
+    held(id);
+    const boom = new Error('boom');
+    let wakes = 0;
+    const tracked = start(id, 600_000, {
+      beforeStep: (step) => {
+        if (step === 'wake') {
+          wakes += 1;
+          if (wakes === 2) {
+            throw boom;
+          }
+        }
+      },
+    });
+    await flush();
+    watch.notify();
+    await at(T0 + FS_SETTLE_MS);
+    expect(tracked.done).toBe(true);
+    expect(tracked.error).toBe(boom);
+    expect(clock.pending).toBe(0);
+    expect(watch.open).toBe(0);
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+  });
+
+  it('a ticket that vanishes from the cache mid-wait: exit 4 unknown-ticket', async () => {
+    const id = lock();
+    held(id);
+    const tracked = start(id, 600_000);
+    await flush();
+    for (const table of ['waiters', 'comments', 'links']) {
+      other.db.prepare(`DELETE FROM ${table} WHERE ticket = ?`).run(id);
+    }
+    other.db.prepare('DELETE FROM tickets WHERE id = ?').run(id);
+    watch.notify();
+    await at(T0 + FS_SETTLE_MS);
+    rejected(tracked, 4, 'unknown-ticket');
+    expect(clock.pending).toBe(0);
+    expect(watch.open).toBe(0);
+  });
+
+  it('claim instead, but the ticket was taken meanwhile: queued again, the wait goes on to a grant', async () => {
+    const id = lock();
+    held(id);
+    clock.jumpTo(T0 + 2000);
+    const hook = seam('claim', () => {
+      late(P.claim(id), 'merger-3', clock.t - 1);
+    });
+    const tracked = start(id, 600_000, { ttl: TTL, beforeStep: hook.beforeStep });
+    await flush();
+    late({ kind: 'ticket.release', ticket: id, body: {} }, 'merger-1', T0 + 1000);
+    clock.jumpTo(T0 + 3000);
+    watch.notify();
+    await at(T0 + 3000 + FS_SETTLE_MS);
+    expect(hook.steps).toContain('claim');
+    expect(tracked.done).toBe(false);
+    expect(queued).toHaveLength(1);
+    expect(eventsOf('ticket.queue.join').filter((e) => e.actor === 'merger-2')).toHaveLength(2);
+    expect(ticketNow(id)).toMatchObject({ assignee: 'merger-3' });
+    expect(ticketNow(id).queue.map((w) => w.actor)).toEqual(['merger-2']);
+    clock.jumpTo(T0 + 4000);
+    releaseTicket(other, 'merger-3', { id });
+    watch.notify();
+    await at(T0 + 4000 + FS_SETTLE_MS);
+    expect(resolved(tracked)).toMatchObject({ queued: false, acceptBy: T0 + 4001 + WINDOW });
+  });
+
+  it.each([
+    ['granted', 'grant'],
+    ['timed out', 'timeout'],
+    ['claimed at once', 'free'],
+  ])('the abort listener is removed when the wait ends %s', async (_name, how) => {
+    const id = lock();
+    if (how !== 'free') {
+      held(id);
+    }
+    clock.jumpTo(T0 + 1000);
+    const tracked = start(id, 30_000);
+    await flush();
+    if (how === 'grant') {
+      clock.jumpTo(T0 + 2000);
+      releaseTicket(other, 'merger-1', { id });
+      watch.notify();
+      await at(T0 + 2000 + FS_SETTLE_MS);
+    } else if (how === 'timeout') {
+      await at(T0 + 31_000);
+    }
+    expect(tracked.done).toBe(true);
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+  });
+});
+
+describe('review round 1 addendum (reviewer-4-1; already correct at 090db5f)', () => {
+  it('a wait granted on a notification while a due-grant timer is pending leaves no timer and no abort listener', async () => {
+    const id = lock();
+    leased(id);
+    clock.jumpTo(T0 + 1000);
+    const tracked = start(id, 3_600_000);
+    await flush();
+    // The grace lapse of merger-1's lease is due at T0 + 180001: a timer is armed for it.
+    expect(clock.pending).toBeGreaterThan(0);
+    clock.jumpTo(T0 + 5000);
+    releaseTicket(other, 'merger-1', { id });
+    watch.notify();
+    await at(T0 + 5000 + FS_SETTLE_MS);
+    expect(resolved(tracked)).toMatchObject({ queued: false, acceptBy: T0 + 5001 + WINDOW });
+    expect(clock.pending).toBe(0);
+    expect(watch.open).toBe(0);
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+    // Nothing fires later either.
+    await at(T0 + 3_600_000);
+    expect(clock.fired).toBeLessThanOrEqual(1);
+  });
+
+  it('no leave is written at the deadline when the actor is no longer queued', async () => {
+    const id = lock();
+    held(id);
+    clock.jumpTo(T0 + 1000);
+    const tracked = start(id, 30_000);
+    await flush();
+    clock.jumpTo(T0 + 2000);
+    // Left elsewhere, with no notification reaching the wait.
+    unqueueTicket(other, 'merger-2', { id });
+    expect(eventsOf('ticket.queue.leave')).toHaveLength(1);
+    await at(T0 + 31_000);
+    expect(tracked.done).toBe(true);
+    expect(tracked.error).toBeInstanceOf(BoardError);
+    expect((tracked.error as BoardError).exitCode).toBe(4);
+    expect(eventsOf('ticket.queue.leave')).toHaveLength(1);
+    expect(eventsOf('ticket.release')).toEqual([]);
   });
 });
