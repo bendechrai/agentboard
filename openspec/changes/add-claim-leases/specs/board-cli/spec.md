@@ -295,27 +295,26 @@ state SHALL never be stored in the cache.
 `claim <id> --as <actor> --ttl <duration> --wait --timeout <duration>`
 SHALL claim at once, as `claim --ttl`, when the ticket is unassigned with
 no waiters, and SHALL then print exactly what `claim --ttl` prints.
-`--wait` SHALL never take over a lease: on a ticket held by another actor
-it SHALL join the queue even when the holder's lease is already
-claimable, and the ticket then passes to it through a grant from the
-queue, due at the join's wall plus 1 when the lapse lies before the join
-(see board-events "Grants"). The same holds for `board_claim` with `wait`
-over MCP. Otherwise it SHALL write a `ticket.queue.join` with the ttl (unless the
-actor is already queued), print the actor's position (the line `queued
-for <id> at position <n>, held by <holder or ->`), and block in the
-foreground on the watch machinery until the wait ends. The deadline SHALL
-be a monotonic clock read when the wait starts plus the timeout, and
-whether it has passed SHALL be decided on that monotonic clock alone, so
-a wall clock stepped back or forward neither delays nor advances it (the
-wall clock is still the clock of every catch-up and event). While it
-blocks it SHALL wake only on a change notification for the events
-directory, on the watch machinery's polling interval, at exactly the
-cache's grant watermark (the next time a grant is due, see board-cache
-"Cache schema"; never later than the deadline), at the deadline, and on
-SIGINT or SIGTERM; each wake SHALL catch up as any command does, so it
-writes the grants that are due itself, and the number of catch-ups SHALL
-be bounded by the wakes, never a busy loop. After each catch-up, the
-first of these that applies ends the wait:
+Otherwise it SHALL write a `ticket.queue.join` with the ttl (unless the
+actor is already queued), print the actor's position (the line `queued for
+<id> at position <n>, held by <holder or ->`), and block in the foreground
+on the watch machinery until the wait ends. `--wait` SHALL never take over
+a lease: on a ticket held by another actor it SHALL join the queue even
+when the holder's lease is already claimable, and the ticket then passes to
+it through a grant from the queue, due at the join's wall plus 1 when the
+lapse lies before the join (see board-events "Grants"). The same holds for
+`board_claim` with `wait` over MCP. The deadline SHALL be a monotonic clock
+read when the wait starts plus the timeout, and whether it has passed SHALL
+be decided on that monotonic clock alone, so a wall clock stepped back or
+forward neither delays nor advances it (the wall clock is still the clock
+of every catch-up and event). While it blocks it SHALL wake only on a
+change notification for the events directory, on the watch machinery's
+polling interval, at exactly the cache's grant watermark (the next time a
+grant is due, see board-cache "Cache schema"; never later than the
+deadline), at the deadline, and on SIGINT or SIGTERM; each wake SHALL catch
+up as any command does, so it writes the grants that are due itself, and
+the number of catch-ups SHALL be bounded by the wakes, never a busy loop.
+After each catch-up, the first of these that applies ends the wait:
 
 1. a grant to the actor is the ticket's current lease: it SHALL exit 0,
    printing the `list` line of the ticket and then `accept the grant with
@@ -565,16 +564,16 @@ actor is still in the queue and name `agentboard unqueue <id> --as
 
 ### Requirement: Lease and queue tools over MCP
 The command registry SHALL define `renew`, `unqueue` and the `--ttl`,
-`--wait`, `--timeout`, `--force` and `--reason` flags, so that
-`agentboard mcp` lists `board_renew` and `board_unqueue`, `board_claim`
-gains optional `ttl` and `wait` and `board_release` gains optional `force`
-and `reason`, validated as on the CLI. `--timeout` SHALL be a CLI-only
-flag, absent from the tool schema. `board_claim` with `wait` SHALL never
-block: when the ticket is unassigned with no waiters it SHALL return the
-ordinary claim result with `queued` false; otherwise (a held ticket,
-including one whose lease is claimable, or one with waiters) it SHALL write the join and
-return `{queued: true, position, holder, ticket}` at once. The grant SHALL
-be delivered only through `board_inbox` as a `ticket.grant` entry.
+`--wait`, `--timeout`, `--force` and `--reason` flags, so that `agentboard
+mcp` lists `board_renew` and `board_unqueue`, `board_claim` gains optional
+`ttl` and `wait` and `board_release` gains optional `force` and `reason`,
+validated as on the CLI. `--timeout` SHALL be a CLI-only flag, absent from
+the tool schema. `board_claim` with `wait` SHALL never block: when the
+ticket is unassigned with no waiters it SHALL return the ordinary claim
+result with `queued` false; otherwise (a held ticket, including one whose
+lease is claimable, or one with waiters) it SHALL write the join and return
+`{queued: true, position, holder, ticket}` at once. The grant SHALL be
+delivered only through `board_inbox` as a `ticket.grant` entry.
 
 #### Scenario: MCP tool list includes renew and unqueue
 - **WHEN** an MCP client lists tools

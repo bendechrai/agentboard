@@ -111,17 +111,17 @@ them on it (see "Known gaps").
 
 1. `add-claim-leases` (in progress, in `openspec/changes/`): groups 1
    (lease, queue and grant fold, PR #69), 2 (grant materialisation in
-   catch-up, PR #70), 3 (lease, queue, forced-release and config
-   commands, PR #98), 4 (waiting in the foreground, PR #102), 6 (mutex
-   guidance and feed summaries, PR #101), 7 (documentation, this README,
-   ADR 0014 and STATUS) and 8 (re-import reconciliation, PR #72) are
-   merged. Group 5 (concurrency, crash and replica tests, no behaviour
-   change) is merging alongside; it also carries three small items moved
-   from group 4's review (a CLI test of the busy warning on stderr, a test
-   of a non-busy error in the ending transaction, and one delta sentence
-   on a wake that sees the actor holding as a signal arrives). When it
-   is merged, the change is archived in its own pull request, folding its
-   deltas into the main specs.
+   catch-up, PR #70), 3 (lease, queue, forced-release and config commands,
+   PR #98), 4 (waiting in the foreground, PR #102), 6 (mutex guidance and
+   feed summaries, PR #101), 7 (documentation, this README, ADR 0014 and
+   STATUS) and 8 (re-import reconciliation, PR #72) are merged. Group 5
+   (concurrency, crash and replica tests, no behaviour change) is still
+   open (ticket 01M4KMNB5ZZW8WBQF4KC5TDSZ3); it also carries three small
+   items moved from group 4's review (a CLI test of the busy warning on
+   stderr, a test of a non-busy error in the ending transaction, and one
+   delta sentence on a wake that sees the actor holding as a signal
+   arrives). When it is merged, the change is archived in its own pull
+   request, folding its deltas into the main specs.
 2. `guard-stale-temporary` (in progress, in `openspec/changes/`, proposed
    in PR #100): `init --into-host` adopts a leftover temporary only when
    it was made from the board at `.board` now, checked by the recorded

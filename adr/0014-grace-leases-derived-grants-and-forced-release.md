@@ -97,14 +97,14 @@ state. Applied, it makes the waiter the holder under an unconfirmed lease
 of the board's `queue.window`; the waiter accepts by renewing, and
 otherwise the grant lapses and the next one is due.
 
-There is no daemon. Every command that catches up (all but `rebuild`)
-writes the grants whose slot time its clock has reached, in its catch-up
-transaction. Because the bytes are derived, every writer on every machine
-writes the identical file, and duplicates collapse by content address. The
-fold accepts a grant only when it equals, field by field, the grant it
-derives at that position, and rejects it `stale-grant` otherwise (for
-example when a renew or leave with an earlier wall arrives later through
-`sync`). The actor `agentboard` is reserved: commands refuse `--as
+There is no daemon. Every command that opens the board and catches up (all
+but `rebuild`) writes the grants whose slot time its clock has reached, in
+its catch-up transaction. Because the bytes are derived, every writer on
+every machine writes the identical file, and duplicates collapse by content
+address. The fold accepts a grant only when it equals, field by field, the
+grant it derives at that position, and rejects it `stale-grant` otherwise
+(for example when a renew or leave with an earlier wall arrives later
+through `sync`). The actor `agentboard` is reserved: commands refuse `--as
 agentboard`, any other kind written by it is malformed, and so is a grant
 written by anyone else.
 
@@ -140,13 +140,14 @@ which have no writer and are the case that matters most.
 
 ## Consequences
 
-- ADR 0002's "a command's own event sorts last" no longer holds for
+- ADR 0002 relies on a command's own event sorting after everything already
+  folded, so that it "never forces a refold". That no longer holds for
   grants: a grant's wall is its slot time, usually in the past when it is
   written. It is folded like an event arriving late through `sync`: later
   events are refolded and inbox cursors move back. A grant written late by
-  a command that ran long after the slot may already have lapsed; the
-  next grant then follows at once. A refused command still commits its
-  catch-up, grants included.
+  a command that ran long after the slot may already have lapsed; the next
+  grant then follows at once. A refused command still commits its catch-up,
+  grants included.
 - Read commands (`list`, `show`, `inbox`, `watch`) may write: they take
   the write lock, and write a grant, only when one is due. The cache keeps
   a grant watermark (the slot time of the next grant), so a warm read with

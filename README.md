@@ -630,6 +630,12 @@ None of this changes a ticket's status, and leases and the queue constrain
 only `claim`: every other command works on a leased ticket as before. A
 claim without `--ttl` writes the same event as it always did.
 
+If the board is shared between machines, upgrade every machine before
+anyone uses `--ttl`, `--wait`, `release --force` or `config set` (see
+"Upgrading a board shared between machines"), and note that a lock held
+across machines is only as strong as `sync` (see "Clocks, skew and several
+machines").
+
 ### Leases: `claim --ttl` and `renew`
 
 ```
@@ -713,10 +719,11 @@ hint: another actor holds this ticket, so do not work on it: see who with 'agent
 ticket that is held, or has waiters, does not fail: the actor joins the
 ticket's queue. That holds even when the holder's lease is already
 claimable: the waiter joins rather than taking over, and its grant follows
-at once. Waiters are served in the order they joined, and while anyone is waiting, a claim without `--wait` (a
-takeover included) is refused with exit 4 `queued`: waiters have priority.
-`unqueue <id>` leaves the queue (exit 4 `invalid-queue` when you are not in
-it). A hand-off or assign to a waiter takes it out of the queue.
+at once. Waiters are served in the order they joined, and while anyone is
+waiting, a claim without `--wait` (a takeover included) is refused with
+exit 4 `queued`: waiters have priority. `unqueue <id>` leaves the queue
+(exit 4 `invalid-queue` when you are not in it). A hand-off or assign to a
+waiter takes it out of the queue.
 
 When the ticket becomes available (released, force-released, or its lease
 lapsed), the head waiter is **granted** it. A grant is an event written by
@@ -727,11 +734,11 @@ makes the waiter the holder with an unconfirmed lease of the board's
 lapses after the window plus the 60 second tolerance and passes to the next
 waiter, so a waiter that died never stalls the queue.
 
-There is no daemon. A grant is a pure function of the events and is
-written by whichever command next runs on the board once it is due (any
-command except `rebuild`, including `list`, `show`, `inbox` and a waiting
-`claim --wait`), timestamped with the moment it became due rather than the
-moment it was written. Every writer derives the same bytes, so two
+There is no daemon. A grant is a pure function of the events and is written
+by whichever command next opens the board and catches up once it is due
+(every such command except `rebuild`, including `list`, `show`, `inbox` and
+a waiting `claim --wait`), timestamped with the moment it became due rather
+than the moment it was written. Every writer derives the same bytes, so two
 processes or two machines writing the same grant produce one file. A read
 command takes the write lock only when a grant is actually due. If nobody
 runs a command for a while, a grant can be written after its window has
@@ -739,8 +746,8 @@ already passed, and the next grant follows straight away.
 
 ### Waiting on the command line
 
-On the command line `--wait` also needs `--timeout` (1 second to 1 day),
-and the claim blocks in the foreground until it ends:
+On the command line `--wait` also needs `--ttl` and `--timeout` (1 second
+to 1 day), and the claim blocks in the foreground until it ends:
 
 ```
 $ agentboard claim 01M5XZK37D --ttl 30m --wait --timeout 5m --as merger-2
@@ -895,26 +902,30 @@ this:
 
 ```
 agentboard claim <lock> --ttl 30m --wait --timeout 10m --as impl-1 || exit 1
+trap 'agentboard release <lock> --as impl-1' EXIT
+trap 'exit 1' INT TERM
 agentboard renew <lock> --as impl-1 || exit 1
 npm test && agentboard renew <lock> --as impl-1 && gh pr merge 42 --squash
-agentboard release <lock> --as impl-1
 ```
 
 The wait exits 0 only when `impl-1` holds the lock. The first `renew`
 accepts the grant (or confirms the grace lease when the lock was free) as
 the first action of real work; the second comes immediately before the
 critical step, so a lock lost during the tests stops the merge; and the
-release runs whether the merge succeeded or not.
+`trap` releases the lock when the script ends, whether the merge
+succeeded, failed or the script was interrupted.
 
 Exit 4 `wait-timeout` or `wait-interrupted` from the wait means the worker
-does not hold the lock: it does not run the critical step, and either
-waits again or reports. `renew` failing with `not-assignee` means the lock
-was lost (it lapsed and passed on, or was force-released): stop. Use a ttl
-longer than the critical section and renew at about half of it if the
-section is long. Never wait on a mutex in a loop of plain claims and never
-claim from a background process: the first is unfair (whoever polls at the
-right moment wins) and the second is exactly the idle hold that leases
-exist to end.
+does not hold the lock: it does not run the critical step, and either waits
+again or reports. `renew` failing with `not-assignee` means the lock was
+lost (it lapsed and passed on, or was force-released): stop. Use a ttl
+longer than the critical section, and no longer than you can afford to lose
+the lock for if the script is killed: a `trap` does not run on SIGKILL or a
+crash, and then the lease, not `release`, is the backstop. Renew at about
+half the ttl if the section is long. Never wait on a mutex in a loop of
+plain claims and never claim from a background process: the first is unfair
+(whoever polls at the right moment wins) and the second is exactly the idle
+hold that leases exist to end.
 
 **An orchestrator running the queue over MCP.** Agents behind MCP cannot
 block, and an agent that has stopped does not read its inbox. There the
@@ -927,12 +938,20 @@ board_claim {"id": "<lock>", "ttl": "30m", "wait": true, "as": "impl-1"}
   -> {"queued": true, "position": 1, "holder": "impl-2", "ticket": "<lock>"}
 ```
 
+On a free lock (unassigned, nobody waiting) the same call claims it at once
+and returns the ordinary claim result with `queued` false, holding a grace
+lease that lapses in `lease.grace` (2 minutes by default) unless renewed:
+the worker must then call `board_renew` straight away and go on with the
+critical step. With `queued` true it has joined the queue, stops, and waits
+for the grant to arrive in `board_inbox`.
+
 The orchestrator reads its own inbox (`board_inbox` returns every event on
 the board, grants to others included, and writes any grant that has fallen
 due) and, when it sees the `ticket.grant` with `to` `impl-1`, dispatches
-`impl-1` again, which accepts with `board_renew {"id": "<lock>", "as": "impl-1"}` as its first
-call, merges and calls `board_release`. If the dispatch takes longer than
-the window, the grant passes to the next waiter, so give dispatch time:
+`impl-1` again, which accepts with `board_renew {"id": "<lock>", "as":
+"impl-1"}` as its first call, merges and calls `board_release`. If the
+dispatch takes longer than the window, the grant passes to the next waiter,
+so give dispatch time:
 
 ```
 agentboard config set queue.window 10m --as orchestrator
@@ -2463,8 +2482,8 @@ it made effective behind an actor's cursor (that cursor is moved back so
 differs from the events (naming the differing rows), when there is no cache
 file, or when the file is not a cache of the running version; it never
 modifies the cache. Neither ever writes an event: they are the only
-commands that do not write a queue grant that has fallen due (see "The
-waiting queue and grants").
+commands that open the board without writing a queue grant that has
+fallen due (see "The waiting queue and grants").
 
 ## Error hints
 
