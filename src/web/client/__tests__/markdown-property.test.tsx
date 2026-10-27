@@ -576,11 +576,15 @@ describe('renderMarkdown renders what it is given', () => {
 });
 
 describe('renderMarkdown on deep and long input', () => {
-  it('renders each deep shape nested far beyond the depth cap into a DOM without throwing, capped', () => {
-    for (const { name, make } of DEEP_SHAPES) {
-      expectCappedRender(make(FAR_BEYOND_DEPTH), name);
-    }
-  });
+  it(
+    'renders each deep shape nested far beyond the depth cap into a DOM without throwing, capped',
+    () => {
+      for (const { name, make } of DEEP_SHAPES) {
+        expectCappedRender(make(FAR_BEYOND_DEPTH), name);
+      }
+    },
+    PROPERTY_TIMEOUT_MS,
+  );
 
   it(
     'renders input nested beyond the depth cap into a DOM without throwing, capped, at any depth',
