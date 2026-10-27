@@ -27,6 +27,7 @@ import {
   gitVersion,
   isGitFailure,
   meetsGitFloor,
+  sanitizeRemoteLine,
   type GitRunner,
 } from './git.js';
 import { BOARD_REF, type BoardModelInfo } from './model.js';
@@ -485,7 +486,7 @@ function rebaseOnto(git: GitRunner, dir: string, onto: string, what: string): vo
         `git rebase --continue (or git rebase --abort) in ${dir}, then run agentboard sync again`,
     );
   }
-  throw syncFailed(`rebasing onto ${what}`, out);
+  throw syncFailed(`rebasing onto ${what}`, out, git);
 }
 
 /**
@@ -537,7 +538,7 @@ function isRelativePathUrl(url: string): boolean {
 function remoteHasRef(git: GitRunner, remote: string, target: string): boolean {
   const out = git.attempt('ls-remote', target, BOARD_REF);
   if (isGitFailure(out)) {
-    throw syncFailed(`reaching ${asciiText(remote)}`, out);
+    throw syncFailed(`reaching ${asciiText(remote)}`, out, git);
   }
   return out.trim() !== '';
 }
@@ -546,7 +547,7 @@ function remoteHasRef(git: GitRunner, remote: string, target: string): boolean {
 function fetchRef(git: GitRunner, remote: string, target: string): void {
   const out = git.attempt('fetch', '--no-tags', target, BOARD_REF);
   if (isGitFailure(out)) {
-    throw syncFailed(`fetching ${BOARD_REF} from ${asciiText(remote)}`, out);
+    throw syncFailed(`fetching ${BOARD_REF} from ${asciiText(remote)}`, out, git);
   }
 }
 
@@ -593,16 +594,20 @@ function push(git: GitRunner, remote: string, target: string, last: boolean): bo
     if (!last) {
       return false;
     }
-    throw syncFailed(what, out);
+    throw syncFailed(what, out, git);
   }
   const refused = reasons.find((reason) => reason.startsWith('[remote rejected]'));
   if (refused !== undefined) {
+    // The remote's own lines may quote a URL with credentials (a hook
+    // echoing the push URL): sanitised like git's own lines.
+    const urls = git.remoteUrls();
     const said = out.stderr
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line.startsWith('remote:'))
       .map((line) => asciiText(line.slice('remote:'.length).trim()))
-      .filter((line) => line !== '');
+      .filter((line) => line !== '')
+      .map((line) => sanitizeRemoteLine(line, urls));
     throw new BoardError(
       3,
       'sync-failed',
@@ -612,5 +617,5 @@ function push(git: GitRunner, remote: string, target: string, last: boolean): bo
         'then run agentboard sync again',
     );
   }
-  throw syncFailed(what, out);
+  throw syncFailed(what, out, git);
 }

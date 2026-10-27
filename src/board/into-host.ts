@@ -77,6 +77,7 @@ import {
   checkNothingInProgress,
   headExists,
   plural,
+  remoteErrorLine,
   syncFailed,
   unmergedPaths,
   zList,
@@ -1304,7 +1305,7 @@ function checkStandalone(dir: string, info: BoardModelInfo, env: Env): MovePlan 
     `+refs/heads/${branch.trim()}:${tracking}`,
   );
   if (isGitFailure(fetched)) {
-    throw syncFailed(`fetching ${asciiText(branch.trim())} from ${asciiText(name)}`, fetched);
+    throw syncFailed(`fetching ${asciiText(branch.trim())} from ${asciiText(name)}`, fetched, git);
   }
   if (!isAncestor(git, 'HEAD', tracking)) {
     throw new BoardError(
@@ -1571,7 +1572,7 @@ function lockedMove(
     const listed = worktree.attempt('ls-remote', target, BOARD_REF);
     if (isGitFailure(listed)) {
       warnings.push(
-        `the host remote ${asciiText(remote.name)} could not be reached (${firstErrorLine(listed)}); ` +
+        `the host remote ${asciiText(remote.name)} could not be reached (${remoteErrorLine(listed, worktree)}); ` +
           `the board is moved anyway, and agentboard sync publishes it once ${asciiText(remote.name)} ` +
           'can be reached',
       );
@@ -1581,7 +1582,7 @@ function lockedMove(
         if (!adopted) {
           discardTemporary(host, temp);
         }
-        throw syncFailed(`fetching ${BOARD_REF} from ${asciiText(remote.name)}`, fetched);
+        throw syncFailed(`fetching ${BOARD_REF} from ${asciiText(remote.name)}`, fetched, worktree);
       }
       if (!isAncestor(worktree, 'FETCH_HEAD', 'HEAD')) {
         rebaseOnto(
@@ -1794,7 +1795,7 @@ function replayFreshCommits(
         3,
         'sync-failed',
         `replaying the events synced to the old remote since the earlier move failed: ` +
-          `${firstErrorLine(out)}${local}`,
+          `${remoteErrorLine(out, worktree)}${local}`,
       );
     }
     // Git's own empty stop: the commit's patch is already in HEAD (one
@@ -2342,7 +2343,7 @@ function rebaseOnto(
   if (!adopted) {
     discardTemporary(host, temp);
   }
-  throw syncFailed(`integrating ${what}`, out);
+  throw syncFailed(`integrating ${what}`, out, worktree);
 }
 
 /** Removes the temporary worktree at `temp`, the temporary refs and an empty `migrating` directory after a refusal in step 3. */

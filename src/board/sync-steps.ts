@@ -13,7 +13,13 @@ import { basename, dirname, join } from 'node:path';
 
 import type { Board } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
-import { firstErrorLine, isGitFailure, type GitFailure, type GitRunner } from './git.js';
+import {
+  firstErrorLine,
+  isGitFailure,
+  sanitizeRemoteLine,
+  type GitFailure,
+  type GitRunner,
+} from './git.js';
 import { asciiText } from './text.js';
 
 /**
@@ -159,9 +165,20 @@ export function unmergedPaths(git: GitRunner): string[] {
   return zList(git.run('diff', '--name-only', '--diff-filter=U', '-z')).sort();
 }
 
-/** `BoardError(3, 'sync-failed')` for a git step that failed. */
-export function syncFailed(what: string, failure: GitFailure): BoardError {
-  return new BoardError(3, 'sync-failed', `${what} failed: ${firstErrorLine(failure)}`);
+/**
+ * `BoardError(3, 'sync-failed')` for a git step run by `git` that failed,
+ * quoting its first error line sanitised against the URLs configured for
+ * the remotes of the repository `git` runs in (board-cli "Git lines quoted
+ * from remote commands"): a credential in a remote URL never reaches the
+ * message. A local step's line names no remote and passes unchanged.
+ */
+export function syncFailed(what: string, failure: GitFailure, git: GitRunner): BoardError {
+  return new BoardError(3, 'sync-failed', `${what} failed: ${remoteErrorLine(failure, git)}`);
+}
+
+/** The first error line of `failure`, sanitised against the remote URLs of the repository `git` runs in. */
+export function remoteErrorLine(failure: GitFailure, git: GitRunner): string {
+  return sanitizeRemoteLine(firstErrorLine(failure), git.remoteUrls());
 }
 
 /**

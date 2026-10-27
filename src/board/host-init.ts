@@ -39,6 +39,7 @@ import {
   type GitRunnerOptions,
 } from './git.js';
 import { BOARD_REF, detectBoardModel } from './model.js';
+import { remoteErrorLine } from './sync-steps.js';
 import { asciiText } from './text.js';
 
 /**
@@ -206,7 +207,7 @@ export function ensureBoardRef(
     const listed = git.attempt('ls-remote', remote, BOARD_REF);
     if (isGitFailure(listed)) {
       warnings.push(
-        `the remote ${asciiText(remote)} could not be reached (${firstErrorLine(listed)}); ` +
+        `the remote ${asciiText(remote)} could not be reached (${remoteErrorLine(listed, git)}); ` +
           'created a new empty board, and the next agentboard sync joins any board there',
       );
     } else if (listed.trim() !== '') {

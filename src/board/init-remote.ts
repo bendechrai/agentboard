@@ -37,6 +37,7 @@ import {
   gitRunner,
   gitVersion,
   isGitFailure,
+  sanitizeRemoteLine,
   type GitFailure,
   type GitRunner,
 } from './git.js';
@@ -187,10 +188,7 @@ export function originUrl(url: string, base: string): string {
  * appears apart from the whole value.
  */
 export function sanitizeGitLine(line: string, given: string, passed: string = given): string {
-  void line;
-  void given;
-  void passed;
-  throw new Error('not implemented');
+  return sanitizeRemoteLine(line, [given, passed]);
 }
 
 /**
@@ -410,12 +408,14 @@ export function initBoardWithRemote(url: string, options?: LocateOptions): InitR
     createBareRepository(path, env);
   }
   const git = gitRunner(base, { env });
+  const quote = (failure: GitFailure): string =>
+    sanitizeGitLine(firstErrorLine(failure), url, remoteUrl);
   const refs = git.attempt('ls-remote', '--', remoteUrl);
   if (isGitFailure(refs)) {
     throw new BoardError(
       3,
       'remote-unreachable',
-      `the repository at ${asciiText(remoteUrl)} cannot be read (${firstErrorLine(refs)}); ` +
+      `the repository given with --remote cannot be read (${quote(refs)}); ` +
         'create an empty repository there (for example on your git host) and check your ' +
         'access to it, then run agentboard init --remote again',
     );
@@ -423,7 +423,7 @@ export function initBoardWithRemote(url: string, options?: LocateOptions): InitR
   const result =
     refs.trim() === ''
       ? createBoard(dir, remoteUrl, writeHostGitignore, env)
-      : cloneBoard(dir, remoteUrl, writeHostGitignore, env);
+      : cloneBoard(dir, remoteUrl, writeHostGitignore, env, quote);
   if (removed.length === 0) {
     return result;
   }
@@ -457,11 +457,11 @@ function checkUrl(url: string): void {
     throw usage('the value is empty');
   }
   if (url.startsWith('-')) {
-    throw usage(`${asciiText(url)} starts with -, which git would read as an option`);
+    throw usage('the value starts with -, which git would read as an option');
   }
   if (url.startsWith(FILE_SCHEME) && fileUrlPath(url) === null) {
     throw usage(
-      `${asciiText(url)} names a host other than localhost, so it is no path on this machine`,
+      'the value is a file:// URL naming a host other than localhost, so it is no path on this machine',
     );
   }
 }
@@ -587,17 +587,17 @@ function existingBoard(dir: string, remoteUrl: string, env: Env): InitRemoteResu
       'remote-mismatch',
       `the board at ${dir} is configured to sync with the remote ${asciiText(chosen.name)} ` +
         `(git config agentboard.remote), which the board repository does not have, so ` +
-        `${asciiText(remoteUrl)} was not added; unset it with git -C ${dir} config --unset ` +
+        `the URL given was not added; unset it with git -C ${dir} config --unset ` +
         `agentboard.remote, or add that remote with git -C ${dir} remote add ` +
-        `${asciiText(chosen.name)} ${asciiText(remoteUrl)}; nothing changed`,
+        `${asciiText(chosen.name)} <url>; nothing changed`,
     );
   }
   throw new BoardError(
     1,
     'remote-mismatch',
     `the board at ${dir} already has the remote ${asciiText(chosen.name)} at ` +
-      `${asciiText(chosen.url)}, not ${asciiText(remoteUrl)}; keep it, or change it with ` +
-      `git -C ${dir} remote set-url ${asciiText(chosen.name)} ${asciiText(remoteUrl)}; ` +
+      `${asciiText(chosen.url)}, not the URL given; keep it, or change it with ` +
+      `git -C ${dir} remote set-url ${asciiText(chosen.name)} <url>; ` +
       'nothing changed',
   );
 }
@@ -666,13 +666,15 @@ function createBoard(
 /**
  * Step 3 of `initBoardWithRemote` for a remote with a branch: a clone into
  * a temporary sibling of `dir`, renamed to `dir` once its working tree
- * holds `events/`; a clone that fails or holds no board is removed.
+ * holds `events/`; a clone that fails or holds no board is removed. `quote`
+ * gives the sanitised first error line of a failed git command.
  */
 function cloneBoard(
   dir: string,
   remoteUrl: string,
   writeHostGitignore: boolean,
   env: Env,
+  quote: (failure: GitFailure) => string,
 ): InitRemoteResult {
   const parent = dirname(dir);
   mkdirSync(parent, { recursive: true });
@@ -686,7 +688,7 @@ function cloneBoard(
       throw new BoardError(
         3,
         'remote-unreachable',
-        `the repository at ${asciiText(remoteUrl)} could not be cloned (${firstErrorLine(cloned)}); ` +
+        `the repository given with --remote could not be cloned (${quote(cloned)}); ` +
           'create an empty repository there (for example on your git host) and check your ' +
           'access to it, then run agentboard init --remote again',
       );
@@ -696,9 +698,9 @@ function cloneBoard(
       throw new BoardError(
         1,
         'not-a-board',
-        `the repository at ${asciiText(remoteUrl)} holds no board: its branch ` +
+        `the repository given with --remote holds no board: its branch ` +
           `${asciiText(checkout.branch ?? '')} cannot be checked out ` +
-          `(${firstErrorLine(checkout.result)}); --remote needs an empty repository, or one ` +
+          `(${quote(checkout.result)}); --remote needs an empty repository, or one ` +
           'that holds a board',
       );
     }
@@ -707,7 +709,7 @@ function cloneBoard(
       throw new BoardError(
         1,
         'not-a-board',
-        `the repository at ${asciiText(remoteUrl)} holds no board: ` +
+        `the repository given with --remote holds no board: ` +
           `${branch === null ? 'its default branch' : `its branch ${asciiText(branch)}`} has no ` +
           'events/ directory; --remote needs an empty repository, or one that holds a board',
       );

@@ -171,9 +171,73 @@ export function firstErrorLine(failure: GitFailure): string {
  * remote.
  */
 export function configuredRemoteUrls(dir: string, env?: Env): string[] {
-  void dir;
-  void env;
-  throw new Error('not implemented');
+  try {
+    const git = gitRunner(dir, { env });
+    const lines = (out: string | GitFailure): string[] =>
+      isGitFailure(out)
+        ? []
+        : out
+            .split('\n')
+            .map((line) => line.trim())
+            .filter((line) => line !== '');
+    const urls = new Set<string>();
+    for (const name of lines(git.attempt('remote'))) {
+      for (const out of [
+        git.attempt('config', '--get-all', `remote.${name}.url`),
+        git.attempt('config', '--get-all', `remote.${name}.pushurl`),
+        git.attempt('remote', 'get-url', '--all', name),
+        git.attempt('remote', 'get-url', '--push', '--all', name),
+      ]) {
+        for (const url of lines(out)) {
+          urls.add(url);
+        }
+      }
+    }
+    return longestFirst(urls);
+  } catch {
+    return [];
+  }
+}
+
+/** `values` as an array, longest first, equal lengths in insertion order. */
+function longestFirst(values: Iterable<string>): string[] {
+  return [...values].sort((a, b) => b.length - a.length);
+}
+
+/**
+ * The scheme and user information of a URL that has both:
+ * `<scheme>://<userinfo>@`, where `<scheme>` is a letter followed by
+ * letters, digits, `+`, `-` or `.` in any case, and `<userinfo>` runs to
+ * the last `@` before a `/`, `?`, `#`, white space or quote (a password may
+ * hold an unencoded `@`). Group 1 is `<scheme>://`, group 2 the user
+ * information.
+ */
+const USERINFO = /([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\s'"/?#]*)@/g;
+
+/** The parts of a URL with a scheme and user information, or null when it has no user information. */
+function splitUserinfo(url: string): { scheme: string; userinfo: string; rest: string } | null {
+  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(url);
+  if (scheme === null) {
+    return null;
+  }
+  const after = url.slice(scheme[0].length);
+  const end = after.search(/[/?#]/);
+  const authority = end === -1 ? after : after.slice(0, end);
+  const at = authority.lastIndexOf('@');
+  if (at === -1) {
+    return null;
+  }
+  return { scheme: scheme[0], userinfo: authority.slice(0, at), rest: after.slice(at + 1) };
+}
+
+/** `text` percent-decoded when that succeeds and gives another text, else null. */
+function percentDecoded(text: string): string | null {
+  try {
+    const decoded = decodeURIComponent(text);
+    return decoded === text ? null : decoded;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -197,9 +261,38 @@ export function configuredRemoteUrls(dir: string, env?: Env): string[] {
  * re-exported from `init-remote.ts`).
  */
 export function sanitizeRemoteLine(line: string, urls: readonly string[]): string {
-  void line;
-  void urls;
-  throw new Error('not implemented');
+  // Step 1: every form of every URL becomes `<url>`, longest first, so a
+  // form that contains another is replaced whole.
+  const forms = new Set<string>();
+  const userinfos = new Set<string>();
+  for (const url of urls) {
+    if (url === '') {
+      continue;
+    }
+    forms.add(url);
+    const split = splitUserinfo(url);
+    if (split !== null) {
+      forms.add(`${split.scheme}${split.rest}`);
+      if (split.userinfo !== '') {
+        userinfos.add(split.userinfo);
+        const decoded = percentDecoded(split.userinfo);
+        if (decoded !== null && decoded !== '') {
+          userinfos.add(decoded);
+        }
+      }
+    }
+  }
+  let out = line;
+  for (const form of longestFirst(forms)) {
+    out = out.replaceAll(form, '<url>');
+  }
+  // Step 2: the user information of those URLs, wherever git prints it
+  // (with a scheme or without one).
+  for (const userinfo of longestFirst(userinfos)) {
+    out = out.replaceAll(userinfo, '<redacted>');
+  }
+  // Step 3: the user information of every other URL in the line.
+  return out.replace(USERINFO, '$1<redacted>@');
 }
 
 /** Options of `gitRunner`. */
@@ -253,6 +346,12 @@ export interface GitRunner {
   attempt(...args: string[]): string | GitFailure;
   /** Like `attempt`, but in `cwd`. */
   attemptIn(cwd: string, ...args: string[]): string | GitFailure;
+  /**
+   * `configuredRemoteUrls(dir)` with the runner's environment: the URLs a
+   * git line quoted from a remote command run in `dir` is sanitised against
+   * (`sanitizeRemoteLine`). Read when a command has failed, never before.
+   */
+  remoteUrls(): string[];
 }
 
 /** The name of the empty hooks directory the runner creates under a git directory. */
@@ -305,6 +404,7 @@ export function gitRunner(dir: string, options?: GitRunnerOptions): GitRunner {
     runInput: (input, ...args) => runWith(prefix, dir, args, input),
     attempt: (...args) => attemptIn(dir, ...args),
     attemptIn,
+    remoteUrls: () => configuredRemoteUrls(dir, env),
   };
 }
 
