@@ -1,0 +1,40 @@
+# Tasks
+
+Independent of `add-claim-leases` and `guard-stale-temporary`: neither
+modifies board-cache "Cache is derived and disposable", so any of them may
+be archived first. It should be merged before the release that ships cache
+schema 5, so that the 0.2.0 upgrade is the first one to keep cursors.
+
+The group is delivered by a test author, an implementer and a reviewer in
+turn (see CONTRIBUTING.md), on one branch cut from `origin/staging`; the
+test author's first commit defines any new internal API as stubs. The
+group is concurrency-critical: the carry runs inside the open's
+`BEGIN IMMEDIATE` recreate while other processes open, catch up and
+advance cursors on the same cache, and the carried set is consumed by
+whichever process folds first. The orchestrator runs a second reviewer on
+the strongest model. Verification for every task includes `make check`,
+`make check-in-docker` and `make check-floor` passing (the change is in
+the store) with coverage at or above 90 percent.
+
+A 0.2.0 cache is never approximated by today's schema with the version
+row changed. Tests use either a fixture made by running the published
+0.2.0 (`npx @bendechrai/agentboard@0.2.0` on a scratch board: create and
+comment tickets with timestamps spread over more than two hours, run
+`inbox` as two actors, then copy `events/` and `cache.sqlite` after a
+`PRAGMA wal_checkpoint(TRUNCATE)`), committed under
+`src/store/__tests__/fixtures/` with the script that made it, or a faithful
+construction: the `SCHEMA` and `cursor_seen` text of
+`git show v0.2.0:src/store/cache.ts` copied verbatim into the test helper,
+`schema_version` `4`, and `cursors`, `cursor_seen` and `folded` rows
+written as 0.2.0 writes them (a 0.2.0 fold of the same event files, with
+the event kinds 0.2.0 does not know recorded as `unknown-kind`). The
+reviewer recomputes at least one carried cache with the real 0.2.0 binary
+and a throwaway program that does not use the code under review, and
+compares its cursor rows with the test's expectation.
+
+## 1. Cursors survive a schema upgrade (`store/keep-cursors-on-upgrade`)
+
+- [ ] 1.1 Carry the cursor tables in `openCache`'s schema step, as design.md "Carry the cursor tables inside the recreate's transaction" and "The expected shape" say: only for a stored version from 1 to `CACHE_SCHEMA_VERSION - 1`; the `PRAGMA table_info` checks on `cursors`, `cursor_seen` and `folded`; row filtering by `typeof()`; an empty carry on any non-busy SQLite error while reading; `SCHEMA` dropping `carried_applied`; the carried rows and `carried_applied` written in the same transaction as the recreate; the module documentation of `cache.ts` and `cursors.ts` updated (including the rule that a change to the delivery rule or fold order must stop the carry). Verify: on a 0.2.0 cache (fixture or faithful construction, see above), opening with this version leaves schema version 5, `cursors` and `cursor_seen` rows equal to the old ones (compared as sets of rows), `carried_applied` equal to the old `folded` = 1 hashes, and every derived table empty until the first catch-up; the same for a schema 1 cache (the 0.1.0 `SCHEMA` text verbatim); no carry, and no cursor rows, for each of: `cursor_seen` missing, `cursors` with an extra column, `cursors` with `last_wall` missing, `cursors.last_wall` declared TEXT, `folded` without the `folded` column, a stored version of 6, a stored version of `abc`, no `meta` table; a carry that leaves out a `cursors` row with a TEXT `last_wall` and that actor's seen rows while keeping the others; a corrupted `cursors` table (a page overwritten in a copy of the fixture so reading it fails with SQLITE_CORRUPT, or an injected read failure) recreating the cache with no cursors rather than failing the open, unless the recreate itself fails as today; a mutant check recorded in the PR (skipping the shape check makes the extra-column test fail; carrying outside the transaction makes the concurrency test of 1.3 fail)
+- [ ] 1.2 Use and drop the carried set in the first fold, as design.md "Remember what the old cache applied until the first fold" says: one helper for the prior applied set, used by both paths of `foldNew` and by `refoldWithCursors`; the incremental path passing to `resetLateCursors` only applied inputs not in the prior; `carried_applied` dropped in the transaction of the first fold that records events, and dropped unused when found with a non-empty `folded`; `dumpCache`, `diffCaches` and `rebuild --check` not covering it. Verify: the scenarios of the board-cache delta: "Upgrade from a 0.2.0 cache keeps every actor's position" (two actors, one cursor more than an hour past the first event, `inbox --peek` then `inbox` returning only events after the cursor, and an actor with no cursor still getting every event), "Upgrade delivers an event the old version did not apply" (a `ticket.supersede`, `ticket.renumber` or `ticket.reconcile` the 0.2.0 fold recorded as an unknown kind, more than an hour behind the cursor, delivered by the next `inbox` with the cursor moved back before it; and one inside the window delivered without moving the cursor), "Upgrade delivers an event the old cache had not recorded"; the same three through `rebuild` as the first fold after the upgrade (its `late` report listing exactly the changed-outcome and unrecorded events per actor); `carried_applied` absent after the first fold and the canonical dump equal to a fresh rebuild before and after it; a stale `carried_applied` beside a non-empty `folded` dropped and not consulted; a property test (fast-check) over random event sets, random cursors produced by real `inbox` calls on a constructed 0.2.0 cache, and random subsets marked unknown to the old version, asserting that after the upgrade every effective event is delivered to each actor or was delivered before, and that no event the old cache applied and delivered is returned again unless a changed-outcome event moved that cursor back over it; a mutant check recorded in the PR (passing every applied event to `resetLateCursors` makes the position test fail; skipping `resetLateCursors` on the first fold makes the unknown-kind test fail)
+- [ ] 1.3 Concurrency and read-only paths. Verify: child-process tests on one board with a 0.2.0 cache: ten processes opening it at once (each running `inbox --peek --as` a different actor, some actors with carried cursors) all succeed, exactly one recreate happens, every process sees the carried cursors, and `carried_applied` is consumed exactly once; a process killed after the recreate commits and before its first catch-up, with the next command's catch-up still using the carried set; an `inbox` advancing a cursor in one process racing the recreate in another leaving either the advanced cursor carried or the advance applied after the recreate, never lost; "Cache of a later schema version is recreated as before"; "Inspecting an earlier cache changes nothing" (`rebuild --check` on the 0.2.0 cache: exit 1, `schema-mismatch`, the file's bytes and its WAL and SHM companions unchanged, by hash, before and after); `rebuild --check` on a schema 5 cache holding `carried_applied` exiting 0 and leaving the table; `openCache(path, { prepare: false })` on the 0.2.0 cache throwing `schema-mismatch` with the file unchanged; each repeated at least 20 times in the test without a flake
+- [ ] 1.4 Documentation: README.md (the paragraph on upgrading every machine that shares a board: an upgrade keeps each actor's inbox position, and the first `inbox` after it also returns any event the old version did not apply), STATUS.md (what exists; the ticket's gap closed). Verify: `make ascii`, `make validate-specs`, and the README sentence matching the board-cache requirement
