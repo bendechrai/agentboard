@@ -126,6 +126,47 @@ hint writes the placeholder `<id>` in its place.
 - **WHEN** `agentboard show 01NOPE0000` runs (`O` is not a Crockford base32 letter)
 - **THEN** it exits 4 with reason `unknown-ticket`, the message says the text given is not a ticket id, and `01NOPE0000` appears in no output
 
+### Requirement: Git lines quoted from remote commands
+When agentboard repeats a line of git's output from a failing git
+command that talks to a remote (`ls-remote`, `fetch`, `pull`, `push`,
+`clone`, and the `remote:` lines a refusing remote prints), in a refusal
+or a warning of `sync`, `init` (joining a host-model board), `init
+--remote` (including the `sync` it runs) or `init --into-host`, the line
+SHALL first be sanitised against every URL configured for the remotes of
+the repository the command ran in (the board repository for a standalone
+board, the host repository for a host-model board): every
+`remote.<name>.url` and `remote.<name>.pushurl` as configured and as git
+resolves it after `insteadOf` and `pushInsteadOf` rewrites, together with
+the value given to `--remote` where there is one. Each such URL, and the
+URL without its user information, SHALL be replaced by `<url>`; its user
+information, as configured and percent-decoded, by `<redacted>` wherever
+it appears; and the user information of any other URL in the line
+(`<scheme>://<userinfo>@`) by `<scheme>://<redacted>@`. So no credential
+or token held in a configured remote URL reaches stdout, stderr, the
+`--json` document or an MCP result. Exit codes, reasons and the rest of
+each message are unchanged. Remote names, and URLs printed by success
+output and by `remote`, are not affected.
+
+#### Scenario: Sync with a token as the user name of the configured remote
+- **WHEN** a standalone board's `origin` is `http://<token>@<host>/me/x.git`, the server answers 401, and `agentboard sync` runs with and without `--json`
+- **THEN** it exits 3 with reason `sync-failed`, the quoted git line reads `could not read Password for 'http://<redacted>@<host>'`, and the token appears nowhere in stdout or stderr
+
+#### Scenario: Sync with user:pass@ and a token in the path of the configured remote
+- **WHEN** `origin` is `http://agent:<secret>@<host>/me/<token>.git` and the remote is unreachable or answers 401, and `agentboard sync` runs
+- **THEN** it exits 3 with reason `sync-failed`, git's `unable to access` or `Authentication failed for` line quotes `'<url>/'`, and neither the secret nor the token appears in any output
+
+#### Scenario: Sync on a host-model board
+- **WHEN** the host repository's `origin` holds a token as its user name or in its path and answers 401, and `agentboard sync` runs on its host-model board
+- **THEN** it exits 3 with reason `sync-failed` and the token appears in no output
+
+#### Scenario: The sync that init --remote runs
+- **WHEN** `agentboard init --remote http://<token>@<host>/me/x.git` runs on a standalone board without a remote and the server answers 401
+- **THEN** it exits 3 with reason `sync-failed` keeping `origin`, the quoted line reads `http://<redacted>@<host>`, and the token appears in no output
+
+#### Scenario: Joining warnings of init and init --into-host
+- **WHEN** `agentboard init` (host model) or `agentboard init --into-host` runs in a host whose `origin` holds a token and answers 401
+- **THEN** the warning that the remote could not be reached quotes git sanitised, and the token appears in no output
+
 ## MODIFIED Requirements
 
 ### Requirement: Close requires a decision disposition

@@ -303,17 +303,48 @@ in `src/board/init-remote.ts` states the contract):
   checkout refusal quotes its git line through the same sanitizer.
 - `init` is neither an MCP tool nor a web action, so the CLI (plain and
   `--json`) is the only surface of these refusals.
-- Not in this group: when `init --remote` attaches a URL to an existing
-  board, or creates a board on an empty remote, and the `sync` it runs
-  then fails, the refusal is `sync`'s own (`sync-failed`, quoting git's
-  line unsanitised). By then the URL is the board's configured remote
-  ("Out of scope", configuration), but a token given as the user name
-  would still be printed by git in that line; the orchestrator files a
-  follow-up for the `sync` refusals.
+- Brought into this group by the orchestrator (DECISION on ticket
+  01M5YAB4PJQSSMGDM2XZAQA5FZ, replacing the earlier "not in this group"
+  ruling): see "Git lines quoted from remote commands" below.
 
 Audit size: 45 rows; 37 change message or hint text (rows 1-4, 6-8,
 10-17, 19-33, 36, 40-45), 8 are already compliant and are listed to show
 they were checked (rows 5, 9, 18, 34, 35 as a pointer, 37-39).
+
+## Git lines quoted from remote commands
+
+The `init --remote` sanitizer covers the value given; the same leak
+exists wherever agentboard quotes git talking to a configured remote.
+Where git's stderr is quoted (audit of `src/board/` and `src/store/`,
+every `firstErrorLine` and `.stderr` use):
+
+| Site | Command | Quoted in |
+|---|---|---|
+| `sync-steps.ts syncFailed` | `ls-remote`, `pull`, `push` (`sync.ts`), `ls-remote`, `fetch`, rebase, `push` (`host-sync.ts`), `fetch` and the replay (`into-host.ts`) | `sync-failed` refusals of `sync`, of the `sync` `init --remote` and `init --into-host` run |
+| `host-sync.ts` refused push | the `remote:` lines of a `[remote rejected]` push | `sync-failed` |
+| `host-init.ts` | `ls-remote <remote>` | the join warning of `init` (host model) |
+| `into-host.ts` | `ls-remote` and `fetch` of the host remote | the warning and `sync-failed` of `init --into-host` |
+| `init-remote.ts` | `ls-remote`, `clone`, `checkout` | rows 42 to 44 above |
+
+Local-only lines (`git --version` in `remote.ts`, `worktree list` in
+`host-init.ts`, `worktree add` and `cherry-pick` in `into-host.ts`) name
+no remote URL; they may go through the same sanitizer, which leaves them
+unchanged. `sync`, `remote` and `init` are not MCP tools and no web
+action runs git against a remote, so the CLI (plain and `--json`) is the
+only surface.
+
+The URLs a line is sanitised against are `configuredRemoteUrls(dir)`
+(`src/board/git.ts`): for each remote of the repository the command ran
+in, every raw `remote.<name>.url` and `remote.<name>.pushurl`, and every
+URL `git remote get-url [--push] --all` resolves (an `insteadOf` rewrite
+can put a credential in the URL git actually uses). It contacts no
+remote. `sanitizeRemoteLine(line, urls)` applies the `sanitizeGitLine`
+steps to each URL at once (longest form first), so the two agree;
+`init --remote` passes the value given and the URL git was given as two
+more URLs. Restricting to the one remote a command used was considered
+and rejected: a line can name another remote's URL (a `pushurl`, a
+redirect), and the cost is one `git remote` and a few `git config`
+reads on a path that is already failing.
 
 ## Out of scope
 
@@ -325,7 +356,8 @@ they were checked (rows 5, 9, 18, 34, 35 as a pointer, 37-39).
   (refused like comment text) is a separate behaviour change; the
   orchestrator files a follow-up ticket for it.
 - Configuration and environment. The configured remote's URL (in
-  `remote-mismatch`, `remote`, `sync` failures), `agentboard.remote`, and
+  `remote-mismatch`, `remote`; a git line quoted from a remote command is
+  sanitised, see "Git lines quoted from remote commands"), `agentboard.remote`, and
   the path the board was looked for at (board-events "Board directory per
   project", board-cli "No board at start-up") come from the user's own
   configuration, not from the refused argument, and the success paths
