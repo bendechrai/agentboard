@@ -74,7 +74,8 @@ tested and documented in README.md.
   `openspec/changes/archive/2026-10-26-add-description-markdown`.
 - **Claim leases and the waiting queue** (`board-events`, `board-cache`,
   `board-cli`, `board-concurrency`, `board-agent-guidance`,
-  `board-view-model`; change `add-claim-leases`, not yet archived):
+  `board-view-model`, `board-openspec-integration`, `board-web`,
+  `board-web-actions`):
   `claim --ttl` writes a grace lease (`lease.grace`, default 2 minutes)
   that only the holder's `renew` confirms; a lease lapsed by more than the
   fixed 60 second skew tolerance can be taken over with `claim --ttl`;
@@ -93,7 +94,9 @@ tested and documented in README.md.
   re-import reconciliation in `import-change` (pairing tickets to groups
   by identity, `ticket.renumber`, `ticket.reconcile`, `ticket.supersede`,
   `--dry-run`, `--force`). Cache schema version 5. README "Leases, the
-  waiting queue and mutex tickets". ADR 0014.
+  waiting queue and mutex tickets". ADR 0014. Delivered in PRs #69, #70,
+  #72, #98, #101, #102, #105 and #107; archived as
+  `openspec/changes/archive/2026-10-27-add-claim-leases`.
 
 Released as `@bendechrai/agentboard` 0.2.0 on npm (tag `v0.2.0`), with the
 landing site in `docs/` served at https://bendechrai.github.io/agentboard/.
@@ -109,20 +112,7 @@ them on it (see "Known gaps").
 
 ## What is next
 
-1. `add-claim-leases` (in progress, in `openspec/changes/`): groups 1
-   (lease, queue and grant fold, PR #69), 2 (grant materialisation in
-   catch-up, PR #70), 3 (lease, queue, forced-release and config commands,
-   PR #98), 4 (waiting in the foreground, PR #102), 6 (mutex guidance and
-   feed summaries, PR #101), 7 (documentation, this README, ADR 0014 and
-   STATUS) and 8 (re-import reconciliation, PR #72) are merged. Group 5
-   (concurrency, crash and replica tests, no behaviour change) is still
-   open (ticket 01M4KMNB5ZZW8WBQF4KC5TDSZ3); it also carries three small
-   items moved from group 4's review (a CLI test of the busy warning on
-   stderr, a test of a non-busy error in the ending transaction, and one
-   delta sentence on a wake that sees the actor holding as a signal
-   arrives). When it is merged, the change is archived in its own pull
-   request, folding its deltas into the main specs.
-2. `guard-stale-temporary` (in progress, in `openspec/changes/`, proposed
+1. `guard-stale-temporary` (in progress, in `openspec/changes/`, proposed
    in PR #100): `init --into-host` adopts a leftover temporary only when
    it was made from the board at `.board` now, checked by the recorded
    HEAD as well as the git directory's identity, which a file system that
