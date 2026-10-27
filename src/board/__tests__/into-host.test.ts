@@ -3165,4 +3165,299 @@ describe('guard-stale-temporary: adoption guarded by the HEAD the move began fro
       expectMoved(root, env);
     });
   });
+
+  /**
+   * Review round 2 (orchestrator ruling on reviewer-gst-2 R1 and
+   * reviewer-gst-1's low; design.md "Record the tip the temporary
+   * integrated" and "Temporaries of earlier versions"). A pid that looks
+   * alive is made deterministic by naming a temporary after this test
+   * process's parent (`process.ppid`, alive for the whole test and never
+   * this process's own pid, which the move treats as dead); its death by
+   * moving the worktree to a name no process has (`DEAD_PID - 1`, which
+   * sorts before `DEAD_PID`, so the older temporary is judged first).
+   */
+  describe('1.5 review round 2: the integrated tip recorded per temporary', () => {
+    const TIP_RECORD = 'agentboard-source-tip';
+    const EARLIER_DEAD_PID = DEAD_PID - 1;
+
+    /** Moves the temporary worktree at `from` to `migrating/<pid>` beside it; returns the new path. */
+    function renameTemporary(root: string, from: string, pid: number): string {
+      const to = join(agentboardDir(root), MIGRATING_DIR, String(pid));
+      git(root, 'worktree', 'move', from, to);
+      return to;
+    }
+
+    /**
+     * Another move of the board in `root` that integrates a local
+     * `refs/agentboard/board` and loses the compare-and-swap to a commit
+     * made on top of it, beside temporaries that already exist. Returns
+     * the new temporary (named by this process's pid).
+     */
+    function loseCasAgain(root: string, env: Env, at: number): string {
+      const before = new Set(registeredMigrating(root));
+      const other = hostBoard(env);
+      commitHostEvent(other.dir, ev(P.create(T3, `host ${String(at)}`), 'h', at), env);
+      git(root, 'fetch', '-q', '-f', other.root, `${BOARD_REF}:refs/test/base-${String(at)}`);
+      const old = refCommit(root);
+      const base = git(root, 'rev-parse', `refs/test/base-${String(at)}`).trim();
+      if (old === null) {
+        git(root, 'update-ref', BOARD_REF, base);
+      }
+      const c1 = String(refCommit(root));
+      // c2 descends from c1: the local ref with one more commit.
+      const tree = git(root, 'rev-parse', `${c1}^{tree}`).trim();
+      const c2 = git(root, '-c', 'user.name=h', '-c', 'user.email=h@localhost', 'commit-tree', tree, '-p', c1, '-m', `race ${String(at)}`).trim();
+      const racing = withGitShimBefore(
+        env,
+        ['update-ref', BOARD_REF],
+        `"$GIT" -C '${root}' update-ref ${BOARD_REF} ${c2} ${c1}`,
+      );
+      expectBoardError(() => move(root, racing), 3, 'sync-failed');
+      const fresh = registeredMigrating(root).filter((p) => !before.has(p));
+      expect(fresh).toHaveLength(1);
+      const temporary = String(fresh[0]);
+      expect(revParse(temporary)).not.toBe(refCommit(root, MIGRATING_REF));
+      return temporary;
+    }
+
+    /**
+     * Board A in a fresh project with a remote another clone put two
+     * events X ahead of A's HEAD on; A's move integrates X and loses the
+     * compare-and-swap. Its temporary is then renamed to look alive.
+     */
+    function aliveTemporaryWithRemoteAhead(env: Env): {
+      root: string;
+      dir: string;
+      boardRemote: string;
+      head: string;
+      xFiles: string[];
+      alive: string;
+    } {
+      const { root, remote, dir, boardRemote, tip } = standaloneProject(env, 3);
+      const other = cloneWithStandalone(remote, boardRemote, 'other');
+      const xFiles = writeEvents(other.dir, 2, 'xavier', 50).map((h) => `${h}.json`);
+      syncStandalone(other.dir, env);
+      const { temporary } = interruptedMove(root, env);
+      expect(readRecordFile(temporary, HEAD_RECORD)).toBe(`${tip}\n`);
+      const alive = renameTemporary(root, temporary, process.ppid);
+      expect(findMigratingWorktrees(root, { env }).find((w) => w.path === alive)?.alive).toBe(true);
+      return { root, dir, boardRemote, head: tip, xFiles, alive };
+    }
+
+    it('scenario: Temporary that looked alive while a fork of the board moved: once its pid is dead it is removed and named, and nothing only it held reaches refs/agentboard/board', () => {
+      const env = syncEnv();
+      const fx = aliveTemporaryWithRemoteAhead(env);
+      // .board becomes B, a fork of A at A's HEAD with its own remote and
+      // event, at a reused inode (simulated); B's move loses the swap too,
+      // overwriting the host's refs/agentboard/migrating with B's tip.
+      rmSync(fx.dir, { recursive: true, force: true });
+      git(fx.root, 'clone', '-q', fx.boardRemote, fx.dir);
+      git(fx.dir, 'reset', '-q', '--hard', fx.head);
+      git(fx.dir, 'remote', 'set-url', 'origin', bareRemote());
+      git(fx.dir, 'push', '-q', 'origin', 'main');
+      git(fx.dir, 'fetch', '-q', 'origin');
+      git(fx.dir, 'branch', '-q', '-u', 'origin/main');
+      const [own] = writeEvents(fx.dir, 1, 'zed', 90);
+      syncStandalone(fx.dir, env);
+      simulateInodeReuse(fx.alive, fx.dir);
+      const forkTemporary = loseCasAgain(fx.root, env, 3000);
+      expect(existsSync(fx.alive)).toBe(true);
+      // A's pid dies; A's temporary is judged first.
+      const stale = renameTemporary(fx.root, fx.alive, EARLIER_DEAD_PID);
+      renameTemporary(fx.root, forkTemporary, DEAD_PID);
+
+      const result = move(fx.root, env);
+
+      expect(result.action).toBe('moved');
+      expect(result.message).toContain(removedAsAnotherBoard(stale, fx.dir));
+      expectMoved(fx.root, env);
+      expectNeverIn(fx.root, fx.xFiles);
+      expect(refEvents(fx.root)).toContain(`${String(own)}.json`);
+      expectCheckClean(fx.root, env);
+    });
+
+    it("scenario: Temporary that looked alive while its board's remote was rewritten: once its pid is dead it is removed and named, and neither dropped event reaches refs/agentboard/board", () => {
+      const env = syncEnv();
+      const fx = aliveTemporaryWithRemoteAhead(env);
+      git(fx.boardRemote, 'update-ref', 'refs/heads/main', fx.head);
+      writeEvents(fx.dir, 1, 'yolanda', 70);
+      syncStandalone(fx.dir, env);
+      expect(eventFiles(fx.dir).some((f) => fx.xFiles.includes(f))).toBe(false);
+      const second = loseCasAgain(fx.root, env, 3000);
+      const stale = renameTemporary(fx.root, fx.alive, EARLIER_DEAD_PID);
+      renameTemporary(fx.root, second, DEAD_PID);
+
+      const result = move(fx.root, env);
+
+      expect(result.action).toBe('moved');
+      expect(result.message).toContain(removedAsAnotherBoard(stale, fx.dir));
+      expectMoved(fx.root, env);
+      expectNeverIn(fx.root, fx.xFiles);
+      expect(eventFiles(fx.dir).some((f) => fx.xFiles.includes(f))).toBe(false);
+      expectCheckClean(fx.root, env);
+    });
+
+    it('scenario: Board whose remote is ahead of its HEAD is adopted: the tip it integrated, beyond HEAD, is in its source tip', () => {
+      const env = syncEnv();
+      const fx = conflictingClones(env);
+      const { bRoot, bDir } = fx;
+      // A third clone syncs an event to the old remote; B fetches it
+      // without merging, so B's source tip is ahead of its HEAD.
+      const c = cloneWithStandalone(fx.remote, fx.boardRemote, 'c');
+      const [fromC] = writeEvents(c.dir, 1, 'carol', 400);
+      syncStandalone(c.dir, env);
+      git(bDir, 'fetch', '-q', 'origin');
+      const head = revParse(bDir);
+      expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+      const integrated = String(refCommit(bRoot, MIGRATING_REF));
+      expect(integrated).not.toBe(head);
+      expect(isAncestor(bDir, head, integrated)).toBe(true);
+      expect(isAncestor(bDir, integrated, 'HEAD')).toBe(false);
+      const temporary = String(registeredMigrating(bRoot)[0]);
+      resolveIgnoreConflicts(temporary);
+      const resolvedHead = revParse(temporary);
+
+      const result = move(bRoot, env);
+
+      expect(result.action).toBe('moved');
+      expect(result.message).not.toContain(temporary);
+      expect(result.message).not.toContain('another board');
+      expectMoved(bRoot, env);
+      expect(isAncestor(bRoot, resolvedHead, BOARD_REF)).toBe(true);
+      expect(refEvents(bRoot)).toContain(`${String(fromC)}.json`);
+      expectCheckClean(bRoot, env);
+    });
+
+    it('a fresh temporary records the tip it integrated (the value of refs/agentboard/migrating it is checked out at) at step 3', () => {
+      const env = syncEnv();
+      const { bRoot } = conflictingClones(env);
+
+      expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+
+      const temporary = String(registeredMigrating(bRoot)[0]);
+      expect(readRecordFile(temporary, TIP_RECORD)).toBe(`${String(refCommit(bRoot, MIGRATING_REF))}\n`);
+    });
+
+    it('the record follows the tip when an adopted temporary integrates more (a replay), seen when that run then loses the compare-and-swap', () => {
+      const env = syncEnv();
+      const fx = conflictingClones(env);
+      const { bRoot, boardRemote } = fx;
+      expectBoardError(() => move(bRoot, env), 3, 'sync-conflict');
+      const temporary = String(registeredMigrating(bRoot)[0]);
+      resolveIgnoreConflicts(temporary);
+      const before = String(refCommit(bRoot, MIGRATING_REF));
+      const c = cloneWithStandalone(fx.remote, boardRemote, 'c');
+      writeEvents(c.dir, 1, 'carol', 400);
+      syncStandalone(c.dir, env);
+      const fresh = git(boardRemote, 'rev-parse', 'main').trim();
+      expect(fresh).not.toBe(before);
+      const mainCommit = git(bRoot, 'rev-parse', 'main').trim();
+      const racing = withGitShimBefore(
+        env,
+        ['update-ref', BOARD_REF],
+        `"$GIT" -C '${bRoot}' update-ref ${BOARD_REF} ${mainCommit}`,
+      );
+
+      expectBoardError(() => move(bRoot, racing), 3, 'sync-failed');
+
+      expect(registeredMigrating(bRoot)).toEqual([temporary]);
+      expect(refCommit(bRoot, MIGRATING_REF)).toBe(fresh);
+      expect(readRecordFile(temporary, TIP_RECORD)).toBe(`${fresh}\n`);
+    });
+
+    it.each([
+      ['both other records (made by this change before the tip record)', [TIP_RECORD]],
+      ['agentboard-source only (0.2.0)', [TIP_RECORD, HEAD_RECORD]],
+      ['no record (older code)', [TIP_RECORD, HEAD_RECORD, SOURCE_RECORD]],
+    ])(
+      'a temporary without agentboard-source-tip that is the only temporary on the host, with %s, is judged against refs/agentboard/migrating, adopted, and gains the record',
+      (_label, removedRecords) => {
+        const env = syncEnv();
+        const { root, dir } = standaloneProject(env, 3);
+        const { temporary } = interruptedMove(root, env);
+        for (const name of removedRecords) {
+          rmSync(recordPath(temporary, name), { force: true });
+        }
+        const integrated = String(refCommit(root, MIGRATING_REF));
+
+        const result = move(root, env);
+
+        expect(result.action).toBe('moved');
+        expect(result.message).not.toContain(temporary);
+        expectMoved(root, env);
+        // The adopted temporary is .board now; its git directory holds the records.
+        expect(readRecordFile(dir, TIP_RECORD)).toBe(`${integrated}\n`);
+      },
+    );
+
+    it.each([
+      ['both other records, beside a temporary whose pid is alive', [TIP_RECORD], 'alive'],
+      ['both other records, beside a plain leftover of a dead move', [TIP_RECORD], 'leftover'],
+      ['agentboard-source only (0.2.0), beside a plain leftover of a dead move', [TIP_RECORD, HEAD_RECORD], 'leftover'],
+      ['no record (older code), beside a temporary whose pid is alive', [TIP_RECORD, HEAD_RECORD, SOURCE_RECORD], 'alive'],
+    ])(
+      'a temporary without agentboard-source-tip with %s is not adoptable: refs/agentboard/migrating may be the other temporary tip',
+      (_label, removedRecords, beside) => {
+        const env = syncEnv();
+        const { root, dir } = standaloneProject(env, 3);
+        const { temporary } = interruptedMove(root, env);
+        for (const name of removedRecords) {
+          rmSync(recordPath(temporary, name), { force: true });
+        }
+        const otherPath = join(agentboardDir(root), MIGRATING_DIR, String(beside === 'alive' ? process.ppid : EARLIER_DEAD_PID));
+        git(root, 'worktree', 'add', '-q', '--detach', otherPath, beside === 'alive' ? 'main' : MIGRATING_REF);
+
+        const result = move(root, env);
+
+        expect(result.action).toBe('moved');
+        expect(result.message).toContain(removedAsAnotherBoard(temporary, dir));
+        if (beside === 'alive') {
+          expect(existsSync(otherPath)).toBe(true);
+        } else {
+          expect(result.message).toContain(`removed ${otherPath}, left by an interrupted move`);
+          expectMoved(root, env);
+        }
+      },
+    );
+
+    // Each row rewrites the tip record of an otherwise adoptable temporary
+    // of this board; the record is read by the HEAD record's rules.
+    it.each<[string, boolean, (integrated: string, dir: string) => string | null]>([
+      ['the tip it integrated (control)', true, (tip) => `${tip}\n`],
+      ['that tip without a trailing newline', true, (tip) => tip],
+      ['empty', false, () => ''],
+      ['not hexadecimal', false, () => 'not-a-commit\n'],
+      ['a ref name (HEAD)', false, () => 'HEAD\n'],
+      ['an abbreviated object name of that tip', false, (tip) => `${tip.slice(0, 12)}\n`],
+      ['that tip in upper-case hexadecimal', false, (tip) => `${tip.toUpperCase()}\n`],
+      ['that tip with a leading space', false, (tip) => ` ${tip}\n`],
+      ['that tip with two trailing newlines', false, (tip) => `${tip}\n\n`],
+      ['that tip followed by a second line', false, (tip) => `${tip}\n${tip}\n`],
+      ['a full name the board repository does not have', false, () => `${'f'.repeat(40)}\n`],
+      ['unreadable (a directory)', false, () => null],
+    ])('a temporary of this board whose agentboard-source-tip is %s: adopted %s', (_label, adopted, content) => {
+      const env = syncEnv();
+      const { root, dir } = standaloneProject(env, 3);
+      const { temporary } = interruptedMove(root, env);
+      const integrated = String(refCommit(root, MIGRATING_REF));
+      const path = recordPath(temporary, TIP_RECORD);
+      rmSync(path, { recursive: true, force: true });
+      const text = content(integrated, dir);
+      if (text === null) {
+        mkdirSync(path);
+      } else {
+        writeFileSync(path, text);
+      }
+
+      const result = move(root, env);
+
+      expect(result.action).toBe('moved');
+      expectMoved(root, env);
+      if (adopted) {
+        expect(result.message).not.toContain(temporary);
+      } else {
+        expect(result.message).toContain(removedAsAnotherBoard(temporary, dir));
+      }
+    });
+  });
 });
