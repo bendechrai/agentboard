@@ -1220,24 +1220,26 @@ export const COMMANDS: readonly CommandSpec[] = [
     },
     streams: (values) => bool(values, 'wait'),
     stream: async (ctx, values, io) => {
+      // The same checks in the same order as `run`: --ttl, --timeout, then
+      // --wait without --ttl, so both entry points give the same first error.
       const ttlText = str(values, 'ttl');
+      const ttl = ttlText === undefined ? undefined : parseTtl(ttlText);
       const timeoutText = str(values, 'timeout');
-      if (ttlText === undefined) {
+      const timeout = timeoutText === undefined ? undefined : parseTimeout(timeoutText);
+      if (ttl === undefined) {
         throw new BoardError(
           1,
           'usage',
           'claim --wait needs --ttl <duration>, the lease to ask for once the ticket is granted',
         );
       }
-      if (timeoutText === undefined) {
+      if (timeout === undefined) {
         throw new BoardError(
           1,
           'usage',
           'claim --wait needs --timeout <duration> on the command line, how long to wait at most',
         );
       }
-      const ttl = parseTtl(ttlText);
-      const timeout = parseTimeout(timeoutText);
       const actor = actorOf(ctx);
       const print = (output: CommandOutput): void => {
         io.stdout(io.json ? `${JSON.stringify(output.json)}\n` : output.text);

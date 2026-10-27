@@ -16,7 +16,8 @@ import { catchUp, readTicket } from '../store/cache.js';
 import { readWatermark } from '../store/engine.js';
 import { BoardError } from '../store/errors.js';
 import { readEventFile } from '../store/eventfile.js';
-import { claimTicket, unqueueTicket, type ClaimedOutcome, type QueuedOutcome } from './actions.js';
+import { NoWrite, runCommand, type Decision, type TxContext } from '../store/transaction.js';
+import { claimTicket, type ClaimedOutcome, type QueuedOutcome } from './actions.js';
 import { TIMEOUT_MAX_MS, TIMEOUT_MIN_MS } from './leases.js';
 import { requireActor } from './lookup.js';
 import { runTicker, type TickerTimers, type TimerHandle, type WatchDir } from './ticker.js';
@@ -246,11 +247,12 @@ export async function waitForGrant(
     );
   }
   const now = options.now ?? Date.now;
+  const monotonic = options.monotonic ?? ((): number => performance.now());
   const timers = options.timers ?? globalTimers;
   const { signal } = options;
 
-  // Step 1: the deadline, then the claim or join.
-  const deadline = now() + timeout;
+  // Step 1: the deadline (monotonic), then the claim or join.
+  const deadline = monotonic() + timeout;
   const first = claimTicket(board, actor, { id: input.id, ttl, wait: true }, { now });
   if (first.queued !== true) {
     return first;
@@ -265,31 +267,35 @@ export async function waitForGrant(
   let deadlineTimer: TimerHandle | null = null;
   let dueTimer: TimerHandle | null = null;
 
-  const clearDue = (): void => {
+  const clearTimers = (): void => {
     if (dueTimer !== null) {
       timers.clearTimeout(dueTimer);
       dueTimer = null;
+    }
+    if (deadlineTimer !== null) {
+      timers.clearTimeout(deadlineTimer);
+      deadlineTimer = null;
     }
   };
   const finish = (outcome: { value: WaitOutcome } | { error: unknown }): void => {
     settled = outcome;
     signal.removeEventListener('abort', wake);
-    clearDue();
-    if (deadlineTimer !== null) {
-      timers.clearTimeout(deadlineTimer);
-      deadlineTimer = null;
-    }
+    clearTimers();
     inner.abort();
   };
 
   /**
-   * Re-arms the due-grant timeout from the cache's grant watermark after a
-   * catch-up at `t`: a timeout for exactly the watermark when it falls
-   * before the deadline (the deadline timeout covers anything later, which
-   * is what clamps a far-off watermark), none otherwise.
+   * Re-arms the wait's two timeouts after a wake at wall `t` and monotonic
+   * `m` that goes on waiting: one for exactly the cache's grant watermark
+   * when it falls before the deadline, and one for the deadline itself,
+   * `deadline - m` away. The deadline timeout covers any later watermark,
+   * which is what clamps a far-off one; re-arming it from the monotonic
+   * clock on every wake means a timer that fired a fraction early (Node's
+   * timers run on the loop's cached millisecond clock) is simply set again
+   * for the remainder.
    */
-  const armDue = (t: number): void => {
-    clearDue();
+  const arm = (t: number, m: number): void => {
+    clearTimers();
     const watermark = readWatermark(board.db);
     if (watermark !== null && watermark > t && watermark < deadline) {
       dueTimer = timers.setTimeout(() => {
@@ -297,6 +303,95 @@ export async function waitForGrant(
         wake();
       }, watermark - t);
     }
+    deadlineTimer = timers.setTimeout(() => {
+      deadlineTimer = null;
+      wake();
+    }, Math.max(1, Math.ceil(deadline - m)));
+  };
+
+  /** The outcome of an actor that holds `ticket`: granted, or handed (a retried claim). */
+  const holding = (ticket: Ticket): WaitOutcome => {
+    const { lease } = ticket;
+    if (lease !== null && isGrant(board, lease.event)) {
+      return { queued: false, grant: lease.event, acceptBy: lease.expiresAt, ticket };
+    }
+    return { hash: null, events: [], ticket, queued: false };
+  };
+
+  /**
+   * Step 3c: the transaction that ends the wait at the deadline or on a
+   * signal. It decides after its own catch-up, which can have written a
+   * grant to the actor or folded a hand-off to it since the wake's read.
+   * Attempted twice when `busy`.
+   */
+  const end = (interrupted: boolean): void => {
+    let held: WaitOutcome | null = null;
+    let released = false;
+    const operation = (ctx: TxContext): Decision => {
+      const ticket = ctx.ticket(id);
+      if (ticket === null) {
+        throw new BoardError(4, 'unknown-ticket', `ticket ${id} is no longer on the board`);
+      }
+      if (ticket.assignee === actor) {
+        if (interrupted) {
+          released = true;
+          return { ok: true, event: { kind: 'ticket.release', ticket: id, body: {} } };
+        }
+        held = holding(ticket);
+        throw new NoWrite('the actor holds the ticket: nothing to leave');
+      }
+      if (ticket.queue.some((waiter) => waiter.actor === actor)) {
+        return { ok: true, event: { kind: 'ticket.queue.leave', ticket: id, body: {} } };
+      }
+      throw new NoWrite('the actor left the queue elsewhere: nothing to leave');
+    };
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        options.beforeStep?.('end');
+        runCommand(board, actor, operation, { now });
+        break;
+      } catch (error) {
+        if (error instanceof NoWrite) {
+          break;
+        }
+        if (error instanceof BoardError && error.exitCode === 5 && error.reason === 'busy') {
+          if (attempt === 1) {
+            continue;
+          }
+          throw new BoardError(
+            5,
+            'busy',
+            `the board cache stayed locked while ending the wait for ticket ${id}, so you are still in its queue: leave it with 'agentboard unqueue ${id} --as ${actor}'`,
+          );
+        }
+        throw error;
+      }
+    }
+    const outcome = (): WaitOutcome | null => held;
+    const holds = outcome();
+    if (holds !== null) {
+      finish({ value: holds });
+      return;
+    }
+    if (released) {
+      throw new BoardError(
+        4,
+        'wait-interrupted',
+        `the wait for ticket ${id} was interrupted after the ticket was given to you; you released it, so it passes to the next waiter`,
+      );
+    }
+    if (interrupted) {
+      throw new BoardError(
+        4,
+        'wait-interrupted',
+        `the wait for ticket ${id} was interrupted; you left its queue`,
+      );
+    }
+    throw new BoardError(
+      4,
+      'wait-timeout',
+      `the wait for ticket ${id} timed out after ${String(timeout)} ms; you left its queue`,
+    );
   };
 
   /** One wake (step 3). Never throws: every error ends the wait or is a warning. */
@@ -305,6 +400,7 @@ export async function waitForGrant(
       return;
     }
     const t = now();
+    const m = monotonic();
     try {
       options.beforeStep?.('wake');
       catchUp(board, { now: t });
@@ -322,36 +418,14 @@ export async function waitForGrant(
         throw new BoardError(4, 'unknown-ticket', `ticket ${id} is no longer on the board`);
       }
       if (ticket.assignee === actor) {
-        const { lease } = ticket;
-        if (lease !== null && isGrant(board, lease.event)) {
-          finish({
-            value: { queued: false, grant: lease.event, acceptBy: lease.expiresAt, ticket },
-          });
-        } else {
-          finish({ value: { hash: null, events: [], ticket, queued: false } });
-        }
+        finish({ value: holding(ticket) });
         return;
       }
-      const queued = ticket.queue.some((waiter) => waiter.actor === actor);
-      if (signal.aborted || t >= deadline) {
-        options.beforeStep?.('end');
-        if (queued) {
-          leaveQueue(board, actor, id, now);
-        }
-        if (signal.aborted) {
-          throw new BoardError(
-            4,
-            'wait-interrupted',
-            `the wait for ticket ${id} was interrupted; you left its queue`,
-          );
-        }
-        throw new BoardError(
-          4,
-          'wait-timeout',
-          `the wait for ticket ${id} timed out after ${String(timeout)} ms; you left its queue`,
-        );
+      if (signal.aborted || m >= deadline) {
+        end(signal.aborted);
+        return;
       }
-      if (!queued) {
+      if (!ticket.queue.some((waiter) => waiter.actor === actor)) {
         if (ticket.assignee === null && ticket.queue.length === 0) {
           options.beforeStep?.('claim');
           const claimed = claimTicket(board, actor, { id, ttl, wait: true }, { now });
@@ -359,8 +433,8 @@ export async function waitForGrant(
             finish({ value: claimed });
             return;
           }
-          // Another actor joined between the read and the claim: the actor
-          // is queued again and the wait goes on.
+          // Another actor took the ticket between the read and the claim:
+          // the actor is queued again and the wait goes on.
         } else {
           throw new BoardError(
             4,
@@ -369,7 +443,7 @@ export async function waitForGrant(
           );
         }
       }
-      armDue(t);
+      arm(t, m);
     } catch (error) {
       finish({ error });
     }
@@ -405,22 +479,6 @@ export async function waitForGrant(
     throw outcome.error;
   }
   return outcome.value;
-}
-
-/**
- * Writes the actor's `ticket.queue.leave`. The ticket was read as queued a
- * moment ago in another transaction, so a leave written elsewhere in
- * between makes the fold reject this one `invalid-queue`: the actor is
- * out of the queue either way, which is all the wait needs.
- */
-function leaveQueue(board: Board, actor: string, id: string, now: () => number): void {
-  try {
-    unqueueTicket(board, actor, { id }, { now });
-  } catch (error) {
-    if (!(error instanceof BoardError && error.exitCode === 4 && error.reason === 'invalid-queue')) {
-      throw error;
-    }
-  }
 }
 
 /** True when the event file `hash` is an applied-kind `ticket.grant`. */

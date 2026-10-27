@@ -538,7 +538,9 @@ export function hintStep(
  *   `dry-run`, `as` A.
  *
  * Exit 5: `integrity`: a human must inspect the file named in the
- * message; step `rebuild --check`. `busy`: retry the command. `no-cache`,
+ * message; step `rebuild --check`. `busy`: retry the command; from `claim`,
+ * where a wait whose leave stayed busy leaves the actor queued, also step
+ * `unqueue <id> --as <actor>`. `no-cache`,
  * `schema-mismatch`: step `rebuild`.
  *
  * Pure.
@@ -1004,7 +1006,10 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
   // Exit 5.
   integrity: (h) =>
     `a human must inspect the file named in the message; compare the cache with the events using ${h.step('rebuild', [['check', true]])}`,
-  busy: () => 'another process held the board cache too long; run the command again',
+  busy: (h) =>
+    h.command?.name === 'claim'
+      ? `another process held the board cache too long; if you were waiting, you are still in the queue: leave it with ${h.step('unqueue', [['id', h.id], ['as', h.actor]])}, or run the command again`
+      : 'another process held the board cache too long; run the command again',
   'no-cache': rebuildHint,
   'schema-mismatch': rebuildHint,
 };
