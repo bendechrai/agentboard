@@ -196,13 +196,14 @@ describe('STATUS.md records the lifecycle as built', () => {
     expect(status()).not.toContain('01M54J9C8VWG6V6E751JHHVW66');
   });
 
-  it('records add-claim-leases as in progress, not proposed', () => {
+  it('records add-claim-leases as archived, and no longer under What is next', () => {
+    const exists = section(status(), 'What exists');
+    expect(exists).toContain('`openspec/changes/archive/2026-10-27-add-claim-leases`');
+    expect(exists).toMatch(/#69/);
+    expect(exists).toMatch(/#70/);
+    expect(exists).toMatch(/#72/);
     const next = section(status(), 'What is next');
-    expect(next).toContain('`add-claim-leases` (in progress');
-    expect(next).not.toContain('`add-claim-leases` (proposed');
-    expect(next).toMatch(/PR #69/);
-    expect(next).toMatch(/PR #70/);
-    expect(next).toMatch(/PR #72/);
+    expect(next).not.toContain('add-claim-leases');
   });
 });
 
