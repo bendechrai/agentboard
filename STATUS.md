@@ -72,6 +72,28 @@ tested and documented in README.md.
   longer than 16384 characters fall back to text. ADR 0015 (amends ADR
   0006). Archived as
   `openspec/changes/archive/2026-10-26-add-description-markdown`.
+- **Claim leases and the waiting queue** (`board-events`, `board-cache`,
+  `board-cli`, `board-concurrency`, `board-agent-guidance`,
+  `board-view-model`; change `add-claim-leases`, not yet archived):
+  `claim --ttl` writes a grace lease (`lease.grace`, default 2 minutes)
+  that only the holder's `renew` confirms; a lease lapsed by more than the
+  fixed 60 second skew tolerance can be taken over with `claim --ttl`;
+  `claim --wait` joins a fair queue, blocking on the CLI until granted
+  (`--timeout`, exit 4 `wait-timeout` or `wait-interrupted`) and
+  non-blocking over MCP (`board_claim` with `wait`, the grant arriving in
+  `board_inbox`), with `unqueue` to leave; grants are derived, backdated
+  `ticket.grant` events by the reserved actor `agentboard`, written by
+  whichever command catches up once they are due and accepted by `renew`
+  within `queue.window`; `release --force --reason` breaks another
+  actor's hold as `ticket.release.force` and tells the previous holder
+  (`LOST: ` in its inbox); `config set|get lease.grace|queue.window`;
+  lease and queue display in `list`, `show` and the inbox; feed summaries;
+  the mutex ticket recipe in the guide, the role checklists, the
+  installed guidance and the MCP instructions (`GUIDANCE_VERSION` 3); and
+  re-import reconciliation in `import-change` (pairing tickets to groups
+  by identity, `ticket.renumber`, `ticket.reconcile`, `ticket.supersede`,
+  `--dry-run`, `--force`). Cache schema version 5. README "Leases, the
+  waiting queue and mutex tickets". ADR 0014.
 
 Released as `@bendechrai/agentboard` 0.2.0 on npm (tag `v0.2.0`), with the
 landing site in `docs/` served at https://bendechrai.github.io/agentboard/.
@@ -80,32 +102,56 @@ CONTRIBUTING.md, "Releasing").
 
 This repository coordinates its own agents with agentboard: `agentboard
 agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
-`agentboard:` guidance in `openspec/config.yaml`.
+`agentboard:` guidance in `openspec/config.yaml`, at guidance version 3
+(`agentboard agents check` reports both current). Machines that share
+this repository's board should run a build with leases before anyone uses
+them on it (see "Known gaps").
 
 ## What is next
 
-1. `add-claim-leases` (in progress, in `openspec/changes/`): grace
-   leases confirmed by `renew` (`claim --ttl`), takeover of a lapsed
-   lease, a fair waiting queue (`claim --wait`), an audited `release
-   --force --reason`, board settings (`config`), mutex ticket guidance,
-   and reconciling tickets when `import-change` is re-run. Groups 1
+1. `add-claim-leases` (in progress, in `openspec/changes/`): groups 1
    (lease, queue and grant fold, PR #69), 2 (grant materialisation in
-   catch-up, PR #70) and 8 (re-import reconciliation, PR #72) are
-   merged, so the fold and the cache already carry leases, queues and
-   grants, with nothing on the command line yet, and `import-change`
-   reconciles tickets with a revised tasks file (cache schema version
-   5). Groups 3 to 7 are not started. Groups 1 to 5 are
-   concurrency-critical, so they get a second reviewer (see
-   CONTRIBUTING.md, "Three roles per task group").
+   catch-up, PR #70), 3 (lease, queue, forced-release and config
+   commands, PR #98), 4 (waiting in the foreground, PR #102), 6 (mutex
+   guidance and feed summaries, PR #101), 7 (documentation, this README,
+   ADR 0014 and STATUS) and 8 (re-import reconciliation, PR #72) are
+   merged. Group 5 (concurrency, crash and replica tests, no behaviour
+   change) is merging alongside; it also carries three small items moved
+   from group 4's review (a CLI test of the busy warning on stderr, a test
+   of a non-busy error in the ending transaction, and one delta sentence
+   on a wake that sees the actor holding as a signal arrives). When it
+   is merged, the change is archived in its own pull request, folding its
+   deltas into the main specs.
+2. `guard-stale-temporary` (in progress, in `openspec/changes/`, proposed
+   in PR #100): `init --into-host` adopts a leftover temporary only when
+   it was made from the board at `.board` now, checked by the recorded
+   HEAD as well as the git directory's identity, which a file system that
+   reuses inode numbers cannot tell apart (ticket
+   01M5XPHX2V5DHQY0RB6M5JWRD6). Its implementation group is in review;
+   its documentation group follows.
 
 ## Known gaps
 
-- `add-claim-leases` was re-synced with the main specs when the ad hoc
-  ticket lifecycle was archived (its tasks.md says which requirements):
-  its guidance group takes `GUIDANCE_VERSION` 3 and its ADR is 0014. Its
-  "Agent guide" keeps the 180-line limit the lifecycle set, which the
-  mutex recipe must now fit beside the ad hoc text (the orchestrator
-  output is 159 lines today).
+- Release gate for `add-claim-leases`: every machine that writes to a
+  shared board must be upgraded before any actor uses `--ttl`, `--wait`,
+  `release --force` or `config set` (README, "Upgrading a board shared
+  between machines"); the release notes for the version that ships it
+  must say so.
+- The guide is at its limit: the orchestrator output of `help agents
+  --role orchestrator` is exactly 180 lines, the limit the ad hoc
+  lifecycle and `add-claim-leases` share, so the next change that adds
+  guidance (`GUIDANCE_VERSION` 4) has to make room or raise the limit
+  through its own spec delta.
+- Refusals outside the lease commands still repeat the refused input
+  (for example `move <id> <token>` with an unknown status), where
+  `add-claim-leases` made the `--ttl`, `--timeout` and `config`
+  refusals name the expected form instead: ticket
+  01M5X7EGBFRQA4BH7R0A35ZW50, to be settled by an OpenSpec change.
+- `init --into-host` killed after its step 4 (the local
+  `refs/agentboard/board` updated) leaves the first board's events in
+  that ref if `.board` is then replaced by a different board before the
+  move is re-run; whether the re-run must detect and refuse this is open:
+  ticket 01M5XYG0VT09DBAW7PZJK1CZ5Y.
 - The draft branch `openspec/add-harness-integration` (not merged)
   predates both archives: before it is proposed it re-syncs board-cli
   "Command surface", "Exit codes" and "MCP server" and board-agent-guidance
@@ -113,4 +159,4 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
   2) and "Checking installed guidance" with the main specs, keeping
   `remote`, `init --remote | --into-host` and the scope disposition
   flags, and takes the next free `GUIDANCE_VERSION` and ADR number after
-  `add-claim-leases`.
+  `add-claim-leases` (version 4, and ADR 0016 since 0015 is taken).
