@@ -124,7 +124,14 @@ them on it (see "Known gaps").
 
 ## What is next
 
-Nothing is queued: the open work is the known gaps below.
+1. `keep-cursors-on-upgrade` (in progress, in `openspec/changes/`,
+   proposed in PR #106): a cache schema upgrade keeps each actor's inbox
+   position instead of replaying the whole board (ticket
+   01M5Y0T56JQ1HS04A3N042Y2Z4). Its implementation is in review (PR #108).
+2. `no-echo-refusals` (in progress, in `openspec/changes/`, proposed in
+   PR #110): no refusal or hint repeats the input it refuses, and `init
+   --remote` never repeats the URL given or its credentials (ticket
+   01M5X7EGBFRQA4BH7R0A35ZW50). Both task groups are being written.
 
 ## Known gaps
 
