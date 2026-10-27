@@ -198,11 +198,28 @@ describe('the recipe text (board-agent-guidance: "Mutex ticket recipe")', () => 
     ['stale holds never by impersonating the holder', ['impersonat']],
     // Across machines.
     ['across machines only as strong as sync', ['sync', 'before claiming', 'exact']],
+    // A wait that ends without a grant (review round 1, finding 2).
+    [
+      'a wait ending in wait-timeout or wait-interrupted leaves the ticket unheld',
+      ['wait-timeout', 'wait-interrupted', 'do not hold', 'do not run the critical step'],
+    ],
+    ['after such a wait, retry or report', ['retry', 'report']],
+    // Accepting a grant over MCP (review round 1, finding 3).
+    [
+      'over MCP the grantee renews within the accept window or the grant passes on',
+      ['board_renew', 'accept window', 'passes on'],
+    ],
   ])('says %s', (_name, phrases) => {
     const text = flat(mutexSection()).toLowerCase();
     for (const phrase of phrases) {
       expect(text, phrase).toContain(phrase.toLowerCase());
     }
+  });
+
+  it('names board_renew and the accept window in one sentence', () => {
+    expect(flat(mutexSection())).toMatch(
+      /board_renew[^.]*accept window|accept window[^.]*board_renew/i,
+    );
   });
 
   it('pairs "never" with impersonating the holder, and names --as there', () => {
@@ -266,6 +283,14 @@ describe('scenario: MCP instructions carry the worker rule', () => {
     expect(text.toLowerCase()).toContain('only joins the queue');
     expect(text).toMatch(/board_claim[^.]*\bwait\b/);
     expect(text).toMatch(/grant[^.]*board_inbox/);
+  });
+
+  it('says the grantee must board_renew within the accept window, or the grant passes on', () => {
+    const text = flat(summary());
+    expect(text).toContain('board_renew');
+    expect(text.toLowerCase()).toContain('accept window');
+    expect(text.toLowerCase()).toContain('passes on');
+    expect(text).toMatch(/board_renew[^.]*accept window|accept window[^.]*board_renew/i);
   });
 
   it('states the rule in at most two sentences, inside the 2000 character cap', () => {

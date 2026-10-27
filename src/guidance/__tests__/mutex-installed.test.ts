@@ -132,6 +132,8 @@ describe.each(RECIPES)('the short recipe in %s', (_name, recipe) => {
       'first action of real work',
       'only joins the queue',
       'board_inbox',
+      // Accepting a grant over MCP (review round 1, finding 3).
+      'board_renew',
     ]) {
       expect(text, phrase).toContain(phrase);
     }

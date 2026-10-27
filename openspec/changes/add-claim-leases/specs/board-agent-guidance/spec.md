@@ -71,7 +71,12 @@ parse against the registry:
   holder is gone, never by impersonating the holder with `--as`;
 - that across machines the lock is only as strong as `sync` (sync before
   claiming and before the critical step), while within one machine it is
-  exact.
+  exact;
+- a wait that ends without a grant: exit 4 `wait-timeout` or
+  `wait-interrupted` means the actor does not hold the ticket, so it does
+  not run the critical step, and retries the wait or reports;
+- over MCP, the grantee accepts a grant by calling `board_renew` within the
+  accept window, or the grant passes on to the next waiter.
 
 The section SHALL follow `Tickets and planning tasks` and precede `Using
 the MCP tools`, and its command lines SHALL pass `--as`. Read with line
@@ -83,7 +88,9 @@ on a mutex in a loop`, `background process`, `foreground`, `CLI only`,
 `report ready`, `only joins the queue`, `board_claim`, `board_inbox`,
 `queue runner`, `one holder at a time`, `lapse`, `queue.window`,
 `lease.grace`, `impersonat` (as in never by impersonating the holder),
-`sync`, `before claiming` and `exact`. The worker step of the test-author,
+`sync`, `before claiming`, `exact`, `wait-timeout`, `wait-interrupted`,
+`do not hold`, `do not run the critical step`, `retry`, `report`,
+`board_renew`, `accept window` and `passes on`. The worker step of the test-author,
 implementer and reviewer checklists SHALL contain `mutex`, `in a loop`,
 `background process` and `report ready`; the queue-runner step of the
 orchestrator checklist SHALL contain `mutex`, `queue runner` and `one
@@ -105,7 +112,9 @@ queue` and `board_inbox`, and in backticks a `claim` with `--ttl`, a
 `renew`, a `claim` with `--ttl`, `--wait` and `--timeout`, and a
 `release`, each passing `--as`. The skill stays at most 45 lines and the
 block at most 40. The summary contains `never wait on a mutex`, `in a
-loop`, `background process` and `only joins the queue`.
+loop`, `background process`, `only joins the queue`, `board_renew`,
+`accept window` and `passes on`. The installed short forms also contain
+`board_renew`.
 
 #### Scenario: Mutex lines in every role checklist
 - **WHEN** `agentboard help agents --role <role>` runs for each role
