@@ -82,7 +82,7 @@ environment variable.
 ## 6. Guidance and feed summaries (`guidance/mutex-recipe`)
 
 - [ ] 6.1 Add the `Mutex tickets` section to `help agents`, the worker lines to the test-author, implementer and reviewer checklists and the queue-runner lines to the orchestrator checklist, the short recipe to the installed `claude` and `agents-md` text, and the worker rule to the MCP instructions summary; set `GUIDANCE_VERSION` to 3. Verify: the guide tests (every `agentboard ` line parses, at most 180 lines with each role checklist, ASCII), the four "Mutex ticket recipe" scenarios, the modified "Agent guide" scenarios, the instructions at most 2000 characters, and `agentboard://guide` still equal to `help agents`
-- [ ] 6.2 Extend `describeEvent` with the lease, queue and grant summaries and the ttl formatting rule. Verify: tests for each new summary, including `claimed (lease 90s)`, `renewed lease (2h)`, `joined the queue`, and the "Forced release summary", "Takeover summary" and "Grant summary" scenarios, and a rejected or stale event producing no feed entry
+- [x] 6.2 Extend `describeEvent` with the lease, queue and grant summaries and the ttl formatting rule. Verify: `src/view/__tests__/describe-leases.test.ts` (30 tests) pins each new summary, including `claimed (lease 90s)`, `renewed lease (2h)`, `joined the queue`, the "Forced release summary", "Takeover summary" and "Grant summary" scenarios, the ttl rule down to `30500ms`, and a rejected or stale event producing no feed entry; `formatDuration` lives in the browser-safe `src/view/time.ts` and `src/board/leases.ts` re-exports it (`src/board/__tests__/leases.test.ts` still green)
 
 ## 7. Documentation (`docs/claim-leases`)
 
