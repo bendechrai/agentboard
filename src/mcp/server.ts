@@ -359,7 +359,7 @@ function runTool(
   try {
     const tool = findTool(name);
     if (tool === undefined) {
-      throw new BoardError(1, 'usage', `unknown tool ${JSON.stringify(name)}`);
+      throw new BoardError(1, 'usage', 'unknown tool; call tools/list for the tool names');
     }
     const { command } = tool;
     const values = toolArguments(command, args);

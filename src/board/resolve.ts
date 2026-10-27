@@ -25,8 +25,7 @@ export const MIN_PREFIX_LENGTH = 6;
  * (`src/guidance/hints.ts`) decide with this. Pure.
  */
 export function isIdShaped(text: string): boolean {
-  // Stub (no-echo-refusals group 1, test author); the implementer writes it.
-  throw new Error(`isIdShaped is not implemented (${String(text.length)})`);
+  return /^[0-9A-HJKMNP-TV-Z]{1,26}$/.test(text.toUpperCase());
 }
 
 /**
@@ -69,7 +68,9 @@ export function resolveTicketId(state: BoardState, text: string): string {
     throw new BoardError(
       1,
       'id-too-short',
-      `ticket id prefix ${asciiText(text)} is too short: give at least ${String(MIN_PREFIX_LENGTH)} characters`,
+      isIdShaped(text)
+        ? `ticket id prefix ${asciiText(text)} is too short: give at least ${String(MIN_PREFIX_LENGTH)} characters`
+        : `the ticket id given is too short: give at least ${String(MIN_PREFIX_LENGTH)} characters`,
     );
   }
   const matches = Object.keys(state.tickets)
@@ -77,7 +78,11 @@ export function resolveTicketId(state: BoardState, text: string): string {
     .sort();
   const [only, ...more] = matches;
   if (only === undefined) {
-    throw new BoardError(4, 'unknown-ticket', `no ticket matches ${asciiText(text)}`);
+    throw new BoardError(
+      4,
+      'unknown-ticket',
+      isIdShaped(text) ? `no ticket matches ${asciiText(text)}` : NOT_AN_ID_MESSAGE,
+    );
   }
   if (more.length > 0) {
     throw new BoardError(
@@ -130,7 +135,7 @@ export function taskRefFromArgs(args: TaskArgs): TaskRef | undefined {
       throw new BoardError(
         1,
         'malformed-task-ref',
-        `malformed task reference ${asciiText(task)}: expected ${TASK_REF_FORM}, for example openspec:add-board-core#3`,
+        `malformed task reference: --task expects ${TASK_REF_FORM}, for example openspec:add-board-core#3`,
       );
     }
     return ref;
@@ -145,14 +150,14 @@ export function taskRefFromArgs(args: TaskArgs): TaskRef | undefined {
     throw new BoardError(
       1,
       'malformed-task-ref',
-      `malformed change name ${asciiText(change)}: it must be non-empty and contain no #`,
+      'malformed change name: --change must be non-empty and contain no #',
     );
   }
   if (!/^[1-9][0-9]*$/.test(group)) {
     throw new BoardError(
       1,
       'malformed-task-ref',
-      `malformed group ${asciiText(group)}: it must be a positive decimal number such as 3`,
+      'malformed group: --group must be a positive decimal number such as 3',
     );
   }
   return { source: 'openspec', ref: change, item: group };
@@ -193,6 +198,6 @@ export function parseTaskFilter(text: string): TaskFilter {
   throw new BoardError(
     1,
     'malformed-task-ref',
-    `malformed task filter ${asciiText(text)}: expected <source>:<ref>[#<item>]`,
+    'malformed task filter: --task expects <source>:<ref>[#<item>]',
   );
 }

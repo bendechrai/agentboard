@@ -239,14 +239,14 @@ export async function waitForGrant(
     throw new BoardError(
       1,
       'usage',
-      `invalid ttl ${String(ttl)}: a ttl is a whole number of milliseconds from ${String(TTL_MIN_MS)} (30s) to ${String(TTL_MAX_MS)} (7d)`,
+      `invalid ttl: a ttl is a whole number of milliseconds from ${String(TTL_MIN_MS)} (30s) to ${String(TTL_MAX_MS)} (7d)`,
     );
   }
   if (!Number.isSafeInteger(timeout) || timeout < TIMEOUT_MIN_MS || timeout > TIMEOUT_MAX_MS) {
     throw new BoardError(
       1,
       'usage',
-      `invalid timeout ${String(timeout)}: a timeout is a whole number of milliseconds from ${String(TIMEOUT_MIN_MS)} (1s) to ${String(TIMEOUT_MAX_MS)} (1d)`,
+      `invalid timeout: a timeout is a whole number of milliseconds from ${String(TIMEOUT_MIN_MS)} (1s) to ${String(TIMEOUT_MAX_MS)} (1d)`,
     );
   }
   const now = options.now ?? Date.now;

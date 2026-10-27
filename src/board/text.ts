@@ -64,8 +64,5 @@ export function choicesMessage(
   argument: string,
   choices: readonly string[],
 ): string {
-  // Stub (no-echo-refusals group 1, test author); the implementer writes it.
-  throw new Error(
-    `choicesMessage is not implemented (${command} ${argument} ${String(choices.length)})`,
-  );
+  return `${command} takes ${argument} as one of ${choices.join(', ')}`;
 }

@@ -112,15 +112,18 @@ the exit codes it can produce with their reasons, and examples. `--json`
 goes after the command, like every other flag. `--help` and `-h` work
 anywhere before a lone `--`, for example `agentboard handoff 01M38Y --help`.
 
-An unknown command or flag exits 1, names the token, suggests up to three
-commands or flags within an edit distance of 2, and points to the help:
+An unknown command or flag exits 1, suggests up to three commands or flags
+within an edit distance of 2, and points to the help. The refusal does not
+repeat the unknown token (a token pasted into the wrong place must not land
+in a terminal or a log); an unknown flag is named by its position among the
+arguments instead:
 
 ```
 $ agentboard clam 01J9K3 --as impl
-agentboard: unknown command clam; did you mean claim? run 'agentboard help' to list the commands
+agentboard: unknown command; did you mean claim? run 'agentboard help' to list the commands
 hint: see the commands with 'agentboard help'
 $ agentboard list --stauts todo
-agentboard: unknown flag --stauts for list; did you mean --status? run 'agentboard help list' to list its flags
+agentboard: unknown flag at argument 2 for list; did you mean --status? run 'agentboard help list' to list its flags
 hint: check the arguments with 'agentboard help list'
 ```
 
@@ -2303,7 +2306,7 @@ before the board is even opened:
 
 ```
 $ agentboard health --stale-after 2hours
-agentboard: invalid --stale-after 2hours: a duration is <n>m, <n>h or <n>d with <n> a positive integer of at most 5 digits (for example 30m, 2h or 1d)
+agentboard: invalid --stale-after: a duration is <n>m, <n>h or <n>d with <n> a positive integer of at most 5 digits (for example 30m, 2h or 1d)
 hint: check the arguments with 'agentboard help health'
 ```
 

@@ -71,7 +71,7 @@ export function treePath(text: string, options?: TreePathOptions): TreePath {
     throw new BoardError(
       1,
       'path-outside-tree',
-      `path ${asciiText(text)} is outside the working tree ${asciiText(root)}`,
+      `the path given is outside the working tree ${asciiText(root)}`,
     );
   }
   return { absolute, recorded: rel.split(sep).join('/') };

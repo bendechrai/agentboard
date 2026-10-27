@@ -717,7 +717,7 @@ function selectTargets(
   const all = GUIDANCE_TARGETS.join(', ');
   for (const t of given) {
     if (!(GUIDANCE_TARGETS as readonly string[]).includes(t)) {
-      throw new BoardError(1, 'usage', `unknown target ${t}; expected one of ${all}`);
+      throw new BoardError(1, 'usage', `unknown target given with --target; expected one of ${all}`);
     }
   }
   const autoDetected = given.length === 0;

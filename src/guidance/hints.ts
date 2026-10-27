@@ -28,6 +28,7 @@
 
 import { ClaimRefusedError } from '../board/actions.js';
 import { isoTime } from '../board/leases.js';
+import { isIdShaped } from '../board/resolve.js';
 import { findCommand } from '../cli/registry.js';
 import type { CommandSpec } from '../cli/types.js';
 import { EXCLUDED_COMMANDS, toolName } from '../mcp/tools.js';
@@ -562,7 +563,7 @@ export function renderHint(reason: string | null, context: HintContext): string 
     hintStep(context.surface, name, args);
   return template({
     context,
-    id: known(context.id, '<id>'),
+    id: context.id !== undefined && isIdShaped(context.id) ? context.id : '<id>',
     actor: known(context.actor, '<actor>'),
     command,
     step,

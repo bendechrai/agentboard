@@ -193,7 +193,7 @@ function readSince(board: Board, actor: string, since: string): InboxResult {
   return inSnapshot(db, () => {
     const start = recordedPosition(db, since);
     if (start === null) {
-      throw new BoardError(1, 'unknown-cursor', `no event ${since} on this board`);
+      throw new BoardError(1, 'unknown-cursor', 'no event matches --since on this board');
     }
     const after = recordedPositions(db, { effectiveOnly: true, minWall: start.ts.wall }).filter(
       (p) => comparePositions(p, start) > 0,

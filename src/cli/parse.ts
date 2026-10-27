@@ -6,9 +6,9 @@
 import { choicesMessage } from '../board/text.js';
 import { SYSTEM_ACTOR } from '../events/schema.js';
 import { BoardError } from '../store/errors.js';
+import { positionalForm } from '../guidance/help.js';
 import { unknownCommandMessage, unknownFlagMessage } from '../guidance/suggest.js';
 import { COMMANDS, GLOBAL_FLAGS, JSON_FLAG } from './registry.js';
-import { asciiText } from './render.js';
 import type { ArgSpec, ArgValue, ArgValues, CommandSpec, Env } from './types.js';
 
 export { choicesMessage };
@@ -130,17 +130,25 @@ export function parseArgs(
   }
   const values: Record<string, ArgValue> = {};
   const positionals: string[] = [];
+  // The 1-based position in argv of each positional, for the refusal of an
+  // extra one (the command words come first, so index i of rest is at
+  // words.length + i + 1).
+  const positions: number[] = [];
   let json = false;
   let jsonSeen = false;
 
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i] ?? '';
     if (arg === '--') {
-      positionals.push(...rest.slice(i + 1));
+      for (let k = i + 1; k < rest.length; k += 1) {
+        positionals.push(rest[k] ?? '');
+        positions.push(words.length + k + 1);
+      }
       break;
     }
     if (!arg.startsWith('--')) {
       positionals.push(arg);
+      positions.push(words.length + i + 1);
       continue;
     }
     const eq = arg.indexOf('=');
@@ -190,8 +198,8 @@ export function parseArgs(
   }
 
   if (positionals.length > command.positionals.length) {
-    const extra = positionals[command.positionals.length] ?? '';
-    throw usage(`unexpected argument ${asciiText(extra)} for ${command.name}`);
+    const position = positions[command.positionals.length] ?? positions.length;
+    throw usage(unexpectedArgumentMessage(command, position));
   }
   command.positionals.forEach((spec, index) => {
     const raw = positionals[index];
@@ -202,7 +210,7 @@ export function parseArgs(
       return;
     }
     if (spec.choices !== undefined && !spec.choices.includes(raw)) {
-      throw usage(`${command.name} takes <${spec.name}> as one of ${spec.choices.join(', ')}`);
+      throw usage(choicesMessage(command.name, `<${spec.name}>`, spec.choices));
     }
     values[spec.name] = spec.type === 'integer' ? parseInteger(spec.name, raw) : raw;
   });
@@ -253,10 +261,15 @@ export function parseArgs(
  * position, so it never repeats the argument. Pure.
  */
 export function unexpectedArgumentMessage(command: CommandSpec, position: number): string {
-  // Stub (no-echo-refusals group 1, test author); the implementer writes it.
-  throw new Error(
-    `unexpectedArgumentMessage is not implemented (${command.name} ${String(position)})`,
-  );
+  const head = `unexpected argument at position ${String(position)} for ${command.name}; it takes`;
+  if (command.positionals.length === 0) {
+    return `${head} no positional arguments`;
+  }
+  const forms = command.positionals.map((arg) => {
+    const form = positionalForm(arg);
+    return arg.required ? form : `[${form}]`;
+  });
+  return `${head} ${forms.join(' ')}, and text with spaces must be quoted`;
 }
 
 /** The command whose words are the longest match for the leading arguments. */
@@ -280,11 +293,14 @@ function selectCommand(argv: readonly string[], commands: readonly CommandSpec[]
   return best;
 }
 
-/** A decimal integer argument, or a usage error naming it. */
+/**
+ * A decimal integer argument, or a usage error naming the argument (`name`
+ * is `--<flag>` or the positional's name) and not the value.
+ */
 function parseInteger(name: string, raw: string): number {
   const value = Number(raw);
   if (!/^-?[0-9]+$/.test(raw) || !Number.isSafeInteger(value)) {
-    throw usage(`${name} must be an integer, not ${asciiText(raw)}`);
+    throw usage(`${name} must be an integer`);
   }
   return value;
 }

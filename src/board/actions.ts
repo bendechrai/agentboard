@@ -127,7 +127,7 @@ function checkTtl(ttl: number): void {
     throw new BoardError(
       1,
       'usage',
-      `invalid ttl ${String(ttl)}: a ttl is a whole number of milliseconds from ${String(TTL_MIN_MS)} (30s) to ${String(TTL_MAX_MS)} (7d)`,
+      `invalid ttl: a ttl is a whole number of milliseconds from ${String(TTL_MIN_MS)} (30s) to ${String(TTL_MAX_MS)} (7d)`,
     );
   }
 }
@@ -1035,7 +1035,7 @@ export function closeTicket(
       throw new BoardError(
         1,
         'decision-path-missing',
-        `the decision record ${asciiText(input.decisionRecordedIn)} does not exist`,
+        'the decision record given with --decision-recorded-in does not exist',
       );
     }
     body = { decision: path.recorded };

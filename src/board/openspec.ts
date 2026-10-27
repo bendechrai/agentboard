@@ -125,7 +125,7 @@ function checkRef(ref: string): string {
     throw new BoardError(
       1,
       'usage',
-      `the OpenSpec change name ${JSON.stringify(asciiText(ref))} is not a single directory name`,
+      'the OpenSpec change name given is not a single directory name',
     );
   }
   return ref;
@@ -145,7 +145,7 @@ function listChangeUnits(hostRoot: string, ref: string): TaskUnit[] {
     throw new BoardError(
       1,
       'tasks-not-found',
-      `cannot read the tasks file ${asciiText(path)} (is ${asciiText(ref)} an OpenSpec change?)`,
+      'cannot read the tasks file of the change given: import-change reads openspec/changes/<name>/tasks.md; is the name an OpenSpec change?',
     );
   }
   return parseOpenSpecTasks(text, path);

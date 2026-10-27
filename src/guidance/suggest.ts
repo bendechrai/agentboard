@@ -122,8 +122,7 @@ export function unknownCommandMessage(
   argv: readonly string[],
   commands: readonly CommandSpec[],
 ): string {
-  const token = unknownCommandToken(argv, commands);
-  return `unknown command ${token}; ${didYouMean(suggestCommands(argv, commands))}run 'agentboard help' to list the commands`;
+  return `unknown command; ${didYouMean(suggestCommands(argv, commands))}run 'agentboard help' to list the commands`;
 }
 
 /**
@@ -149,9 +148,7 @@ export function unknownFlagMessage(
   flags: readonly ArgSpec[],
 ): string {
   const suggestions = didYouMean(suggestFlags(name, flags));
-  // Stub (no-echo-refusals group 1, test author): the implementer writes the
-  // message above; until then the old text is kept and `position` unused.
-  return `unknown flag --${asciiText(name)} for ${command.name}; ${suggestions}run 'agentboard help ${command.name}' to list its flags`;
+  return `unknown flag at argument ${String(position)} for ${command.name}; ${suggestions}run 'agentboard help ${command.name}' to list its flags`;
 }
 
 /**

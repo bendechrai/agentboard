@@ -17,7 +17,6 @@ import { inSnapshot, loadMeta } from '../store/engine.js';
 import { BoardError } from '../store/errors.js';
 import { runCommand } from '../store/transaction.js';
 import { requireActor } from './lookup.js';
-import { asciiText } from './text.js';
 import type { WriteOptions } from './types.js';
 
 /** The setting keys `config` accepts, in this order. */
@@ -90,7 +89,7 @@ export function setConfig(
     throw new BoardError(
       1,
       'usage',
-      `invalid value ${String(value)} for ${key}: a setting is a whole number of milliseconds from ${String(SETTING_MIN_MS)} (30s) to ${String(SETTING_MAX_MS)} (10m)`,
+      `invalid value for ${key}: a setting is a whole number of milliseconds from ${String(SETTING_MIN_MS)} (30s) to ${String(SETTING_MAX_MS)} (10m)`,
     );
   }
   const result = runCommand(
@@ -102,14 +101,14 @@ export function setConfig(
   return { hash: result.hash, key, value };
 }
 
-/** `text` as a `SettingKey`, or `BoardError(1, 'usage')` naming it and listing the keys. */
+/** `text` as a `SettingKey`, or `BoardError(1, 'usage')` listing the keys (not the text). */
 function settingKey(text: string): SettingKey {
   const found = SETTING_KEYS.find((key) => key === text);
   if (found === undefined) {
     throw new BoardError(
       1,
       'usage',
-      `unknown setting ${asciiText(text)}: the keys are ${SETTING_KEYS.join(' and ')}`,
+      `unknown setting: the keys are ${SETTING_KEYS.join(' and ')}`,
     );
   }
   return found;

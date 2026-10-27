@@ -80,7 +80,7 @@ export function parseImportTarget(text: string): ImportTarget {
     throw new BoardError(
       1,
       'malformed-task-ref',
-      `${asciiText(text)} names an item; import-change takes a whole change or <source>:<ref>`,
+      'the change given to import-change names an item (it contains #); import-change takes a whole change or <source>:<ref>',
     );
   }
   const colon = text.indexOf(':');
@@ -93,12 +93,15 @@ export function parseImportTarget(text: string): ImportTarget {
     throw new BoardError(
       1,
       'malformed-task-ref',
-      `the task source ${JSON.stringify(asciiText(source))} must match ` +
-        `${String(TASK_SOURCE_PATTERN)}`,
+      `the task source given to import-change must match ${String(TASK_SOURCE_PATTERN)}`,
     );
   }
   if (ref === '') {
-    throw new BoardError(1, 'usage', `import-change ${asciiText(text)} names no ref`);
+    throw new BoardError(
+      1,
+      'usage',
+      'the change given to import-change names no ref after its source',
+    );
   }
   return { source, ref };
 }
@@ -886,7 +889,7 @@ export function importChange(
     throw new BoardError(
       1,
       'unsupported-source',
-      `task source ${asciiText(target.source)} has no adapter in this version; only ` +
+      `the task source given has no adapter in this version; only ` +
         `${SOURCE_ADAPTERS.map((a) => a.source).join(', ')} can be imported`,
     );
   }

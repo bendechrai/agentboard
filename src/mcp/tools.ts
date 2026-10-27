@@ -22,7 +22,6 @@
 
 import { parseArgs } from '../cli/parse.js';
 import { ACTOR_FLAG, COMMANDS } from '../cli/registry.js';
-import { asciiText } from '../cli/render.js';
 import type { ArgSpec, ArgValues, CommandSpec, ExclusiveGroup } from '../cli/types.js';
 import { BoardError } from '../store/errors.js';
 
@@ -268,7 +267,7 @@ export function toolArguments(command: CommandSpec, args: unknown): ArgValues {
   for (const [key, value] of Object.entries(given)) {
     const spec = specs.get(key);
     if (spec === undefined) {
-      throw usage(`unknown argument ${asciiText(key)} for ${toolName(command.name)}`);
+      throw usage(unknownArgumentMessage(command));
     }
     const checked = argumentValue(spec, value);
     if (checked !== null) {
@@ -372,8 +371,8 @@ function argumentValue(
  * Pure.
  */
 export function unknownArgumentMessage(command: CommandSpec): string {
-  // Stub (no-echo-refusals group 1, test author); the implementer writes it.
-  throw new Error(`unknownArgumentMessage is not implemented (${command.name})`);
+  const names = Object.keys(toolInputSchema(command).properties).join(', ');
+  return `unknown argument for ${toolName(command.name)}; its arguments are ${names}`;
 }
 
 function usage(message: string): BoardError {

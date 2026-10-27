@@ -46,7 +46,6 @@
  * `src/board/openspec.ts` may name it (src/board/__tests__/sources.test.ts).
  */
 
-import { asciiText } from '../board/text.js';
 import type { CommandOutput } from '../cli/types.js';
 import { BoardError } from '../store/errors.js';
 
@@ -284,7 +283,7 @@ export function agentsHelpOutput(version: string, role: string | undefined): Com
     throw new BoardError(
       1,
       'usage',
-      `unknown role ${asciiText(role)}; the roles are ${ROLES.join(', ')}`,
+      `unknown role given with --role; the roles are ${ROLES.join(', ')}`,
     );
   }
   const out = renderGuide(version) + renderRoleChecklist(role);
