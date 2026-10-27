@@ -890,6 +890,32 @@ export function recordedFlags(db: DatabaseSync): Map<string, number> {
 }
 
 /**
+ * The prior applied set of a fold (keep-cursors-on-upgrade design.md:
+ * "Remember what the old cache applied until the first fold"): what the
+ * cache recorded as applied before the fold, as a map from hash to flag
+ * like `recordedFlags`, for `becameEffective` and the incremental path of
+ * `foldNew` to decide which events became effective in the fold.
+ *
+ * - When `folded` has at least one row: exactly `recordedFlags(db)` (every
+ *   recorded hash to its flag, 1 applied, 0 anything else). A
+ *   `carried_applied` table present beside it is stale and not read.
+ * - When `folded` is empty and the `carried_applied` table exists (left by
+ *   a recreate that carried the cursors, see `openCache`): each hash of
+ *   `carried_applied` mapped to 1, and nothing else.
+ * - When `folded` is empty and there is no `carried_applied` table: the
+ *   empty map.
+ *
+ * Read-only: never drops `carried_applied` or writes any row; the fold
+ * that records events drops it in its own transaction. Reads on `db` as it
+ * is (the caller holds the transaction). Used by both paths of `foldNew`
+ * and by `refoldWithCursors`.
+ */
+export function priorApplied(db: DatabaseSync): ReadonlyMap<string, number> {
+  void db;
+  throw new Error('not implemented: priorApplied (keep-cursors-on-upgrade task 1.2)');
+}
+
+/**
  * The events applied now that were not applied according to `prior` (a
  * `recordedFlags` snapshot taken before a refold): recorded for the first
  * time, or flipped from rejected to applied.
