@@ -228,11 +228,30 @@ queued) and blocks on the watch machinery, waking on new events and at
 the next due grant time so that it writes due grants itself. It exits 0
 when a grant to it is applied (printing that it must renew to accept, and
 by when), or, on timeout, writes `ticket.queue.leave` and exits 4
-`wait-timeout`. SIGINT and SIGTERM also leave the queue. A waiter killed
-with SIGKILL stays queued; its grant then lapses after one window and
-passes on, which is the liveness rule doing its job. `--timeout` is
+`wait-timeout`. SIGINT and SIGTERM also leave the queue, and exit 4
+`wait-interrupted` rather than the 0 of `watch`: for `claim`, exit 0
+means "you hold the ticket", and a script or supervisor that chains the
+critical step on it must not run that step after an interrupt. A waiter
+killed with SIGKILL stays queued; its grant then lapses after one window
+and passes on, which is the liveness rule doing its job. `--timeout` is
 required with `--wait` on the CLI (1 second to 1 day) so an agent's
 command always returns.
+
+The wait wakes only on a directory notification, the watch poll, the
+cache's grant watermark (clamped to the deadline, so a far-off watermark
+never overflows a timer), the deadline and a signal, and catches up at
+each wake, so its catch-ups are bounded by those wakes. After each
+catch-up it ends on the first that applies: a grant to it (exit 0, naming
+`renew` and the acceptance deadline); being the assignee by a hand-off
+(exit 0, as a retried claim); the deadline or a signal (leave if still
+queued, exit 4); a free ticket with an empty queue, which is what a join
+rejected after a late-synced release leaves (claim instead); otherwise
+no longer queued (exit 4 `invalid-queue`). Checking the grant before the
+deadline makes a grant due exactly at the deadline win. With `--json`
+the waiting claim prints the queued document and then the final one, one
+per line, like `watch --json`. The library entry point is `waitForGrant`
+(`src/board/wait.ts`), with the clock, timers and directory watcher
+injectable so the loop is tested on a fake clock.
 
 MCP tool calls have client timeouts, so `board_claim` with `wait` never
 blocks: it returns `{queued: true, position, holder}` (or the ordinary

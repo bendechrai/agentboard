@@ -90,7 +90,7 @@ or is interrupted (see "Waiting on the command line"). `init`, `sync` and
 
 #### Scenario: Claim has help for leases and waiting
 - **WHEN** `agentboard help claim` runs with no board and no actor
-- **THEN** it prints the synopsis with `--ttl`, `--wait` and `--timeout`, the exit codes including 4 `already-assigned`, `queued` and `wait-timeout`, and an example that parses to `claim` with `--ttl`, and exits 0
+- **THEN** it prints the synopsis with `--ttl`, `--wait` and `--timeout`, the exit codes including 4 `already-assigned`, `queued`, `wait-timeout` and `wait-interrupted`, and an example that parses to `claim` with `--ttl`, and exits 0
 
 #### Scenario: Renew, unqueue and config have help
 - **WHEN** `agentboard help renew`, `agentboard help unqueue` and `agentboard help config` run with no board and no actor
@@ -207,16 +207,19 @@ of the two. `renew <id> --as <actor> [--ttl <duration>]` SHALL write a
 `--ttl` is omitted, and an `expiresAt` equal to its `ts.wall` plus that
 ttl, only when the actor is the assignee. `renew` SHALL check the
 assignee first: an actor that is not the ticket's assignee SHALL exit 4
-with reason `not-assignee` and write nothing, whether or not `--ttl` is
-given and whether or not the ticket has a lease, so a former holder whose
+with reason `not-assignee` and write nothing, whether or not a well-formed
+`--ttl` is given and whether or not the ticket has a lease (a malformed
+`--ttl` is refused with exit 1 `usage` first, because arguments are parsed
+before the board is opened), so a former holder whose
 lock was force-released or handed to another actor learns that it lost
 the lock. Only `renew` by the assignee without `--ttl` on a ticket with no
 lease SHALL exit 1 with reason `usage`. A ttl SHALL be 1 to 5 ASCII digits
 followed by `s`, `m`, `h` or `d`, between 30 seconds and 7 days
-inclusive; any other value SHALL exit 1 with reason `usage` naming the
-form without repeating the value given, exactly `invalid --ttl: a ttl is
-<n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 30s to 7d`, so
-a token pasted as a ttl never lands in a terminal or a log. The command SHALL build the event's hybrid timestamp before
+inclusive. Any other value SHALL exit 1 with reason `usage` and the
+message `invalid --ttl: a ttl is <n>s, <n>m, <n>h or <n>d with <n> of 1
+to 5 digits, from 30s to 7d`, which names the form and never repeats the
+value given, so a token pasted as a ttl never lands in a terminal or a
+log. The command SHALL build the event's hybrid timestamp before
 validating, inside the same transaction, and SHALL validate with the
 fold's rules against that timestamp. A claim on a ticket held by another
 actor with no waiters SHALL be written as a takeover, with `supersedes`
@@ -291,22 +294,62 @@ state SHALL never be stored in the cache.
 ### Requirement: Waiting on the command line
 `claim <id> --as <actor> --ttl <duration> --wait --timeout <duration>`
 SHALL claim at once, as `claim --ttl`, when the ticket is unassigned with
-no waiters. Otherwise it SHALL write a `ticket.queue.join` with the ttl
-(unless the actor is already queued), print the actor's position, and
-block in the foreground on the watch machinery, waking on new events and
-at the next time a grant is due so that it writes due grants itself,
-until a grant to the actor is applied; it SHALL then exit 0, printing
-that the actor must run `agentboard renew <id>` to accept and by when.
-When the timeout passes first it SHALL write `ticket.queue.leave` and
-exit 4 with reason `wait-timeout`; on SIGINT or SIGTERM it SHALL write
-`ticket.queue.leave` and exit with the watch command's signal behaviour.
-When its join is rejected because the ticket became free with no waiters,
-it SHALL claim instead. `--wait` SHALL require `--ttl` and, on the CLI,
-`--timeout` (1 to 5 digits and `s`, `m`, `h` or `d`, at most 1 day);
-otherwise it SHALL exit 1 with reason `usage`. A refused `--timeout` SHALL
-name the form without repeating the value given, exactly `invalid
---timeout: a timeout is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5
-digits, from 1s to 1d`. `unqueue <id> --as
+no waiters, and SHALL then print exactly what `claim --ttl` prints.
+Otherwise it SHALL write a `ticket.queue.join` with the ttl (unless the
+actor is already queued), print the actor's position (the line `queued
+for <id> at position <n>, held by <holder or ->`), and block in the
+foreground on the watch machinery until the wait ends. The deadline SHALL
+be the local clock read when the wait starts plus the timeout. While it
+blocks it SHALL wake only on a change notification for the events
+directory, on the watch machinery's polling interval, at exactly the
+cache's grant watermark (the next time a grant is due, see board-cache
+"Cache schema"; never later than the deadline), at the deadline, and on
+SIGINT or SIGTERM; each wake SHALL catch up as any command does, so it
+writes the grants that are due itself, and the number of catch-ups SHALL
+be bounded by the wakes, never a busy loop. After each catch-up, the
+first of these that applies ends the wait:
+
+1. a grant to the actor is the ticket's current lease: it SHALL exit 0,
+   printing the `list` line of the ticket and then `accept the grant with
+   'agentboard renew <id> --as <actor>' before <acceptBy>`, where
+   `<acceptBy>` is the grant's lease expiry as an ISO 8601 UTC time;
+2. the actor has otherwise become the assignee (a hand-off or assign to a
+   waiter): it SHALL exit 0 as a retried claim does (`already claimed by
+   <actor>`), writing nothing;
+3. at the deadline, or on SIGINT or SIGTERM: it SHALL write
+   `ticket.queue.leave` when the actor is still queued (and nothing
+   otherwise) and exit 4 with reason `wait-timeout` at the deadline and
+   `wait-interrupted` on a signal. A grant due at the deadline itself is
+   therefore written and wins. An interrupted wait never exits 0 unless
+   it holds the ticket, because exit 0 means the actor holds it and a
+   script may go on to the critical step; the signal handlers SHALL be in
+   place before the join is written;
+4. the actor is neither queued nor the assignee and the ticket is
+   unassigned with no waiters (its join was rejected because the ticket
+   became free, for example a release from another machine with an
+   earlier wall arrived through `sync`): it SHALL claim instead, as `claim
+   --ttl`, and exit 0;
+5. the actor is neither queued nor the assignee otherwise (it left the
+   queue from another command, or a grant to it lapsed and passed on): it
+   SHALL exit 4 with reason `invalid-queue`, writing nothing.
+
+With `--json` a waiting claim prints one JSON document per line, as
+`watch --json` does: the queued document `{queued, position, holder,
+ticket}` when it joins (or finds itself queued), then the final document:
+the claim result when it claimed, `{queued: false, grant, acceptBy,
+ticket}` when granted (`grant` the grant's hash, `acceptBy` its lease
+expiry in milliseconds), or the error document. A claim that claims at
+once prints the one document `claim --ttl --wait` prints. The synchronous
+in-process entry point (`runCli`) and `board_claim` over MCP never block:
+over MCP `wait` joins and returns at once (see "Lease and queue tools over
+MCP"), and `runCli` refuses a `claim --wait --timeout` that passed
+validation with exit 1 `streaming-command`.
+
+`--wait` SHALL require `--ttl` and, on the CLI, `--timeout` (1 to 5
+digits and `s`, `m`, `h` or `d`, at most 1 day); otherwise it SHALL exit 1 with reason `usage`. A refused `--timeout` SHALL
+exit 1 with reason `usage` and the message `invalid --timeout: a timeout
+is <n>s, <n>m, <n>h or <n>d with <n> of 1 to 5 digits, from 1s to 1d`,
+which names the form and never repeats the value given. `unqueue <id> --as
 <actor>` SHALL write `ticket.queue.leave`, and SHALL exit 4 with reason
 `invalid-queue` when the actor is not queued.
 
@@ -325,6 +368,30 @@ digits, from 1s to 1d`. `unqueue <id> --as
 #### Scenario: Leave the queue
 - **WHEN** `merger-3` is queued on T1 and runs `unqueue T1 --as merger-3`
 - **THEN** it exits 0 and `show T1` no longer lists `merger-3`
+
+#### Scenario: Waiter wakes when a grant falls due
+- **WHEN** `merger-1` claimed T1 with `--ttl 30m` and never renewed, `merger-2` is waiting on T1, and no other command runs
+- **THEN** the waiting command writes the grant to itself at the grant's slot time (the claim's wall plus 120000 plus 60000 plus 1) and exits 0, and it has not exited one millisecond before that time
+
+#### Scenario: Timeout at the boundary
+- **WHEN** a waiter started with `--timeout 30s` at time t0 is still queued
+- **THEN** it is still waiting at t0 plus 29999 milliseconds and has written nothing, and at t0 plus 30000 it writes `ticket.queue.leave` and exits 4 with reason `wait-timeout`; when a grant to it falls due at exactly t0 plus 30000 instead, it is granted and exits 0
+
+#### Scenario: Interrupted wait leaves the queue
+- **WHEN** a waiting `claim --wait` receives SIGINT or SIGTERM
+- **THEN** it writes `ticket.queue.leave`, exits 4 with reason `wait-interrupted`, and `show T1` no longer lists it
+
+#### Scenario: Killed waiter stays queued
+- **WHEN** a waiting `claim --wait` is killed with SIGKILL
+- **THEN** it stays in the queue of T1, and a grant to it after a release lapses after the window and passes to the next waiter
+
+#### Scenario: Join rejected because the ticket became free
+- **WHEN** `merger-2` is waiting on T1 and a release by the holder with a wall earlier than `merger-2`'s join arrives late, so the join is rejected and T1 is free with no waiters
+- **THEN** the waiting command claims T1 with its ttl and exits 0
+
+#### Scenario: Waiter no longer queued
+- **WHEN** `merger-2` is waiting on T1, still held by `merger-1`, and `unqueue T1 --as merger-2` runs from another shell
+- **THEN** the waiting command exits 4 with reason `invalid-queue` and writes nothing
 
 ### Requirement: Forced release on the command line
 `release <id> --as <actor> --force --reason <text>` SHALL write a
@@ -429,6 +496,8 @@ the same `--wait` form. The `holder-changed`, `invalid-queue` and
 `stale-grant` reasons SHALL hint `agentboard show <id>`. `not-assignee`
 from `renew` SHALL hint `agentboard show <id>` and say the lock was lost.
 `wait-timeout` SHALL hint `agentboard inbox --as <actor>`.
+`wait-interrupted` SHALL say the actor left the queue and name the same
+`--wait` form to wait again.
 
 #### Scenario: Hint for a live lease
 - **WHEN** `claim T1 --as merger-2` is refused because `merger-1` holds a live lease
