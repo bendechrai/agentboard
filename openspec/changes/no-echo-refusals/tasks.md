@@ -1,0 +1,44 @@
+# Tasks
+
+Independent of the open changes `guard-stale-temporary` (board-concurrency
+"Moving a board into the host repository loses no event") and
+`keep-cursors-on-upgrade` (board-cache "Cache is derived and
+disposable"): neither modifies a requirement this change touches, so any
+of them may be archived first.
+
+Each group is delivered by a test author, an implementer and a reviewer in
+turn (see CONTRIBUTING.md), on its own branch cut from `origin/staging`.
+The two groups touch different files and may run in parallel. Production
+changes are message and hint text only: no exit code, reason, JSON field,
+event or hint step may change, and a test that finds one changed fails.
+
+Both groups use one shared fixture module of token-shaped values
+(design.md "Testing approach": a GitHub-style token, an AWS-style key id,
+a 40-character hex string, a URL with credentials, and a token of more
+than 26 characters from `[a-z0-9-]`) and one assertion helper that fails
+when any fixture, or any substring of eight or more of its characters,
+appears in a given output. Group 1's test author creates them; group 2
+reuses them (if group 2 starts first, its test author creates them in the
+same place and group 1 reuses them).
+
+The reviewer checks every row of design.md "Audit" against the code
+(including that rows 5, 9, 18, 34 and 37 to 39 still need no change),
+recomputes the expected text of at least three messages with a throwaway
+program that does not import the code under review, and runs the built
+CLI and MCP server with each fixture through at least one refusal of
+every class, grepping the captured output. Verification for every task
+includes `make check` passing with coverage at or above 90 percent.
+
+## 1. Refusals and hints repeat no refused input (`cli/no-echo-refusals`)
+
+- [ ] 1.1 Parser and guidance refusals (design.md "Audit" rows 1 to 4 and 6 to 8): `unknownCommandMessage` and `unknownFlagMessage` in `src/guidance/suggest.ts` stop naming the token, and the unknown flag message names the flag's 1-based argument position (the parser passes it); `parseArgs`'s extra positional and `parseInteger` refusals; the `help` subtopic, `--role` and `--target` refusals. Doc comments and the stubs' contracts state the new exact messages. Verify: board-agent-guidance scenarios "Misspelled command", "Unknown flag names its position" and "Token in the command position"; board-cli scenarios "Extra and non-integer arguments" and "Guidance arguments"; each fixture through each refusal on the CLI, in process (`runCli`) and as a child of the built CLI, plain and `--json`, appearing nowhere in stdout or stderr; reasons and exit codes unchanged; suggestions unchanged for the existing suggestion tests; a `--name=value` unknown flag also not repeating `value`
+- [ ] 1.2 Value refusals of the registry and the board (rows 10 to 17, 19 to 27): the status refusal as a choices refusal of `move <status>`, `handoff --status` and `list --status`; `health` durations; task reference, change name (both sites), group and task filter; ticket id resolution with the id shape (one exported helper, for example `isIdShaped(text)`, used by `resolveTicketId` and the hints); `inbox --since`; decision path missing and path outside the tree; the `import-change` target, source, ref, adapter, change name and tasks file refusals. Verify: board-cli scenarios "Unknown status", "Malformed task reference, change name, group and filter", "Health duration", "Ticket id that is not an id", "Unknown ticket id that is id-shaped", "Unknown inbox cursor", "Decision path outside the working tree", "Import target" and the modified "Close with a missing decision path"; the existing scenarios "Malformed task reference", "Ambiguous prefix is refused" and "Invalid task reference refused as link does" still pass; the id shape boundaries (26 Crockford characters named, 27 not; `I`, `L`, `O`, `U` and lowercase handled as specified; a 5-character non-shaped text refused `id-too-short` without being named); no event file written by any refusal
+- [ ] 1.3 Library entry points (rows 28 to 31): `settingKey` and `setConfig` in `src/board/config.ts`, `checkTtl` in `src/board/actions.ts`, the ttl and timeout checks of `src/board/wait.ts`. Verify: each called directly with a refused key or number, the message is the design's exact text and contains neither the key nor the number's digits (other than the bounds it states)
+- [ ] 1.4 MCP and web (rows 32 to 35): the unknown tool and unknown argument refusals in `src/mcp/server.ts` and `src/mcp/tools.ts` (the argument refusal lists the tool's argument names in schema order); nothing else on these surfaces echoes, because they reach the same code. Verify: board-cli scenarios "Unknown status over MCP", "Unknown tool and unknown tool argument" and "Web action"; for every refusal class of 1.1 and 1.2 that has a tool, the fixture passed as the tool argument does not appear in the tool result (text and structured content) or the server's stderr, over a real stdio client against the built server
+- [ ] 1.5 Hints (row 36): `hintFor` writes the given id only when it is id-shaped, else `<id>`, on both surfaces (`cliHintContext` and `runTool` may keep filling it; the template decides). Verify: board-cli scenario "Hint for an id that is not an id"; an id-shaped id still appears in the `no-disposition`, `invalid-transition` and `needs-scope-disposition` hints exactly as today (the existing hint tests and goldens unchanged); the hint completeness test still green
+- [ ] 1.6 Guard against regressions: a source scan test that lists every `BoardError` construction and `usage(...)` call under `src/` whose message interpolates a value and fails on any not in an allow-list, each allow-list entry naming why it is compliant (registry names, board data, configuration, accepted input, the id helper). Verify: the test fails when the old `unknown status ${asciiText(text)}` message is restored on a scratch copy (recorded in the PR); README.md or the agent guide unchanged unless they quote a changed message (search them and the help text for each old message); `make ascii`, `make validate-specs`
+
+## 2. `init --remote` repeats no URL given (`sharing/no-echo-remote-url`)
+
+- [ ] 2.1 The `init --remote` refusals (design.md "Audit" rows 40 to 45): the two `usage` refusals, `remote-unreachable` (both the `ls-remote` and the clone failure), `not-a-board`, and `remote-mismatch` (including the `agentboard.remote` variant), saying "the value", "the repository given with --remote" or "the URL given" and writing `<url>` in the suggested `git remote set-url` step; one sanitizer for quoted git lines that replaces every occurrence of the value given with `<url>` and every URL user information with `<redacted>`. Verify: the modified board-cli scenarios "Credentials in an unreachable URL", "Remote URL that is an option", "Remote mismatch does not repeat the URL given" and "Clone fails after ls-remote", and the other scenarios of "Board in a separate repository" unchanged and green; the sanitizer unit-tested on git lines that repeat the value verbatim, repeat it without its credentials, contain a second URL with credentials, and contain neither; the credential fixture absent from the output of the built CLI, plain and `--json`; `make check`, `make check-in-docker`, `make check-floor` and `make check-git-floor` (the change touches sharing)
+- [ ] 2.2 Documentation: README.md and the `init` help (registry description and exit code meanings) checked for a quoted URL refusal and updated if one is quoted. Verify: `make ascii`, `make validate-specs`, the help drift guard green
