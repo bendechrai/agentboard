@@ -911,8 +911,42 @@ export function recordedFlags(db: DatabaseSync): Map<string, number> {
  * and by `refoldWithCursors`.
  */
 export function priorApplied(db: DatabaseSync): ReadonlyMap<string, number> {
-  void db;
-  throw new Error('not implemented: priorApplied (keep-cursors-on-upgrade task 1.2)');
+  const recorded = recordedFlags(db);
+  if (recorded.size > 0 || !hasCarriedApplied(db)) {
+    return recorded;
+  }
+  return new Map(
+    db
+      .prepare('SELECT hash FROM carried_applied')
+      .all()
+      .map((row): [string, number] => [text(row, 'hash'), 1]),
+  );
+}
+
+/** Whether the cache holds a `carried_applied` table (see `openCache`). */
+function hasCarriedApplied(db: DatabaseSync): boolean {
+  return (
+    db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'carried_applied'")
+      .get() !== undefined
+  );
+}
+
+/**
+ * Drops `carried_applied` once `folded` has a row: the fold that just
+ * recorded events into an empty `folded` has consumed it as its prior, and
+ * one found beside an already non-empty `folded` is stale (left by a
+ * version that does not know the table) and is dropped unused. A fold that
+ * records nothing into an empty `folded` leaves it for the fold that does.
+ * Caller holds the transaction.
+ */
+function dropConsumedCarry(db: DatabaseSync): void {
+  if (!hasCarriedApplied(db)) {
+    return;
+  }
+  if (stmt(db, 'SELECT 1 FROM folded LIMIT 1').get() !== undefined) {
+    db.exec('DROP TABLE carried_applied');
+  }
 }
 
 /**
@@ -937,8 +971,9 @@ export function refoldWithCursors(
   db: DatabaseSync,
   eventsDir: string,
 ): { result: RefoldResult; late: LateEvent[] } {
-  const prior = recordedFlags(db);
+  const prior = priorApplied(db);
   const result = refold(db, eventsDir);
+  dropConsumedCarry(db);
   return { result, late: resetLateCursors(db, becameEffective(db, prior)) };
 }
 
@@ -1021,23 +1056,35 @@ function foldNew(
   const { db } = board;
   const last = readLastPosition(db);
   const late = last !== null && inputs.some((input) => compareToPosition(input, last) < 0);
+  // What the cache had applied before this fold: the folded flags, or, in
+  // the first fold after a recreate that carried the cursors, the old
+  // cache's applied set (`carried_applied`), so that an event the old
+  // cache had applied and delivered is not treated as newly effective.
+  const prior = priorApplied(db);
   if (!late) {
     const batch = applyBatch(db, inputs, malformed);
     const applied = new Set(batch.applied);
-    // Every event here sorts after last_position, so after every cursor (a
-    // cursor only points at a folded event): this moves no cursor, grants
-    // included, and keeps the incremental path to the same contract.
+    // Every event here sorts after last_position, so on a cache that has
+    // folded before this moves no cursor (a cursor only points at a folded
+    // event), grants included, and keeps the incremental path to the same
+    // contract. After a carrying recreate last_position is null and the
+    // carried cursors may sit past these events: the ones the old cache
+    // had applied are left out, and the others move cursors back as late
+    // events do.
     resetLateCursors(
       db,
       inputs
-        .filter((input) => applied.has(input.hash))
+        .filter((input) => applied.has(input.hash) && prior.get(input.hash) !== 1)
         .map((input) => ({ hash: input.hash, ts: input.event.ts })),
     );
+    dropConsumedCarry(db);
     return { ...batch, malformed: [...malformed], corrupt: null, refolded: false };
   }
-  const prior = recordedFlags(db);
   const full = refold(db, board.eventsDir, readAllFiles(board, probe));
+  dropConsumedCarry(db);
   resetLateCursors(db, becameEffective(db, prior));
+  // `last_position` is only ever written beside `folded` rows, so on this
+  // path `folded` was not empty and `prior` is exactly the recorded flags.
   const isNew = (hash: string): boolean => !prior.has(hash);
   return {
     applied: full.applied.filter(isNew),

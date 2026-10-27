@@ -118,14 +118,47 @@
  * Cursor seen sets (`src/store/cursors.ts`) are stored in one
  * more table, `cursor_seen (actor, hash, wall)`, documented there. It is
  * part of the cursors and is treated exactly like `cursors`: kept by
- * `rebuild`, not covered by `dumpCache` or `rebuild --check`, dropped with
- * every other table when the schema version differs. The schema step does
- * not create it: `openCache` creates it, when missing, on every preparing
- * open, after the schema step.
+ * `rebuild`, not covered by `dumpCache` or `rebuild --check`, and carried
+ * with it across a schema upgrade (below). The schema step does not create
+ * it on a recreate that carries nothing: `openCache` creates it, when
+ * missing, on every preparing open, after the schema step.
+ *
+ * Schema upgrade (board-cache: "Cache is derived and disposable";
+ * keep-cursors-on-upgrade design.md). When a preparing open finds a stored
+ * version that is an earlier one (the exact decimal text of an integer from
+ * 1 to `CACHE_SCHEMA_VERSION - 1`), the recreate keeps the cursor tables:
+ * inside its `BEGIN IMMEDIATE` it reads the old `cursors` and `cursor_seen`
+ * rows and the hashes the old `folded` table records as applied, drops and
+ * recreates every table, and writes the cursor rows back and the applied
+ * hashes into a transient table that only such a recreate creates:
+ *
+ * ```sql
+ * CREATE TABLE carried_applied (
+ *   hash TEXT PRIMARY KEY
+ * );
+ * ```
+ *
+ * The carry happens only when the three old tables have the expected shape
+ * (`PRAGMA table_info`: `cursors` exactly `actor TEXT` primary key,
+ * `last_wall INTEGER`, `last_counter INTEGER`, `last_actor TEXT`,
+ * `last_hash TEXT`; `cursor_seen` exactly `actor TEXT`, `hash TEXT` (the
+ * primary key) and `wall INTEGER`; `folded` at least `hash TEXT` primary
+ * key and `folded INTEGER`), and rows are filtered by `typeof()`, never
+ * repaired (a cursor row with an ill-typed value is left out with its seen
+ * rows, so that actor is redelivered everything). Otherwise, for a later
+ * version, no version, or a SQLite error while reading the old tables, the
+ * recreate drops the cursors as it always did. `carried_applied` is read
+ * by the first fold that records events into the recreated cache
+ * (`priorApplied`, `src/store/engine.ts`), which treats an event as newly
+ * effective only when the old cache had not applied it, and drops the
+ * table; it is not covered by `dumpCache`, `diffCaches` or
+ * `rebuild --check`. The inspect-only open never carries. The carry is
+ * only sound while the delivery rule and the fold order of positions are
+ * the ones the old version used; see `src/store/cursors.ts`.
  */
 
 import { existsSync } from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 
 import { canonicalEncode } from '../events/canonical.js';
 import type { BoardState, Rejected, Ticket, UnknownReport } from '../events/fold.js';
@@ -135,6 +168,7 @@ import {
   catchUpLocked,
   catchUpUnlocked,
   inImmediate,
+  isBusy,
   loadState,
   inSnapshot,
   loadTicket,
@@ -191,7 +225,10 @@ export interface OpenCacheOptions {
  * when the database has no `meta.schema_version`, recording
  * `CACHE_SCHEMA_VERSION` and `last_position` `null`. When the stored
  * `schema_version` differs from `CACHE_SCHEMA_VERSION`, every table is
- * dropped and recreated empty (the cache is disposable). Never folds events.
+ * dropped and recreated empty (the cache is disposable), except that an
+ * earlier version's cursor tables are carried across the recreate when
+ * they have the expected shape (see the module documentation and
+ * `schemaStep`). Never folds events.
  *
  * Every statement of the open waits on the busy timeout, including the
  * switch to WAL, which SQLite can fail with SQLITE_BUSY without consulting
@@ -217,7 +254,8 @@ export interface OpenCacheOptions {
  *
  * On every preparing open, whatever the stored version, it also ensures
  * the `cursor_seen` table exists (`CREATE TABLE IF NOT EXISTS`, see
- * `src/store/cursors.ts`); recreating the schema drops it too. An
+ * `src/store/cursors.ts`); recreating the schema drops it too, and a
+ * carrying recreate creates it again with the carried rows. An
  * inspect-only open (`prepare: false`) never creates it.
  */
 export function openCache(path: string, options?: OpenCacheOptions): DatabaseSync {
@@ -238,17 +276,7 @@ export function openCache(path: string, options?: OpenCacheOptions): DatabaseSyn
     db.exec('PRAGMA foreign_keys = ON');
     retryBusy(() => {
       if (storedSchemaVersion(db) !== String(CACHE_SCHEMA_VERSION)) {
-        inImmediate(db, () => {
-          // Re-checked under the write lock: a concurrent opener may have won.
-          if (storedSchemaVersion(db) !== String(CACHE_SCHEMA_VERSION)) {
-            db.exec(SCHEMA);
-            stmt(db, 'INSERT INTO meta (key, value) VALUES (?, ?)').run(
-              'schema_version',
-              String(CACHE_SCHEMA_VERSION),
-            );
-            stmt(db, "INSERT INTO meta (key, value) VALUES ('last_position', 'null')").run();
-          }
-        });
+        schemaStep(db);
       }
     }, deadline);
     // After the schema step, which drops it along with every table.
@@ -261,6 +289,232 @@ export function openCache(path: string, options?: OpenCacheOptions): DatabaseSyn
   }
   return db;
 }
+
+/**
+ * The schema step of a preparing open that found another stored version:
+ * recreates the schema under the write lock, carrying the cursor tables
+ * when the stored version is an earlier one and the old tables have the
+ * expected shape (`readCarry`). When reading the carry fails with a SQLite
+ * error other than busy, the whole transaction is rolled back (SQLite
+ * refuses every later statement of a transaction after SQLITE_CORRUPT, the
+ * recreate's `DROP TABLE`s included) and the step runs again in a fresh
+ * `BEGIN IMMEDIATE`, re-checking the version, without reading the carry;
+ * the recreate then fails only where it fails today.
+ */
+function schemaStep(db: DatabaseSync): void {
+  try {
+    recreateSchema(db, true);
+  } catch (error) {
+    if (!(error instanceof CarryReadError)) {
+      throw error;
+    }
+    recreateSchema(db, false);
+  }
+}
+
+/**
+ * One `BEGIN IMMEDIATE` ... `COMMIT` that re-checks the stored version (a
+ * concurrent opener may have won) and, when it still differs, reads the
+ * carry (with `carry` true and an earlier stored version), drops and
+ * recreates every table, records the version and `last_position` `null`,
+ * and writes the carried rows and `carried_applied`. All of it commits or
+ * rolls back as one transaction, so a concurrent opener sees either the
+ * old cache or the new one with its cursors in place.
+ */
+function recreateSchema(db: DatabaseSync, carry: boolean): void {
+  inImmediate(db, () => {
+    const stored = storedSchemaVersion(db);
+    if (stored === String(CACHE_SCHEMA_VERSION)) {
+      return;
+    }
+    const carried = carry && isEarlierVersion(stored) ? readCarry(db) : null;
+    db.exec(SCHEMA);
+    stmt(db, 'INSERT INTO meta (key, value) VALUES (?, ?)').run(
+      'schema_version',
+      String(CACHE_SCHEMA_VERSION),
+    );
+    stmt(db, "INSERT INTO meta (key, value) VALUES ('last_position', 'null')").run();
+    if (carried !== null) {
+      writeCarry(db, carried);
+    }
+  });
+}
+
+/**
+ * Whether `stored` is an earlier schema version: exactly the decimal text
+ * `String(n)` of an integer `n` from 1 to `CACHE_SCHEMA_VERSION - 1`. A
+ * later version (a downgrade), no version, `04`, `4.0`, ` 4`, `0` or `-1`
+ * is not one, and carries nothing.
+ */
+function isEarlierVersion(stored: string | null): boolean {
+  for (let n = 1; n < CACHE_SCHEMA_VERSION; n += 1) {
+    if (stored === String(n)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** The cursor tables and applied hashes read from an old cache. */
+interface Carry {
+  cursors: SQLOutputValue[][];
+  seen: SQLOutputValue[][];
+  applied: string[];
+}
+
+/** A SQLite error (other than busy) while reading the carry; see `schemaStep`. */
+class CarryReadError extends Error {
+  constructor(cause: unknown) {
+    super('reading the cursor tables of the old cache failed', { cause });
+  }
+}
+
+/** One column of an expected table shape, as `PRAGMA table_info` reports it. */
+interface ColumnShape {
+  name: string;
+  type: string;
+  pk: boolean;
+}
+
+const CURSORS_SHAPE: readonly ColumnShape[] = [
+  { name: 'actor', type: 'TEXT', pk: true },
+  { name: 'last_wall', type: 'INTEGER', pk: false },
+  { name: 'last_counter', type: 'INTEGER', pk: false },
+  { name: 'last_actor', type: 'TEXT', pk: false },
+  { name: 'last_hash', type: 'TEXT', pk: false },
+];
+
+const CURSOR_SEEN_SHAPE: readonly ColumnShape[] = [
+  { name: 'actor', type: 'TEXT', pk: true },
+  { name: 'hash', type: 'TEXT', pk: true },
+  { name: 'wall', type: 'INTEGER', pk: false },
+];
+
+const FOLDED_SHAPE: readonly ColumnShape[] = [
+  { name: 'hash', type: 'TEXT', pk: true },
+  { name: 'folded', type: 'INTEGER', pk: false },
+];
+
+/**
+ * Whether `table` has every column of `shape` (names exactly, declared
+ * types case-insensitively, primary key membership) and, when `exact`, no
+ * other column. A missing table has no columns and fails.
+ */
+function hasShape(
+  db: DatabaseSync,
+  table: string,
+  shape: readonly ColumnShape[],
+  exact: boolean,
+): boolean {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (exact && columns.length !== shape.length) {
+    return false;
+  }
+  return shape.every((expected) =>
+    columns.some(
+      (column) =>
+        column.name === expected.name &&
+        String(column.type).toUpperCase() === expected.type &&
+        Number(column.pk) > 0 === expected.pk,
+    ),
+  );
+}
+
+/**
+ * Reads the carry from the old `cursors`, `cursor_seen` and `folded`
+ * tables, or returns null when any of them lacks the expected shape
+ * (design.md "The expected shape"). Rows are filtered by `typeof()`, never
+ * repaired: a `cursors` row needs a TEXT actor and position columns that
+ * are all NULL or INTEGER, INTEGER, TEXT, TEXT; a `cursor_seen` row needs
+ * TEXT actor and hash, an INTEGER wall and a carried actor; an applied
+ * hash is a TEXT hash whose `folded` is the INTEGER 1. Any SQLite error
+ * other than busy becomes `CarryReadError` (a busy one cannot happen under
+ * the lock and propagates as it is).
+ */
+function readCarry(db: DatabaseSync): Carry | null {
+  try {
+    if (
+      !hasShape(db, 'cursors', CURSORS_SHAPE, true) ||
+      !hasShape(db, 'cursor_seen', CURSOR_SEEN_SHAPE, true) ||
+      !hasShape(db, 'folded', FOLDED_SHAPE, false)
+    ) {
+      return null;
+    }
+    const cursors = db
+      .prepare(
+        `SELECT actor, last_wall, last_counter, last_actor, last_hash FROM cursors
+         WHERE typeof(actor) = 'text'
+           AND ((typeof(last_wall) = 'null' AND typeof(last_counter) = 'null'
+                 AND typeof(last_actor) = 'null' AND typeof(last_hash) = 'null')
+             OR (typeof(last_wall) = 'integer' AND typeof(last_counter) = 'integer'
+                 AND typeof(last_actor) = 'text' AND typeof(last_hash) = 'text'))`,
+      )
+      .all()
+      .map((row) => CURSORS_SHAPE.map((column) => value(row, column.name)));
+    const actors = new Set(cursors.map((row) => row[0]));
+    const seen = db
+      .prepare(
+        `SELECT actor, hash, wall FROM cursor_seen
+         WHERE typeof(actor) = 'text' AND typeof(hash) = 'text' AND typeof(wall) = 'integer'`,
+      )
+      .all()
+      .filter((row) => actors.has(row.actor))
+      .map((row) => CURSOR_SEEN_SHAPE.map((column) => value(row, column.name)));
+    const applied = db
+      .prepare(
+        `SELECT hash FROM folded
+         WHERE typeof(hash) = 'text' AND typeof(folded) = 'integer' AND folded = 1`,
+      )
+      .all()
+      .map((row) => String(row.hash));
+    return { cursors, seen, applied };
+  } catch (error) {
+    if (isBusy(error)) {
+      throw error;
+    }
+    throw new CarryReadError(error);
+  }
+}
+
+/** A column of a row read by `readCarry`, whose SELECT names every column it reads. */
+function value(row: Record<string, SQLOutputValue>, column: string): SQLOutputValue {
+  return row[column] ?? null;
+}
+
+/**
+ * Writes the carry into the recreated schema: creates `cursor_seen` and
+ * `carried_applied`, then inserts the carried rows. Runs inside the
+ * recreate's transaction.
+ */
+function writeCarry(db: DatabaseSync, carry: Carry): void {
+  db.exec(CURSOR_SEEN);
+  db.exec(CARRIED_APPLIED);
+  const cursor = db.prepare(
+    'INSERT INTO cursors (actor, last_wall, last_counter, last_actor, last_hash) VALUES (?, ?, ?, ?, ?)',
+  );
+  for (const row of carry.cursors) {
+    cursor.run(...row);
+  }
+  const seen = db.prepare('INSERT INTO cursor_seen (actor, hash, wall) VALUES (?, ?, ?)');
+  for (const row of carry.seen) {
+    seen.run(...row);
+  }
+  const applied = db.prepare('INSERT INTO carried_applied (hash) VALUES (?)');
+  for (const hash of carry.applied) {
+    applied.run(hash);
+  }
+}
+
+/**
+ * The hashes the old cache had applied, kept by a carrying recreate until
+ * the first fold that records events consumes and drops it (see
+ * `priorApplied` in `src/store/engine.ts`).
+ */
+const CARRIED_APPLIED = `
+CREATE TABLE carried_applied (
+  hash TEXT PRIMARY KEY
+);
+`;
 
 /**
  * Creates `cursor_seen` when it is missing (the schema step drops it and
@@ -347,7 +601,10 @@ function storedSchemaVersion(db: DatabaseSync): string | null {
   return typeof row?.value === 'string' ? row.value : null;
 }
 
-/** Drops every table (children first) and creates the schema documented above. */
+/**
+ * Drops every table (children first), `carried_applied` included, and
+ * creates the schema documented above.
+ */
 const SCHEMA = `
 DROP TABLE IF EXISTS comments;
 DROP TABLE IF EXISTS links;
@@ -357,6 +614,7 @@ DROP TABLE IF EXISTS cursors;
 DROP TABLE IF EXISTS cursor_seen;
 DROP TABLE IF EXISTS folded;
 DROP TABLE IF EXISTS meta;
+DROP TABLE IF EXISTS carried_applied;
 CREATE TABLE tickets (
   id           TEXT PRIMARY KEY,
   title        TEXT NOT NULL,

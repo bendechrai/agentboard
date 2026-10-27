@@ -13,7 +13,9 @@ tested and documented in README.md.
 - **Board core** (`board-events`, `board-cache`, `board-concurrency`,
   `board-cli`): the append-only event log with a disposable SQLite cache,
   every CLI command, `rebuild`, `sync` over git, inbox cursors with
-  `inbox` and `watch`, and the concurrency and crash property tests.
+  `inbox` and `watch` (kept across a cache schema upgrade, so an upgrade
+  does not replay the whole board to every actor), and the concurrency
+  and crash property tests.
   ADRs 0001 to 0005.
 - **OpenSpec integration** (`board-openspec-integration`):
   `import-change`, source-neutral task links and `close-merged`.
@@ -125,10 +127,12 @@ them on it (see "Known gaps").
 
 ## What is next
 
-1. `keep-cursors-on-upgrade` (in progress, in `openspec/changes/`,
-   proposed in PR #106): a cache schema upgrade keeps each actor's inbox
-   position instead of replaying the whole board (ticket
-   01M5Y0T56JQ1HS04A3N042Y2Z4). Its implementation is in review (PR #108).
+1. `keep-cursors-on-upgrade` (in `openspec/changes/`, proposed in PR
+   #106): a cache schema upgrade keeps every actor's inbox position, and
+   the first fold after it delivers the events the old version did not
+   apply (ticket 01M5Y1T56ZCBNYZAHDK1THTPSK). Its one group is
+   implemented on `store/keep-cursors-on-upgrade`; once it is merged the
+   change is archived, folding its board-cache delta into the main spec.
 2. `no-echo-refusals` (in progress, in `openspec/changes/`, proposed in
    PR #110): no refusal or hint repeats the input it refuses, and `init
    --remote` never repeats the URL given or its credentials (ticket
@@ -141,13 +145,6 @@ them on it (see "Known gaps").
   `release --force` or `config set` (README, "Upgrading a board shared
   between machines"); the release notes for the version that ships it
   must say so.
-- A cache schema upgrade drops inbox cursors: on a `schema_version`
-  mismatch the cache drops every table, the non-derivable `cursors` and
-  `cursor_seen` included, so after upgrading (0.2.0 to 0.3.0 moves the
-  cache schema from 4 to 5) every actor's next `inbox` returns the whole
-  board once, and an agent following the guidance may act on stale
-  events: ticket 01M5Y0T56JQ1HS04A3N042Y2Z4. A fix is being proposed as
-  the OpenSpec change `keep-cursors-on-upgrade`.
 - The `agentboard` on PATH on the maintainer's machine is the published
   0.2.0 (guidance version 2) until 0.3.0 is installed. Run from this
   repository it reports the version 3 guidance as `stale` and suggests
