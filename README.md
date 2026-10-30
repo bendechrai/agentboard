@@ -5,6 +5,8 @@ project.
 
 Website: https://bendechrai.github.io/agentboard/
 
+[![The agentboard landing page: a ticket board your agents can share](docs/media/landing.jpg)](https://bendechrai.github.io/agentboard/)
+
 Status: early development. Every command below, including the MCP server,
 is implemented and tested, but until 1.0 commands, flags and output may
 still change between minor versions.
