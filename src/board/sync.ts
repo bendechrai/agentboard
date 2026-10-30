@@ -443,7 +443,7 @@ function hasUpstream(git: GitRunner, branch: string): boolean {
 function remoteHasBranch(git: GitRunner, remote: string, branch: string): boolean {
   const out = git.attempt('ls-remote', '--heads', remote, `refs/heads/${branch}`);
   if (isGitFailure(out)) {
-    throw syncFailed(`reaching ${asciiText(remote)}`, out, git);
+    throw syncFailed(`reaching ${remote}`, out, git);
   }
   return out.trim() !== '';
 }
@@ -464,7 +464,7 @@ function pull(git: GitRunner, dir: string, remote: string, branch: string): void
         'git rebase --continue (or git rebase --abort), then run agentboard sync again',
     );
   }
-  throw syncFailed(`pulling from ${asciiText(remote)}`, out, git);
+  throw syncFailed(`pulling from ${remote}`, out, git);
 }
 
 /**
@@ -487,5 +487,5 @@ function push(
   if (rejected && !last) {
     return false;
   }
-  throw syncFailed(`pushing to ${asciiText(remote)}`, out, git);
+  throw syncFailed(`pushing to ${remote}`, out, git);
 }

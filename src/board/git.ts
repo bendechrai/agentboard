@@ -149,13 +149,32 @@ export function isGitFailure(result: string | GitFailure): result is GitFailure 
  * trimmed, one line. Pure.
  */
 export function firstErrorLine(failure: GitFailure): string {
+  return asciiText(rawErrorLine(failure));
+}
+
+/**
+ * `firstErrorLine` before `asciiText`: the line as git wrote it, for a
+ * caller that sanitises it against URLs first (a URL holding a non-ASCII
+ * character or a backslash is only found in the raw line) and escapes it
+ * afterwards. Pure.
+ */
+export function rawErrorLine(failure: GitFailure): string {
   const all = `${failure.stderr}\n${failure.stdout}`
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line !== '');
-  const line = all.find((l) => /^(fatal|error):/.test(l)) ?? all[0] ?? 'git failed';
-  return asciiText(line);
+  return all.find((l) => /^(fatal|error):/.test(l)) ?? all[0] ?? 'git failed';
 }
+
+/** The environment variables curl reads a proxy from (lower case, and the upper-case forms git documents). */
+const PROXY_VARIABLES: readonly string[] = [
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+];
 
 /**
  * Every URL configured for the remotes of the git repository at `dir`
@@ -173,11 +192,29 @@ export function firstErrorLine(failure: GitFailure): string {
  * `env`, a value without `://` also as `http://<value>` (review round 1,
  * design.md "Review round 1"). Deduplicated, longest first, empty values
  * dropped. A repository with no remotes, or one git cannot read, gives
- * `[]`; never throws. Runs git with the sanitised environment of
- * `GitRunnerOptions.env` (`env` defaults to `process.env`); contacts no
+ * `[]` apart from the proxies of `env` (which git would still use from
+ * that directory); never throws. Runs git with the sanitised environment
+ * of `GitRunnerOptions.env` (`env` defaults to `process.env`); contacts no
  * remote.
  */
 export function configuredRemoteUrls(dir: string, env?: Env): string[] {
+  const urls = new Set<string>();
+  const add = (value: string): void => {
+    const url = value.trim();
+    if (url !== '') {
+      urls.add(url);
+    }
+  };
+  // A proxy without a scheme is read by curl as `http://<value>`, which is
+  // how git prints it; both forms are listed so its user information is
+  // known.
+  const addProxy = (value: string): void => {
+    const proxy = value.trim();
+    add(proxy);
+    if (proxy !== '' && !proxy.includes('://')) {
+      add(`http://${proxy}`);
+    }
+  };
   try {
     const git = gitRunner(dir, { env });
     const lines = (out: string | GitFailure): string[] =>
@@ -187,23 +224,50 @@ export function configuredRemoteUrls(dir: string, env?: Env): string[] {
             .split('\n')
             .map((line) => line.trim())
             .filter((line) => line !== '');
-    const urls = new Set<string>();
-    for (const name of lines(git.attempt('remote'))) {
+    // `config -z --get-regexp`: `<key>\n<value>` entries, NUL-terminated.
+    const values = (out: string | GitFailure): string[] =>
+      isGitFailure(out)
+        ? []
+        : out
+            .split('\0')
+            .filter((entry) => entry !== '')
+            .map((entry) => entry.slice(entry.indexOf('\n') + 1));
+    const names = lines(git.attempt('remote'));
+    for (const name of names) {
       for (const out of [
         git.attempt('config', '--get-all', `remote.${name}.url`),
         git.attempt('config', '--get-all', `remote.${name}.pushurl`),
         git.attempt('remote', 'get-url', '--all', name),
         git.attempt('remote', 'get-url', '--push', '--all', name),
       ]) {
-        for (const url of lines(out)) {
-          urls.add(url);
-        }
+        lines(out).forEach(add);
       }
+      lines(git.attempt('config', '--get-all', `remote.${name}.proxy`)).forEach(addProxy);
     }
-    return longestFirst(urls);
+    // A remote named by URL: git accepts a URL where a remote name goes,
+    // and `sync` passes it to git as it is.
+    const namedByUrl = (value: string): void => {
+      const name = value.trim();
+      if (!names.includes(name) && /[:/]/.test(name)) {
+        add(name);
+      }
+    };
+    values(git.attempt('config', '-z', '--get-regexp', '^branch\\..*\\.remote$')).forEach(namedByUrl);
+    lines(git.attempt('config', '--get-all', 'agentboard.remote')).forEach(namedByUrl);
+    lines(git.attempt('config', '--get-all', 'http.proxy')).forEach(addProxy);
+    lines(git.attempt('config', '--get-all', 'https.proxy')).forEach(addProxy);
+    values(git.attempt('config', '-z', '--get-regexp', '^http\\..*\\.proxy$')).forEach(addProxy);
   } catch {
-    return [];
+    // git could not be run at all: only the environment's proxies are known.
   }
+  const given = env ?? process.env;
+  for (const name of PROXY_VARIABLES) {
+    const value = given[name];
+    if (value !== undefined) {
+      addProxy(value);
+    }
+  }
+  return longestFirst(urls);
 }
 
 /** `values` as an array, longest first, equal lengths in insertion order. */
@@ -313,8 +377,8 @@ export function sanitizeRemoteLine(line: string, urls: readonly string[]): strin
  * `user@host:path` are returned unchanged. Pure; never throws.
  */
 export function withoutUserinfo(url: string): string {
-  void url;
-  throw new Error('not implemented');
+  const split = splitUserinfo(url);
+  return split === null ? url : `${split.scheme}${split.rest}`;
 }
 
 /** Options of `gitRunner`. */

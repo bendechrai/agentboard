@@ -33,11 +33,12 @@ import { openBoard } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
 import { boardExists, locateBoard, type LocateOptions } from '../store/locate.js';
 import {
-  firstErrorLine,
   gitRunner,
   gitVersion,
   isGitFailure,
+  rawErrorLine,
   sanitizeRemoteLine,
+  withoutUserinfo,
   type GitFailure,
   type GitRunner,
 } from './git.js';
@@ -216,8 +217,9 @@ export function sanitizeGitLine(line: string, given: string, passed: string = gi
  *    read it as an option: `--upload-pack=<command>` run against the
  *    host's own `origin`), or a `file://` URL whose host part is neither
  *    empty nor `localhost`: `BoardError(1, 'usage')` naming `--remote`
- *    and not the value (see "Refusal messages" below), before any git command runs with the value (the host
- *    repository's remote is never contacted; nothing is created). Every
+ *    and not the value (see "Refusal messages" below), before any git
+ *    command runs with the value (the host repository's remote is never
+ *    contacted; nothing is created). Every
  *    git command that is given the URL (`ls-remote`, `clone`) passes it
  *    after `--`. `git` cannot be run: `BoardError(1, 'git-missing')` as
  *    `initBoard`.
@@ -255,13 +257,14 @@ export function sanitizeGitLine(line: string, given: string, passed: string = gi
  *      that nothing changed.
  *    - `standalone` whose chosen remote has another URL:
  *      `BoardError(1, 'remote-mismatch')` naming the remote, the URL it
- *      has (configuration), "the URL given" in place of the value and
- *      `git -C <dir> remote set-url <name> <url>` with the literal `<url>`
- *      (the text `remote set-url` appears); nothing changes. When the chosen remote
- *      is one `agentboard.remote` names and the repository does not have
+ *      has (configuration, shown through `withoutUserinfo`), "the URL
+ *      given" in place of the value and `git -C <dir> remote set-url
+ *      <name> <url>` with the literal `<url>` (the text `remote set-url`
+ *      appears); nothing changes. When the chosen remote is one
+ *      `agentboard.remote` names and the repository does not have
  *      (`chosen.url` null), the message names `agentboard.remote` and the
- *      missing name instead (and `<url>` in its `remote add` step) and does not suggest `remote set-url`, which
- *      would fail.
+ *      missing name instead (and `<url>` in its `remote add` step) and
+ *      does not suggest `remote set-url`, which would fail.
  *    - `broken-host-link` or `not-a-repository`: not this command's job;
  *      `BoardError(2, 'board-link-broken')` for a broken link (it is a
  *      host worktree; `agentboard init` repairs it) and
@@ -317,8 +320,8 @@ export function sanitizeGitLine(line: string, given: string, passed: string = gi
  *      checked out as the clone's branch (tracking `origin`) before the
  *      check; when that checkout fails (the branch's tree cannot be
  *      read), the temporary directory is removed and the refusal is
- *      `BoardError(1, 'not-a-board')` quoting git (through `sanitizeGitLine`), never a
- *      raw error.
+ *      `BoardError(1, 'not-a-board')` quoting git (sanitised as the
+ *      `ls-remote` line is), never a raw error.
  *      With `events/` present, the temporary directory is renamed
  *      to `dir`, the host `.gitignore` entry is written as above, and the
  *      board is opened once so its events are folded into the cache
@@ -411,8 +414,12 @@ export function initBoardWithRemote(url: string, options?: LocateOptions): InitR
     createBareRepository(path, env);
   }
   const git = gitRunner(base, { env });
+  // Git's line is sanitised raw (before `asciiText`) against the value
+  // given, the URL git was given for it, and the remote and proxy URLs of
+  // the directory the command runs in (a proxy credential is printed by
+  // git whichever repository it serves), then escaped.
   const quote = (failure: GitFailure): string =>
-    sanitizeGitLine(firstErrorLine(failure), url, remoteUrl);
+    asciiText(sanitizeRemoteLine(rawErrorLine(failure), [url, remoteUrl, ...git.remoteUrls()]));
   const refs = git.attempt('ls-remote', '--', remoteUrl);
   if (isGitFailure(refs)) {
     throw new BoardError(
@@ -574,12 +581,12 @@ function existingBoard(dir: string, remoteUrl: string, env: Env): InitRemoteResu
       created: false,
       joined: false,
       remote: chosen.name,
-      remoteUrl,
+      remoteUrl: withoutUserinfo(remoteUrl),
       sync: null,
       warnings: [],
       message:
         `board already exists at ${asciiText(dir)} (standalone model) with the remote ` +
-        `${asciiText(chosen.name)} at ${asciiText(remoteUrl)}; nothing changed`,
+        `${asciiText(chosen.name)} at ${asciiText(withoutUserinfo(remoteUrl))}; nothing changed`,
     };
   }
   if (chosen.url === null) {
@@ -599,7 +606,7 @@ function existingBoard(dir: string, remoteUrl: string, env: Env): InitRemoteResu
     1,
     'remote-mismatch',
     `the board at ${dir} already has the remote ${asciiText(chosen.name)} at ` +
-      `${asciiText(chosen.url)}, not the URL given; keep it, or change it with ` +
+      `${asciiText(withoutUserinfo(chosen.url))}, not the URL given; keep it, or change it with ` +
       `git -C ${dir} remote set-url ${asciiText(chosen.name)} <url>; ` +
       'nothing changed',
   );
@@ -626,12 +633,12 @@ function attachBoard(
     created: false,
     joined: false,
     remote: 'origin',
-    remoteUrl,
+    remoteUrl: withoutUserinfo(remoteUrl),
     sync,
     warnings: [...sync.warnings],
     message:
       `attached the board at ${asciiText(dir)} (standalone model) to the remote origin at ` +
-      `${asciiText(remoteUrl)}\n${sync.message}`,
+      `${asciiText(withoutUserinfo(remoteUrl))}\n${sync.message}`,
   };
 }
 
@@ -657,12 +664,12 @@ function createBoard(
     created: true,
     joined: false,
     remote: 'origin',
-    remoteUrl,
+    remoteUrl: withoutUserinfo(remoteUrl),
     sync,
     warnings: [...sync.warnings],
     message:
       `created the board at ${asciiText(dir)} (standalone model: a git repository of its own, ` +
-      `shared through the remote origin at ${asciiText(remoteUrl)})\n${sync.message}`,
+      `shared through the remote origin at ${asciiText(withoutUserinfo(remoteUrl))})\n${sync.message}`,
   };
 }
 
@@ -732,11 +739,11 @@ function cloneBoard(
     created: true,
     joined: true,
     remote: 'origin',
-    remoteUrl,
+    remoteUrl: withoutUserinfo(remoteUrl),
     sync: null,
     warnings: [],
     message:
-      `cloned the board at ${asciiText(dir)} from ${asciiText(remoteUrl)} (standalone model: ` +
+      `cloned the board at ${asciiText(dir)} from ${asciiText(withoutUserinfo(remoteUrl))} (standalone model: ` +
       `a git repository of its own) with ${plural(events, 'event')}`,
   };
 }

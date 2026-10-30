@@ -53,6 +53,8 @@ import {
   gitVersion,
   isGitFailure,
   meetsGitFloor,
+  rawErrorLine,
+  withoutUserinfo,
   type GitFailure,
   type GitRunner,
 } from './git.js';
@@ -78,6 +80,7 @@ import {
   headExists,
   plural,
   remoteErrorLine,
+  remoteMessage,
   syncFailed,
   unmergedPaths,
   zList,
@@ -644,9 +647,11 @@ export interface IntoHostResult extends InitResult {
    * The URL of the standalone board's chosen remote as written in its
    * configuration (the raw `remote.<name>.url`, so a URL that
    * `url.<base>.insteadOf` rewrites is reported as the user wrote it,
-   * which is the remote they retire) for `moved`, read from the kept
-   * repository for `resumed`; null when the standalone board had no
-   * remote, and for `unchanged` and `repaired`.
+   * which is the remote they retire), without its user information
+   * (`withoutUserinfo`; board-cli "Remote URLs are shown without
+   * credentials"), for `moved`, read from the kept repository for
+   * `resumed`; null when the standalone board had no remote, and for
+   * `unchanged` and `repaired`.
    */
   readonly oldRemoteUrl: string | null;
   /**
@@ -1305,7 +1310,7 @@ function checkStandalone(dir: string, info: BoardModelInfo, env: Env): MovePlan 
     `+refs/heads/${branch.trim()}:${tracking}`,
   );
   if (isGitFailure(fetched)) {
-    throw syncFailed(`fetching ${asciiText(branch.trim())} from ${asciiText(name)}`, fetched, git);
+    throw syncFailed(`fetching ${branch.trim()} from ${name}`, fetched, git);
   }
   if (!isAncestor(git, 'HEAD', tracking)) {
     throw new BoardError(
@@ -1316,7 +1321,12 @@ function checkStandalone(dir: string, info: BoardModelInfo, env: Env): MovePlan 
     );
   }
   const url = git.attempt('config', '--get', `remote.${name}.url`);
-  return { sourceTip: tracking, oldRemoteUrl: isGitFailure(url) ? null : url.trim(), gitDir, head };
+  return {
+    sourceTip: tracking,
+    oldRemoteUrl: isGitFailure(url) ? null : withoutUserinfo(url.trim()),
+    gitDir,
+    head,
+  };
 }
 
 /** Step 1, check 6: the host repository's remote, refused when ambiguous. */
@@ -1572,9 +1582,12 @@ function lockedMove(
     const listed = worktree.attempt('ls-remote', target, BOARD_REF);
     if (isGitFailure(listed)) {
       warnings.push(
-        `the host remote ${asciiText(remote.name)} could not be reached (${remoteErrorLine(listed, worktree)}); ` +
-          `the board is moved anyway, and agentboard sync publishes it once ${asciiText(remote.name)} ` +
-          'can be reached',
+        remoteMessage(
+          `the host remote ${remote.name} could not be reached (${rawErrorLine(listed)}); ` +
+            `the board is moved anyway, and agentboard sync publishes it once ${remote.name} ` +
+            'can be reached',
+          worktree,
+        ),
       );
     } else if (listed.trim() !== '') {
       const fetched = worktree.attempt('fetch', '--no-tags', target, BOARD_REF);
@@ -1582,7 +1595,8 @@ function lockedMove(
         if (!adopted) {
           discardTemporary(host, temp);
         }
-        throw syncFailed(`fetching ${BOARD_REF} from ${asciiText(remote.name)}`, fetched, worktree);
+        // `host` (the same repository): the temporary worktree may be gone.
+        throw syncFailed(`fetching ${BOARD_REF} from ${remote.name}`, fetched, host);
       }
       if (!isAncestor(worktree, 'FETCH_HEAD', 'HEAD')) {
         rebaseOnto(
@@ -2156,7 +2170,8 @@ function resumedMove(
 ): IntoHostResult {
   const scratch = join(commonDir(gitRunner(hostRoot, { env }), hostRoot), AGENTBOARD_GIT_SUBDIR);
   const keptAt = newestKept(scratch);
-  const oldRemoteUrl = keptAt === null ? null : keptRemoteUrl(keptAt, env);
+  const kept = keptAt === null ? null : keptRemoteUrl(keptAt, env);
+  const oldRemoteUrl = kept === null ? null : withoutUserinfo(kept);
   // A kill before the deletions of step 6 leaves the temporary refs behind.
   deleteTemporaryRefs(hostGit(hostRoot, { env }));
   if (keptAt !== null) {

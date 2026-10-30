@@ -27,7 +27,6 @@ import {
   gitVersion,
   isGitFailure,
   meetsGitFloor,
-  sanitizeRemoteLine,
   type GitRunner,
 } from './git.js';
 import { BOARD_REF, type BoardModelInfo } from './model.js';
@@ -41,6 +40,7 @@ import {
   hostTrackedPaths,
   hostWarning,
   plural,
+  remoteMessage,
   stageAndCommit,
   syncFailed,
   unmergedPaths,
@@ -538,7 +538,7 @@ function isRelativePathUrl(url: string): boolean {
 function remoteHasRef(git: GitRunner, remote: string, target: string): boolean {
   const out = git.attempt('ls-remote', target, BOARD_REF);
   if (isGitFailure(out)) {
-    throw syncFailed(`reaching ${asciiText(remote)}`, out, git);
+    throw syncFailed(`reaching ${remote}`, out, git);
   }
   return out.trim() !== '';
 }
@@ -547,7 +547,7 @@ function remoteHasRef(git: GitRunner, remote: string, target: string): boolean {
 function fetchRef(git: GitRunner, remote: string, target: string): void {
   const out = git.attempt('fetch', '--no-tags', target, BOARD_REF);
   if (isGitFailure(out)) {
-    throw syncFailed(`fetching ${BOARD_REF} from ${asciiText(remote)}`, out, git);
+    throw syncFailed(`fetching ${BOARD_REF} from ${remote}`, out, git);
   }
 }
 
@@ -586,7 +586,7 @@ function push(git: GitRunner, remote: string, target: string, last: boolean): bo
     .split('\n')
     .map((line) => PUSH_REFUSAL.exec(line)?.[1]?.trim() ?? null)
     .filter((reason): reason is string => reason !== null);
-  const what = `pushing ${BOARD_REF} to ${asciiText(remote)}`;
+  const what = `pushing ${BOARD_REF} to ${remote}`;
   const moved = (reason: string): boolean =>
     reason.startsWith('[rejected]') ||
     (reason.startsWith('[remote rejected]') && LOST_RACE.test(reason));
@@ -599,22 +599,24 @@ function push(git: GitRunner, remote: string, target: string, last: boolean): bo
   const refused = reasons.find((reason) => reason.startsWith('[remote rejected]'));
   if (refused !== undefined) {
     // The remote's own lines may quote a URL with credentials (a hook
-    // echoing the push URL): sanitised like git's own lines.
-    const urls = git.remoteUrls();
+    // echoing the push URL): the whole message is sanitised like git's own
+    // lines, raw first and escaped afterwards (`remoteMessage`).
     const said = out.stderr
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line.startsWith('remote:'))
-      .map((line) => asciiText(line.slice('remote:'.length).trim()))
-      .filter((line) => line !== '')
-      .map((line) => sanitizeRemoteLine(line, urls));
+      .map((line) => line.slice('remote:'.length).trim())
+      .filter((line) => line !== '');
     throw new BoardError(
       3,
       'sync-failed',
-      `${what} failed: the remote refused it (${asciiText(refused)})` +
-        `${said.length > 0 ? `: ${said.join('; ')}` : ''}; fix what the remote names ` +
-        `(a hook, or a host that does not accept refs/agentboard/*; see agentboard init --remote), ` +
-        'then run agentboard sync again',
+      remoteMessage(
+        `${what} failed: the remote refused it (${refused})` +
+          `${said.length > 0 ? `: ${said.join('; ')}` : ''}; fix what the remote names ` +
+          `(a hook, or a host that does not accept refs/agentboard/*; see agentboard init --remote), ` +
+          'then run agentboard sync again',
+        git,
+      ),
     );
   }
   throw syncFailed(what, out, git);

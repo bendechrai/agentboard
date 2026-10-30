@@ -27,6 +27,7 @@ import {
   gitVersion,
   isGitFailure,
   meetsGitFloor,
+  withoutUserinfo,
   type GitRunner,
   type GitRunnerOptions,
 } from './git.js';
@@ -344,8 +345,16 @@ export function remoteReport(dir: string, options?: RemoteReportOptions): Remote
     refCommit: info.model === 'host' ? commitOf(git, BOARD_REF) : null,
     branch: info.model === 'standalone' ? choice.branch : null,
     head,
-    remote: choice.chosen,
-    remotes: choice.remotes,
+    // URLs are shown without their user information (board-cli "Remote
+    // URLs are shown without credentials"); git keeps them as configured.
+    remote:
+      choice.chosen === null
+        ? null
+        : {
+            ...choice.chosen,
+            url: choice.chosen.url === null ? null : withoutUserinfo(choice.chosen.url),
+          },
+    remotes: choice.remotes.map((remote) => ({ ...remote, url: withoutUserinfo(remote.url) })),
     problems,
   };
 }
