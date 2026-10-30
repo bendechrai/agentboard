@@ -124,19 +124,24 @@ them on it (see "Known gaps").
   (ticket 01M5XPHX2V5DHQY0RB6M5JWRD6) and documented in README "Moving a
   board into the host repository" (PR #111); the change is archived as
   `openspec/changes/archive/2026-10-27-guard-stale-temporary`.
+- **Inbox positions survive a cache schema upgrade** (`board-cache`):
+  when the cache was written by an earlier schema version, the recreate
+  carries each actor's cursor and seen set and the old cache's applied
+  events inside the same transaction, so the first `inbox` after an
+  upgrade returns only events after the actor's position plus any whose
+  outcome the new version changed (0.2.0 recorded reconcile, renumber and
+  supersede as unknown kinds). Old long-running `watch`, `serve`, `top` or
+  `mcp` processes must be stopped before upgrading. Delivered in PR #108
+  (ticket 01M5Y0T56JQ1HS04A3N042Y2Z4); archived as
+  `openspec/changes/archive/2026-10-30-keep-cursors-on-upgrade`.
 
 ## What is next
 
-1. `keep-cursors-on-upgrade` (in `openspec/changes/`, proposed in PR
-   #106): a cache schema upgrade keeps every actor's inbox position, and
-   the first fold after it delivers the events the old version did not
-   apply (ticket 01M5Y1T56ZCBNYZAHDK1THTPSK). Its one group is
-   implemented on `store/keep-cursors-on-upgrade`; once it is merged the
-   change is archived, folding its board-cache delta into the main spec.
-2. `no-echo-refusals` (in progress, in `openspec/changes/`, proposed in
+1. `no-echo-refusals` (in progress, in `openspec/changes/`, proposed in
    PR #110): no refusal or hint repeats the input it refuses, and `init
    --remote` never repeats the URL given or its credentials (ticket
-   01M5X7EGBFRQA4BH7R0A35ZW50). Both task groups are being written.
+   01M5X7EGBFRQA4BH7R0A35ZW50). Both task groups are in review (PRs #117
+   and #113).
 
 ## Known gaps
 
