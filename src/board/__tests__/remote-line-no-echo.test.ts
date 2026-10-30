@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { expectNoLeak } from '../../__tests__/harness/secret-fixtures.js';
-import { configuredRemoteUrls, sanitizeRemoteLine } from '../git.js';
+import { configuredRemoteUrls, sanitizeRemoteLine, withoutUserinfo } from '../git.js';
 import { sanitizeGitLine } from '../init-remote.js';
 import { git, gitRepo, tempDir } from './helpers.js';
 import { GH_TOKEN, URL_TOKEN, localEnv } from './no-echo-remote-helpers.js';
@@ -59,6 +59,82 @@ describe('configuredRemoteUrls', () => {
     const repo = gitRepo(join(tempDir(), 'r'));
     git(repo, 'remote', 'add', 'origin', 'https://127.0.0.1:1/x.git');
     expect(configuredRemoteUrls(repo, env)).toEqual(['https://127.0.0.1:1/x.git']);
+  });
+});
+
+describe('configuredRemoteUrls: remotes named by URL and proxies (review round 1)', () => {
+  it('every branch.<b>.remote and agentboard.remote value that names no configured remote and holds : or /, as given', () => {
+    const env = localEnv();
+    const repo = gitRepo(join(tempDir(), 'r'));
+    git(repo, 'remote', 'add', 'origin', 'https://host.example/a.git');
+    git(repo, 'config', 'branch.main.remote', `http://agent:${URL_TOKEN}@127.0.0.1:1/x.git`);
+    git(repo, 'config', 'branch.main.merge', 'refs/heads/main');
+    git(repo, 'config', 'branch.dev.remote', 'origin');
+    // A bare word naming no remote is kept out (board-cli "Configured
+    // remote that does not exist" names it).
+    git(repo, 'config', 'branch.old.remote', 'nope');
+    git(repo, 'config', 'agentboard.remote', `https://127.0.0.1:1/${GH_TOKEN}.git`);
+
+    expect([...configuredRemoteUrls(repo, env)].sort()).toEqual(
+      [
+        'https://host.example/a.git',
+        `http://agent:${URL_TOKEN}@127.0.0.1:1/x.git`,
+        `https://127.0.0.1:1/${GH_TOKEN}.git`,
+      ].sort(),
+    );
+  });
+
+  it('the proxies git uses: http.proxy, http.<url>.proxy, https.proxy and remote.<name>.proxy from the configuration', () => {
+    const env = localEnv();
+    const repo = gitRepo(join(tempDir(), 'r'));
+    git(repo, 'remote', 'add', 'origin', 'http://127.0.0.1:1/x.git');
+    git(repo, 'config', 'http.proxy', `http://${GH_TOKEN}%20a@127.0.0.1:3128`);
+    git(repo, 'config', 'http.http://127.0.0.1:1/.proxy', `http://${GH_TOKEN}%2Fb@127.0.0.1:3129`);
+    git(repo, 'config', 'https.proxy', `http://${GH_TOKEN}%27c@127.0.0.1:3130`);
+    git(repo, 'config', 'remote.origin.proxy', `http://agent:${URL_TOKEN}@127.0.0.1:3131`);
+
+    const urls = configuredRemoteUrls(repo, env);
+
+    for (const proxy of [
+      `http://${GH_TOKEN}%20a@127.0.0.1:3128`,
+      `http://${GH_TOKEN}%2Fb@127.0.0.1:3129`,
+      `http://${GH_TOKEN}%27c@127.0.0.1:3130`,
+      `http://agent:${URL_TOKEN}@127.0.0.1:3131`,
+    ]) {
+      expect(urls).toContain(proxy);
+    }
+  });
+
+  it.each(['http_proxy', 'https_proxy', 'all_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY'])(
+    'the proxy of the environment given, %s; a value without a scheme also as http://<value>',
+    (name) => {
+      const repo = gitRepo(join(tempDir(), 'r'));
+      const withScheme = configuredRemoteUrls(
+        repo,
+        localEnv({ [name]: `http://${GH_TOKEN}%20x@127.0.0.1:3128` }),
+      );
+      expect(withScheme).toEqual([`http://${GH_TOKEN}%20x@127.0.0.1:3128`]);
+      const bare = configuredRemoteUrls(repo, localEnv({ [name]: `agent:${URL_TOKEN}@127.0.0.1:3128` }));
+      expect([...bare].sort()).toEqual(
+        [`agent:${URL_TOKEN}@127.0.0.1:3128`, `http://agent:${URL_TOKEN}@127.0.0.1:3128`].sort(),
+      );
+    },
+  );
+
+  it('a proxy user name git 2.32 prints decoded (%20, %2F, %27) is redacted once the proxy is in the list', () => {
+    for (const [encoded, decoded] of [
+      ['%20', ' '],
+      ['%2F', '/'],
+      ['%27', "'"],
+    ] as const) {
+      const proxy = `http://${GH_TOKEN}${encoded}x@127.0.0.1:3128`;
+      const line = `fatal: could not read Password for 'http://${GH_TOKEN}${decoded}x@127.0.0.1:3128': terminal prompts disabled`;
+      const out = sanitizeRemoteLine(line, [proxy]);
+      expectNoLeak(out);
+      expect(out).toBe(
+        "fatal: could not read Password for 'http://<redacted>@127.0.0.1:3128': terminal prompts disabled",
+      );
+    }
   });
 });
 
@@ -130,5 +206,21 @@ describe('sanitizeRemoteLine', () => {
         expectNoLeak(sanitizeRemoteLine(line, [url]));
       }
     }
+  });
+});
+
+describe('withoutUserinfo: the form a remote URL is shown in (review round 1 addendum)', () => {
+  it.each([
+    [`https://agent:${URL_TOKEN}@host.example/x.git`, 'https://host.example/x.git'],
+    [`http://${GH_TOKEN}@127.0.0.1:4242/me/x.git`, 'http://127.0.0.1:4242/me/x.git'],
+    [`HTTPS://a:p@${URL_TOKEN}@host.example/x.git`, 'HTTPS://host.example/x.git'],
+    [`ssh://agent:${URL_TOKEN}@[::1]:22/x.git`, 'ssh://[::1]:22/x.git'],
+    ['https://host.example/path@v2/x.git', 'https://host.example/path@v2/x.git'],
+    ['https://host.example/x.git', 'https://host.example/x.git'],
+    ['git@host.example:me/x.git', 'git@host.example:me/x.git'],
+    ['/srv/boards/x.git', '/srv/boards/x.git'],
+    ['', ''],
+  ])('%s -> %s', (url, shown) => {
+    expect(withoutUserinfo(url)).toBe(shown);
   });
 });
