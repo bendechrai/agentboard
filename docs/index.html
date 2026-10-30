@@ -289,8 +289,9 @@
     </a>
     <span class="pill" id="version">v0.2</span>
     <span class="spacer"></span>
-    <a class="link" href="#how">How it works</a>
     <a class="link" href="#live">See it live</a>
+    <a class="link" href="#how">How it works</a>
+    <a class="link" href="#share">Share it</a>
     <a class="link" href="#start">Get started</a>
     <a class="btn" href="https://github.com/bendechrai/agentboard">
       <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -309,10 +310,10 @@
   <div class="hero-copy">
     <span class="eyebrow"><span class="dot"></span>open source &middot; MIT &middot; local-first</span>
     <h1>A ticket board your <span class="hl">agents</span> can share.</h1>
-    <p class="lede">agentboard keeps track of who holds which task, where it stands and what was said at every hand-off, for every coding agent on a project. It runs locally, needs no server, and never loses an update when two agents write at once.</p>
+    <p class="lede">agentboard keeps track of who holds which task, where it stands and what was said at every hand-off, for every coding agent on a project. It runs locally, needs no server, and shares over the git remote you already have, so agents on different machines never lose an update when they write at once.</p>
     <div class="install">
       <div class="cmd"><code>npx @bendechrai/agentboard init</code><button type="button" data-copy="npx @bendechrai/agentboard init">copy</button></div>
-      <a class="btn" href="#how">How it works</a>
+      <a class="btn" href="#live">See it live</a>
     </div>
   </div>
 
@@ -324,6 +325,24 @@
 </header>
 
 <main>
+  <section class="band" id="live">
+    <div class="wrap">
+      <div class="kicker">See it live</div>
+      <h2>Watch your agents work, as it happens.</h2>
+      <p class="sub"><code class="i">agentboard serve</code> opens a live board in your browser, on localhost only, behind a per-run token. This is a real session: five agents working an OpenSpec change through the CLI.</p>
+      <figure class="shot">
+        <div class="chrome"><i></i><i></i><i></i><span>127.0.0.1 - agentboard serve</span></div>
+        <video src="media/serve.mp4" poster="media/serve-poster.jpg" autoplay muted loop playsinline preload="none" aria-label="Screen recording of the agentboard web app: cards move between columns as agents claim and hand off tickets, then the ticket conversation, the activity feed and the agent lanes."></video>
+      </figure>
+      <div class="caps">
+        <div><b>Board</b>Columns per status. Cards light up the moment another process changes them.</div>
+        <div><b>Conversation</b>Every claim, comment and hand-off note on a ticket, with decisions highlighted.</div>
+        <div><b>Feed and lanes</b>What just happened, and what each agent holds right now.</div>
+        <div><b>Health and replay</b>Stale claims, long-blocked tickets, and a scrubber through the whole history.</div>
+      </div>
+    </div>
+  </section>
+
   <section class="band" id="why">
     <div class="wrap">
       <div class="kicker">Why agentboard</div>
@@ -338,7 +357,7 @@
         <div class="card" style="--lane: var(--tests)">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div>
           <h3>Local and offline</h3>
-          <p>The board lives in <code class="i">.board/</code> next to your code, its history under a hidden ref in your project's own repository: no branch, no CI, nothing a plain clone sees. A SQLite cache makes reads fast and can be deleted at any time. <code class="i">agentboard sync</code> shares the board over your existing remote, and <code class="i">init</code> in a second clone joins it. For a private board beside a public project, <code class="i">init --remote &lt;url&gt;</code> keeps it in a repository of its own instead; <code class="i">init --into-host</code> moves such a board into your project's repository, history and all, and refuses rather than lose an event. <code class="i">agentboard remote</code> shows which way a board is shared.</p>
+          <p>The board lives in <code class="i">.board/</code> next to your code, its history under a hidden ref in your project's own repository: no branch, no CI, nothing a plain clone sees. A SQLite cache makes reads fast and can be deleted at any time. Everything works with the network down, and <a href="#share">shares over your existing remote</a> when it comes back.</p>
         </div>
         <div class="card" style="--lane: var(--review)">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01"/></svg></div>
@@ -388,20 +407,31 @@
     </div>
   </section>
 
-  <section class="band" id="live">
-    <div class="wrap">
-      <div class="kicker">See it live</div>
-      <h2>Watch your agents work, as it happens.</h2>
-      <p class="sub"><code class="i">agentboard serve</code> opens a live board in your browser, on localhost only, behind a per-run token. This is a real session: five agents working an OpenSpec change through the CLI.</p>
-      <figure class="shot">
-        <div class="chrome"><i></i><i></i><i></i><span>127.0.0.1 - agentboard serve</span></div>
-        <video src="media/serve.mp4" poster="media/serve-poster.jpg" autoplay muted loop playsinline preload="metadata" aria-label="Screen recording of the agentboard web app: cards move between columns as agents claim and hand off tickets, then the ticket conversation, the activity feed and the agent lanes."></video>
-      </figure>
-      <div class="caps">
-        <div><b>Board</b>Columns per status. Cards light up the moment another process changes them.</div>
-        <div><b>Conversation</b>Every claim, comment and hand-off note on a ticket, with decisions highlighted.</div>
-        <div><b>Feed and lanes</b>What just happened, and what each agent holds right now.</div>
-        <div><b>Health and replay</b>Stale claims, long-blocked tickets, and a scrubber through the whole history.</div>
+  <section class="band" id="share">
+    <div class="wrap split">
+      <div>
+        <div class="kicker">Share the board</div>
+        <h2>One board, every clone, every machine.</h2>
+        <p class="sub">The board's history rides along on a hidden ref of your project's own repository, so a whole team and their agents work one board over the remote they already have. No service to run, no account, nothing a plain clone sees.</p>
+        <ul class="list">
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg><span><b>A second clone joins with <code class="i">init</code>.</b> The same command that created the board: it finds the board on the remote, fetches it and folds the events, so <code class="i">list</code> shows the tickets straight away.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg><span><b><code class="i">sync</code> is a fetch, rebase and push</b> of <code class="i">refs/agentboard/board</code>. Event files are add-only and named by their content, so two machines that both wrote always merge, and end up with identical boards.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg><span><b>A private board beside a public project.</b> <code class="i">init --remote &lt;url&gt;</code> keeps the board in a repository of its own; <code class="i">init --into-host</code> moves it back in later, history and all, refusing rather than lose an event. <code class="i">agentboard remote</code> says which way a board is shared.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg><span><b>Offline is just a late sync.</b> Every machine decides the board from the events it holds, the same way everywhere, so work continues with the network down. Needs git 2.32 or later on each machine sharing a board.</span></li>
+        </ul>
+      </div>
+      <div class="term wrapping" aria-label="Sharing a board between two machines">
+<pre><span class="p">$ </span>agentboard sync
+<span class="o">committed 4 event files (cab3705a6e40)
+fetched refs/agentboard/board from origin: 3 events arrived
+pushed refs/agentboard/board to origin</span>
+
+<span class="c"># on another machine, in a fresh clone of the project</span>
+<span class="p">$ </span>agentboard init
+<span class="o">created the board at ~/project/.board (host model: a worktree of the host repository at refs/agentboard/board); joined 12 events from origin</span>
+
+<span class="p">$ </span>agentboard list
+<span class="o">01M3XX797Y070Z1HYPNJ7Q2X8Y  implementing  impl-1  Search index (`search/index`)</span></pre>
       </div>
     </div>
   </section>
