@@ -31,6 +31,7 @@ import {
   printingSshShim,
   startAuthServer,
   type AuthServer,
+  withoutTiming,
 } from '../../board/__tests__/no-echo-remote-helpers.js';
 import { hostBoard, hostRepo, standaloneBoard } from '../../board/__tests__/sharing-helpers.js';
 import { bareRemote, type Env } from '../../board/__tests__/sync-helpers.js';
@@ -72,7 +73,10 @@ function expectSanitisedRefusal(
   expect(doc.reason).toBe(reason);
   expect(doc.exitCode).toBe(code);
   expect(doc.message).toMatch(message);
-  expect(plain.stderr.split('\n')[0]).toBe(`agentboard: ${doc.message}`);
+  // Two git runs: curl's elapsed time (`after N ms`) may differ between them.
+  expect(withoutTiming(plain.stderr.split('\n')[0] ?? '')).toBe(
+    withoutTiming(`agentboard: ${doc.message}`),
+  );
   return doc.message;
 }
 

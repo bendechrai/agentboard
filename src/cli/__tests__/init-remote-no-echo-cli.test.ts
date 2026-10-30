@@ -30,6 +30,7 @@ import {
   printingSshShim,
   startAuthServer,
   type AuthServer,
+  withoutTiming,
 } from '../../board/__tests__/no-echo-remote-helpers.js';
 import { sshShim, standaloneBoard } from '../../board/__tests__/sharing-helpers.js';
 import { type Env } from '../../board/__tests__/sync-helpers.js';
@@ -85,7 +86,11 @@ function expectRefusal(
 
   const json = spawnCli(['init', '--remote', url, '--json'], cwd, env);
   expect(json.code, json.stderr).toBe(code);
-  expect(oneJson(json)).toEqual({ error: { exitCode: code, reason, message: shown, hint } });
+  // Two git runs: curl's elapsed time (`after N ms`) may differ between them.
+  const doc = oneJson(json) as { error: { message: string } };
+  expect({ ...doc, error: { ...doc.error, message: withoutTiming(doc.error.message) } }).toEqual({
+    error: { exitCode: code, reason, message: withoutTiming(shown), hint },
+  });
   expect(json.stdout + json.stderr).not.toContain(url);
   expectNoLeak(json.stdout + json.stderr);
   return shown;
