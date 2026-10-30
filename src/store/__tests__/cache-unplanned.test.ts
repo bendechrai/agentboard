@@ -56,6 +56,14 @@ function freshDump(eventsDir: string): string {
   return dumpCache(openB(copyBoard(eventsDir)).db);
 }
 
+/** Every row of `table`, as plain objects. */
+function rows(db: DatabaseSync, table: string): Record<string, unknown>[] {
+  return db
+    .prepare(`SELECT * FROM ${table}`)
+    .all()
+    .map((r) => ({ ...r }));
+}
+
 function ticketRow(board: Board, id = T1): Row {
   return board.db.prepare('SELECT * FROM tickets WHERE id = ?').get(id) as Row;
 }
@@ -281,8 +289,14 @@ describe('scenario: cache from an earlier schema is rebuilt', () => {
       value: '5',
     });
     expect(columns(board.db, 'tickets')).toContain('unplanned');
-    // Cursors are dropped: entries may be delivered again, none is skipped.
-    expect(board.db.prepare('SELECT * FROM cursors').all()).toEqual([]);
+    // The cursor is carried across the recreate (keep-cursors-on-upgrade):
+    // the version 3 tables have the expected shape.
+    expect(rows(board.db, 'cursors')).toEqual([
+      { actor: 'b', last_wall: 0, last_counter: 0, last_actor: 'orch', last_hash: 'x' },
+    ]);
+    expect(
+      board.db.prepare("SELECT name FROM sqlite_master WHERE name = 'carried_applied'").get(),
+    ).toBeUndefined();
     expect(ticketRow(board)).toMatchObject({ status: 'merged', unplanned: UNPLANNED_JSON });
     expect(readTicket(board.db, T1)?.unplanned?.reason).toBe('hotfix');
     expect(dumpCache(board.db)).toBe(freshDump(events));

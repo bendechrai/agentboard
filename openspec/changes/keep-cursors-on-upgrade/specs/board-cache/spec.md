@@ -33,7 +33,11 @@ applied it, so an actor's next `inbox` returns the events after its
 cursor (and the unseen ones inside its seen window), plus every event that
 the running version applies and the old version did not, wherever it sits
 relative to the cursor. The record of the old cache's applied events SHALL
-be discarded by that fold and SHALL NOT be compared by `rebuild --check`.
+be discarded by that fold and SHALL NOT be compared by `rebuild --check`. These
+guarantees assume that no process of the earlier version keeps running on
+the board across the upgrade: a long-running one (such as `watch` or
+`serve`) can fold the recreated cache with its own rules, and the events it
+does not know are then delivered only after `rebuild`.
 
 `rebuild` and `rebuild --check` SHALL NOT catch up before they run: `rebuild`
 refolds every event file itself (so late events are recorded, and reported,
@@ -61,7 +65,7 @@ many processes opening a board with no cache at once all succeed.
 
 #### Scenario: Upgrade delivers an event the old version did not apply
 - **WHEN** a 0.2.0 cache recorded a `ticket.supersede` event as an unknown kind, an actor's cursor is more than an hour of event time past it, and this version runs `inbox --as` that actor
-- **THEN** the returned events include the `ticket.supersede` event, and no event sorting before it that the actor was already given is returned
+- **THEN** the returned events include the `ticket.supersede` event, and no event that the actor was already given is returned when it sorts before the greatest effective event preceding the `ticket.supersede` and is more than an hour of event time before that event
 
 #### Scenario: Upgrade delivers an event the old cache had not recorded
 - **WHEN** an event file with a timestamp more than an hour before an actor's cursor is added to `events/` after the 0.2.0 cache last caught up, and this version runs `inbox --as` that actor

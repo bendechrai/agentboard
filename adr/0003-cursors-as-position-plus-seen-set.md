@@ -66,8 +66,14 @@ listed again.
 
 Cursors live in the cache but are the one thing there that is not derived
 from the event log. `rebuild` keeps `cursors` and `cursor_seen`; `rebuild
---check` does not compare them. Losing them (a deleted cache, a schema
-version change) makes every event pending again: redelivery, never a skip.
+--check` does not compare them. A schema upgrade keeps them too: the
+recreate carries the cursor tables of an earlier version when they have
+the expected shape, and the first fold after it treats only the events the
+old cache had not applied as newly effective (OpenSpec change
+`keep-cursors-on-upgrade`, board-cache "Cache is derived and disposable").
+Losing them (a deleted cache, a later version's cache, cursor tables of an
+unexpected shape) makes every event pending again: redelivery, never a
+skip.
 
 `watch` never advances the stored cursor; it is a stream, not an
 acknowledgement. It keeps its own in-memory bookmark: the set of effective

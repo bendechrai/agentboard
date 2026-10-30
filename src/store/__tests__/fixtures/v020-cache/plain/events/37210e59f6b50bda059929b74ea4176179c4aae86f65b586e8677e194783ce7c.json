@@ -1,0 +1,1 @@
+{"actor":"orch","body":{"checklist":["one"],"task":{"item":"1","ref":"demo","source":"openspec"},"title":"First"},"kind":"ticket.create","ticket":"01M3250V3JK8YBFM8P5J02Y48V","ts":{"actor":"orch","counter":0,"wall":1790000000112},"v":1}

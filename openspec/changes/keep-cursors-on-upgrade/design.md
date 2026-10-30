@@ -48,7 +48,9 @@ Goals:
   given, not the whole board.
 - Never a skipped event: an event this version applies that the actor
   was not given (because the old version did not apply it, or the old
-  cache had not recorded it yet) is still delivered.
+  cache had not recorded it yet) is still delivered, provided no process
+  of the old version keeps running on the board across the upgrade (see
+  "Mixed versions on one board").
 - Whenever the carry cannot be shown safe (unexpected shape, unreadable
   table, a later version's cache), fall back to today's behavior.
 - `rebuild --check` and the inspect-only open stay byte-for-byte
@@ -123,6 +125,19 @@ Any SQLite error while reading the carry (for example SQLITE_CORRUPT on
 a damaged table) makes the carry empty and the recreate proceeds as
 today. A busy error cannot happen there (the lock is held) and is not
 swallowed if it does.
+
+SQLite refuses every later statement of a transaction in which a read
+failed with SQLITE_CORRUPT, the `DROP TABLE`s of the recreate included,
+and `ROLLBACK TO` a savepoint does not clear that (checked on the
+`node:sqlite` of Node 22 and 24). So when reading the carry fails, the
+open rolls the whole transaction back and runs the schema step again in
+a new `BEGIN IMMEDIATE`, re-checking the version as always, this time
+without reading the carry; the recreate then fails only where it fails
+today (a page that `DROP TABLE` itself cannot read).
+
+"An integer from 1 to `CACHE_SCHEMA_VERSION - 1`" is the exact decimal
+text `String(n)`: `04`, `4.0`, ` 4`, `0` and `-1` are not earlier
+versions and carry nothing.
 
 ### Remember what the old cache applied until the first fold
 
@@ -202,7 +217,14 @@ delivered to the actor or `isPending(C, E)`.
 So the invariant holds for `A_new` right after the first fold, which is
 all "never skipped" asks. The cost of case 3 when the event is behind
 the window is today's late-event cost: the events between the new and
-the old position that are outside the seen set are redelivered.
+the old position that are outside the seen set are redelivered, and so
+are the events within `SEEN_WINDOW_MS` before the new position that are
+outside the seen set (`isPending` treats them as late events inside the
+new position's window). So "no event sorting before it that the actor
+was already given is returned" holds for the events more than an hour
+before the event the cursor moves back to; the 0.2.0 fixture of the
+tests places the superseded ticket's create, the event the cursor moves
+back to, as the only event before the supersede.
 
 The argument depends on three things being the same in the version that
 wrote the cursor and the version that reads it: the cursor table
@@ -233,6 +255,18 @@ version is older, so the recreate drops the stale `carried_applied` with
 everything else before carrying afresh. A build of schema 5 from before
 this change (unreleased) never creates or reads `carried_applied`, and
 the stale-table rule above covers it leaving one behind.
+
+A long-running process of the old version (`watch`, `serve`, `top`,
+`mcp` of 0.2.0) left running across the upgrade is the exception to "never
+a skip". Its connection was prepared before the recreate and never
+re-checks the schema version, so it can fold the recreated cache with the
+old version's rules: the events it does not know are then recorded as
+unknown kinds in the new cache, and this version neither applies nor
+delivers them until `rebuild` refolds the event files. This is not
+introduced by the carry (a recreate without it behaves the same way), but
+the guarantee holds only when every process of the old version is
+stopped before the new version first runs, which the README's upgrade
+paragraph tells users.
 
 ### Read-only paths
 
