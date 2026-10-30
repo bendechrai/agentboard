@@ -164,7 +164,14 @@ export function firstErrorLine(failure: GitFailure): string {
  * `remote.<name>.pushurl` value (`git config --get-all`), and every URL
  * git resolves for it after `url.<base>.insteadOf` and `pushInsteadOf`
  * rewrites (`git remote get-url --all <name>` and `git remote get-url
- * --push --all <name>`). Deduplicated, longest first, empty values
+ * --push --all <name>`); every `branch.<b>.remote` and `agentboard.remote`
+ * value that names no remote `git remote` lists and contains `:` or `/`
+ * (a remote named by URL); and every proxy git may use: the values of
+ * `http.proxy`, every `http.<url>.proxy`, `https.proxy` and every
+ * `remote.<name>.proxy`, and of the `http_proxy`, `https_proxy`,
+ * `all_proxy`, `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` variables of
+ * `env`, a value without `://` also as `http://<value>` (review round 1,
+ * design.md "Review round 1"). Deduplicated, longest first, empty values
  * dropped. A repository with no remotes, or one git cannot read, gives
  * `[]`; never throws. Runs git with the sanitised environment of
  * `GitRunnerOptions.env` (`env` defaults to `process.env`); contacts no
@@ -293,6 +300,21 @@ export function sanitizeRemoteLine(line: string, urls: readonly string[]): strin
   }
   // Step 3: the user information of every other URL in the line.
   return out.replace(USERINFO, '$1<redacted>@');
+}
+
+/**
+ * `url` as agentboard shows a configured or given remote URL anywhere it
+ * names one (no-echo-refusals review round 1 addendum; board-cli "Remote
+ * URLs are shown without credentials"): with its user information
+ * removed, `<scheme>://<userinfo>@<rest>` becoming `<scheme>://<rest>`,
+ * where the user information is what `sanitizeRemoteLine` takes it to be
+ * (up to the last `@` before the first `/`, `?` or `#` after the scheme).
+ * A URL without user information, a path and the scp-like
+ * `user@host:path` are returned unchanged. Pure; never throws.
+ */
+export function withoutUserinfo(url: string): string {
+  void url;
+  throw new Error('not implemented');
 }
 
 /** Options of `gitRunner`. */

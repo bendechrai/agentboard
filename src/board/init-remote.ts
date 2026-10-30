@@ -84,7 +84,10 @@ export interface InitRemoteResult extends InitResult {
    * (`git -C <dir> remote get-url origin` prints it): `originUrl(url,
    * base)`, so an absolute path for a local path given relative or
    * absolute, the `file://` URL as given, and any other URL as given. On
-   * `unchanged`, the URL the remote already had.
+   * `unchanged`, the URL the remote already had. Shown, like the URL in
+   * `message`, through `withoutUserinfo` (board-cli "Remote URLs are shown
+   * without credentials"): `http://agent:<secret>@host/x.git` is
+   * `http://host/x.git` here although git keeps it whole.
    */
   readonly remoteUrl: string;
   /**
