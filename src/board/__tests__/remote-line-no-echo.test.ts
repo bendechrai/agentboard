@@ -305,3 +305,33 @@ describe('split pieces never mangle or unmask (review round 3: S2, S3)', () => {
 
 /** The board ref, spelled out so a one-letter piece would visibly mangle it. */
 const BOARD_REF_TEXT = 'refs/agentboard/board';
+
+describe('the split-piece rule at its edges (review round 4)', () => {
+  it.each([6, 10, 19])('a %i-character piece between two raw @ is used', (length) => {
+    const piece = `${'q7'.repeat(10)}`.slice(0, length);
+    const out = sanitizeRemoteLine(`fatal: the proxy said ${piece} twice`, [`http://a@${piece}@127.0.0.1:3128`]);
+    expect(out).toBe('fatal: the proxy said <redacted> twice');
+  });
+
+  it.each(['------', '-.-.-.', ':::::::'])('a piece of only punctuation (%s) is skipped', (piece) => {
+    const line = `error: ${piece} boundary ${piece} https://other.example/y.git`;
+    expect(sanitizeRemoteLine(line, [`https://a@${piece}@git.example.com/x.git`])).toBe(line);
+  });
+
+  it.each(['socks5h', 'SOCKS5H', 'socks4a', 'socks5', 'git+ssh', 'ssh+git', 'https:', 'HTTPS:', 'socks5h:'])(
+    'a piece that is a scheme name of 6 or more characters (%s) is skipped',
+    (piece) => {
+      const line = `fatal: ${piece} refused for https://other.example/y.git and socks5h://proxy.example:1080`;
+      expect(sanitizeRemoteLine(line, [`http://a@${piece}@127.0.0.1:3128`])).toBe(line);
+    },
+  );
+
+  it('catch-all first: with https://a@https:@host configured, another credentialed URL is redacted whole', () => {
+    const line = `fatal: could not read Password for 'https://${GH_TOKEN}@other.example': terminal prompts disabled`;
+    const out = sanitizeRemoteLine(line, ['https://a@https:@git.example.com/x.git']);
+    expectNoLeak(out);
+    expect(out).toBe(
+      "fatal: could not read Password for 'https://<redacted>@other.example': terminal prompts disabled",
+    );
+  });
+});

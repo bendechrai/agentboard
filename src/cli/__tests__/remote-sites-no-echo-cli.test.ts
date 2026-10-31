@@ -42,8 +42,10 @@ import {
   hostBoard,
   hostRepo,
   standaloneBoard,
+  withKillingGitShim,
 } from '../../board/__tests__/sharing-helpers.js';
 import { bareRemote, type Env } from '../../board/__tests__/sync-helpers.js';
+import { MIGRATING_REF } from '../../board/into-host.js';
 import { BOARD_REF } from '../../board/model.js';
 import { oneJson, spawnCli, type Run } from './cli-helpers.js';
 
@@ -325,6 +327,63 @@ describe('sync-conflict refusals name a remote named by URL without credentials'
       3,
       (text) => {
         expect(text).toContain(`what ${NAMED.shown} holds`);
+      },
+    );
+  });
+});
+
+describe('round 4: init --into-host moved and resumed results name a host remote named by URL without credentials', () => {
+  /** A project with a synced standalone board whose host remote is named by URL (`agentboard.remote`), rewritten to the host bare repository. */
+  function project(): { root: string; env: Env } {
+    const env = localEnv();
+    const { root, remote } = standaloneProject(env, 2);
+    rewriteToLocal(env, NAMED.url, remote);
+    nameByUrl(root, 'agentboard.remote');
+    return { root, env };
+  }
+
+  it('moved: the --json remote', () => {
+    const { root, env } = project();
+    const out = spawnCli(['init', '--into-host', '--json'], root, env);
+    expectNoLeak(all(out));
+    expect(out.code, out.stderr).toBe(0);
+    expect(oneJson(out)).toMatchObject({ action: 'moved', remote: NAMED.shown });
+  });
+
+  it('resumed after a kill past the worktree move: the --json remote', () => {
+    const { root, env } = project();
+    const killed = spawnCli(
+      ['init', '--into-host'],
+      root,
+      withKillingGitShim(env, ['update-ref', '-d', MIGRATING_REF], 'after'),
+    );
+    expectNoLeak(all(killed));
+    expect(killed.code).not.toBe(0);
+    const out = spawnCli(['init', '--into-host', '--json'], root, env);
+    expectNoLeak(all(out));
+    expect(out.code, out.stderr).toBe(0);
+    expect(oneJson(out)).toMatchObject({ action: 'resumed', remote: NAMED.shown });
+  });
+});
+
+describe('round 4: the init --remote mismatch names the setting that chose the remote', () => {
+  it.each(NAMINGS)('%s set to a URL with credentials', (naming) => {
+    bothWays(
+      () => {
+        const root = join(tempDir(), 'proj');
+        const dir = standaloneBoard(root);
+        git(dir, 'symbolic-ref', 'HEAD', 'refs/heads/main');
+        nameByUrl(dir, naming);
+        return { cwd: root, env: localEnv() };
+      },
+      ['init', '--remote', 'https://other.example/y.git'],
+      1,
+      (text) => {
+        expect(text).toContain(
+          `is configured to sync with the remote ${NAMED.shown} (git config ${naming}), which the ` +
+            'board repository does not have, so the URL given was not added; unset it with git -C ',
+        );
+        expect(text).toContain(`config --unset ${naming}, or add that remote with git -C `);
       },
     );
   });
