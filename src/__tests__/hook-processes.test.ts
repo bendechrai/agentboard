@@ -33,7 +33,7 @@ import {
 } from 'node:fs';
 import { delimiter, join } from 'node:path';
 
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 
 import { canonicalHash } from '../events/canonical.js';
 import type { TicketGrantEvent } from '../events/schema.js';
@@ -745,6 +745,56 @@ describe('scenario: slow discovery', SLOW, () => {
       expect(out.ms, argv.join(' ')).toBeLessThan(BOUND_MS);
       expectNoStack(out.stderr);
     }
+  });
+});
+
+describe('scenario: slow discovery, a git that ignores SIGTERM', SLOW, () => {
+  /** PIDs the shim recorded, killed after each test so no sleep outlives it. */
+  let pidFile: string | null = null;
+
+  afterEach(() => {
+    if (pidFile === null || !existsSync(pidFile)) {
+      return;
+    }
+    for (const line of readFileSync(pidFile, 'utf8').split('\n')) {
+      const pid = Number(line);
+      if (!Number.isInteger(pid) || pid <= 0) {
+        continue;
+      }
+      for (const target of [-pid, pid]) {
+        try {
+          process.kill(target, 'SIGKILL');
+        } catch {
+          // Already gone, or not a group leader.
+        }
+      }
+    }
+    pidFile = null;
+  });
+
+  it('a git that traps and ignores SIGTERM does not hold the hook past 3 seconds from its start', async () => {
+    const { root } = await claimedProject();
+    // The shim lives in this test's own scratch directory and records its
+    // pid there. It ignores SIGTERM and then becomes the sleep (exec keeps
+    // the pid and the ignored disposition), so a SIGTERM on timeout does
+    // not end it; only SIGKILL does. A hook that waits for it takes 8 s.
+    const shim = scratchDir();
+    pidFile = join(shim, 'pids');
+    const git = join(shim, 'git');
+    writeFileSync(git, `#!/bin/sh\necho $$ >> '${pidFile}'\ntrap '' TERM\nexec sleep 8\n`);
+    chmodSync(git, 0o755);
+    const env = cliEnv({ PATH: [shim, process.env.PATH ?? ''].join(delimiter) });
+    const out = await runHook(
+      ['pre-tool-use', '--strict', '--as', 'impl'],
+      root,
+      editPayload(root, join(root, 'src', 'a.ts')),
+      env,
+    );
+    expect(existsSync(pidFile), 'the shim ran').toBe(true);
+    expect(out.signal).toBeNull();
+    expect(out.code, out.stderr).toBe(0);
+    expect(out.ms).toBeLessThan(BOUND_MS);
+    expectNoStack(out.stderr);
   });
 });
 

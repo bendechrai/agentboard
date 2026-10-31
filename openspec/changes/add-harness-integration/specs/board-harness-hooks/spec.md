@@ -26,11 +26,12 @@ from the start of the process and covers everything the command does,
 Node's start-up and board discovery (its `git` child included) among
 them; a `git` child of discovery that has not answered when the budget
 runs out counts as git failing, so discovery falls back to `./.board`
-(board-events discovery rules). No stderr line SHALL repeat any part of the payload (its `cwd`
-included), the actor, the event argument or other refused input
-(board-cli "Refusals never repeat the refused input"). The command SHALL
-NOT write events, run `sync`, or touch the network; the only state it may
-write is the inbox cursor in `session-start`. It SHALL read the cache as
+(board-events discovery rules); so does a `git` child that ignores
+being told to stop. No stderr line SHALL repeat any part of the payload
+(its `cwd` included), the actor, the event argument or other refused
+input (board-cli "Refusals never repeat the refused input"). The command
+SHALL NOT write events, run `sync`, or touch the network; the only state
+it may write is the inbox cursor in `session-start`. It SHALL read the cache as
 it is and SHALL NOT catch up: it folds no event file, writes no due grant
 (board-cli "Due grants are written during catch-up"), reaps no temporary
 file, and never creates, recreates or rebuilds the cache; a missing cache,
