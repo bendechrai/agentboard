@@ -363,11 +363,13 @@ function percentDecoded(text: string): string | null {
  * refusing remote prints), with every URL in `urls` treated as
  * `sanitizeGitLine` (`src/board/init-remote.ts`) treats the value given:
  * each URL, and each URL without its user information, replaced by
- * `<url>` (longest first over all of them); the user information of each
- * URL, as configured and percent-decoded, replaced by `<redacted>`
- * wherever it appears; then the user information of every other
- * `<scheme>://<userinfo>@` in the line replaced by `<scheme>://<redacted>@`.
- * With `urls` empty only the last step applies. Pure; never throws.
+ * `<url>` (longest first over all of them); then the user information of
+ * every other `<scheme>://<userinfo>@` in the line replaced by
+ * `<scheme>://<redacted>@`; then the user information of each URL, as
+ * configured and percent-decoded, and the pieces of it git and curl print
+ * on their own (`splitPieces`, those `usablePiece` accepts), replaced by
+ * `<redacted>` wherever they appear. With `urls` empty only the generic
+ * step applies. Pure; never throws.
  *
  * `urls` is what `configuredRemoteUrls` gives for the repository the
  * command ran in (the board repository for a standalone board, the host
@@ -402,25 +404,60 @@ export function sanitizeRemoteLine(line: string, urls: readonly string[]): strin
       redact(split.userinfo);
     }
     // The user information as git and curl split a proxy URL (design.md
-    // "Review round 2"): git splits at the first `@` and prints what
-    // follows, up to the last `@`, encoded as a host; curl on git 2.32
-    // ends the authority at a raw `#` or `?` and prints the text before it
-    // as the proxy host.
+    // "Review round 2" and "Review round 3"): git splits at the first `@`
+    // and prints what follows, up to the last `@`, encoded as a host; curl
+    // on git 2.32 ends the authority at a raw `#` or `?` and prints the
+    // text before it as the proxy host. A piece too short, without a
+    // letter or digit, or a scheme name is not used: it is redacted
+    // wherever it appears and would mangle ordinary words.
     for (const piece of splitPieces(url)) {
-      redact(piece);
+      if (usablePiece(piece)) {
+        redact(piece);
+      }
     }
   }
   let out = line;
   for (const form of longestFirst(forms)) {
     out = out.replaceAll(form, '<url>');
   }
-  // Step 2: the user information of those URLs, wherever git prints it
-  // (with a scheme or without one).
+  // Step 2: the user information of every other URL in the line, before
+  // any piece redaction can touch a `<scheme>://` marker it relies on.
+  out = out.replace(USERINFO, '$1<redacted>@');
+  // Step 3: the user information of the listed URLs and its pieces,
+  // wherever git prints them (with a scheme or without one).
   for (const userinfo of longestFirst(userinfos)) {
     out = out.replaceAll(userinfo, '<redacted>');
   }
-  // Step 3: the user information of every other URL in the line.
-  return out.replace(USERINFO, '$1<redacted>@');
+  return out;
+}
+
+/** The shortest split piece that is redacted on its own (design.md "Review round 3"). */
+const MIN_PIECE_LENGTH = 6;
+
+/** URL scheme names a split piece is never taken for (any case). */
+const SCHEME_NAMES: readonly string[] = [
+  'http',
+  'https',
+  'ftp',
+  'ftps',
+  'git',
+  'ssh',
+  'file',
+  'git+ssh',
+  'ssh+git',
+  'socks4',
+  'socks4a',
+  'socks5',
+  'socks5h',
+];
+
+/** Whether a split piece is long enough, holds a letter or digit, and is no scheme name. */
+function usablePiece(piece: string): boolean {
+  return (
+    piece.length >= MIN_PIECE_LENGTH &&
+    /[A-Za-z0-9]/.test(piece) &&
+    !SCHEME_NAMES.includes(piece.toLowerCase())
+  );
 }
 
 /**

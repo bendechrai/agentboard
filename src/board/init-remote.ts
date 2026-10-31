@@ -595,11 +595,11 @@ function existingBoard(dir: string, remoteUrl: string, env: Env): InitRemoteResu
     throw new BoardError(
       1,
       'remote-mismatch',
-      `the board at ${dir} is configured to sync with the remote ${asciiText(chosen.name)} ` +
+      `the board at ${dir} is configured to sync with the remote ${asciiText(withoutUserinfo(chosen.name))} ` +
         `(git config agentboard.remote), which the board repository does not have, so ` +
         `the URL given was not added; unset it with git -C ${dir} config --unset ` +
         `agentboard.remote, or add that remote with git -C ${dir} remote add ` +
-        `${asciiText(chosen.name)} <url>; nothing changed`,
+        `${asciiText(withoutUserinfo(chosen.name))} <url>; nothing changed`,
     );
   }
   throw new BoardError(

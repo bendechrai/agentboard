@@ -296,7 +296,7 @@ export function syncHostBoard(
       if (remoteHasRef(git, remote, target)) {
         fetchRef(git, remote, target);
         if (!isAncestor(git, 'FETCH_HEAD', 'HEAD')) {
-          rebaseOnto(git, dir, 'FETCH_HEAD', `what ${asciiText(remote)} holds`);
+          rebaseOnto(git, dir, 'FETCH_HEAD', `what ${asciiText(withoutUserinfo(remote))} holds`);
         }
         refCommit = integrateLocalRef(git, dir);
         pulled = true;

@@ -468,7 +468,7 @@ function pull(git: GitRunner, dir: string, remote: string, branch: string): void
     throw new BoardError(
       3,
       'sync-conflict',
-      `pulling from ${asciiText(remote)} stopped on a conflict in the board repository at ${dir}: ` +
+      `pulling from ${asciiText(withoutUserinfo(remote))} stopped on a conflict in the board repository at ${dir}: ` +
         `${conflicted.map((p) => asciiText(p)).join(', ')}; resolve them, git add them and ` +
         'git rebase --continue (or git rebase --abort), then run agentboard sync again',
     );

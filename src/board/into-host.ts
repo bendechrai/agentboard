@@ -1606,7 +1606,7 @@ function lockedMove(
           temp,
           adopted,
           ['FETCH_HEAD'],
-          `what ${asciiText(remote.name)} holds`,
+          `what ${asciiText(withoutUserinfo(remote.name))} holds`,
         );
       }
       joined = true;
@@ -1683,7 +1683,7 @@ function lockedMove(
     created: false,
     model: 'host',
     joined,
-    remote: remote?.name ?? null,
+    remote: remote === null ? null : withoutUserinfo(remote.name),
     events: countEvents(dir),
     hostGitignore,
     warnings: [...warnings, ...sync.warnings],
@@ -2198,7 +2198,7 @@ function resumedMove(
     created: false,
     model: 'host',
     joined: false,
-    remote: remote?.name ?? null,
+    remote: remote === null ? null : withoutUserinfo(remote.name),
     events: countEvents(dir),
     hostGitignore: null,
     warnings: [...sync.warnings],
@@ -2230,7 +2230,7 @@ function unchangedBoard(
   }
   const lines = [
     `the board at ${asciiText(dir)} is already in the host repository (host model: its ` +
-      `history is ${BOARD_REF}; ${remote === null ? 'no remote configured' : `remote: ${asciiText(remote)}`}); ` +
+      `history is ${BOARD_REF}; ${remote === null ? 'no remote configured' : `remote: ${asciiText(withoutUserinfo(remote))}`}); ` +
       changed,
   ];
   if (removed.length > 0) {
@@ -2241,7 +2241,7 @@ function unchangedBoard(
     created: false,
     model: 'host',
     joined: false,
-    remote,
+    remote: remote === null ? null : withoutUserinfo(remote),
     events: countEvents(dir),
     hostGitignore: null,
     warnings: [],
