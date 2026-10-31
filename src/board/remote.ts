@@ -27,6 +27,7 @@ import {
   gitVersion,
   isGitFailure,
   meetsGitFloor,
+  withoutUserinfo,
   type GitRunner,
   type GitRunnerOptions,
 } from './git.js';
@@ -322,7 +323,7 @@ export function remoteReport(dir: string, options?: RemoteReportOptions): Remote
         ? 'the repository has no remote'
         : `the remotes are ${remoteNames(choice.remotes)}`;
     problems.push(
-      `${REMOTE_CONFIG_KEY} names ${asciiText(choice.chosen.name)}, which is not a remote of the repository ` +
+      `${REMOTE_CONFIG_KEY} names ${asciiText(withoutUserinfo(choice.chosen.name))}, which is not a remote of the repository ` +
         `(${existing}); set it to one of them with ${SET_REMOTE}`,
     );
   }
@@ -344,8 +345,19 @@ export function remoteReport(dir: string, options?: RemoteReportOptions): Remote
     refCommit: info.model === 'host' ? commitOf(git, BOARD_REF) : null,
     branch: info.model === 'standalone' ? choice.branch : null,
     head,
-    remote: choice.chosen,
-    remotes: choice.remotes,
+    // URLs are shown without their user information (board-cli "Remote
+    // URLs are shown without credentials"); git keeps them as configured.
+    remote:
+      choice.chosen === null
+        ? null
+        : {
+            ...choice.chosen,
+            // The name too: `agentboard.remote` or the upstream may name
+            // the remote by URL.
+            name: withoutUserinfo(choice.chosen.name),
+            url: choice.chosen.url === null ? null : withoutUserinfo(choice.chosen.url),
+          },
+    remotes: choice.remotes.map((remote) => ({ ...remote, url: withoutUserinfo(remote.url) })),
     problems,
   };
 }

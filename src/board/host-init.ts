@@ -35,11 +35,12 @@ import {
   firstErrorLine,
   gitRunner,
   isGitFailure,
+  rawErrorLine,
   type GitRunner,
   type GitRunnerOptions,
 } from './git.js';
 import { BOARD_REF, detectBoardModel } from './model.js';
-import { asciiText } from './text.js';
+import { remoteMessage, syncFailed } from './sync-steps.js';
 
 /**
  * Lines of the `.gitignore` that `init` writes inside the board directory,
@@ -206,11 +207,19 @@ export function ensureBoardRef(
     const listed = git.attempt('ls-remote', remote, BOARD_REF);
     if (isGitFailure(listed)) {
       warnings.push(
-        `the remote ${asciiText(remote)} could not be reached (${firstErrorLine(listed)}); ` +
-          'created a new empty board, and the next agentboard sync joins any board there',
+        remoteMessage(
+          `the remote ${remote} could not be reached (${rawErrorLine(listed)}); ` +
+            'created a new empty board, and the next agentboard sync joins any board there',
+          git,
+        ),
       );
     } else if (listed.trim() !== '') {
-      git.run('fetch', '--no-tags', remote, `${BOARD_REF}:${BOARD_REF}`);
+      // A fetch that fails after a successful ls-remote is a refusal
+      // quoting git sanitised, never a raw error carrying git's output.
+      const fetch = git.attempt('fetch', '--no-tags', remote, `${BOARD_REF}:${BOARD_REF}`);
+      if (isGitFailure(fetch)) {
+        throw syncFailed(`fetching ${BOARD_REF} from ${remote}`, fetch, git);
+      }
       const fetched = git.run('rev-parse', '--verify', `${BOARD_REF}^{commit}`).trim();
       return { commit: fetched, source: 'remote', warnings };
     }

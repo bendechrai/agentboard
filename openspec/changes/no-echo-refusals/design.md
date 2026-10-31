@@ -44,8 +44,10 @@ Non-Goals:
   (board-cli "No secrets on the board") covers the free text it stores;
   whether more accepted values (the actor) need it is a separate
   question (see "Out of scope").
-- Redacting success output, `show`, `list`, `remote` or `sync` output,
-  which print board data and configuration.
+- Redacting `show` and `list` output, which print board data. (Remote
+  URLs in success output and in `remote` were a non-goal until review
+  round 1; they are now shown without their user information, see "Review
+  round 1".)
 
 ## The rule
 
@@ -268,9 +270,268 @@ may print. A URL with credentials (`https://user:<token>@host/repo.git`)
 is the most likely way a real secret reaches an argument, which is why
 these refusals are in scope although the URL passed the form checks.
 
+Rulings of the group 2 test author (ticket 01M5YAB4PJQSSMGDM2XZAQA5FZ),
+from the lines git 2.32.7 and 2.53.0 actually print (`sanitizeGitLine`
+in `src/board/init-remote.ts` states the contract):
+
+- "The value given" covers every form of it git prints: the value as
+  given, the URL git was given for it (the absolute path of a relative
+  local path, which is what git quotes in `'<path>' does not appear to be
+  a git repository`), and the value without its user information (git
+  strips credentials itself and prints `unable to access
+  'https://host/x.git/'` and `Authentication failed for
+  'https://host/x.git/'`, which would otherwise repeat a token in the
+  path). Each becomes `<url>`, longest first; what git appends (a
+  trailing `/`) stays. The match is literal, so a short value may also be
+  replaced inside other words; that costs readability, never safety.
+- Credentials are the user information of a value that has a scheme: the
+  text between `<scheme>://` and the last `@` before the first `/`, `?`
+  or `#`, so a user name alone counts (git prints a token given as the
+  user name in `could not read Password for 'https://<token>@host'`) and
+  a password holding an unencoded `@` is taken whole. That user
+  information, as given and percent-decoded (git prints the decoded form),
+  is replaced by `<redacted>` wherever it appears, with or without a
+  scheme (a `git://` URL gives `unable to look up <userinfo>@host`, and
+  ssh echoes `<userinfo>@host`). Every other `<scheme>://<userinfo>@` in
+  the line is redacted as the delta says, whatever the scheme's case.
+- The scp-like form `user@host:path` has no user information: `user` is
+  an ssh login name and cannot carry a password, so it is kept where git
+  or ssh print it apart from the whole value. An IPv6 host (`[::1]`) needs
+  no special case: brackets belong to the host, after the `@`.
+- Apart from the value, every `init --remote` refusal keeps today's text
+  (the table above abbreviates; the tails `... and check your access to
+  it, then run agentboard init --remote again` and `--remote needs an
+  empty repository, or one that holds a board` stay). The `not-a-board`
+  checkout refusal quotes its git line through the same sanitizer.
+- `init` is neither an MCP tool nor a web action, so the CLI (plain and
+  `--json`) is the only surface of these refusals.
+- Brought into this group by the orchestrator (DECISION on ticket
+  01M5YAB4PJQSSMGDM2XZAQA5FZ, replacing the earlier "not in this group"
+  ruling): see "Git lines quoted from remote commands" below.
+
 Audit size: 45 rows; 37 change message or hint text (rows 1-4, 6-8,
 10-17, 19-33, 36, 40-45), 8 are already compliant and are listed to show
 they were checked (rows 5, 9, 18, 34, 35 as a pointer, 37-39).
+
+## Git lines quoted from remote commands
+
+The `init --remote` sanitizer covers the value given; the same leak
+exists wherever agentboard quotes git talking to a configured remote.
+Where git's stderr is quoted (audit of `src/board/` and `src/store/`,
+every `firstErrorLine` and `.stderr` use):
+
+| Site | Command | Quoted in |
+|---|---|---|
+| `sync-steps.ts syncFailed` | `ls-remote`, `pull`, `push` (`sync.ts`), `ls-remote`, `fetch`, rebase, `push` (`host-sync.ts`), `fetch` and the replay (`into-host.ts`) | `sync-failed` refusals of `sync`, of the `sync` `init --remote` and `init --into-host` run |
+| `host-sync.ts` refused push | the `remote:` lines of a `[remote rejected]` push | `sync-failed` |
+| `host-init.ts` | `ls-remote <remote>` | the join warning of `init` (host model) |
+| `into-host.ts` | `ls-remote` and `fetch` of the host remote | the warning and `sync-failed` of `init --into-host` |
+| `init-remote.ts` | `ls-remote`, `clone`, `checkout` | rows 42 to 44 above |
+
+Local-only lines (`git --version` in `remote.ts`, `worktree list` in
+`host-init.ts`, `worktree add` and `cherry-pick` in `into-host.ts`) name
+no remote URL; they may go through the same sanitizer, which leaves them
+unchanged. `sync`, `remote` and `init` are not MCP tools and no web
+action runs git against a remote, so the CLI (plain and `--json`) is the
+only surface.
+
+The URLs a line is sanitised against are `configuredRemoteUrls(dir)`
+(`src/board/git.ts`): for each remote of the repository the command ran
+in, every raw `remote.<name>.url` and `remote.<name>.pushurl`, and every
+URL `git remote get-url [--push] --all` resolves (an `insteadOf` rewrite
+can put a credential in the URL git actually uses). It contacts no
+remote. `sanitizeRemoteLine(line, urls)` applies the `sanitizeGitLine`
+steps to each URL at once (longest form first), so the two agree;
+`init --remote` passes the value given and the URL git was given as two
+more URLs. Restricting to the one remote a command used was considered
+and rejected: a line can name another remote's URL (a `pushurl`, a
+redirect), and the cost is one `git remote` and a few `git config`
+reads on a path that is already failing.
+
+## Review round 1
+
+From reviewer-ne2-2 (REQUEST CHANGES) and reviewer-ne2-1 (APPROVE WITH
+NITS), with the orchestrator's DECISIONs on ticket
+01M5YAB4PJQSSMGDM2XZAQA5FZ:
+
+- Sanitise before escaping. `firstErrorLine` passes the line through
+  `asciiText`, which writes a non-ASCII character as `\u00e9` and a
+  backslash as `\\`, so a URL holding either was never found in the
+  escaped line and a token in its path was printed on every path. The
+  line is sanitised in its raw form and escaped afterwards (or the
+  sanitiser also matches the escaped form of each URL and each user
+  information); the same for the `remote:` lines of a refused push.
+- The whole message is sanitised. `chooseRemote` takes `agentboard.remote`
+  or the upstream `branch.<b>.remote` as the remote name, and git accepts
+  a URL there; `reaching <remote> failed` printed it raw. Every
+  `sync-failed` message (not only git's line) goes through the sanitiser,
+  and `configuredRemoteUrls` lists every such value that names no
+  configured remote and holds `:` or `/`. A bare word (`nope`) is kept
+  out, so "Configured remote that does not exist" still names it; it
+  cannot carry a URL credential.
+- Proxies. `http.proxy`, `http.<url>.proxy`, `https.proxy`,
+  `remote.<name>.proxy` and the proxy environment variables (lower and
+  upper case; curl ignores `HTTP_PROXY`, but listing it costs nothing)
+  are in the list, a scheme-less value also as `http://<value>` so its
+  user information is known. git 2.32 prints a proxy user name decoded
+  (`%20` as a space, `%2F` as `/`, `%27` as `'`), which the generic
+  `<scheme>://<userinfo>@` step cannot cross; step 2 redacts it once the
+  proxy is listed. `init --remote` sanitises against the same list for
+  the directory it runs git in, plus the value given.
+- Every later step pinned. The scenarios that fail at `ls-remote` never
+  reached the later steps, so a test makes a remote answer `ls-remote`
+  (an `insteadOf` rewrite of the credentialed URL to a local bare
+  repository) and fails exactly one later step with a `git` shim on
+  PATH: the `sync` pull and push, the host-model fetch of the board ref
+  and a push that is not rejected, both fetches of `init --into-host`,
+  the clone and checkout of `init --remote`.
+- The raw fetch of the host-model `init` join (`host-init.ts`, after a
+  successful `ls-remote`) threw git's error, its stderr included, as an
+  unexpected error. It becomes `BoardError(3, 'sync-failed')`, `fetching
+  refs/agentboard/board from <remote> failed: <line>`, sanitised.
+- Success output (reversing the non-goal above). Wherever a remote URL is
+  shown (success messages, `init --remote --json` `remoteUrl`,
+  `agentboard remote`, `remote-mismatch`), it is shown with its user
+  information removed (`withoutUserinfo` in `src/board/git.ts`); the
+  path stays, so a token in a path is still shown there: that is the URL
+  the user configured, and the rule for refusals (the value given is
+  never repeated) is unchanged. git's configuration keeps the URL.
+- A server's own reply can echo a token from the request path in a
+  path-only form (an `ERR` packet quoting `/<token>/x.git/info/refs`),
+  which no client-side rule can recognise; it is a known limit, and the
+  server holds the token anyway.
+- The CLI tests compare plain and `--json` output from two git runs only
+  after replacing curl's `after N ms`.
+- Accepted as is: a very short user name that is a substring of `<url>`
+  can mangle the marker (`<<redacted>>`); cosmetic.
+
+| Site added to the audit | Command | Now |
+|---|---|---|
+| `host-init.ts` join fetch | `fetch <remote> refs/agentboard/board:refs/agentboard/board` | `sync-failed`, sanitised |
+| `sync.ts`, `host-sync.ts` `what` | the remote name, which may be a URL | sanitised with the line |
+| `into-host.ts` local `dir` fetch | no remote | unchanged |
+
+## Review round 2
+
+From reviewer-ne2-2 (R1 to R5) and reviewer-ne2-1 (N03, N34) at 63cfb1b,
+with the orchestrator's round 2 DECISION and its addendum:
+
+- R1. A remote named by URL is shown as a name: `sync`'s `pulled from`
+  and `pushed to` lines, its `--json` `remote`, and `agentboard remote`'s
+  `remote:` and `problem:` lines and `--json` `remote.name` printed it
+  with its credential. Every displayed remote name goes through
+  `withoutUserinfo`, which leaves a real name (`origin`) as it is.
+- R2. A proxy URL with two raw `@`: `splitUserinfo` takes the user
+  information to the last `@`, git 2.53 splits a proxy URL at the first
+  and prints the rest as the host, percent-encoded
+  (`http://a@<token>%40x@proxy` printed `http://a@ghp%5F...%2540x%40proxy`).
+  The text between the first and the last `@` is redacted as given,
+  decoded and in git's host encoding (every byte other than an ASCII
+  letter, digit, `-` and `.` as `%XX`, upper-case hex).
+- R3. A proxy user name with a raw `#` or `?`: curl on git 2.32 ends the
+  authority there and prints `Could not resolve proxy: <text before it>`
+  (git 2.53 refuses the URL whole, `only SOCKS proxies support paths`,
+  which is already `<url>`). That text is redacted too. The test makes it
+  a DNS label longer than 63 characters, which the resolver refuses
+  without sending a query, so the lookup curl attempts never leaves the
+  machine.
+- R4. No change: `http://agent:pw/<x>@host`, `http:agent:<x>@host` and the
+  scp-like `<x>@host:path` carry no user information for git or curl, so
+  they never authenticate, and `withoutUserinfo` keeps them.
+- R5. A guard for a remote named by a relative path (`../<token>/repo.git`
+  is URL-valued because it holds `/`).
+- N03. The host-model push whose board ref loses the race on the last
+  retry is pinned: a `git` shim moves the remote's board ref before every
+  push, so every attempt is rejected, and prints a line quoting the
+  credentialed URL.
+- N34. `oldRemoteUrl` and the `kept` line of `init --into-host` show the
+  configured URL without its user information, on a resumed move too.
+
+## Review round 3
+
+From reviewer-ne2-2 (S1 to S3) at b2da7cc, with the orchestrator's round 3
+DECISION.
+
+### S1: every place a remote name or URL is displayed
+
+The search: every template literal under `src/` (tests excluded) that
+interpolates an expression naming `remote`, `Remote`, `chosen`, `url`,
+`Url` or `URL`, read one by one, plus every result field typed as a
+remote name or URL (`InitResult.remote`, `IntoHostResult.remote`,
+`InitRemoteResult.remote` and `remoteUrl`, `SyncResult.remote`,
+`RemoteReport`), the hint templates and the help text. Each site:
+
+| Site | Shows | Status at b2da7cc |
+|---|---|---|
+| `init.ts` existing board (`remote: <name>`, both models) and `remote` | chosen remote name | leaks: wrap |
+| `init.ts` new host board (`sync publishes it to <name>`) | chosen remote name | leaks: wrap |
+| `init.ts` joined host board (`joined N events from <name>`) and `remote` | chosen remote name | leaks: wrap |
+| `init.ts` repair (`sourceText`, `joined from <name>`) and `remote` | chosen remote name | leaks: wrap |
+| `into-host.ts` board already in the host (`remote: <name>`) and `remote` | chosen remote name | leaks: wrap |
+| `init-remote.ts` `remote-mismatch`, `agentboard.remote` variant | `chosen.name`, a URL when no such remote | leaks: wrap (both the sentence and the `remote add` step) |
+| `init-remote.ts` `remote-mismatch` (`chosen.name` of an existing remote), `unchanged` | a configured remote's name | compliant (a git remote name cannot be a URL: `git remote add` refuses `:`) |
+| `sync.ts` `sync-conflict` (`pulling from <name>`) | chosen remote name | leaks: wrap |
+| `host-sync.ts` `rebaseOnto` `sync-conflict` (`what <name> holds`) | chosen remote name | leaks: wrap |
+| `into-host.ts` rebase conflict (`integrating what <name> holds`) | chosen remote name | leaks: wrap |
+| `sync.ts`, `host-sync.ts` `syncFailed` messages, `host-init.ts` join warning and fetch, `into-host.ts` unreachable warning and fetch | remote name in a refusal | compliant (whole message sanitised) |
+| `sync.ts`, `host-sync.ts` pulled/pushed lines and `remote` | remote name | compliant (round 2) |
+| `remote.ts` report, problem line, remotes list | names and URLs | compliant (round 2); `remoteNames` lists configured remote names only |
+| `init-remote.ts` created, cloned, attached, unchanged, `remoteUrl` | URL | compliant (round 1) |
+| `into-host.ts` `oldRemoteUrl`, kept line | URL | compliant (round 2) |
+| `hints.ts`, help text | placeholders (`<url>`, `<name>`) only | compliant |
+| `web/serve.ts` | the server's own URL | not a remote |
+
+Every leaking site is pinned by `src/cli/__tests__/remote-sites-no-echo-cli.test.ts`.
+
+### S2: split pieces
+
+The pieces `splitPieces` makes from a URL with more than one raw `@` (and
+from a proxy user name with `#` or `?`) were redacted before the generic
+`<scheme>://<userinfo>@` step, so a configured `https://a@http@host/x.git`
+turned `http://<token>@proxy` into `<redacted>://<token>@proxy`, which the
+generic step no longer recognised; a one-letter piece also mangled
+`refs/agentboard/board`. Now the generic step runs first, and a piece is
+not used when it is shorter than 6 characters, has no letter or digit, or
+is a URL scheme name. Six: a piece is redacted everywhere in the line, so
+a short one collides with ordinary words (`a`, `http`, `board`, `main`,
+`refs`), while the secrets this change protects (tokens, passwords) are
+far longer; the leak checks themselves treat 8 characters as the
+shortest secret substring. The user information as a whole, as given and
+decoded, is still redacted at any length, so a short `user:pw` is still
+covered where git prints it whole; only a short piece printed alone (a
+4-character password between two raw `@` of a proxy) is accepted.
+
+### S3
+
+A test pins the host encoding per UTF-8 byte: `http://a@<token>\u00e9@proxy`
+is printed by git 2.53 as `<token>%C3%A9%40proxy`.
+
+## Review round 4
+
+Both reviewers approved with nits at ab8eaae; the orchestrator's final
+DECISION took these into the group:
+
+- Tests pin the `--json` `remote` of `init --into-host`'s `moved` and
+  `resumed` results with a host `agentboard.remote` that is a URL.
+- The split-piece rule is pinned at its edges: pieces of 6, 10 and 19
+  characters are used; `------`, `-.-.-.` and `:::::::` (no letter or
+  digit) are skipped; scheme names of 6 or more characters (`socks5h`,
+  `SOCKS5H`, `socks4a`, `socks5`, `git+ssh`, `ssh+git`) are skipped, and
+  so is a scheme name followed by `:` (`https:`, `socks5h:`), which would
+  otherwise turn another URL's `https://` into `<redacted>//`. A configured
+  `https://a@https:@host` with another credentialed URL in the line is the
+  case only the catch-all-first order passes. The length check counts the
+  raw piece's characters, so `\u00e99q7x` (5) is skipped although git
+  prints it as the 10 characters `%C3%A99q7x`: inside the accepted
+  residual. A percent-decoded piece that is short, and an ordinary word of
+  6 or more characters used as a piece, stay accepted (nothing leaks).
+- The `init --remote` mismatch message names the setting that chose the
+  remote: `branch.<b>.remote` when the upstream chose it, else
+  `agentboard.remote`.
+- The source scan's dead `PENDING_GROUP_2` constant and filter are gone;
+  the branch name `cloneBoard` names is server-supplied (read from the
+  remote), and `rebaseOnto`'s `what` names the remote only through
+  `withoutUserinfo`.
 
 ## Out of scope
 
@@ -282,7 +543,9 @@ they were checked (rows 5, 9, 18, 34, 35 as a pointer, 37-39).
   (refused like comment text) is a separate behaviour change; the
   orchestrator files a follow-up ticket for it.
 - Configuration and environment. The configured remote's URL (in
-  `remote-mismatch`, `remote`, `sync` failures), `agentboard.remote`, and
+  `remote-mismatch`, `remote`, shown without its user information; a git
+  line quoted from a remote command is sanitised, see "Git lines quoted
+  from remote commands"), `agentboard.remote`, and
   the path the board was looked for at (board-events "Board directory per
   project", board-cli "No board at start-up") come from the user's own
   configuration, not from the refused argument, and the success paths

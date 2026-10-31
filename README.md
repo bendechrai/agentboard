@@ -1365,7 +1365,15 @@ another URL (the message names `git -C .board remote set-url`), and 1
 `board-in-host` when `.board` is in the host repository. When the `sync`
 it runs fails (the first push refused, say), `init` exits with that
 failure's code and reason; the board and its `origin` are kept, so the
-next `sync` finishes the job.
+next `sync` finishes the job. None of these refusals repeats the URL you
+gave (a URL with credentials is the usual way a secret reaches a command
+line): they say "the URL given" and write `<url>` in any suggested
+command, and a git error line quoted by `init`, `sync` or `init
+--into-host` has every configured remote or proxy URL replaced by
+`<url>` and any URL credential by `<redacted>`. Success output and
+`agentboard remote` show a remote URL without its user information
+(`https://host/x.git` for `https://user:token@host/x.git`); git's
+configuration keeps the URL as you wrote it.
 
 On every other machine, clone the project and run the same command:
 

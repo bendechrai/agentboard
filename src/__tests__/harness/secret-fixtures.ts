@@ -7,7 +7,11 @@
  * passes a fixture as the refused input and then checks every channel the
  * refusal reaches (stdout, stderr, the `--json` document, the MCP tool
  * result and the MCP server's stderr, the web action body and the
- * server's output) with `expectNoLeak`.
+ * server's output) with `expectNoLeak`. Group 2 (sharing: `init
+ * --remote`, `sync`, git lines quoted from remote commands) builds its
+ * URLs from the same fixtures through `src/board/__tests__/no-echo-remote-helpers.ts`
+ * and calls `expectNoLeak` with one output; `secretFixture` and
+ * `MIN_LEAK` are its names for `fixture` and `LEAK_WINDOW`.
  *
  * The literals are built with `join` (as `src/board/__tests__/helpers.ts`
  * builds its secret samples) so that no complete token-shaped string is in
@@ -124,8 +128,14 @@ export function fixture(name: string): SecretFixture {
   return found;
 }
 
+/** `fixture`, under the name the group 2 (sharing) tests import. */
+export const secretFixture = fixture;
+
 /** A substring of a fixture's secret this long or longer counts as a leak. */
 export const LEAK_WINDOW = 8;
+
+/** `LEAK_WINDOW`, under the name the group 2 (sharing) tests import. */
+export const MIN_LEAK = LEAK_WINDOW;
 
 /** Any value as text: strings as they are, everything else as JSON. */
 function textOf(output: unknown): string {
@@ -160,17 +170,46 @@ export function leaksIn(
     .map((f) => f.name);
 }
 
+/** Whether `value` is a `SecretFixture` (the optional last argument of `expectNoLeak`). */
+function isFixtureList(value: readonly unknown[]): value is readonly SecretFixture[] {
+  return value.every(
+    (item) =>
+      typeof item === 'object' &&
+      item !== null &&
+      'name' in item &&
+      'value' in item &&
+      'secret' in item,
+  );
+}
+
 /**
- * Asserts that no fixture leaked into any of `outputs` (see `leaksIn`).
- * `what` names the call in the failure message; the failure never prints
- * the output itself beyond what vitest prints for the comparison.
+ * Asserts that no fixture leaked (see `leaksIn`). Two call shapes, one
+ * per task group of no-echo-refusals, so that neither group's tests
+ * changed when the two copies of this file were merged:
+ * - `expectNoLeak(what, outputs, fixtures?)` (group 1): every value of
+ *   `outputs` is checked; `what` names the call in the failure message,
+ *   which never prints the output itself beyond what vitest prints for
+ *   the comparison.
+ * - `expectNoLeak(output, fixtures?)` (group 2): one output, a string.
+ * The shapes are told apart by the second argument: absent or a list of
+ * fixtures means the second shape; any other list means the first.
  */
+export function expectNoLeak(output: string, fixtures?: readonly SecretFixture[]): void;
 export function expectNoLeak(
   what: string,
   outputs: readonly unknown[],
-  fixtures: readonly SecretFixture[] = SECRET_FIXTURES,
+  fixtures?: readonly SecretFixture[],
+): void;
+export function expectNoLeak(
+  first: string,
+  second?: readonly unknown[],
+  third: readonly SecretFixture[] = SECRET_FIXTURES,
 ): void {
-  outputs.forEach((output, index) => {
-    expect(leaksIn(output, fixtures), `${what}: output ${String(index)}`).toEqual([]);
+  if (second === undefined || (second.length > 0 && isFixtureList(second))) {
+    expect(leaksIn(first, second ?? SECRET_FIXTURES), 'no fixture in the output').toEqual([]);
+    return;
+  }
+  second.forEach((output, index) => {
+    expect(leaksIn(output, third), `${first}: output ${String(index)}`).toEqual([]);
   });
 }

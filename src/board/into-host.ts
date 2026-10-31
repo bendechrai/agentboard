@@ -53,6 +53,8 @@ import {
   gitVersion,
   isGitFailure,
   meetsGitFloor,
+  rawErrorLine,
+  withoutUserinfo,
   type GitFailure,
   type GitRunner,
 } from './git.js';
@@ -77,6 +79,8 @@ import {
   checkNothingInProgress,
   headExists,
   plural,
+  remoteErrorLine,
+  remoteMessage,
   syncFailed,
   unmergedPaths,
   zList,
@@ -643,9 +647,11 @@ export interface IntoHostResult extends InitResult {
    * The URL of the standalone board's chosen remote as written in its
    * configuration (the raw `remote.<name>.url`, so a URL that
    * `url.<base>.insteadOf` rewrites is reported as the user wrote it,
-   * which is the remote they retire) for `moved`, read from the kept
-   * repository for `resumed`; null when the standalone board had no
-   * remote, and for `unchanged` and `repaired`.
+   * which is the remote they retire), without its user information
+   * (`withoutUserinfo`; board-cli "Remote URLs are shown without
+   * credentials"), for `moved`, read from the kept repository for
+   * `resumed`; null when the standalone board had no remote, and for
+   * `unchanged` and `repaired`.
    */
   readonly oldRemoteUrl: string | null;
   /**
@@ -1304,7 +1310,7 @@ function checkStandalone(dir: string, info: BoardModelInfo, env: Env): MovePlan 
     `+refs/heads/${branch.trim()}:${tracking}`,
   );
   if (isGitFailure(fetched)) {
-    throw syncFailed(`fetching ${asciiText(branch.trim())} from ${asciiText(name)}`, fetched);
+    throw syncFailed(`fetching ${branch.trim()} from ${name}`, fetched, git);
   }
   if (!isAncestor(git, 'HEAD', tracking)) {
     throw new BoardError(
@@ -1315,7 +1321,12 @@ function checkStandalone(dir: string, info: BoardModelInfo, env: Env): MovePlan 
     );
   }
   const url = git.attempt('config', '--get', `remote.${name}.url`);
-  return { sourceTip: tracking, oldRemoteUrl: isGitFailure(url) ? null : url.trim(), gitDir, head };
+  return {
+    sourceTip: tracking,
+    oldRemoteUrl: isGitFailure(url) ? null : withoutUserinfo(url.trim()),
+    gitDir,
+    head,
+  };
 }
 
 /** Step 1, check 6: the host repository's remote, refused when ambiguous. */
@@ -1571,9 +1582,12 @@ function lockedMove(
     const listed = worktree.attempt('ls-remote', target, BOARD_REF);
     if (isGitFailure(listed)) {
       warnings.push(
-        `the host remote ${asciiText(remote.name)} could not be reached (${firstErrorLine(listed)}); ` +
-          `the board is moved anyway, and agentboard sync publishes it once ${asciiText(remote.name)} ` +
-          'can be reached',
+        remoteMessage(
+          `the host remote ${remote.name} could not be reached (${rawErrorLine(listed)}); ` +
+            `the board is moved anyway, and agentboard sync publishes it once ${remote.name} ` +
+            'can be reached',
+          worktree,
+        ),
       );
     } else if (listed.trim() !== '') {
       const fetched = worktree.attempt('fetch', '--no-tags', target, BOARD_REF);
@@ -1581,7 +1595,8 @@ function lockedMove(
         if (!adopted) {
           discardTemporary(host, temp);
         }
-        throw syncFailed(`fetching ${BOARD_REF} from ${asciiText(remote.name)}`, fetched);
+        // `host` (the same repository): the temporary worktree may be gone.
+        throw syncFailed(`fetching ${BOARD_REF} from ${remote.name}`, fetched, host);
       }
       if (!isAncestor(worktree, 'FETCH_HEAD', 'HEAD')) {
         rebaseOnto(
@@ -1591,7 +1606,7 @@ function lockedMove(
           temp,
           adopted,
           ['FETCH_HEAD'],
-          `what ${asciiText(remote.name)} holds`,
+          `what ${asciiText(withoutUserinfo(remote.name))} holds`,
         );
       }
       joined = true;
@@ -1668,7 +1683,7 @@ function lockedMove(
     created: false,
     model: 'host',
     joined,
-    remote: remote?.name ?? null,
+    remote: remote === null ? null : withoutUserinfo(remote.name),
     events: countEvents(dir),
     hostGitignore,
     warnings: [...warnings, ...sync.warnings],
@@ -1794,7 +1809,7 @@ function replayFreshCommits(
         3,
         'sync-failed',
         `replaying the events synced to the old remote since the earlier move failed: ` +
-          `${firstErrorLine(out)}${local}`,
+          `${remoteErrorLine(out, worktree)}${local}`,
       );
     }
     // Git's own empty stop: the commit's patch is already in HEAD (one
@@ -2155,7 +2170,8 @@ function resumedMove(
 ): IntoHostResult {
   const scratch = join(commonDir(gitRunner(hostRoot, { env }), hostRoot), AGENTBOARD_GIT_SUBDIR);
   const keptAt = newestKept(scratch);
-  const oldRemoteUrl = keptAt === null ? null : keptRemoteUrl(keptAt, env);
+  const kept = keptAt === null ? null : keptRemoteUrl(keptAt, env);
+  const oldRemoteUrl = kept === null ? null : withoutUserinfo(kept);
   // A kill before the deletions of step 6 leaves the temporary refs behind.
   deleteTemporaryRefs(hostGit(hostRoot, { env }));
   if (keptAt !== null) {
@@ -2182,7 +2198,7 @@ function resumedMove(
     created: false,
     model: 'host',
     joined: false,
-    remote: remote?.name ?? null,
+    remote: remote === null ? null : withoutUserinfo(remote.name),
     events: countEvents(dir),
     hostGitignore: null,
     warnings: [...sync.warnings],
@@ -2214,7 +2230,7 @@ function unchangedBoard(
   }
   const lines = [
     `the board at ${asciiText(dir)} is already in the host repository (host model: its ` +
-      `history is ${BOARD_REF}; ${remote === null ? 'no remote configured' : `remote: ${asciiText(remote)}`}); ` +
+      `history is ${BOARD_REF}; ${remote === null ? 'no remote configured' : `remote: ${asciiText(withoutUserinfo(remote))}`}); ` +
       changed,
   ];
   if (removed.length > 0) {
@@ -2225,7 +2241,7 @@ function unchangedBoard(
     created: false,
     model: 'host',
     joined: false,
-    remote,
+    remote: remote === null ? null : withoutUserinfo(remote),
     events: countEvents(dir),
     hostGitignore: null,
     warnings: [],
@@ -2342,7 +2358,7 @@ function rebaseOnto(
   if (!adopted) {
     discardTemporary(host, temp);
   }
-  throw syncFailed(`integrating ${what}`, out);
+  throw syncFailed(`integrating ${what}`, out, worktree);
 }
 
 /** Removes the temporary worktree at `temp`, the temporary refs and an empty `migrating` directory after a refusal in step 3. */

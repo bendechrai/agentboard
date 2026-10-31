@@ -21,7 +21,14 @@ import { dirname, join, resolve } from 'node:path';
 import { openBoard } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
 import { boardExists, locateBoard, type LocateOptions } from '../store/locate.js';
-import { gitRunner, gitVersion, isGitFailure, meetsGitFloor, type GitVersion } from './git.js';
+import {
+  gitRunner,
+  gitVersion,
+  isGitFailure,
+  meetsGitFloor,
+  type GitVersion,
+  withoutUserinfo,
+} from './git.js';
 import { MIGRATING_DIR, cleanDeadMigratingWorktrees, pendingMove } from './into-host.js';
 import {
   AGENTBOARD_GIT_SUBDIR,
@@ -409,7 +416,10 @@ function existingBoard(
 ): InitResult {
   const choice = boardRemote(info, { env });
   const remote = choice.chosen?.name ?? null;
-  const remoteText = remote === null ? 'no remote configured' : `remote: ${asciiText(remote)}`;
+  // A remote named by URL is shown without its user information (board-cli
+  // "Remote URLs are shown without credentials").
+  const shown = remote === null ? null : withoutUserinfo(remote);
+  const remoteText = shown === null ? 'no remote configured' : `remote: ${asciiText(shown)}`;
   const lines: string[] = [];
   if (info.model === 'host') {
     let changed = 'nothing changed';
@@ -459,7 +469,7 @@ function existingBoard(
     created: false,
     model: info.model === 'host' ? 'host' : 'standalone',
     joined: false,
-    remote,
+    remote: shown,
     events: countEvents(dir),
     hostGitignore: null,
     warnings: [],
@@ -483,6 +493,8 @@ function createHostBoard(dir: string, remote: string | null, env: Env): InitResu
   const hostRoot = dirname(dir);
   const hostGitignore = ignoreBoardInHost(hostRoot);
   const ref = ensureBoardRef(hostRoot, remote, { env });
+  // Shown without its user information; git was given the name as it is.
+  const shown = remote === null ? null : withoutUserinfo(remote);
   const adopted = adoptRepairingWorktree(hostRoot, dir, { env });
   addBoardWorktree(hostRoot, dir, { env });
   openBoard(dir).close();
@@ -490,7 +502,7 @@ function createHostBoard(dir: string, remote: string | null, env: Env): InitResu
   const base = {
     dir,
     model: 'host' as const,
-    remote,
+    remote: shown,
     events,
     hostGitignore,
     warnings: [...ref.warnings],
@@ -520,12 +532,12 @@ function createHostBoard(dir: string, remote: string | null, env: Env): InitResu
     ref.source === 'local' && ref.commit !== writeEmptyBoardCommit(hostRoot, { env });
   const how =
     ref.source === 'remote'
-      ? `joined ${plural(events, 'event')} from ${asciiText(remote ?? '')}`
+      ? `joined ${plural(events, 'event')} from ${asciiText(shown ?? '')}`
       : restored
         ? `restored it from the local ${BOARD_REF} with ${plural(events, 'event file')}`
         : remote === null
           ? 'a new empty board; agentboard sync publishes it once the repository has a remote'
-          : `a new empty board; agentboard sync publishes it to ${asciiText(remote)}, ` +
+          : `a new empty board; agentboard sync publishes it to ${asciiText(shown ?? '')}, ` +
             'where everyone who can fetch the remote can read it';
   return {
     ...base,
@@ -556,7 +568,7 @@ function repairBoard(dir: string, remote: string | null, env: Env): InitResult {
     created: false,
     model: 'host',
     joined: repair.source === 'remote',
-    remote,
+    remote: remote === null ? null : withoutUserinfo(remote),
     events,
     hostGitignore,
     warnings: repair.skipped.map(
@@ -572,7 +584,7 @@ function repairBoard(dir: string, remote: string | null, env: Env): InitResult {
 /** Where a repaired board's history came from, for the repair message. */
 function sourceText(source: BoardRefSource | null, remote: string | null): string {
   if (source === 'remote') {
-    return `joined from ${asciiText(remote ?? '')}`;
+    return `joined from ${asciiText(withoutUserinfo(remote ?? ''))}`;
   }
   return source === 'local' ? 'from the local ref' : 'a new empty board';
 }
