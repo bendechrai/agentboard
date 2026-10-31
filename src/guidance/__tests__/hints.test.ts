@@ -65,6 +65,8 @@ const PINNED: Readonly<Record<string, number>> = {
   'holder-changed': 4,
   'id-too-short': 1,
   integrity: 5,
+  // An actor name that fails the actor check (actor-secret-check task 1.1).
+  'invalid-actor': 1,
   'invalid-queue': 4,
   'invalid-transition': 4,
   'malformed-event': 1,
