@@ -185,6 +185,6 @@ approve the staged npm release (CONTRIBUTING.md, "Releasing").
   ticket 01M5XYG0VT09DBAW7PZJK1CZ5Y.
 - The proposal `add-harness-integration` (draft PR #67, not merged) was
   re-synced on 2026-10-31 with the main specs as of `a455011` (guidance
-  version 4, ADR 0016; its design.md lists what the newer archives
+  version stays 3, ADR 0016; its design.md lists what the newer archives
   forced). Any change archived after that which touches the requirements
   it modifies needs one more re-sync before it is archived.

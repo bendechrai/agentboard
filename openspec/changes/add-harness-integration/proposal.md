@@ -26,7 +26,9 @@ install`, and `init` only prints a hint.
   (`.github/copilot-instructions.md` block), all with the existing marker,
   refuse-unless-`--force` and `check` semantics, and every project
   guidance text carries the mutex short form. New flag `--hooks-strict`.
-  `GUIDANCE_VERSION` becomes 4.
+  `GUIDANCE_VERSION` stays 3: it is raised only when an existing
+  target's installed text changes, and new targets install at the
+  current version, so existing installs are not reported stale.
 - In a bare project, `agents install` prompts for targets on a terminal;
   non-interactive runs keep the no-targets failure.
 - `init` offers to run `agents install` on a terminal, with `--agents` and
@@ -48,8 +50,8 @@ install`, and `init` only prints a hint.
 ### Modified Capabilities
 - `board-agent-guidance`: new install targets, bare-project prompt,
   non-clobbering rules and `check` for them, harness MCP entries, the
-  sandbox verification requirement, `hook` excluded from MCP, guidance
-  version 4, and the mutex short form in the `cursor` and `copilot` texts.
+  sandbox verification requirement, `hook` excluded from MCP, the rule for
+  when the guidance version is raised, and the mutex short form in the `cursor` and `copilot` texts.
 - `board-cli`: command surface (`hook`, `init` flags), the `hook` exit-code
   exception, `hook` excluded from MCP, `hook` excepted from writing due
   grants during catch-up, and `init` offering the install.

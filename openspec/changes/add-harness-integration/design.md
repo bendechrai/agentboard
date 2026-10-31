@@ -103,6 +103,20 @@ without hooks; the release workflow; a general TOML library.
    released when done; no hook ever claims, renews or queues, so a hook is
    never the background process the worker rules forbid.
 
+12. **One guidance version, raised only for changed text.** Ben decided
+   on PR #67 that a target whose installed text is unchanged keeps its
+   version and is not reported `stale`, and that a new target installs at
+   the then-current version. The existing design has one constant,
+   `GUIDANCE_VERSION`, which every marker records and `agents check`
+   compares with `N != v`. This change alters no existing text, so the
+   constant stays 3 and the new targets install with version 3 markers;
+   no per-target version table is needed. The rule is written into
+   "Installing guidance into a host project" and "Checking installed
+   guidance". Limit: a later change that alters one target's text while
+   others stay unchanged would, with one constant, mark them all stale;
+   such a change would have to introduce per-target versions in its own
+   delta.
+
 ## Re-sync with the main specs
 
 Re-synced on 2026-10-31 with the main specs as of `a455011` (after the
@@ -121,12 +135,14 @@ exclusion. Places where the main specs forced a change of substance:
   contradicts "the hook writes no events". The change keeps the hook
   read-only and adds `hook` to that requirement's exceptions (MODIFIED).
   Consequence: `session-start` does not deliver a grant that is due but
-  not yet written (open question below). A cache of another schema
+  not yet written (Ben confirmed this on PR #67). A cache of another schema
   version counts as unreadable, since opening it would recreate it
   (`keep-cursors-on-upgrade`).
-- **Guidance version 4 is now stated in the spec.** board-agent-guidance
-  "Mutex ticket recipe" says the version SHALL be 3; it is MODIFIED to
-  "3 or later" and "Installing guidance into a host project" says 4.
+- **The guidance version stays 3.** The branch planned
+  `GUIDANCE_VERSION` 4, which would have reported every 0.3.0 install
+  `stale` although this change alters no existing target's text. Decided
+  by Ben on PR #67 (decision 12): the version is raised only when an
+  existing target's installed text changes.
 - **Cursor and Copilot carry the mutex short form.** "Mutex ticket recipe"
   puts a short form in all installed project guidance; to keep the
   proposal's "same rules in every target", the `cursor` rule and the
@@ -188,8 +204,5 @@ three marked entries, or install with an explicit `--target` list.
 - Whether Codex reads `AGENTS.md` is confirmed in the sandbox suite; if it does
   not, the `codex` target only prints its command and the spec changes.
 - An ADR (0016) recording decisions 2 and 3 is planned in task group 1.
-- Should `hook session-start` catch up like `inbox` (and so write any due
-  grant and fold late files) so that a pending grant is delivered at
-  session start? The spec keeps decision 3 (no catch-up, no event
-  writes); catching up would make `session-start` the one hook event that
-  can write an event and take the write lock.
+- Decided by Ben on PR #67: `hook session-start` does not catch up or
+  write due grants; hooks stay read-only (decision 3).

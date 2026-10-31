@@ -10,9 +10,10 @@ into a host project", "Installed guidance never clobbers user content",
 `guard-stale-temporary`, `keep-cursors-on-upgrade` and `no-echo-refusals`.
 It keeps `remote`, `init --remote` and `--into-host`, the scope
 disposition flags, `renew`, `unqueue`, `config`, the lease flags and the
-CLI-only flags. `add-claim-leases` took `GUIDANCE_VERSION` 3 and ADR
-0014, and ADR 0015 is taken, so this change's guidance group (group 4)
-sets `GUIDANCE_VERSION` to 4 and its ADR (task 1.4) is 0016. The agent
+CLI-only flags. `GUIDANCE_VERSION` stays 3, since this change alters no
+existing target's installed text, and the new targets install at version
+3 (board-agent-guidance "Installing guidance into a host project"). ADR
+0014 and 0015 are taken, so this change's ADR (task 1.4) is 0016. The agent
 guide gains no line (design.md decision 10). Every new refusal follows
 board-cli "Refusals never repeat the refused input": its tests pass a
 token-shaped value and assert it appears in no output.
@@ -52,8 +53,8 @@ another archived change has touched since `a455011`.
 
 ## 4. Other harness targets (`guidance/harness-targets`)
 
-- [ ] 4.1 Test author: tests for `codex`, `cursor`, `antigravity` and `copilot` install, auto-detection, the printed `codex mcp add` / `agy mcp add` commands, `--global` (explicit target required, scratch `CODEX_HOME` and `HOME`, other entries untouched), refusal (foreign TOML table, markerless mdc, unmanaged MCP entries), `--command` reaching each MCP entry, the 4096 byte `AGENTS.md` block and the 24 KB warning, check states, "Harness MCP entries", the mutex short form in the `cursor` rule and `copilot` block with their line limits ("Mutex ticket recipe"), version 3 installs reported `stale`, and an empty or multi-line `--command` refused without repeating it. Verify: tests are red, pre-push subset passes
-- [ ] 4.2 Implementer: implement the four targets with the existing block, owned-key and refusal helpers; the `cursor` rule body and the `copilot` block are the `AGENTS.md` block's text (the six rules, the mutex short form and the pointer to `agentboard help agents`); set `GUIDANCE_VERSION` to 4. Verify: group 4 tests pass; every `agentboard ` line in the new texts parses against the registry
+- [ ] 4.1 Test author: tests for `codex`, `cursor`, `antigravity` and `copilot` install, auto-detection, the printed `codex mcp add` / `agy mcp add` commands, `--global` (explicit target required, scratch `CODEX_HOME` and `HOME`, other entries untouched), refusal (foreign TOML table, markerless mdc, unmanaged MCP entries), `--command` reaching each MCP entry, the 4096 byte `AGENTS.md` block and the 24 KB warning, check states, "Harness MCP entries", the mutex short form in the `cursor` rule and `copilot` block with their line limits ("Mutex ticket recipe"), 0.3.0 (version 3) `claude` and `agents-md` installs still `current`, new targets carrying version 3 markers, adding a target leaving the others' state unchanged, and an empty or multi-line `--command` refused without repeating it. Verify: tests are red, pre-push subset passes
+- [ ] 4.2 Implementer: implement the four targets with the existing block, owned-key and refusal helpers; the `cursor` rule body and the `copilot` block are the `AGENTS.md` block's text (the six rules, the mutex short form and the pointer to `agentboard help agents`); leave `GUIDANCE_VERSION` at 3 and the existing rendered texts byte-identical. Verify: group 4 tests pass; the rendered `SKILL.md` and `AGENTS.md` block are byte-identical to 0.3.0's; every `agentboard ` line in the new texts parses against the registry
 - [ ] 4.3 Reviewer: check no user bytes change outside owned regions in any target. Verify: report with verdict
 
 ## 5. Prompts (`guidance/prompts`)

@@ -83,9 +83,16 @@ exit 1 with reason `usage`, naming the flag but not the value, and write
 nothing. The command SHALL NOT require a board and
 SHALL NOT run git commands that modify anything. `init` SHALL end its
 output with a line suggesting `agentboard agents install` unless it ran the
-install (see board-cli "Init offers to install agent guidance"). The
-guidance version SHALL be 4, so `agents check` reports installations of
-guidance version 3 or earlier as `stale`.
+install (see board-cli "Init offers to install agent guidance").
+The guidance version (`GUIDANCE_VERSION`, the one version every marker
+records and `agents check` compares) SHALL be raised only when the
+installed text of a target that already exists changes. A new target
+SHALL install, and be checked, at the guidance version current when it
+is added, its marker recording that version. The targets this
+requirement adds (`claude-hooks`, `codex`, `cursor`, `antigravity` and
+`copilot`) leave the text of `claude`, `agents-md`, `openspec` and
+`mcp-json` unchanged, so the guidance version stays 3 and they install
+with version 3 markers.
 
 #### Scenario: Install the Claude skill
 - **WHEN** `agentboard agents install --target claude` runs in a project with no `.claude/skills/agentboard`
@@ -131,9 +138,13 @@ guidance version 3 or earlier as `stale`.
 - **WHEN** `agentboard agents install --target claude --target agents-md` runs with guidance version 2
 - **THEN** `SKILL.md` and the `AGENTS.md` block each state the ad hoc rule, contain no text saying an ad hoc ticket cannot enter `implementing`, carry the guidance version marker `v2`, and `agents check` reports installations of guidance version 1 as `stale`
 
-#### Scenario: Version 3 installs are stale
-- **WHEN** `agents check` runs where the skill and the `AGENTS.md` block were installed with guidance version 3 and the running CLI has guidance version 4
-- **THEN** it reports the `claude` and `agents-md` targets as `stale` and exits 1
+#### Scenario: Existing installs stay current
+- **WHEN** the skill and the `AGENTS.md` block were installed by agentboard 0.3.0 (guidance version 3) and the CLI with these targets runs `agents check`
+- **THEN** it reports `claude` and `agents-md` as `current` and exits 0
+
+#### Scenario: New targets install at the current version
+- **WHEN** `agentboard agents install --target cursor --target copilot --target claude-hooks` runs
+- **THEN** the Cursor rule, the Copilot block and each agentboard hook command carry a version 3 marker, and `agents check` reports each `current`
 
 ### Requirement: Installed guidance never clobbers user content
 Each target SHALL own only its marked region: the whole of `SKILL.md` only
@@ -198,6 +209,10 @@ or its version or markers cannot be read). It SHALL exit 0 when
 all found targets are current, and 1 otherwise, so it can run in a
 project's own checks. With `--json` it SHALL print an array of
 `{target, path, state, installedVersion, currentVersion}`.
+A target is `stale` only when its recorded version differs from the
+running guidance version, so installing or adding a target never changes
+the state of another (see "Installing guidance into a host project" for
+when the version is raised).
 
 #### Scenario: Hand-edited hook is modified
 - **WHEN** an installed agentboard hook command in `.claude/settings.json` is edited but keeps its marker
@@ -206,6 +221,10 @@ project's own checks. With `--json` it SHALL print an array of
 #### Scenario: Missing hook is modified
 - **WHEN** the `Stop` agentboard hook is deleted but the other two remain
 - **THEN** `agents check` reports `claude-hooks` as `modified`
+
+#### Scenario: Adding a target leaves the others current
+- **WHEN** `claude` and `agents-md` are installed and `current`, and `agents install --target cursor` runs
+- **THEN** `agents check` still reports `claude` and `agents-md` as `current`, and `cursor` as `current`
 
 #### Scenario: Stale skill after upgrade
 - **WHEN** the skill was installed with guidance version 1 and the running CLI has guidance version 2
@@ -268,9 +287,7 @@ SHALL contain a short form of the recipe (the worker rules, the claim, renew, wa
 commands, and the pointer to `agentboard help agents`), the MCP server
 `instructions` summary SHALL contain the worker rules in one or two
 sentences while staying within 2000 characters, and the guidance version
-SHALL be 3 or later (3 introduced the short form; see "Installing
-guidance into a host project" for the current version), so `agents check`
-reports version 2 installations as `stale`.
+SHALL be 3, so `agents check` reports version 2 installations as `stale`.
 In `SKILL.md` the short form is a section headed `## Mutex tickets` after
 the rules and before `## Everything else`; in the AGENTS.md block it is a
 paragraph introduced by the line `Mutex tickets:` after the rules and
