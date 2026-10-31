@@ -99,7 +99,8 @@ ref does not exist (git's own convention for "no ref";
 `update-ref <ref> <zero> <value>` deletes the ref). It is written with
 the atomic `writeRecord` of guard-stale-temporary, on every pass through
 step 4: a fresh temporary and an adopted one (an adopted temporary's
-record is rewritten with the `<old>` of the run that swaps). It is read
+record is rewritten with the `<old>` of the run that swaps), except
+across a resume of the same board (next section). It is read
 with the rules of the HEAD record: well formed only as exactly one full
 lowercase hexadecimal object name of the board's algorithm with at most
 one trailing newline; anything else, or an unreadable file, is "no
@@ -110,6 +111,37 @@ a later write would leave the update without its record, exactly the
 case to undo. A kill between the write and the swap leaves a record and a
 ref that does not hold the temporary's HEAD, which the rule below ignores
 (scenario "Killed before the host ref was updated").
+
+### Carry the record forward across a resume of the same board (review round 1)
+
+The value before *this* swap is the right undo point only when the ref
+does not already hold this board's unpublished commits. After a move of
+the same board updated the ref and stopped, a resume compares against the
+value that move wrote, so recording it would make a later reset by
+another board a no-op that publishes the first board (reviewer-ih4-2,
+sequences D1, D2, D2b, D3, D5). So:
+
+- After the foreign updates are undone, the leftover pass reads the ref
+  (`refAtLeftover`). When a dead temporary of this board without rebase
+  or cherry-pick state has its HEAD equal to that value, the record to
+  write at step 4 is that temporary's `agentboard-board-before` when well
+  formed, else none ("unknown").
+- At step 4, when such a temporary existed and `<old>` still equals
+  `refAtLeftover`, the move writes the carried value instead of `<old>`
+  (an adopted temporary therefore keeps its own record), or, for
+  "unknown", writes no record and removes any it has, so a later run
+  with another board refuses rather than resets. Otherwise `<old>` as
+  above.
+- That leftover is not removed in the leftover pass. It is removed (and
+  named as today, left by an interrupted move) only once the resuming
+  move has written its own record at step 4; a run that stops earlier (a
+  kill before step 4, the failed fetch of the host remote's ref that
+  discards a fresh temporary, sequence D4) leaves it as the evidence for
+  the next run.
+
+The existing rewrite of an adopted temporary's record (a move that lost
+the swap, whose HEAD is not in the ref) is unchanged: no leftover's HEAD
+equals the ref then.
 
 ### Judge every dead temporary whose HEAD is in the local ref
 
@@ -249,6 +281,48 @@ tests pin them.
    `update-ref refs/agentboard/board <recorded> <HEAD>`, the zero object
    name included (git deletes the ref then); the race tests intercept
    that command line.
+
+6. **Live temporary of another board (review round 1).** A temporary
+   named by a live pid, without rebase or cherry-pick state, whose HEAD
+   is in the local ref and which is not this board's makes the move exit
+   3 `sync-in-progress` with the existing hint, before any reset,
+   changing nothing: `the temporary worktree at <path> was made by a move
+   that may still be running (its process is alive) and put commits of
+   another board (not the one at <dir>, or one whose history no longer
+   holds where that move began) into refs/agentboard/board in the host
+   repository without publishing them; nothing was changed; run agentboard
+   init --into-host again once that move has finished`. A live temporary
+   of this board is left alone as before.
+7. **Naming after a kill between the reset and the removal (review
+   round 1).** Before running the reset command the move marks the
+   temporary with an atomic record `agentboard-board-undone` (removed
+   again when the reset loses its compare-and-swap); a dead temporary
+   carrying it is removed and named as left by a move of another board,
+   whatever its HEAD, and no reset line is printed for it (the reset was
+   made by the killed run).
+8. **A reset that changes nothing (review round 1).** When the recorded
+   value equals the temporary's HEAD (and so the ref), no command runs
+   and no reset line is printed; the temporary is removed and named as
+   left by a move of another board. The ref's content was there
+   independently of that move (a hand-fetched ref that held the whole
+   board) and is integrated as before.
+9. **Refusal after resets in the same run (review round 1 addendum).** In
+   the refusal of ruling 4, `nothing was changed;` becomes
+   `refs/agentboard/board was set back for the interrupted move at <path>
+   earlier in this run, and nothing else was changed;` (`moves at <path>,
+   <path>` for several, in reset order) when that run already made
+   resets.
+10. **Moved past, several candidates (addendum).** The refusal names the
+    candidate whose HEAD is the furthest along (a descendant of the
+    others).
+11. **A record naming a missing object (addendum).** A well formed record
+    that is not the zero object name and does not name a commit of the
+    host repository is refused before the reset is tried, with ruling 4's
+    text and `<why>` `the value that move recorded for the ref is not a
+    commit in the host repository`; never the lost-race text.
+12. **Hash algorithm (addendum).** The zero object name has the length of
+    the board's object names (64 digits in a sha256 repository); a test
+    pins it with sha256 repositories.
 
 ## Alternatives considered
 
