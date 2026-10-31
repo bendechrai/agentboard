@@ -366,6 +366,14 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
     { fn: 'selectCommand', callee: 'unknownCommandMessage', why: BUILDER },
     { fn: 'resolveActor', value: 'ACTOR_ENV', why: REGISTRY },
     { fn: 'refuseReservedActor', value: 'SYSTEM_ACTOR', why: REGISTRY },
+    // The actor check names where the name came from and the matching
+    // pattern names, never the name (actor-secret-check design.md "Messages").
+    {
+      fn: 'checkActorName',
+      value: 'source',
+      why: `${REGISTRY} (an ActorSource: --as, AGENTBOARD_ACTOR, --to, the argument as or to)`,
+    },
+    { fn: 'checkActorName', value: 'names', why: 'the matching secret pattern names' },
     { fn: 'usage', value: 'message', why: PASS },
   ],
   'src/cli/registry.ts': [
