@@ -9,9 +9,9 @@ that a name outside it or matching a secret pattern is refused with exit
 within the guide's line limit. `help` for every command that takes an
 actor SHALL list exit code 1 `invalid-actor`, and the help of `--as` and
 `--to` SHALL state the form. The `invalid-actor` hint SHALL name, on the
-CLI, `--as <actor>` and `AGENTBOARD_ACTOR` (or `--to <actor>` when `--to`
-was refused), over MCP the `as` argument and `agentboard mcp --as
-<actor>`, and on the web `agentboard serve --as <actor>` (or the
+CLI, `--as <actor>` and `AGENTBOARD_ACTOR` (and `--to <actor>` for
+`handoff`), over MCP the `as` argument and `agentboard mcp --as <actor>`
+(and the `to` argument for `board_handoff`), and on the web `agentboard serve --as <actor>` (or the
 hand-off's `to`), always with the placeholder `<actor>` and never the
 refused name. Every guide line beginning `agentboard ` SHALL still parse.
 
