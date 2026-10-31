@@ -40,6 +40,16 @@ export interface LocateOptions {
    * child process runs with. Defaults to `process.env`.
    */
   env?: Readonly<Record<string, string | undefined>>;
+  /**
+   * A bound, in milliseconds, on the `git` child of rule 2. A `git` that
+   * has not answered within it is killed (SIGKILL, so one that ignores
+   * SIGTERM is bounded too) and counts as git failing, so
+   * discovery falls through to rule 3 (`./.board`). `agentboard hook`
+   * passes what is left of its budget (board-harness-hooks "Hook command
+   * and protocol"). Unbounded when absent; a value of zero or less is a
+   * bound of one millisecond.
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -72,7 +82,7 @@ export function locateBoard(options?: LocateOptions): BoardLocation {
   if (override !== undefined && override !== '') {
     return { dir: resolve(cwd, override), source: 'env' };
   }
-  const commonDir = gitCommonDir(cwd, env);
+  const commonDir = gitCommonDir(cwd, env, options?.timeoutMs);
   if (commonDir !== null) {
     const hostRoot = dirname(resolve(cwd, commonDir));
     if (basename(hostRoot) === BOARD_DIR_NAME && boardExists(hostRoot)) {
@@ -84,10 +94,14 @@ export function locateBoard(options?: LocateOptions): BoardLocation {
   return { dir: resolve(cwd, BOARD_DIR_NAME), source: 'cwd' };
 }
 
-/** `git rev-parse --git-common-dir` in `cwd`, or null when git fails or is absent. */
+/**
+ * `git rev-parse --git-common-dir` in `cwd`, or null when git fails, is
+ * absent, or (with `timeoutMs`) has not answered in time.
+ */
 function gitCommonDir(
   cwd: string,
   env: Readonly<Record<string, string | undefined>>,
+  timeoutMs?: number,
 ): string | null {
   try {
     const out = execFileSync('git', ['rev-parse', '--git-common-dir'], {
@@ -95,6 +109,12 @@ function gitCommonDir(
       env: { ...env },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      // A timeout of 0 would mean no bound. The child is killed with
+      // SIGKILL, which a git that ignores or traps SIGTERM cannot survive,
+      // so a bound is a bound; rev-parse holds no lock a kill could leave.
+      ...(timeoutMs === undefined
+        ? {}
+        : { timeout: Math.max(1, Math.floor(timeoutMs)), killSignal: 'SIGKILL' as const }),
     });
     const dir = out.replace(/\r?\n$/, '');
     return dir === '' ? null : dir;

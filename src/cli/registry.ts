@@ -27,6 +27,7 @@ import {
 import { SETTING_KEYS, getConfig, setConfig } from '../board/config.js';
 import { formatDuration, isoTime, parseSetting, parseTimeout, parseTtl } from '../board/leases.js';
 import { importChange, parseImportTarget } from '../board/import.js';
+import { HOOK_EVENTS } from '../board/hook.js';
 import { readInbox } from '../board/inbox.js';
 import { refuseSecretLike } from '../board/secrets.js';
 import { checkActorName } from './parse.js';
@@ -2389,7 +2390,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'mcp',
     summary: 'Serve the board as MCP tools over stdio',
     description:
-      'Serves the board as MCP tools over stdio, one tool per board command (not init, watch, serve, top, rebuild, sync, remote, config, mcp, version, help or the agents commands), for agents that prefer tools to the shell. Runs until the client disconnects or the process gets SIGINT or SIGTERM. --as sets the default actor for tool calls that pass no as of their own, before AGENTBOARD_ACTOR. Nothing but protocol messages is written to stdout. It exits 2 when no board is found from this directory.',
+      'Serves the board as MCP tools over stdio, one tool per board command (not init, watch, serve, top, rebuild, sync, remote, config, hook, mcp, version, help or the agents commands), for agents that prefer tools to the shell. Runs until the client disconnects or the process gets SIGINT or SIGTERM. --as sets the default actor for tool calls that pass no as of their own, before AGENTBOARD_ACTOR. Nothing but protocol messages is written to stdout. It exits 2 when no board is found from this directory.',
     group: 'setup',
     examples: [
       { command: 'agentboard mcp', summary: 'Serve the board over MCP on stdio' },
@@ -2416,6 +2417,66 @@ export const COMMANDS: readonly CommandSpec[] = [
         1,
         'streaming-command',
         'agentboard mcp serves MCP over stdio and runs only from the agentboard executable',
+      );
+    },
+  },
+  {
+    name: 'hook',
+    summary: 'Answer a coding harness hook event (Claude Code) from the board, read-only',
+    description:
+      "Run by a coding harness on one of three events, never by hand: session-start, stop or pre-tool-use. Reads the harness's JSON payload from stdin and answers in Claude Code's hook protocol: exit 0, with at most one JSON document on stdout, continues; exit 2, only with --strict, blocks with the reason on stderr. Warn-only unless --strict. It fails open: no board, an unreadable, locked or older cache, no actor, a malformed payload, an unknown event or a run past its 2 second budget all exit 0 without blocking. It is read-only: it writes no event, never syncs or catches up (so it writes no due grant) and never creates or rebuilds the cache; session-start may only advance the actor's inbox cursor. The actor is --as or AGENTBOARD_ACTOR, never the OS user or the payload. --json is accepted and changes nothing: the answer is always the hook protocol. Set AGENTBOARD_HOOKS=off to make every event exit 0 at once. It never reports the other exit codes, and it is not an MCP tool.",
+    group: 'setup',
+    examples: [
+      {
+        command: 'agentboard hook session-start',
+        summary: 'Answer the SessionStart event with the held tickets and the inbox as context',
+      },
+      {
+        command: 'agentboard hook pre-tool-use --strict',
+        summary: 'Deny an edit of a project file while the actor holds no ticket',
+      },
+      {
+        command: 'agentboard hook stop --as impl',
+        summary: 'Remind impl to hand off or block a held ticket before stopping',
+      },
+    ],
+    exitCodes: [
+      {
+        code: 0,
+        meaning:
+          'Continue: the answer, if any, is the JSON document on stdout; also every failure (fail open)',
+      },
+      {
+        code: 1,
+        reason: 'invalid-actor',
+        meaning:
+          'Only through the in-process registry, where every command checks a given --as; the executable treats such a name as no actor and exits 0',
+      },
+      {
+        code: 2,
+        meaning: 'Block, with --strict only: the reason is on stderr and is fed back to the agent',
+      },
+    ],
+    positionals: [
+      positional(
+        'event',
+        'string',
+        'The harness event: session-start, stop or pre-tool-use',
+        true,
+        HOOK_EVENTS,
+      ),
+    ],
+    actorHelp:
+      'The actor whose tickets and inbox the hook checks, before AGENTBOARD_ACTOR; with neither, stop and pre-tool-use do nothing and session-start asks for one; checked: 1 to 32 ASCII letters, digits, . _ - or @, the first a letter or digit (a name that fails counts as no actor)',
+    flags: [flag('strict', 'boolean', 'Block (exit 2) instead of warning')],
+    exclusive: [],
+    writes: false,
+    operation: 'runHook',
+    run: () => {
+      throw new BoardError(
+        1,
+        'streaming-command',
+        'agentboard hook reads its payload from stdin and runs only from the agentboard executable',
       );
     },
   },

@@ -33,7 +33,8 @@ export const TOOL_PREFIX = 'board_';
  * setup, streaming or maintenance commands run by a human or an
  * orchestrator in a shell (`config set` and `config get` among them: the
  * board settings are set up in a shell), `help` (tools/list already
- * describes every tool), and `agents install` and
+ * describes every tool), `hook` (run by a coding harness on its own
+ * events, board-harness-hooks), and `agents install` and
  * `agents check`, which write or read host project files in the caller's
  * working tree (board-agent-guidance: "Help is not an MCP tool").
  */
@@ -47,6 +48,7 @@ export const EXCLUDED_COMMANDS: readonly string[] = [
   'remote',
   'config set',
   'config get',
+  'hook',
   'mcp',
   'version',
   'help',
