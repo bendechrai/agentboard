@@ -64,10 +64,21 @@
  *   checklist tell agents to read.
  * - Only `resources/list` and `resources/read` are handled; no resource
  *   templates (the URIs are few and fixed, and all listed).
- * - An unknown URI is refused as the SDK's own `McpServer` refuses one:
- *   `McpError(ErrorCode.InvalidParams, "Resource <uri> not found")`
- *   (JSON-RPC error -32602). URIs match exactly: no normalization, so a
- *   trailing slash, a query, a fragment or a change of case is unknown.
+ * - An unknown URI is refused with JSON-RPC error -32602
+ *   (`ErrorCode.InvalidParams`, the code the SDK's own `McpServer` uses)
+ *   whose message is exactly `unknown resource; the resources are <every
+ *   resource URI in resources/list order, joined with ", ">`
+ *   (`unknownResourceMessage`) and which has no `data` member (board-cli:
+ *   "MCP protocol errors never repeat the request"). The message is built
+ *   from `GUIDE_RESOURCES`, never from the request, so it names the valid
+ *   choices and repeats no part of the URI, which may hold a token. It is
+ *   thrown as a `ProtocolError`, not an `McpError`, because `McpError`
+ *   prefixes its message with `MCP error <code>: ` and the SDK's protocol
+ *   layer sends `error.message` on the wire as it is; the prefix is a
+ *   client's presentation of an error (an SDK client adds it when it
+ *   raises the response), and sending it made such clients show it twice.
+ *   URIs match exactly: no normalization, so a trailing slash, a query, a
+ *   fragment or a change of case is unknown.
  */
 
 import type { Readable, Writable } from 'node:stream';
@@ -80,7 +91,6 @@ import {
   ErrorCode,
   ListResourcesRequestSchema,
   ListToolsRequestSchema,
-  McpError,
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 
@@ -242,8 +252,14 @@ export interface BoardMcpServer {
    * `agentboard help agents` (`agentsHelpOutput(VERSION, undefined)`) for
    * the guide and of `agentboard help agents --role <role>`
    * (`agentsHelpOutput(VERSION, role)`) for a role: byte for byte the
-   * stdout of the same CLI invocation of the same build. Any other URI is
-   * the `InvalidParams` error described in the module comment.
+   * stdout of the same CLI invocation of the same build. Any other URI
+   * (including the empty string, a trailing slash, a query, a fragment, a
+   * change of case or another scheme) is the JSON-RPC error -32602
+   * described in the module comment: message `unknown resource; the
+   * resources are ` followed by the listed URIs in `resources/list` order
+   * joined with `, `, no `data`, nothing on stderr, and the server keeps
+   * serving. The message is built from the resource list, so it never
+   * repeats the URI.
    */
   connect(transport: Transport): Promise<void>;
   /** Closes the protocol server and its transport. Idempotent. */
@@ -296,7 +312,7 @@ export function createMcpServer(options: McpServerOptions): BoardMcpServer {
     const { uri } = request.params;
     const resource = GUIDE_RESOURCES.find((r) => r.uri === uri);
     if (resource === undefined) {
-      throw new McpError(ErrorCode.InvalidParams, `Resource ${uri} not found`);
+      throw new ProtocolError(ErrorCode.InvalidParams, unknownResourceMessage());
     }
     const { text } = agentsHelpOutput(VERSION, resource.role ?? undefined);
     return { contents: [{ uri, mimeType: 'text/plain', text }] };
@@ -342,6 +358,34 @@ const GUIDE_RESOURCES: readonly GuideResource[] = [
     role,
   })),
 ];
+
+/**
+ * The `message` of the unknown-resource error (board-agent-guidance: "Guide
+ * over MCP"): `unknown resource; the resources are ` followed by every
+ * `GUIDE_RESOURCES` URI in `resources/list` order joined with `, `. Built
+ * from the registry only, so a new role is listed without a second edit and
+ * no part of the request can reach it.
+ */
+function unknownResourceMessage(): string {
+  return `unknown resource; the resources are ${GUIDE_RESOURCES.map((r) => r.uri).join(', ')}`;
+}
+
+/**
+ * A JSON-RPC error response thrown from a request handler. The SDK's
+ * protocol layer serialises any thrown error as `{ code, message }`, taking
+ * `code` when it is a safe integer and adding `data` only when the error
+ * has one, so this reaches the wire with `message` exactly as given: unlike
+ * `McpError`, it adds no `MCP error <code>: ` prefix.
+ */
+class ProtocolError extends Error {
+  constructor(
+    readonly code: ErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ProtocolError';
+  }
+}
 
 /** Steps 1 to 6 of `BoardMcpServer.callTool`. Never throws. */
 function runTool(
