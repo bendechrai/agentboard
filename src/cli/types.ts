@@ -281,10 +281,11 @@ export interface CommandSpec {
    * Help text for `--as` on a command that neither writes nor tracks a
    * cursor but still uses the actor: one ASCII line replacing
    * `Accepted and ignored by this command` on the `--as` line of its help
-   * (the line still reads `string, optional`). Only `serve` and `mcp`
-   * have it: on `serve`, `--as` is the actor of the web app's write
+   * (the line still reads `string, optional`). Only `serve`, `mcp` and
+   * `hook` have it: on `serve`, `--as` is the actor of the web app's write
    * actions and the only way to enable them; on `mcp`, the server's
-   * default actor for tool calls. Absent on
+   * default actor for tool calls; on `hook`, the actor whose tickets and
+   * inbox the hook checks. Absent on
    * every command that writes or tracks a cursor, and on every command
    * that ignores `--as`.
    */

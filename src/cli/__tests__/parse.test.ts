@@ -56,6 +56,7 @@ describe('the command registry', () => {
       'config set',
       'config get',
       'mcp',
+      'hook',
       'agents install',
       'agents check',
       'version',

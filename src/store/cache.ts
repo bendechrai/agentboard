@@ -216,6 +216,15 @@ export interface OpenCacheOptions {
    *   unchanged, cursor rows included.
    */
   readonly prepare?: boolean;
+  /**
+   * With `prepare` false only: the busy timeout of the connection and the
+   * deadline of the busy retry, in milliseconds, in place of
+   * `BUSY_TIMEOUT_MS`. `agentboard hook` passes what is left of its
+   * budget, so a locked cache makes it give up in time instead of waiting
+   * the usual 5 seconds; zero waits not at all. Ignored by a preparing
+   * open.
+   */
+  readonly busyTimeoutMs?: number;
 }
 
 /**
@@ -260,7 +269,7 @@ export interface OpenCacheOptions {
  */
 export function openCache(path: string, options?: OpenCacheOptions): DatabaseSync {
   if (options?.prepare === false) {
-    return inspectCache(path);
+    return inspectCache(path, options.busyTimeoutMs);
   }
   const deadline = Date.now() + BUSY_TIMEOUT_MS;
   const db = new DatabaseSync(path);
@@ -555,17 +564,19 @@ function isNotADatabase(error: unknown): boolean {
 /**
  * `openCache(path, { prepare: false })`: opens an existing cache without
  * writing to the file. Only per-connection pragmas are set and the schema
- * version is read (retried on SQLITE_BUSY like any open).
+ * version is read (retried on SQLITE_BUSY like any open, with
+ * `busyTimeoutMs` as both the busy timeout and the retry deadline).
  */
-function inspectCache(path: string): DatabaseSync {
+function inspectCache(path: string, busyTimeoutMs: number = BUSY_TIMEOUT_MS): DatabaseSync {
   if (!existsSync(path)) {
     throw new BoardError(5, 'no-cache', `there is no cache file at ${path}`);
   }
-  const deadline = Date.now() + BUSY_TIMEOUT_MS;
+  const wait = Math.max(0, Math.floor(busyTimeoutMs));
+  const deadline = Date.now() + wait;
   const db = new DatabaseSync(path);
   let stored: string | null;
   try {
-    db.exec(`PRAGMA busy_timeout = ${String(BUSY_TIMEOUT_MS)}`);
+    db.exec(`PRAGMA busy_timeout = ${String(wait)}`);
     db.exec('PRAGMA foreign_keys = ON');
     stored = retryBusy(() => inSnapshot(db, () => storedSchemaVersion(db)), deadline);
   } catch (error) {

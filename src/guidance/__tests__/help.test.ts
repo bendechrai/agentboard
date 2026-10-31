@@ -83,8 +83,12 @@ function argLine(arg: ArgSpec, positional: boolean): RegExp {
   );
 }
 
-/** Commands that never open a board. */
-const BOARDLESS = new Set(['init', 'agents install', 'agents check', 'version', 'help']);
+/**
+ * Commands that never report a board error: those that never open a
+ * board, and `hook`, which locates and reads one but fails open, exiting
+ * 0 or 2 only (board-cli "Exit codes", add-harness-integration).
+ */
+const BOARDLESS = new Set(['init', 'agents install', 'agents check', 'version', 'help', 'hook']);
 
 /**
  * Commands that locate a board but cannot exit 5: `mcp` locates the board
@@ -146,6 +150,7 @@ describe('the help data of record in the registry', () => {
         'config set',
         'config get',
         'mcp',
+        'hook',
         'agents install',
         'agents check',
         'version',
@@ -197,6 +202,12 @@ describe('the help data of record in the registry', () => {
     // Every command succeeds with 0.
     expect(c.exitCodes[0]).toMatchObject({ code: 0 });
     expect(c.exitCodes[0]?.reason).toBeUndefined();
+    if (name === 'hook') {
+      // board-cli "Exit codes": hook exits 0 or 2 only, as the harness
+      // protocol defines them, and never reports a usage error.
+      expect(codes).toEqual([0, 2]);
+      return;
+    }
     expect(c.exitCodes).toContainEqual(expect.objectContaining({ code: 1, reason: 'usage' }));
   });
 
@@ -225,13 +236,18 @@ describe('the help data of record in the registry', () => {
     ]);
   });
 
-  it('gives actorHelp to serve and mcp only, which neither write nor track a cursor', () => {
+  it('gives actorHelp to serve, mcp and hook only, which neither write nor track a cursor', () => {
     // serve --as is the actor of the web app's write actions, so its --as
     // line does not say "ignored".
     expect(COMMANDS.filter((c) => c.actorHelp !== undefined).map((c) => c.name)).toEqual([
       'serve',
       'mcp',
+      'hook',
     ]);
+    // hook: the actor whose tickets the hook checks (board-harness-hooks
+    // "Hook actor resolution"), never ignored.
+    expect(needsActor(command('hook'))).toBe(false);
+    expect(command('hook').actorHelp).toContain('AGENTBOARD_ACTOR');
     const serve = command('serve');
     expect(needsActor(serve)).toBe(false);
     expect(serve.actorHelp).toMatch(/write/i);
