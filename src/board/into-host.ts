@@ -862,18 +862,25 @@ export interface IntoHostResult extends InitResult {
  * command run and no line; a refusal after resets made earlier in the
  * run says they were kept; a live temporary of another board whose HEAD
  * is in the ref is `BoardError(3, 'sync-in-progress')` naming it, before
- * any reset. Then the evidence of this board's own unpublished update is
- * found (design.md "Carry the record forward"): a dead temporary of this
- * board whose HEAD equals the ref. It is kept through the leftover pass
- * (renamed to `<pid>-kept` when named by this process's pid, which the
- * fresh temporary takes), adopted when it integrated something, and
- * otherwise removed, named as left by an interrupted move, only after
- * this run's swap of step 4 succeeded; at that swap, when `<old>` still
- * equals the value the leftover pass read, the record written is the
- * evidence's own `agentboard-board-before` (so it never names this
- * board's unpublished commits), or none when the evidence has no well
- * formed one, so a later run with another board refuses rather than
- * resets. Otherwise `removeDeadMigratingWorktrees(hostRoot)`
+ * any reset; every dead temporary of another board whose HEAD was in the
+ * ref as the run began is removed and named as another board's once the
+ * chain is done, also one whose update a reset made for another
+ * temporary undid (ruling 13). Then the evidence of this board's own
+ * unpublished update is found (design.md "Carry the record forward"):
+ * the first by name of the dead temporaries of this board whose HEAD is
+ * an ancestor of, or equal to, the ref (ruling 14; the others are plain
+ * leftovers). It is kept through the leftover pass (renamed to
+ * `<pid>-kept` when named by this process's pid, which the fresh
+ * temporary takes), adopted when it integrated something, and otherwise
+ * removed, named as left by an interrupted move, only after this run's
+ * swap of step 4 succeeded; at that swap, when `<old>` still equals the
+ * value the leftover pass read, the record written is the evidence's own
+ * `agentboard-board-before` when its HEAD equals the ref (so it never
+ * names this board's unpublished commits), or none when its HEAD is a
+ * strict ancestor (another writer added commits on top, review round 2)
+ * or it has no well formed record, so a later run with another board
+ * refuses rather than resets or integrates. A live temporary of this
+ * board is left alone (ruling 15). Otherwise `removeDeadMigratingWorktrees(hostRoot)`
  * removes the temporaries that hold nothing (the message names what was
  * removed), and a dead-pid temporary worktree without rebase or
  * cherry-pick state whose HEAD differs from `MIGRATING_REF` (or whose ref
@@ -1539,28 +1546,39 @@ function lockedMove(
     foreign.push(path);
   }
   // The evidence of this board's own unpublished update (design.md "Carry
-  // the record forward"): a dead temporary of this board whose HEAD is
-  // the ref as the leftover pass finds it. The ref then already holds
-  // this board's commits, so the value this run's swap compares against
-  // is not the undo point; the record to write at step 4 is that
-  // temporary's own (`carried`; null for no well formed record: none is
-  // written, so a later run with another board refuses). The temporary
-  // is kept, not removed or adopted away, until this run's swap has
-  // succeeded with that record in place, so a run that stops before then
-  // leaves the evidence for the next. One named by this process's own pid
-  // is renamed first, as the fresh temporary of this run takes that path.
+  // the record forward"): the first, by the byte order of names, dead
+  // temporary of this board whose HEAD is an ancestor of, or equal to,
+  // the ref as the leftover pass finds it (ruling 14). The ref then
+  // already holds this board's commits, so the value this run's swap
+  // compares against is not the undo point; the record to write at step
+  // 4 is that temporary's own when its HEAD equals the ref
+  // (`carriedRecord`), and none (null) when it has no well formed record
+  // or when its HEAD is a strict ancestor (another writer added commits
+  // on top, review round 2): nothing is written then, so a later run
+  // with another board refuses rather than resets or integrates. The
+  // temporary is kept, not removed or adopted away, until this run's
+  // swap has succeeded with that record in place, so a run that stops
+  // before then leaves the evidence for the next. One named by this
+  // process's own pid is renamed first, as the fresh temporary of this
+  // run takes that path.
   const refAtLeftover = refValue(host, BOARD_REF);
   const evidence =
     refAtLeftover === ''
       ? undefined
       : findMigratingWorktrees(hostRoot, { env }).find(
-          (w) => dead(w) && !w.rebasing && w.registered && w.head === refAtLeftover && belongs(w.path),
+          (w) =>
+            dead(w) &&
+            !w.rebasing &&
+            w.registered &&
+            w.head !== null &&
+            isAncestor(host, w.head, refAtLeftover) &&
+            belongs(w.path),
         );
   let evidencePath = evidence?.path;
   let carriedRecord: string | null = null;
   if (evidence !== undefined) {
     const record = nameRecord(host, evidence.path, BEFORE_RECORD, plan.head.length);
-    carriedRecord = record.present ? record.name : null;
+    carriedRecord = record.present && evidence.head === refAtLeftover ? record.name : null;
     if (evidence.pid === process.pid) {
       evidencePath = `${evidence.path}-kept`;
       host.run('worktree', 'move', evidence.path, evidencePath);
@@ -2162,6 +2180,11 @@ interface UndoneUpdates {
  *   the ref moved meanwhile, the marker removed again; resets already
  *   made stay, each was exact.
  *
+ * When the chain is done, every dead temporary of another board whose
+ * HEAD was in the ref as the run began is returned for removal and
+ * naming (ruling 13): one not set back itself had its update undone by
+ * a reset made for another temporary.
+ *
  * Nothing is removed here: a refusal part way through a chain leaves the
  * temporaries already set back in place, their HEAD no longer in the ref
  * and their marker set, for the next run.
@@ -2203,17 +2226,32 @@ function undoForeignUpdates(
   )) {
     paths.push(marked.path);
   }
+  // Every dead temporary of another board whose HEAD is in the ref as the
+  // run begins is named as another board's once the chain is done
+  // (ruling 13): one not set back itself had its update undone by a reset
+  // made for another temporary (two temporaries of one board holding the
+  // ref after a kill between a resume's swap and its removal of the
+  // evidence), or the chain ended in a refusal, which removes nothing.
+  const foreignAtStart = found.filter((w) => dead(w) && inRef(w, initial) && !ours(w.path)).map((w) => w.path);
+  const done = (): UndoneUpdates => {
+    for (const path of foreignAtStart) {
+      if (!paths.includes(path)) {
+        paths.push(path);
+      }
+    }
+    return { lines, paths };
+  };
   for (;;) {
     const ref = refValue(host, BOARD_REF);
     if (ref === '') {
-      return { lines, paths };
+      return done();
     }
     const candidates = findMigratingWorktrees(hostRoot, { env }).filter(
       (w): w is MigratingWorktree & { head: string } =>
         dead(w) && !paths.includes(w.path) && inRef(w, ref) && !ours(w.path),
     );
     if (candidates.length === 0) {
-      return { lines, paths };
+      return done();
     }
     const equal = candidates.find((w) => w.head === ref);
     if (equal === undefined) {
