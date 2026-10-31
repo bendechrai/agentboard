@@ -27,7 +27,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -1886,6 +1886,141 @@ describe('into-host-replaced-after-step-4: a move killed after it updated the ho
         killed(fx.root, env, ['update-ref', BOARD_REF, ZERO], 'before');
         expect(refCommit(fx.root)).toBe(ha);
         expect(registeredMigrating(fx.root)).toHaveLength(1);
+
+        expectBMovedWithoutA(fx, bFiles, env);
+      });
+    });
+
+    describe('review round 3: the ref moved during the resume (ruling 16), an evidence equal to the ref preferred (ruling 17)', () => {
+      /**
+       * `env` with a `git` shim that, at the step 2 fetch into
+       * `refs/agentboard/migrating-fetch` (after the leftover pass), first
+       * adds a third writer's commit on top of the local ref, once; and
+       * that kills the CLI right after (`after`, the real command run
+       * first) or right before (`before`) the step 4 `update-ref
+       * refs/agentboard/board`. Returns the env and the file the shim
+       * writes the third writer's commit to.
+       */
+      function thirdWriterDuringResume(env: Env, root: string, when: KillWhen): { env: Env; third: string } {
+        const scratch = tempDir();
+        const third = join(scratch, 'third');
+        return {
+          third,
+          env: withShellGitShim(
+            env,
+            [
+              'case " $* " in',
+              `  *"${MIGRATING_FETCH_REF}"*)`,
+              `    if [ ! -e '${third}' ]; then`,
+              `      p=$("$GIT" -C '${root}' rev-parse ${BOARD_REF})`,
+              `      t=$("$GIT" -C '${root}' rev-parse "$p^{tree}")`,
+              `      c=$("$GIT" -C '${root}' -c user.name=h -c user.email=h@localhost commit-tree "$t" -p "$p" -m 'third writer')`,
+              `      "$GIT" -C '${root}' update-ref ${BOARD_REF} "$c" "$p" && echo "$c" > '${third}'`,
+              '    fi',
+              '    ;;',
+              `  *" update-ref ${BOARD_REF} "*)`,
+              when === 'before'
+                ? '    kill -KILL "$PPID"; sleep 5; exit 1 ;;'
+                : '    "$GIT" "$@"; kill -KILL "$PPID"; sleep 5; exit 1 ;;',
+              'esac',
+            ].join('\n'),
+          ),
+        };
+      }
+
+      it.each([
+        ['S1: joined (the evidence adopted), the resume killed right after its update', true, 'after'],
+        ['S1b: joined (the evidence adopted), the resume killed right before its update', true, 'before'],
+        ['S1f: not joined (a fresh temporary, the evidence kept), the resume killed right after its update', false, 'after'],
+      ] as const)(
+        "%s: a third writer's commit on top of A's update after the leftover pass, then B: refused, nothing of A published, and the resume recorded nothing",
+        (_label, joined, when) => {
+          const env = syncEnv();
+          const fx = boardA(env, joined);
+          killed(fx.root, env, COMMANDS.updateRef, 'after');
+          const first = String(registeredMigrating(fx.root)[0]);
+          const ha = String(refCommit(fx.root));
+          expect(readRecordFile(first, BEFORE_RECORD)).toBe(`${ZERO}\n`);
+
+          const resuming = thirdWriterDuringResume(env, fx.root, when);
+          expectKilled(intoHost(fx.root, resuming.env));
+          const y = readFileSync(resuming.third, 'utf8').trim();
+          expect(git(fx.root, 'rev-parse', `${y}^`).trim()).toBe(ha);
+          // Whether the resume swapped or not, the ref holds the third writer's commit on top of A's update.
+          expect(refCommit(fx.root)).toBe(y);
+          // The temporary of the resume (the adopted evidence, or a fresh one) holds A's commits under Y.
+          const resumed = joined ? first : String(registeredMigrating(fx.root).find((t) => t !== first));
+          expect(revParse(resumed)).toBe(y);
+          const records = new Map(registeredMigrating(fx.root).map((t) => [t, readRecordFile(t, BEFORE_RECORD)]));
+
+          replaceWithB(fx.root, env);
+          const before = untouched(fx.root, fx.dir);
+          const remoteRefs = git(fx.remote, 'for-each-ref');
+
+          const out = intoHost(fx.root, env);
+
+          expect(out.code, out.stderr).toBe(3);
+          expect(errorOf(out).reason).toBe('sync-failed');
+          if (joined) {
+            expect(errorOf(out).message).toBe(cannotSetBack(resumed, fx.dir, "that move left no record of the ref's value before it"));
+          } else {
+            expect(errorOf(out).message).toContain(`git update-ref -d ${BOARD_REF}`);
+          }
+          expect(untouched(fx.root, fx.dir)).toEqual(before);
+          expect(git(fx.remote, 'for-each-ref')).toBe(remoteRefs);
+          if (joined) {
+            expectNeverIn(fx.remote, fx.files);
+          } else {
+            expect(refCommit(fx.remote)).toBeNull();
+          }
+          expect(refCommit(fx.root)).toBe(y);
+          for (const file of fx.files) {
+            expect(eventFiles(fx.dir)).not.toContain(file);
+          }
+          // Ruling 16: <old> (Y) differed from the ref at the leftover pass (HA)
+          // and still held the evidence's HEAD, so the resume wrote no record.
+          expect(records.get(resumed), resumed).toBeNull();
+          for (const [temporary, record] of records) {
+            expect(record, temporary).not.toBe(`${y}\n`);
+          }
+        },
+      );
+
+      it('S2: A killed after step 4, A gains an event, its resume killed between its update and the removal of the evidence (the older temporary sorting first), a further resume killed after its update, then B: a real reset, nothing of A anywhere', () => {
+        const env = syncEnv();
+        const fx = boardA(env, false);
+        const migrating = join(agentboardDir(fx.root), MIGRATING_DIR);
+        // Above any pid_max, so never alive; the older temporary sorts first.
+        const olderName = join(migrating, '4194305');
+        const newerName = join(migrating, '4194306');
+        killed(fx.root, env, COMMANDS.updateRef, 'after');
+        git(fx.root, 'worktree', 'move', String(registeredMigrating(fx.root)[0]), olderName);
+        const ha = String(refCommit(fx.root));
+        writeEvents(fx.dir, 1, 'orch', 5);
+        syncStandalone(fx.dir, env);
+        fx.files.splice(0, fx.files.length, ...eventFiles(fx.dir));
+        // The resume: the older temporary is its evidence (HEAD equal to the
+        // ref, record carried); killed after its swap, before removing it.
+        killed(fx.root, env, COMMANDS.updateRef, 'after');
+        const newer = registeredMigrating(fx.root).find((t) => t !== olderName);
+        git(fx.root, 'worktree', 'move', String(newer), newerName);
+        const ha2 = String(refCommit(fx.root));
+        expect(ha2).not.toBe(ha);
+        expect(git(fx.root, 'merge-base', '--is-ancestor', ha, ha2).trim()).toBe('');
+        expect(revParse(olderName)).toBe(ha);
+        expect(revParse(newerName)).toBe(ha2);
+        expect(readRecordFile(olderName, BEFORE_RECORD)).toBe(`${ZERO}\n`);
+        expect(readRecordFile(newerName, BEFORE_RECORD)).toBe(`${ZERO}\n`);
+        expect([basename(olderName), basename(newerName)].sort()[0]).toBe(basename(olderName));
+
+        // Ruling 17: the newer temporary, whose HEAD equals the ref, is the
+        // evidence, so its record (the zero object name) is carried.
+        killed(fx.root, env, COMMANDS.updateRef, 'after');
+        expect(refCommit(fx.root)).toBe(ha2);
+        expect(
+          registeredMigrating(fx.root).some((t) => revParse(t) === ha2 && readRecordFile(t, BEFORE_RECORD) === `${ZERO}\n`),
+        ).toBe(true);
+        const bFiles = replaceWithB(fx.root, env);
 
         expectBMovedWithoutA(fx, bFiles, env);
       });
