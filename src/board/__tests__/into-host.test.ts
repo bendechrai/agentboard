@@ -4272,6 +4272,75 @@ describe('into-host-replaced-after-step-4: what an unfinished move of another bo
       expect(eventFiles(dir)).toEqual([...aFiles, ...b.files].sort());
       expect(refEvents(remote)).toEqual([...aFiles, ...b.files].sort());
     });
+
+    describe('review round 2: evidence named by this process, two evidence temporaries', () => {
+      /**
+       * Board A (two events) in a host whose remote has no board ref, its
+       * move refused at step 6 for a transient reason: the ref holds A's
+       * unpublished update (HA), the temporary (a plain leftover named by
+       * this process's pid) records the zero object name.
+       */
+      function plainEvidence(env: Env): { root: string; dir: string; temporary: string; ha: string } {
+        const { root, dir } = standaloneProject(env, 2);
+        const cloning = cloningAfterStep4(env, dir);
+        expectBoardError(() => move(root, cloning.env), 3, 'sync-failed');
+        rmSync(dir, { recursive: true, force: true });
+        fs.renameSync(cloning.aside, dir);
+        const temporary = String(registeredMigrating(root)[0]);
+        const ha = String(refCommit(root));
+        expect(basename(temporary)).toBe(String(process.pid));
+        expect(revParse(temporary)).toBe(ha);
+        expect(readRecordFile(temporary, BEFORE_RECORD)).toBe(`${ZERO}\n`);
+        return { root, dir, temporary, ha };
+      }
+
+      /** `env` with a shim that moves the ref from `ha` to a commit on top of it right before the step 4 swap, so the swap is lost after the record is written. */
+      function losingTheSwap(env: Env, root: string, ha: string): Env {
+        const racer = commitOnTop(root, ha, 'racer');
+        return withGitShimBefore(env, ['update-ref', BOARD_REF], `"$GIT" -C '${root}' update-ref ${BOARD_REF} ${racer} ${ha}`);
+      }
+
+      it('C: evidence named by the running process own pid is renamed to <pid>-kept, kept, and its record carried by the fresh temporary that takes the pid path', () => {
+        const env = syncEnv();
+        const fx = plainEvidence(env);
+        const kept = `${fx.temporary}-kept`;
+
+        expectBoardError(() => move(fx.root, losingTheSwap(env, fx.root, fx.ha)), 3, 'sync-failed');
+
+        expect(registeredMigrating(fx.root).sort()).toEqual([fx.temporary, kept].sort());
+        expect(revParse(kept)).toBe(fx.ha);
+        expect(readRecordFile(kept, BEFORE_RECORD)).toBe(`${ZERO}\n`);
+        // The fresh temporary compared against HA, A's own update: it carries the evidence's record, not HA.
+        expect(revParse(fx.temporary)).toBe(fx.ha);
+        expect(readRecordFile(fx.temporary, BEFORE_RECORD)).toBe(`${ZERO}\n`);
+      });
+
+      it('the residual: of two dead temporaries of this board whose HEAD is the ref, the first in the byte order of their names is the evidence, kept and its record carried; the other is removed as a plain leftover', () => {
+        const env = syncEnv();
+        const fx = plainEvidence(env);
+        const migrating = join(agentboardDir(fx.root), MIGRATING_DIR);
+        const firstByName = join(migrating, String(DEAD_PID - 1));
+        const secondByName = join(migrating, String(DEAD_PID));
+        git(fx.root, 'worktree', 'move', fx.temporary, firstByName);
+        git(fx.root, 'worktree', 'add', '-q', '--detach', secondByName, fx.ha);
+        const from = git(firstByName, 'rev-parse', '--absolute-git-dir').trim();
+        for (const name of fs.readdirSync(from).filter((n) => n.startsWith('agentboard-') && fs.statSync(join(from, n)).isFile())) {
+          cpSync(join(from, name), recordPath(secondByName, name));
+        }
+        // A record that differs only to make the choice visible (by construction both carry the same one).
+        const other = commitOnTop(fx.root, fx.ha, 'other record');
+        writeFileSync(recordPath(secondByName, BEFORE_RECORD), `${other}\n`);
+        expect([basename(firstByName), basename(secondByName)].sort()[0]).toBe(basename(firstByName));
+
+        expectBoardError(() => move(fx.root, losingTheSwap(env, fx.root, fx.ha)), 3, 'sync-failed');
+
+        const fresh = join(migrating, String(process.pid));
+        expect(registeredMigrating(fx.root).sort()).toEqual([firstByName, fresh].sort());
+        expect(existsSync(secondByName)).toBe(false);
+        expect(readRecordFile(fresh, BEFORE_RECORD)).toBe(`${ZERO}\n`);
+        expect(readRecordFile(firstByName, BEFORE_RECORD)).toBe(`${ZERO}\n`);
+      });
+    });
   });
 
   describe('review round 1 addendum (reviewer-ih4-1): resets kept by a refusal, sha256, the furthest candidate, a missing object', () => {

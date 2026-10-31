@@ -1625,11 +1625,26 @@ describe('into-host-replaced-after-step-4: a move killed after it updated the ho
       bFiles: readonly string[],
       env: Env,
     ): void {
+      const temporaries = registeredMigrating(fx.root);
       const doc = intoHostOk(fx.root, env, 'the run with B');
       const lines = String(doc.message).split('\n');
       expect(lines.filter((l) => l.startsWith(DELETED_PREFIX)), String(doc.message)).toHaveLength(1);
       expect(String(doc.message)).not.toContain('back to its value before the interrupted move');
-      expect(lines.some((l) => l.startsWith('removed ') && l.endsWith(anotherBoardSuffix(fx.dir))), String(doc.message)).toBe(true);
+      // Review round 2 (ruling 13): every temporary of A whose HEAD was in the
+      // ref when the run began is named as left by a move of another board,
+      // also the second of two (D1, D5) whose update the one reset undid.
+      const suffix = anotherBoardSuffix(fx.dir);
+      const named = lines.find((l) => l.startsWith('removed ') && l.endsWith(suffix));
+      expect(named, String(doc.message)).toBeDefined();
+      const paths = String(named).slice('removed '.length, -suffix.length).split(', ');
+      for (const temporary of temporaries) {
+        expect(paths, String(doc.message)).toContain(temporary);
+      }
+      for (const line of lines.filter((l) => l.endsWith('left by an interrupted move'))) {
+        for (const temporary of temporaries) {
+          expect(line, String(doc.message)).not.toContain(temporary);
+        }
+      }
       syncOk(fx.root, env);
       expectMoved(fx.root, env);
       const all = [...bFiles, ...fx.otherFiles].sort();
@@ -1796,6 +1811,84 @@ describe('into-host-replaced-after-step-4: a move killed after it updated the ho
       expect(refEvents(fx.remote)).toEqual(bFiles);
       expectNeverIn(fx.root, fx.files);
       expectNeverIn(fx.remote, fx.files);
+    });
+
+    describe('review round 2: a third writer on top of the evidence, a live temporary of this board, a kill between the marker and the reset', () => {
+      it("R1 (N6): A killed after step 4, a third writer's commit on top of A's update, A's resume killed after its update, then B: refused (no record), nothing changed, nothing of A anywhere", () => {
+        const env = syncEnv();
+        const fx = boardA(env, false);
+        killed(fx.root, env, COMMANDS.updateRef, 'after');
+        const first = String(registeredMigrating(fx.root)[0]);
+        const ha = String(refCommit(fx.root));
+        const tree = git(fx.root, 'rev-parse', `${ha}^{tree}`).trim();
+        const x = git(fx.root, '-c', 'user.name=h', '-c', 'user.email=h@localhost', 'commit-tree', tree, '-p', ha, '-m', 'third writer').trim();
+        git(fx.root, 'update-ref', BOARD_REF, x, ha);
+        killed(fx.root, env, COMMANDS.updateRef, 'after');
+        expect(refCommit(fx.root)).toBe(x);
+        const resumed = registeredMigrating(fx.root).filter((t) => t !== first);
+        expect(resumed).toHaveLength(1);
+        const second = String(resumed[0]);
+        expect(revParse(second)).toBe(x);
+        // A's first leftover (HEAD an ancestor of the ref) was the evidence:
+        // its HEAD is not the ref, so it carried no record, and the resume wrote none.
+        expect(readRecordFile(second, BEFORE_RECORD)).toBeNull();
+        replaceWithB(fx.root, env);
+        const before = untouched(fx.root, fx.dir);
+        const remoteRefs = git(fx.remote, 'for-each-ref');
+
+        const out = intoHost(fx.root, env);
+
+        expect(out.code, out.stderr).toBe(3);
+        expect(errorOf(out)).toMatchObject({
+          reason: 'sync-failed',
+          message: cannotSetBack(second, fx.dir, "that move left no record of the ref's value before it"),
+        });
+        expect(untouched(fx.root, fx.dir)).toEqual(before);
+        expect(git(fx.remote, 'for-each-ref')).toBe(remoteRefs);
+        expect(refCommit(fx.remote)).toBeNull();
+        expect(refCommit(fx.root)).toBe(x);
+        for (const file of fx.files) {
+          expect(eventFiles(fx.dir)).not.toContain(file);
+        }
+      });
+
+      it('A: a live temporary of this board whose HEAD is the ref is left alone: the same board moves with exit 0, the temporary untouched and not named', () => {
+        const env = syncEnv();
+        const fx = boardA(env, false);
+        killed(fx.root, env, COMMANDS.updateRef, 'after');
+        const pid = livePid();
+        try {
+          const live = join(agentboardDir(fx.root), MIGRATING_DIR, String(pid));
+          git(fx.root, 'worktree', 'move', String(registeredMigrating(fx.root)[0]), live);
+          const head = revParse(live);
+          const record = readRecordFile(live, BEFORE_RECORD);
+
+          const doc = intoHostOk(fx.root, env);
+
+          expect(doc).toMatchObject({ action: 'moved' });
+          expect(String(doc.message)).not.toContain(live);
+          expect(registeredMigrating(fx.root)).toEqual([live]);
+          expect(revParse(live)).toBe(head);
+          expect(readRecordFile(live, BEFORE_RECORD)).toBe(record);
+          expect(eventFiles(fx.dir)).toEqual(fx.files);
+          expect(refEvents(fx.remote)).toEqual(fx.files);
+        } finally {
+          stopPid(pid);
+        }
+      });
+
+      it('B: a run with B killed between marking the temporary and the reset command: the next run, the HEAD still the ref, resets and names it as another board, nothing of A anywhere', () => {
+        const env = syncEnv();
+        const fx = boardA(env, false);
+        killed(fx.root, env, COMMANDS.updateRef, 'after');
+        const ha = String(refCommit(fx.root));
+        const bFiles = replaceWithB(fx.root, env);
+        killed(fx.root, env, ['update-ref', BOARD_REF, ZERO], 'before');
+        expect(refCommit(fx.root)).toBe(ha);
+        expect(registeredMigrating(fx.root)).toHaveLength(1);
+
+        expectBMovedWithoutA(fx, bFiles, env);
+      });
     });
   });
 });
