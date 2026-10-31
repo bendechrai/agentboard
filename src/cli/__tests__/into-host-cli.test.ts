@@ -2025,5 +2025,70 @@ describe('into-host-replaced-after-step-4: a move killed after it updated the ho
         expectBMovedWithoutA(fx, bFiles, env);
       });
     });
+
+    describe('review round 4: the ref moved back to an older leftover during the resume (ruling 18)', () => {
+      it("S8: two leftovers of A (the older a strict ancestor, the newer equal to the ref), a writer sets the ref back to the older one's HEAD after the next resume's leftover pass, that resume killed after its update, then B: refused, nothing of A published", () => {
+        const env = syncEnv();
+        const fx = boardA(env, false);
+        const migrating = join(agentboardDir(fx.root), MIGRATING_DIR);
+        // Above any pid_max, so never alive; the older temporary sorts first.
+        const olderName = join(migrating, '4194305');
+        const newerName = join(migrating, '4194306');
+        killed(fx.root, env, COMMANDS.updateRef, 'after');
+        git(fx.root, 'worktree', 'move', String(registeredMigrating(fx.root)[0]), olderName);
+        const ha = String(refCommit(fx.root));
+        writeEvents(fx.dir, 1, 'orch', 5);
+        syncStandalone(fx.dir, env);
+        fx.files.splice(0, fx.files.length, ...eventFiles(fx.dir));
+        killed(fx.root, env, COMMANDS.updateRef, 'after');
+        const newer = registeredMigrating(fx.root).find((t) => t !== olderName);
+        git(fx.root, 'worktree', 'move', String(newer), newerName);
+        const ha2 = String(refCommit(fx.root));
+        expect(revParse(olderName)).toBe(ha);
+        expect(revParse(newerName)).toBe(ha2);
+        expect(git(fx.root, 'merge-base', '--is-ancestor', ha, ha2).trim()).toBe('');
+
+        // The next resume: after its leftover pass (the newer temporary the
+        // evidence), another writer sets the ref back from HA2 to HA, once;
+        // the run is killed right after its own update.
+        const fired = join(tempDir(), 'fired');
+        const resuming = withShellGitShim(
+          env,
+          [
+            'case " $* " in',
+            `  *"${MIGRATING_FETCH_REF}"*)`,
+            `    if [ ! -e '${fired}' ]; then : > '${fired}'; "$GIT" -C '${fx.root}' update-ref ${BOARD_REF} ${ha} ${ha2}; fi ;;`,
+            `  *" update-ref ${BOARD_REF} "*)`,
+            '    "$GIT" "$@"; kill -KILL "$PPID"; sleep 5; exit 1 ;;',
+            'esac',
+          ].join('\n'),
+        );
+        expectKilled(intoHost(fx.root, resuming));
+        expect(existsSync(fired)).toBe(true);
+        const refAfter = String(refCommit(fx.root));
+        // Ruling 18: <old> (HA) differed from the ref at the leftover pass and
+        // held the older leftover's HEAD, so no temporary records it.
+        const records = new Map(registeredMigrating(fx.root).map((t) => [t, readRecordFile(t, BEFORE_RECORD)]));
+        replaceWithB(fx.root, env);
+        const before = untouched(fx.root, fx.dir);
+        const remoteRefs = git(fx.remote, 'for-each-ref');
+
+        const out = intoHost(fx.root, env);
+
+        expect(out.code, out.stderr).toBe(3);
+        expect(errorOf(out).reason).toBe('sync-failed');
+        expect(errorOf(out).message).toContain(`git update-ref -d ${BOARD_REF}`);
+        expect(untouched(fx.root, fx.dir)).toEqual(before);
+        expect(git(fx.remote, 'for-each-ref')).toBe(remoteRefs);
+        expect(refCommit(fx.remote)).toBeNull();
+        expect(refCommit(fx.root)).toBe(refAfter);
+        for (const file of fx.files) {
+          expect(eventFiles(fx.dir)).not.toContain(file);
+        }
+        for (const [temporary, record] of records) {
+          expect(record, temporary).not.toBe(`${ha}\n`);
+        }
+      });
+    });
   });
 });
