@@ -38,25 +38,28 @@ tickets, or in a worktree whose agent has not set `AGENTBOARD_ACTOR`.
   --hooks-strict` appends `--strict` to the three commands, and only then
   may `stop` and `pre-tool-use` exit 2, for exactly the reasons the
   board-harness-hooks requirements name. Even in strict mode a `stop`
-  whose payload has `stop_hook_active` true is never blocked again, so
-  one stop produces at most one block. Reinstalling in the other mode
+  is blocked only when its payload has `stop_hook_active` exactly
+  `false`; true, missing or a payload the hook cannot read never blocks,
+  so one stop produces at most one block. Reinstalling in the other mode
   updates the owned entries without `--force`.
 - **Fail open, read-only, bounded.** A failure of the hook itself never
   blocks: it is exit 0 (or the strict exit 2 the event had already
   decided) with nothing on stdout, at most one line on stderr and never a
   stack trace. That covers no board, a missing, locked, unreadable or
   other-version cache, no resolvable actor, a payload that is not a JSON
-  object, an error in the command's own arguments, a process directory
-  removed under the process, a stdout or stderr that is closed or failing
+  object or is larger than 1 MiB, an error in the command's own
+  arguments, a process directory removed under the process, a stdout or stderr that is closed or failing
   (a broken pipe, a full device), an internal error, and the 2 second
   budget running out. The budget is measured from the start of the
   process and covers everything the command does: Node's start-up, board
   discovery (whose `git` child is bounded by the time left and counts as
   failing when it does not answer, so discovery falls back to `./.board`),
-  the stdin read and the cache read, so the settings `timeout` of 5
-  seconds is not normally reached. The command is the one exception to
-  board-cli "Exit codes": it exits 0 or 2 only, and never the usual 1 to
-  5. It reads the cache as it is, through an inspect-only open that never
+  the stdin read, the cache read and the event's own work (checked
+  between event-file reads and before the one write, which takes the
+  write lock in a single attempt bounded by the time left), so the
+  settings `timeout` of 5 seconds is not normally reached. The command
+  is the one exception to board-cli "Exit codes": it exits 0 or 2 only,
+  and never the usual 1 to 5. It reads the cache as it is, through an inspect-only open that never
   creates, migrates or rebuilds it, and never catches up: it folds no
   event file, writes no due grant and reaps no temporary file. The only
   state it may write is the actor's inbox cursor in `session-start`. It

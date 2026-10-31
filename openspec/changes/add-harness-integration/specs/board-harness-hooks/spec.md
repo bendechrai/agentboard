@@ -10,7 +10,9 @@ a point of failure for the agent's work.
 ### Requirement: Hook command and protocol
 `agentboard hook <event> [--strict]`, where `<event>` is `session-start`,
 `stop` or `pre-tool-use`, SHALL read the harness's JSON payload from stdin
-(an absent, empty or malformed payload is treated as `{}`) and answer in
+(an absent, empty or malformed payload is treated as `{}`, and so is a
+payload larger than 1 MiB, 1048576 bytes, which is not read past that
+size) and answer in
 Claude Code's hook protocol: exit 0 with an optional JSON document on
 stdout, or, only in strict mode, exit 2 with the reason on stderr. Any
 other outcome SHALL be exit 0 and no output. The command SHALL fail open:
@@ -19,12 +21,17 @@ payload shape, a process directory that no longer exists, stdout or
 stderr closed early or failing (a broken pipe, a full device), an
 internal error or running past its time budget of 2 seconds SHALL each
 end in exit 0 without blocking (or the strict exit 2 the event's
-requirement gives), with at most one line on stderr and never a stack
+requirement gives, when it is decided within the budget), with at most one line on stderr and never a stack
 trace. So SHALL an unknown event or any other error in the command's own
 arguments, whose line names the three events. The budget is measured
 from the start of the process and covers everything the command does,
-Node's start-up and board discovery (its `git` child included) among
-them; a `git` child of discovery that has not answered when the budget
+Node's start-up, board discovery (its `git` child included) and the
+event's own work among them. Each event checks the time left while it
+works (after the cache read, between event-file reads and before its
+one write); a run that finds the budget spent ends in exit 0 with
+nothing on stdout and at most the one out-of-time line on stderr, never
+a strict exit 2 and never a cursor write, and a reading of the clock
+past the deadline is never ignored; a `git` child of discovery that has not answered when the budget
 runs out counts as git failing, so discovery falls back to `./.board`
 (board-events discovery rules); so does a `git` child that ignores
 being told to stop. No stderr line SHALL repeat any part of the payload
@@ -68,6 +75,14 @@ read.
 - **WHEN** the cache is locked by another process for longer than 2 seconds and `agentboard hook pre-tool-use --strict` runs
 - **THEN** it exits 0 within 3 seconds and does not block the tool call
 
+#### Scenario: Time budget covers the event
+- **WHEN** the budget runs out while `agentboard hook stop --strict` is checking an actor's held tickets
+- **THEN** it exits 0 without blocking, with nothing on stdout and at most the out-of-time line on stderr
+
+#### Scenario: Oversized payload
+- **WHEN** `agentboard hook stop --strict` runs with a payload larger than 1 MiB
+- **THEN** it answers as for an empty payload, without reading the rest
+
 #### Scenario: Removed working directory
 - **WHEN** the hook process starts in a directory that has been removed (an agent's worktree deleted under it)
 - **THEN** it exits 0 with at most one line on stderr and no stack trace
@@ -103,7 +118,11 @@ holding it. A name a writing command could not use (the reserved actor
 form of the change `actor-secret-check`) counts as no actor and is never
 repeated. With no actor, `session-start` SHALL, where a board is found,
 print one line telling the agent to set `AGENTBOARD_ACTOR` or pass `--as`,
-and `stop` and `pre-tool-use` SHALL do nothing. The payload's `cwd` is
+and `stop` and `pre-tool-use` SHALL do nothing. When an actor is set but
+is such a name, the `session-start` line SHALL instead say that the actor
+is not a valid actor name (still naming `AGENTBOARD_ACTOR` and `--as`),
+so it is distinct from the line for no actor, and SHALL NOT repeat the
+name. The payload's `cwd` is
 used when it names an existing directory, and the process directory
 otherwise. Subagents and linked
 worktrees of the same session inherit the process environment and are
@@ -113,6 +132,10 @@ payload's `cwd` and the usual discovery rules.
 #### Scenario: Unresolvable actor at session start
 - **WHEN** `agentboard hook session-start` runs with no actor
 - **THEN** it exits 0 and prints one line naming `AGENTBOARD_ACTOR` and `--as`
+
+#### Scenario: Invalid actor at session start
+- **WHEN** `agentboard hook session-start` runs with `--as` or `AGENTBOARD_ACTOR` set to a token-shaped name
+- **THEN** it exits 0 and prints one line saying the actor is not a valid actor name, different from the no-actor line, and the name appears nowhere in the output
 
 #### Scenario: Unresolvable actor elsewhere
 - **WHEN** `agentboard hook pre-tool-use --strict` runs with no actor
@@ -138,7 +161,16 @@ saying how many entries were omitted and naming `agentboard inbox --as
 <actor>`; the cursor SHALL then advance over the delivered entries only,
 so the next `inbox` lists exactly the omitted ones. The held-ticket line is
 cut at a ticket boundary to at most 2000 characters, ending with `and <n>
-more`. The answer is the `SessionStart` `additionalContext`.
+more`. The answer is the `SessionStart` `additionalContext`. The hook
+SHALL read the event files of only the entries it can deliver (at most
+one more than it shows, to know there are more), taking the omitted
+count from the cache, and SHALL hold the cache write lock only to write
+the cursor, taken in one attempt bounded by the time budget, never
+retried past it: when the lock is not had in time the run ends as a run
+out of time, delivering no entry and writing nothing, and when the
+cursor has moved since the entries were chosen (another `inbox` or hook
+delivered them) it delivers no entry, writes nothing and answers with
+the held-ticket line alone.
 
 #### Scenario: Inbox is delivered
 - **WHEN** `hook session-start` runs for actor `impl` with two pending inbox entries
@@ -160,20 +192,34 @@ more`. The answer is the `SessionStart` `additionalContext`.
 - **WHEN** `reviewer` hands T1 to `impl`, or the queue grants M1 to `merger-2`
 - **THEN** the held-ticket line of `impl`, or of `merger-2`, names that ticket with its token
 
+#### Scenario: Write lock held by another process
+- **WHEN** another process holds the cache write lock for longer than 2 seconds and `hook session-start` runs for an actor with a pending entry
+- **THEN** it exits 0 within 3 seconds without delivering the entry, and the next `agentboard inbox` lists it
+
+#### Scenario: Entries delivered meanwhile
+- **WHEN** another `agentboard inbox` for the same actor delivers the pending entries while `hook session-start` is reading them
+- **THEN** the hook delivers none of them and its context is the held-ticket line alone
+
 ### Requirement: Stop hook
 `hook stop` SHALL check whether the actor still holds a ticket that is not
 `blocked` and has no comment by the actor since the actor last became its
 assignee (by a claim, a grant from the queue or a hand-off to it); a
-comment is a `ticket.comment` or a hand-off note. When there is
-none it SHALL do nothing. Every such ticket is named, in id order. Otherwise, without `--strict` it SHALL exit 0 with
+comment is a `ticket.comment` or a hand-off note, and a hand-off note
+the actor writes when handing the ticket to itself counts (the note and
+the hand-off are one event, at the same position). When there is
+none it SHALL do nothing. The tickets are named in id order, each with
+its commands, as many as fit in 2000 characters, cut at a ticket
+boundary; when any are left out the text ends with `and <n> more`. Otherwise, without `--strict` it SHALL exit 0 with
 a `systemMessage` naming the ticket and the `handoff` and `comment` plus
 `move ... blocked` commands, and, for a ticket held under a lease (such as
 a mutex ticket), first `agentboard release <id> --as <actor>`, since a
 lock is released when done (board-agent-guidance "Mutex ticket recipe");
 with `--strict` it SHALL exit 2 with the same
-text on stderr, except that when the payload has `stop_hook_active` true it
-SHALL NOT block again, so one stop produces at most one block: it answers
-as warn mode does. `release` is named only for a ticket with a lease, and
+text on stderr only when the payload has `stop_hook_active` exactly JSON
+`false`. When it is `true`, missing or anything else, or the payload is
+empty, not JSON or larger than the payload limit, it SHALL NOT block: it
+answers as warn mode does (failing open, ADR 0016), so one stop produces
+at most one block even when the hook cannot see the field. `release` is named only for a ticket with a lease, and
 the warn answer never carries a `decision`.
 
 #### Scenario: Forgot to hand off, warn mode
@@ -187,6 +233,18 @@ the warn answer never carries a `decision`.
 #### Scenario: Strict mode does not loop
 - **WHEN** the same state runs `hook stop --strict` with `stop_hook_active` true
 - **THEN** it exits 0
+
+#### Scenario: Strict mode cannot see stop_hook_active
+- **WHEN** the same state runs `hook stop --strict` with an empty payload, a payload that is not JSON, one without `stop_hook_active`, or one where it is the string `"false"`
+- **THEN** it exits 0 with the warn-mode `systemMessage`
+
+#### Scenario: Hand-off to oneself
+- **WHEN** `impl` holds T1 and runs `agentboard handoff T1 --to impl --status <status> --note "<text>"`
+- **THEN** `hook stop --strict --as impl` exits 0 with no output
+
+#### Scenario: Many held tickets
+- **WHEN** `impl` holds 200 tickets with no comment since taking them and `hook stop` runs
+- **THEN** the message is at most 2000 characters, names the first tickets in id order, whole, and ends with `and <n> more` counting the rest
 
 #### Scenario: Held mutex names release
 - **WHEN** `merger-1` holds the mutex ticket M1 under a lease, granted from the queue, with no comment since, and `hook stop` runs
@@ -212,18 +270,29 @@ against the payload's `cwd` when relative) is inside the project and not
 under `.board/`. The project is the directory holding the board directory
 and the checkout or linked worktree the payload's `cwd` is in (the nearest
 directory at or above it holding a `.git` entry); a sibling directory
-sharing a name prefix is outside. It SHALL pass silently when the actor
+sharing a name prefix is outside. Containment is decided on real paths:
+the target (or, for a file not yet created, its nearest existing
+ancestor with the rest of the path appended) and the project
+directories are resolved through symbolic links first, so a target
+reached through a link to the project is inside and a link inside the
+project that leads outside it is outside. It SHALL pass silently when the actor
 holds at least one ticket. Otherwise, without `--strict`, it SHALL exit 0
 with context telling the agent to claim a ticket (naming `agentboard
 claim` and `agentboard inbox`) or to carry on if the work is not
 ticketed, and never with a `permissionDecision` (an `allow` would skip
 the user's permission prompt); with `--strict` it SHALL deny the tool call
-with that text (exit 2), every time. A given session (the payload's
+(exit 2), every time, with a text saying the edit is refused because the
+actor holds no ticket, naming `agentboard claim` and `agentboard inbox`,
+and telling the agent, if the work is not ticketed, to stop and ask the
+user rather than retry the edit; the strict text never says to carry on
+and names no waiting or retrying. A given session (the payload's
 `session_id`) SHALL be warned at most once per 10 minutes in warn mode,
 tracked outside the board in a file of the OS temporary directory named by
 a hash of the session id and replaced atomically, so that a run of edits is
 not a run of warnings; a payload without a session id is warned every
-time.
+time. The file is read without following a symbolic link and without
+blocking, and only its first 64 bytes; a link, a FIFO or anything else
+that is not a regular file at the name counts as no earlier warning.
 
 #### Scenario: Edit with a claim
 - **WHEN** `impl` holds T1 and the payload is an `Edit` of a project file
@@ -236,6 +305,18 @@ time.
 #### Scenario: Edit without a claim, strict mode
 - **WHEN** the same runs with `--strict`
 - **THEN** it exits 2 with the reason on stderr
+
+#### Scenario: Strict denial does not invite a retry
+- **WHEN** `impl` holds nothing and `hook pre-tool-use --strict` denies a `Write` of a project file
+- **THEN** stderr says the edit is refused, names `agentboard claim`, `agentboard inbox` and asking the user, and does not say to carry on
+
+#### Scenario: Symbolic link to the project
+- **WHEN** the payload's `cwd` reaches the project through a symbolic link and the target is the same file by its real path, or the other way round
+- **THEN** the edit is checked as a project file
+
+#### Scenario: Rate-limit file that is not a regular file
+- **WHEN** the session's rate-limit file name is a symbolic link (to a FIFO, or to a file holding a recent time) or a FIFO
+- **THEN** the hook does not block on it, counts it as no earlier warning and warns
 
 #### Scenario: Other tools and paths
 - **WHEN** the tool is `Read`, or the path is outside the project root, or under `.board/`
