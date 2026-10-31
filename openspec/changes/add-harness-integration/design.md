@@ -179,8 +179,13 @@ the group's ticket and pinned by the tests and the stub contracts in
   (the reserved `agentboard`, a secret pattern, outside the actor form
   `^[A-Za-z0-9][A-Za-z0-9._@-]{0,31}$` of `actor-secret-check`, which is
   not merged yet) is no actor: the hook is silent (session-start prints
-  its no-actor line) and never repeats it. When `actor-secret-check`
-  lands, the hook should call its check instead of its own copy.
+  its no-actor line) and never repeats it. Since `actor-secret-check`
+  landed (#128) the hook calls the check's own predicate, `isActorName`
+  in `src/board/secrets.ts`, which `checkActorName` (`src/cli/parse.ts`)
+  shares; the hook cannot import `src/cli` (the layering rule), so the
+  predicate lives below it. The registry entry lists exit 1
+  `invalid-actor` like every command, reachable only through the
+  in-process registry; the executable never reports it.
 - **No-actor line.** session-start prints it only where a board is found
   (the cache is not needed), as one JSON document
   `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":...}}`;

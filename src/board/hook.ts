@@ -39,7 +39,8 @@ import { isAbsolute, join, resolve } from 'node:path';
 import type { BoardState, Ticket } from '../events/fold.js';
 import { CACHE_FILE, openCache, readState } from '../store/cache.js';
 import { boardExists, locateBoard } from '../store/locate.js';
-import { secretPatternsIn } from './secrets.js';
+import { SYSTEM_ACTOR } from '../events/schema.js';
+import { isActorName } from './secrets.js';
 import type { Env } from './text.js';
 
 /** The events, in the order help and the argument-error line name them. */
@@ -86,15 +87,6 @@ export function parseHookPayload(text: string): HookPayload {
   return {};
 }
 
-/** The reserved system actor (board-events "Reserved system actor"). */
-const RESERVED_ACTOR = 'agentboard';
-
-/**
- * The actor form of the change `actor-secret-check`: a letter or digit,
- * then up to 31 of letters, digits, `.`, `_`, `@` and `-`.
- */
-const ACTOR_FORM = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,31}$/;
-
 /**
  * The actor of a hook run (board-harness-hooks "Hook actor resolution"):
  * `given` (the `--as` value) when it is a non-empty string, else
@@ -103,20 +95,17 @@ const ACTOR_FORM = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,31}$/;
  * payload.
  *
  * A resolved name that could not be used by a writing command is treated
- * as no actor (null) rather than refused, since a hook never fails:
- * the reserved actor `agentboard` (board-events "Reserved system actor"),
- * a name in which `secretPatternsIn` finds a secret pattern, and a name
- * outside the actor form `^[A-Za-z0-9][A-Za-z0-9._@-]{0,31}$` (the form
- * the pending change `actor-secret-check` makes the rule for every
- * command). Such a name is therefore never repeated in hook output. Pure.
+ * as no actor (null) rather than refused, since a hook never fails: the
+ * reserved actor `agentboard` (`SYSTEM_ACTOR`, board-events "Reserved
+ * system actor") and a name that fails the actor check of every command
+ * (`isActorName`: a secret pattern, or outside the actor form
+ * `^[A-Za-z0-9][A-Za-z0-9._@-]{0,31}$`; board-cli "Actor names are
+ * checked"). Such a name is therefore never repeated in hook output. Pure.
  */
 export function resolveHookActor(given: string | undefined, env: Env): string | null {
   const fromEnv = env.AGENTBOARD_ACTOR;
   const name = given !== undefined && given !== '' ? given : fromEnv;
-  if (name === undefined || name === '') {
-    return null;
-  }
-  if (name === RESERVED_ACTOR || !ACTOR_FORM.test(name) || secretPatternsIn(name).length > 0) {
+  if (name === undefined || name === '' || name === SYSTEM_ACTOR || !isActorName(name)) {
     return null;
   }
   return name;

@@ -2447,6 +2447,12 @@ export const COMMANDS: readonly CommandSpec[] = [
           'Continue: the answer, if any, is the JSON document on stdout; also every failure (fail open)',
       },
       {
+        code: 1,
+        reason: 'invalid-actor',
+        meaning:
+          'Only through the in-process registry, where every command checks a given --as; the executable treats such a name as no actor and exits 0',
+      },
+      {
         code: 2,
         meaning: 'Block, with --strict only: the reason is on stderr and is fed back to the agent',
       },
@@ -2461,7 +2467,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       ),
     ],
     actorHelp:
-      'The actor whose tickets and inbox the hook checks, before AGENTBOARD_ACTOR; with neither, stop and pre-tool-use do nothing and session-start asks for one',
+      'The actor whose tickets and inbox the hook checks, before AGENTBOARD_ACTOR; with neither, stop and pre-tool-use do nothing and session-start asks for one; checked: 1 to 32 ASCII letters, digits, . _ - or @, the first a letter or digit (a name that fails counts as no actor)',
     flags: [flag('strict', 'boolean', 'Block (exit 2) instead of warning')],
     exclusive: [],
     writes: false,

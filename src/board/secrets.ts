@@ -47,6 +47,26 @@ export function secretPatternsIn(text: string): SecretPatternName[] {
   return SECRET_PATTERN_NAMES.filter((name) => PATTERNS[name].test(text));
 }
 
+/**
+ * The actor form (board-cli "Actor names are checked"): 1 to 32 ASCII
+ * letters, digits, `.`, `_`, `-` or `@`, the first a letter or digit. No
+ * `i` or `u` flag and no `m` flag: ASCII only, no case folding, and `^`
+ * and `$` are the ends of the whole string, so a trailing newline fails.
+ */
+export const ACTOR_FORM = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,31}$/;
+
+/**
+ * The predicate of the actor check (`checkActorName`, `src/cli/parse.ts`,
+ * which refuses with the messages; board-cli "Actor names are checked"):
+ * true when `name` matches no secret pattern (`secretPatternsIn`) and has
+ * the actor form (`ACTOR_FORM`). The empty string fails. Shared with
+ * `agentboard hook`, which treats a name that fails as no actor instead
+ * of refusing (board-harness-hooks "Hook actor resolution"). Pure.
+ */
+export function isActorName(name: string): boolean {
+  return secretPatternsIn(name).length === 0 && ACTOR_FORM.test(name);
+}
+
 /** The expression of each pattern, as documented on `SECRET_PATTERN_NAMES`. */
 const PATTERNS: Record<SecretPatternName, RegExp> = {
   'pem-private-key': /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/,

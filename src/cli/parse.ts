@@ -4,7 +4,7 @@
  * "Actor names are checked").
  */
 
-import { secretPatternsIn } from '../board/secrets.js';
+import { ACTOR_FORM, secretPatternsIn } from '../board/secrets.js';
 import { choicesMessage } from '../board/text.js';
 import { SYSTEM_ACTOR } from '../events/schema.js';
 import { BoardError } from '../store/errors.js';
@@ -368,14 +368,6 @@ export function refuseReservedActor(actor: string | undefined): void {
  */
 export type ActorSource =
   '--as' | 'AGENTBOARD_ACTOR' | '--to' | 'the argument as' | 'the argument to';
-
-/**
- * The actor form (board-cli "Actor names are checked"): 1 to 32 ASCII
- * letters, digits, `.`, `_`, `-` or `@`, the first a letter or digit. No
- * `i` or `u` flag and no `m` flag: ASCII only, no case folding, and `^`
- * and `$` are the ends of the whole string, so a trailing newline fails.
- */
-const ACTOR_FORM = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,31}$/;
 
 /**
  * The actor check (board-cli "Actor names are checked"; actor-secret-check
