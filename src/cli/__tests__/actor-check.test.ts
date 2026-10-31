@@ -79,7 +79,8 @@ describe('the actor tables (sanity, recomputed without the code under test)', ()
   });
 
   it('the board actors are all of [a-z0-9-], the longest 15 characters', () => {
-    expect(BOARD_ACTORS.length).toBeGreaterThanOrEqual(77);
+    expect(BOARD_ACTORS).toHaveLength(91);
+    expect(new Set(BOARD_ACTORS).size).toBe(91);
     expect(BOARD_ACTORS.every((a) => /^[a-z0-9-]+$/.test(a))).toBe(true);
     expect(Math.max(...BOARD_ACTORS.map((a) => a.length))).toBe(15);
   });
