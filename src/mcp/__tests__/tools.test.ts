@@ -55,7 +55,7 @@ describe('tool names', () => {
     expect(TOOL_PREFIX).toBe('board_');
   });
 
-  it('excludes exactly init, watch, serve, top, rebuild, sync, remote, config, mcp, version, help and the agents commands', () => {
+  it('excludes exactly init, watch, serve, top, rebuild, sync, remote, config, hook, mcp, version, help and the agents commands', () => {
     // agents install and agents check write or read host project files in
     // the caller's working tree and are run in a shell, like the other
     // setup commands; init, sync and remote run git against the host's
@@ -68,6 +68,7 @@ describe('tool names', () => {
         'config get',
         'config set',
         'help',
+        'hook',
         'init',
         'mcp',
         'rebuild',
@@ -108,6 +109,7 @@ describe('tool names', () => {
       'rebuild',
       'sync',
       'remote',
+      'hook',
       'mcp',
       'version',
     ]) {

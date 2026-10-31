@@ -365,6 +365,7 @@ describe('callTool', () => {
       'board_rebuild',
       'board_sync',
       'board_remote',
+      'board_hook',
       'board_mcp',
     ]) {
       expect(failed(h.server.callTool(name, {})), name).toMatchObject({
