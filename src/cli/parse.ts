@@ -4,6 +4,7 @@
  * "Actor names are checked").
  */
 
+import { secretPatternsIn } from '../board/secrets.js';
 import { choicesMessage } from '../board/text.js';
 import { SYSTEM_ACTOR } from '../events/schema.js';
 import { BoardError } from '../store/errors.js';
@@ -366,11 +367,15 @@ export function refuseReservedActor(actor: string | undefined): void {
  * on the web, whose body properties are the MCP argument names).
  */
 export type ActorSource =
-  | '--as'
-  | 'AGENTBOARD_ACTOR'
-  | '--to'
-  | 'the argument as'
-  | 'the argument to';
+  '--as' | 'AGENTBOARD_ACTOR' | '--to' | 'the argument as' | 'the argument to';
+
+/**
+ * The actor form (board-cli "Actor names are checked"): 1 to 32 ASCII
+ * letters, digits, `.`, `_`, `-` or `@`, the first a letter or digit. No
+ * `i` or `u` flag and no `m` flag: ASCII only, no case folding, and `^`
+ * and `$` are the ends of the whole string, so a trailing newline fails.
+ */
+const ACTOR_FORM = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,31}$/;
 
 /**
  * The actor check (board-cli "Actor names are checked"; actor-secret-check
@@ -419,7 +424,19 @@ export type ActorSource =
  * (as for `resolveActor`) and is never checked.
  */
 export function checkActorName(name: string, source: ActorSource): void {
-  void name;
-  void source;
-  throw new Error('not implemented: checkActorName (actor-secret-check task 1.1)');
+  const names = secretPatternsIn(name).join(', ');
+  if (names !== '') {
+    throw new BoardError(
+      1,
+      'invalid-actor',
+      `refused: the actor name given with ${source} matches the secret pattern(s) ${names}; an actor name is recorded on every event and shared with the board, so choose another name (--allow-secret-like does not apply to actor names)`,
+    );
+  }
+  if (!ACTOR_FORM.test(name)) {
+    throw new BoardError(
+      1,
+      'invalid-actor',
+      `refused: the actor name given with ${source} is not of the actor form: 1 to 32 ASCII letters, digits, dots, underscores, hyphens or @ signs, the first a letter or digit, such as impl-1`,
+    );
+  }
 }

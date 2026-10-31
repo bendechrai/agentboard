@@ -29,6 +29,7 @@ import { formatDuration, isoTime, parseSetting, parseTimeout, parseTtl } from '.
 import { importChange, parseImportTarget } from '../board/import.js';
 import { readInbox } from '../board/inbox.js';
 import { refuseSecretLike } from '../board/secrets.js';
+import { checkActorName } from './parse.js';
 import { initBoard } from '../board/init.js';
 import { initBoardWithRemote } from '../board/init-remote.js';
 import { moveBoardIntoHost } from '../board/into-host.js';
@@ -90,15 +91,18 @@ export const JSON_FLAG: ArgSpec = {
  * `--as <actor>`, accepted by every command (board-cli: "Every command
  * SHALL accept `--as`"). Writing commands require an actor: `--as` or, as
  * the fallback, `AGENTBOARD_ACTOR` (`resolveActor`). Commands that neither
- * write nor track a per-actor cursor ignore it, so `show T1 --as impl`
- * behaves exactly like `show T1`. Not required by the parser.
+ * write nor track a per-actor cursor otherwise ignore it, so `show T1 --as
+ * impl` behaves exactly like `show T1`, but every command checks a given
+ * `--as` (`checkActorName`, board-cli "Actor names are checked") and refuses
+ * the reserved actor. Not required by the parser.
  */
 export const ACTOR_FLAG: ArgSpec = {
   name: 'as',
   type: 'string',
   required: false,
   repeatable: false,
-  summary: 'Actor recorded on the event (falls back to AGENTBOARD_ACTOR)',
+  summary:
+    'Actor recorded on the event (falls back to AGENTBOARD_ACTOR); 1 to 32 ASCII letters, digits, . _ - or @, the first a letter or digit',
 };
 
 /** Flags accepted by every command, in addition to its own: `--json` and `--as`. */
@@ -287,6 +291,17 @@ const EXIT_ACTOR: ExitCodeSpec = {
   code: 1,
   reason: 'missing-actor',
   meaning: 'No actor: pass --as <actor> or set AGENTBOARD_ACTOR',
+};
+/**
+ * An actor name that fails the actor check (board-cli "Actor names are
+ * checked"): a given `--as` on every command, `AGENTBOARD_ACTOR` when it
+ * is the actor of a command that needs one, and the `--to` of `handoff`.
+ */
+const EXIT_INVALID_ACTOR: ExitCodeSpec = {
+  code: 1,
+  reason: 'invalid-actor',
+  meaning:
+    'The actor name (--as, AGENTBOARD_ACTOR or --to) matches a secret pattern or is not of the actor form; nothing is written',
 };
 const EXIT_ID_SHORT: ExitCodeSpec = {
   code: 1,
@@ -873,8 +888,12 @@ export const COMMANDS: readonly CommandSpec[] = [
       },
     ],
     exitCodes: [
-      { code: 0, meaning: 'The board was created, already existed, or was moved into the host repository' },
+      {
+        code: 0,
+        meaning: 'The board was created, already existed, or was moved into the host repository',
+      },
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       { code: 1, reason: 'git-missing', meaning: 'git could not be run' },
       {
         code: 1,
@@ -903,7 +922,8 @@ export const COMMANDS: readonly CommandSpec[] = [
       {
         code: 1,
         reason: 'remote-mismatch',
-        meaning: 'The existing standalone board already has a remote with another URL; nothing changed',
+        meaning:
+          'The existing standalone board already has a remote with another URL; nothing changed',
       },
       {
         code: 1,
@@ -1011,6 +1031,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       EXIT_OK,
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_ACTOR,
       {
         code: 1,
@@ -1066,7 +1087,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       { command: 'agentboard show 01J9K3', summary: 'Show the ticket whose id starts with 01J9K3' },
       { command: 'agentboard show 01J9K3 --json', summary: 'The same, as one JSON document' },
     ],
-    exitCodes: [EXIT_OK, EXIT_USAGE, ...READ_ID_EXITS, EXIT_INTEGRITY],
+    exitCodes: [EXIT_OK, EXIT_USAGE, EXIT_INVALID_ACTOR, ...READ_ID_EXITS, EXIT_INTEGRITY],
     positionals: [ID],
     flags: [flag('raw', 'boolean', "Print the ticket's raw event files")],
     exclusive: [],
@@ -1095,7 +1116,14 @@ export const COMMANDS: readonly CommandSpec[] = [
         summary: 'List the tickets of the OpenSpec change add-parser as JSON',
       },
     ],
-    exitCodes: [EXIT_OK, EXIT_USAGE, EXIT_TASK_REF, EXIT_NO_BOARD, EXIT_INTEGRITY],
+    exitCodes: [
+      EXIT_OK,
+      EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
+      EXIT_TASK_REF,
+      EXIT_NO_BOARD,
+      EXIT_INTEGRITY,
+    ],
     positionals: [],
     flags: [
       flag('status', 'string', 'Only tickets in this status'),
@@ -1146,6 +1174,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       { code: 0, meaning: 'Claimed, already held by the actor, or granted after waiting' },
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_ACTOR,
       EXIT_ID_SHORT,
       EXIT_ID_AMBIGUOUS,
@@ -1291,6 +1320,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       EXIT_OK,
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_ACTOR,
       EXIT_ID_SHORT,
       EXIT_ID_AMBIGUOUS,
@@ -1329,6 +1359,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       EXIT_OK,
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_ACTOR,
       EXIT_ID_SHORT,
       EXIT_ID_AMBIGUOUS,
@@ -1353,19 +1384,19 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'release',
     summary: 'Give up a ticket you hold',
     description:
-      'Clears the assignment of a ticket the actor holds, leaving its status unchanged, so another actor (or the next waiter) can have it. Only the current assignee can release a ticket, except with --force and a --reason, which breaks another actor\'s hold and records who did it and why; reserve it for the orchestrator or a human, after checking the holder is gone.',
+      "Clears the assignment of a ticket the actor holds, leaving its status unchanged, so another actor (or the next waiter) can have it. Only the current assignee can release a ticket, except with --force and a --reason, which breaks another actor's hold and records who did it and why; reserve it for the orchestrator or a human, after checking the holder is gone.",
     group: 'lifecycle',
     examples: [
       { command: 'agentboard release 01J9K3 --as impl', summary: 'Give up ticket 01J9K3' },
       {
-        command:
-          'agentboard release 01J9K3 --force --reason "merger-1 crashed" --as orchestrator',
+        command: 'agentboard release 01J9K3 --force --reason "merger-1 crashed" --as orchestrator',
         summary: 'Break the hold of a crashed holder on ticket 01J9K3',
       },
     ],
     exitCodes: [
       EXIT_OK,
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_ACTOR,
       EXIT_ID_SHORT,
       EXIT_ID_AMBIGUOUS,
@@ -1426,6 +1457,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       EXIT_OK,
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_ACTOR,
       {
         code: 1,
@@ -1490,6 +1522,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       EXIT_OK,
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_ACTOR,
       EXIT_ID_SHORT,
       EXIT_ID_AMBIGUOUS,
@@ -1528,6 +1561,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       EXIT_OK,
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_ACTOR,
       EXIT_ID_SHORT,
       EXIT_ID_AMBIGUOUS,
@@ -1540,7 +1574,12 @@ export const COMMANDS: readonly CommandSpec[] = [
     ],
     positionals: [ID],
     flags: [
-      flag('to', 'string', 'New assignee', { required: true }),
+      flag(
+        'to',
+        'string',
+        'New assignee, of the actor form: 1 to 32 ASCII letters, digits, . _ - or @, the first a letter or digit',
+        { required: true },
+      ),
       flag('status', 'string', 'Target status (the current one to only reassign)', {
         required: true,
       }),
@@ -1551,11 +1590,15 @@ export const COMMANDS: readonly CommandSpec[] = [
     writes: true,
     operation: 'handoffTicket',
     run: (ctx, values) => {
+      // The new assignee is checked before anything else is read and
+      // before the board is opened (board-cli "Actor names are checked").
+      const assignee = req(values, 'to');
+      checkActorName(assignee, ctx.surface === 'mcp' ? 'the argument to' : '--to');
       const to = status(req(values, 'status'), 'handoff', '--status');
       return written(
         handoffTicket(ctx.board(), actorOf(ctx), {
           id: req(values, 'id'),
-          to: req(values, 'to'),
+          to: assignee,
           status: to,
           note: req(values, 'note'),
           allowSecretLike: bool(values, 'allow-secret-like'),
@@ -1582,6 +1625,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       EXIT_OK,
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_ACTOR,
       EXIT_TASK_REF,
       {
@@ -1631,6 +1675,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       EXIT_OK,
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_ACTOR,
       EXIT_ID_SHORT,
       EXIT_ID_AMBIGUOUS,
@@ -1660,6 +1705,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       EXIT_OK,
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_ACTOR,
       EXIT_ID_SHORT,
       EXIT_ID_AMBIGUOUS,
@@ -1691,7 +1737,8 @@ export const COMMANDS: readonly CommandSpec[] = [
         summary: 'Close ticket 01J9K3, which made no decision',
       },
       {
-        command: 'agentboard close 01J9K3 --no-decision --unplanned "abandoned: superseded" --as orch',
+        command:
+          'agentboard close 01J9K3 --no-decision --unplanned "abandoned: superseded" --as orch',
         summary: 'Close a blocked ad hoc ticket, recording why its work was never planned',
       },
       {
@@ -1702,6 +1749,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       EXIT_OK,
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_ACTOR,
       {
         code: 1,
@@ -1785,6 +1833,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       EXIT_OK,
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_ACTOR,
       {
         code: 1,
@@ -1810,9 +1859,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       });
       return {
         json: result,
-        text: result.entries
-          .map((entry) => `${renderInboxLine(entry, actorOf(ctx))}\n`)
-          .join(''),
+        text: result.entries.map((entry) => `${renderInboxLine(entry, actorOf(ctx))}\n`).join(''),
       };
     },
   },
@@ -1828,6 +1875,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       { code: 0, meaning: 'Stopped by SIGINT or SIGTERM' },
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_ACTOR,
       EXIT_NO_BOARD,
       EXIT_INTEGRITY,
@@ -1899,6 +1947,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         meaning:
           'Invalid arguments: unknown flag, a --port that is not an integer from 0 to 65535, an empty --as, or --open with --no-open',
       },
+      EXIT_INVALID_ACTOR,
       {
         code: 1,
         reason: 'port-in-use',
@@ -1946,6 +1995,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       { code: 0, meaning: 'Quit with q or Ctrl-C, or stopped by SIGINT or SIGTERM' },
       { code: 1, reason: 'usage', meaning: 'Invalid arguments: unknown flag or extra argument' },
+      EXIT_INVALID_ACTOR,
       {
         code: 1,
         reason: 'not-a-tty',
@@ -2006,6 +2056,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         meaning:
           'Invalid arguments: unknown flag, or a duration that is not <n>m, <n>h or <n>d with <n> from 1 to 99999',
       },
+      EXIT_INVALID_ACTOR,
       EXIT_NO_BOARD,
       EXIT_INTEGRITY,
     ],
@@ -2054,6 +2105,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       EXIT_OK,
       { code: 1, meaning: 'With --check: the cache differs from the event log, or is missing' },
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_NO_BOARD,
       EXIT_INTEGRITY,
     ],
@@ -2082,6 +2134,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       EXIT_OK,
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       { code: 1, reason: 'git-missing', meaning: 'git could not be run' },
       {
         code: 1,
@@ -2160,6 +2213,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       { code: 0, meaning: 'The board exists; problems, if any, are in the output' },
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_NO_BOARD,
     ],
     positionals: [],
@@ -2191,6 +2245,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       EXIT_OK,
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_ACTOR,
       EXIT_TASK_REF,
       {
@@ -2253,6 +2308,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       EXIT_OK,
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_ACTOR,
       { code: 1, reason: 'gh-missing', meaning: 'The GitHub CLI gh was not found on PATH' },
       EXIT_NO_BOARD,
@@ -2298,7 +2354,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         summary: 'Give granted waiters 5 minutes to accept',
       },
     ],
-    exitCodes: [EXIT_OK, EXIT_USAGE, EXIT_ACTOR, EXIT_NO_BOARD, EXIT_INTEGRITY],
+    exitCodes: [EXIT_OK, EXIT_USAGE, EXIT_INVALID_ACTOR, EXIT_ACTOR, EXIT_NO_BOARD, EXIT_INTEGRITY],
     positionals: [
       positional('key', 'string', KEY_SUMMARY, true, SETTING_KEYS),
       positional('value', 'string', 'Duration: <n>s or <n>m, from 30s to 10m'),
@@ -2326,7 +2382,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         summary: 'Print the acceptance window as JSON',
       },
     ],
-    exitCodes: [EXIT_OK, EXIT_USAGE, EXIT_NO_BOARD, EXIT_INTEGRITY],
+    exitCodes: [EXIT_OK, EXIT_USAGE, EXIT_INVALID_ACTOR, EXIT_NO_BOARD, EXIT_INTEGRITY],
     positionals: [positional('key', 'string', KEY_SUMMARY, false, SETTING_KEYS)],
     flags: [],
     exclusive: [],
@@ -2354,6 +2410,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     exitCodes: [
       { code: 0, meaning: 'The client disconnected or the server was stopped by a signal' },
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
       EXIT_NO_BOARD,
     ],
     actorHelp:
@@ -2409,6 +2466,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         meaning:
           'Invalid arguments: unknown command, flag or --target, a missing or malformed argument, or an --mcp-command that is empty or contains a newline (nothing is written)',
       },
+      EXIT_INVALID_ACTOR,
       {
         code: 1,
         reason: 'no-targets',
@@ -2459,6 +2517,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       { code: 0, meaning: 'Every target found is current, or none was found' },
       { code: 1, meaning: 'A target found is stale or modified (all are still reported)' },
       EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
     ],
     positionals: [],
     flags: [],
@@ -2473,7 +2532,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     description: 'Prints the version of this agentboard. Needs no board and no actor.',
     group: 'setup',
     examples: [{ command: 'agentboard version', summary: 'Print the version' }],
-    exitCodes: [EXIT_OK, EXIT_USAGE],
+    exitCodes: [EXIT_OK, EXIT_USAGE, EXIT_INVALID_ACTOR],
     positionals: [],
     flags: [],
     exclusive: [],
@@ -2508,6 +2567,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         meaning:
           'The topic is not a command (close matches are suggested), or the role is not one of the four',
       },
+      EXIT_INVALID_ACTOR,
     ],
     positionals: [
       positional('topic', 'string', 'Command name, its first word, or agents', false),

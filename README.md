@@ -423,6 +423,28 @@ that actor (see "Acting from the browser").
 Use one stable name per role instance, for example `orchestrator`,
 `test-1`, `impl-1`, `reviewer-1`.
 
+An actor name is recorded on every event and shared with every clone of
+the board, so it is checked before anything is written. A name passes when
+it matches none of the secret patterns of "No secrets on the board" and
+has the actor form: 1 to 32 ASCII letters, digits, `.`, `_`, `-` or `@`,
+the first a letter or digit (`impl-1`, `Ben`, `ben.dechrai`, `test_author`,
+`ben@laptop`). Every command checks a given `--as`, reads included; a
+command that needs an actor also checks `AGENTBOARD_ACTOR` when it falls
+back to it (a command that needs no actor ignores the variable and never
+repeats it); `handoff` checks `--to`; over MCP the `as` and `to` arguments
+and `agentboard mcp --as` are checked the same way. A name that fails is
+refused with exit 1 and reason `invalid-actor` before the board is opened,
+the refusal names where the name came from (`--as`, `AGENTBOARD_ACTOR` or
+`--to`) and never the name itself, and `--allow-secret-like` does not
+apply: choose another name. The reserved actor `agentboard` is refused as
+before (exit 1, `usage`).
+
+Events already on a board are not checked: a ticket held by a name that
+can no longer be passed is handed on by another actor with
+`release <id> --force --reason "<why>" --as <actor>` (see "Forced
+release") or claimed once its lease is claimable, and
+`list --assignee <name>` still finds its tickets, whatever the name.
+
 ## Tickets and task references
 
 Every ticket references the unit of planned work it delivers, as a task

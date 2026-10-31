@@ -101,6 +101,16 @@ export interface RunContext {
    */
   readonly actor: string | null;
   /**
+   * How the arguments were given: `cli` (the default when absent) for
+   * command-line flags, `mcp` for the named arguments of an MCP tool call
+   * (and of a web action body, whose properties are the MCP argument
+   * names). It only names the source of a refused actor name in a
+   * refusal (`--to` or `the argument to` for the new assignee of
+   * `handoff`; board-cli "Actor names are checked"); the values
+   * themselves are the same on every surface.
+   */
+  readonly surface?: 'cli' | 'mcp';
+  /**
    * The board, found by discovery (`findBoard` with `cwd` and `env`) and
    * opened (`openBoard`) on first call; later calls return the same handle.
    * The caller of `run` closes it. Throws `BoardError(2,

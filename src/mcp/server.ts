@@ -84,7 +84,14 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 
-import { LazyBoard, commandActor, errorDocument, exitCodeFor, runContext } from '../cli/main.js';
+import {
+  LazyBoard,
+  checkedActor,
+  commandActor,
+  errorDocument,
+  exitCodeFor,
+  runContext,
+} from '../cli/main.js';
 import { ACTOR_ENV } from '../cli/parse.js';
 import type { Env } from '../cli/types.js';
 import {
@@ -120,7 +127,9 @@ export interface ToolErrorContent {
    * context)` with surface `mcp`, `command` the tool's command (null for an
    * unknown or excluded tool name), `id` the call's `id` argument when it
    * is a string, and `actor` the call's `as`, else the server's `--as`,
-   * else the server's `AGENTBOARD_ACTOR` (undefined when none is set).
+   * else the server's `AGENTBOARD_ACTOR` (undefined when none is set, and
+   * undefined when that name fails the actor check, so the hint writes
+   * `<actor>`).
    * Null only when `reason` is null. Always present. The exit code, reason
    * and message are exactly the CLI's for the same failure; the hint may
    * differ, because it is written for a tool caller (tool calls instead of
@@ -198,7 +207,16 @@ export interface BoardMcpServer {
    *    happens before the board is opened. The reserved actor is refused
    *    here too (`refuseReservedActor`: the call's `as` for every tool,
    *    and the resolved actor of a tool that needs one), as exit 1
-   *    `usage`, writing nothing.
+   *    `usage`, writing nothing. The actor check runs here too, through
+   *    the same `commandActor` as the CLI (board-cli "Actor names are
+   *    checked"): the call's `as` on every tool (source `the argument
+   *    as`) and the server's `AGENTBOARD_ACTOR` when a tool that needs an
+   *    actor falls back to it (source `AGENTBOARD_ACTOR`), each a tool
+   *    error with `exitCode` 1 and `reason` `invalid-actor`, writing
+   *    nothing; the server's own `--as` was checked when it started
+   *    (`src/cli.ts`). The `to` of `board_handoff` is checked by the
+   *    command's argument conversion with source `the argument to` (the
+   *    context's `surface` is `mcp`).
    * 4. `command.run(ctx, values)` with a `RunContext` like the CLI's:
    *    `cwd` and `env` from the options, the actor, `boardDir()` returning
    *    `boardDir`, and `board(options)` opening `boardDir` with `openBoard`
@@ -368,8 +386,9 @@ function runTool(
       command,
       typeof given === 'string' && given !== '' ? given : options.actor,
       options.env,
+      'the argument as',
     );
-    const output = command.run(runContext(options.cwd, options.env, actor, opened), values);
+    const output = command.run(runContext(options.cwd, options.env, actor, opened, 'mcp'), values);
     const warnings = output.warnings ?? [];
     for (const line of warnings) {
       options.stderr(`agentboard: ${line}\n`);
@@ -408,11 +427,18 @@ function nonEmpty(value: unknown): string | undefined {
   return typeof value === 'string' && value !== '' ? value : undefined;
 }
 
-/** The hint context of a failed call (see `ToolErrorContent.hint`). */
+/**
+ * The hint context of a failed call (see `ToolErrorContent.hint`): its
+ * actor is the name the call would have used, only when it passes the
+ * actor check (`checkedActor`), so no hint repeats a refused or unchecked
+ * name.
+ */
 function mcpHintContext(options: McpServerOptions, name: string, args: unknown): HintContext {
   const given = isObject(args) ? args : {};
   const id = nonEmpty(given.id);
-  const actor = nonEmpty(given.as) ?? nonEmpty(options.actor) ?? nonEmpty(options.env[ACTOR_ENV]);
+  const actor = checkedActor(
+    nonEmpty(given.as) ?? nonEmpty(options.actor) ?? nonEmpty(options.env[ACTOR_ENV]),
+  );
   const command = findTool(name)?.command.name ?? null;
   const closeDecision = command === 'close' ? closeDecisionOf(given) : undefined;
   const force = command === 'release' && given.force === true;
