@@ -293,10 +293,11 @@ export interface CommandSpec {
    * summary (that a given name is checked and otherwise not used) on the
    * `--as` line of its help (the line still reads `string, optional`); it
    * states the actor form too (board-agent-guidance "Guide states the
-   * actor form"). Only `serve` and `mcp`
-   * have it: on `serve`, `--as` is the actor of the web app's write
+   * actor form"). Only `serve`, `mcp` and
+   * `hook` have it: on `serve`, `--as` is the actor of the web app's write
    * actions and the only way to enable them; on `mcp`, the server's
-   * default actor for tool calls. Absent on
+   * default actor for tool calls; on `hook`, the actor whose tickets and
+   * inbox the hook checks. Absent on
    * every command that writes or tracks a cursor, and on every command
    * that ignores `--as`.
    */

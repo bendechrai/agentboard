@@ -16,8 +16,8 @@ stdout, or, only in strict mode, exit 2 with the reason on stderr. Any
 other outcome SHALL be exit 0 and no output. The command SHALL fail open:
 no board, an unreadable or locked cache, an unresolvable actor, an unknown
 payload shape, an internal error or running past its time budget of 2
-seconds SHALL each end in exit 0 without blocking, and at most one line on
-stderr. So SHALL an unknown event or any other error in the command's own
+seconds, measured from the start of the process, SHALL each end in exit 0
+without blocking, and at most one line on stderr. So SHALL an unknown event or any other error in the command's own
 arguments, whose line names the three events. That line SHALL NOT repeat
 any part of the payload, the event argument or other refused input
 (board-cli "Refusals never repeat the refused input"). The command SHALL
@@ -28,7 +28,9 @@ it is and SHALL NOT catch up: it folds no event file, writes no due grant
 file, and never creates, recreates or rebuilds the cache; a missing cache,
 or one of another schema version, counts as unreadable. It SHALL never
 claim, renew, release or join or leave a queue. Setting
-`AGENTBOARD_HOOKS=off` SHALL make every event exit 0 immediately.
+`AGENTBOARD_HOOKS=off` (exactly `off`) SHALL make every event exit 0
+immediately, with no output, before stdin, the arguments or the board are
+read.
 
 #### Scenario: No board
 - **WHEN** `agentboard hook pre-tool-use --strict` runs in a directory with no board
@@ -64,9 +66,14 @@ never from the OS user or the payload. A ticket the actor holds is an open
 ticket whose assignee is the actor, whatever the state of its lease (a
 lapsed lease is held until another actor takes it over, as board-cli
 "Leases on the command line" defines); being queued for a ticket is not
-holding it. With no actor, `session-start` SHALL
+holding it. A name a writing command could not use (the reserved actor
+`agentboard`, a name matching a secret pattern, or one outside the actor
+form of the change `actor-secret-check`) counts as no actor and is never
+repeated. With no actor, `session-start` SHALL, where a board is found,
 print one line telling the agent to set `AGENTBOARD_ACTOR` or pass `--as`,
-and `stop` and `pre-tool-use` SHALL do nothing. Subagents and linked
+and `stop` and `pre-tool-use` SHALL do nothing. The payload's `cwd` is
+used when it names an existing directory, and the process directory
+otherwise. Subagents and linked
 worktrees of the same session inherit the process environment and are
 therefore the same actor; board discovery in a linked worktree uses the
 payload's `cwd` and the usual discovery rules.

@@ -43,9 +43,12 @@ export const HOOK_EVENTS = ['session-start', 'stop', 'pre-tool-use'] as const;
 export type HookEvent = (typeof HOOK_EVENTS)[number];
 
 /**
- * The internal time budget of one hook run, in milliseconds, from the
- * start of the run (stdin included) to its answer (design.md decision 3;
- * the settings `timeout` the `claude-hooks` target writes is 5 seconds).
+ * The internal time budget of one hook run, in milliseconds (design.md
+ * decision 3; the settings `timeout` the `claude-hooks` target writes is 5
+ * seconds). For the executable it runs from the start of the process
+ * (`performance.timeOrigin`), not from the start of `runHookProcess`, so
+ * Node's own start-up and module loading count against it and a loaded
+ * machine still gets its answer within about the budget.
  */
 export const HOOK_BUDGET_MS = 2000;
 
@@ -164,6 +167,11 @@ export interface HookRequest {
   readonly env: Env;
   /** The clock for the budget and for lease states; defaults to `Date.now`. */
   readonly now?: () => number;
+  /**
+   * When the run started, on the `now` clock; defaults to `now()` at the
+   * call. The deadline is `startedAt + budgetMs`.
+   */
+  readonly startedAt?: number;
   /** The budget of this run in milliseconds; defaults to `HOOK_BUDGET_MS`. */
   readonly budgetMs?: number;
 }
@@ -192,24 +200,27 @@ export interface HookOutcome {
  *    the arguments or the payload (board-cli "Refusals never repeat the
  *    refused input").
  * 3. The payload is parsed with `parseHookPayload`.
- * 4. The actor is `resolveHookActor(--as, env)`. With no actor,
- *    `session-start` answers exit 0 with stdout exactly one JSON document,
- *    `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":<text>}}`,
- *    whose text is one line naming `AGENTBOARD_ACTOR` and `--as` (and no
- *    actor value), and stderr empty; `stop` and `pre-tool-use` answer
- *    exit 0 with stdout and stderr empty. The board is not read.
+ * 4. The actor is `resolveHookActor(--as, env)`. With no actor, `stop`
+ *    and `pre-tool-use` answer exit 0 with stdout and stderr empty, and
+ *    `session-start` answers exit 0 with stderr empty and, when discovery
+ *    (as in step 5) finds a board (`boardExists`; its cache is not
+ *    needed), stdout exactly one JSON document,
+ *    `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":<text>}}`
+ *    and a newline, whose text is one line naming `AGENTBOARD_ACTOR` and
+ *    `--as` (and no actor value); where there is no board, stdout is
+ *    empty. The cache is not read.
  * 5. The board is read with `readHookView` (discovery from the payload's
- *    `cwd`, see `HookViewOptions.cwd`), with the deadline at the start of
- *    the run plus `budgetMs`. A null view is exit 0 with stdout empty and
+ *    `cwd`, see `HookViewOptions.cwd`), with the deadline
+ *    `startedAt + budgetMs`. A null view is exit 0 with stdout empty and
  *    at most one stderr line.
  * 6. The event answers as its requirement says (board-harness-hooks
  *    "Session start hook", "Stop hook", "Pre-tool-use claim check"),
  *    holding computed with `heldTickets`.
  *
- * Any error thrown inside, and running past the budget, is exit 0 with
- * stdout empty and at most one stderr line. The answer is given within
- * the budget plus the time of one bounded step, so well within 3 seconds
- * of the start for the default budget.
+ * Any error thrown inside, and running past the deadline, is exit 0
+ * with stdout empty and at most one stderr line. The answer is given by
+ * the deadline plus the time of one bounded step, so well within 3
+ * seconds of `startedAt` for the default budget.
  */
 export function runHook(request: HookRequest): HookOutcome {
   void request;
@@ -259,9 +270,12 @@ export interface HookProcessIo {
  * `agentboard hook` for the executable (`src/cli.ts` calls it, instead of
  * the ordinary CLI, when `isHookInvocation` holds): when `HOOKS_ENV` is
  * `off`, resolves 0 at once without reading stdin; otherwise reads the
- * payload with `readHookStdin` within `HOOK_BUDGET_MS`, runs `runHook`
- * with what remains of the budget, writes its stdout and stderr, and
- * resolves its exit code. Never rejects; never resolves any code but 0 or
+ * payload with `readHookStdin` until the deadline, the process start
+ * (`performance.timeOrigin`) plus `HOOK_BUDGET_MS`, runs `runHook` with
+ * `startedAt` the process start, writes its stdout and stderr, stops
+ * reading stdin (so an input that never ends does not keep the process
+ * alive), and resolves its exit code. The process therefore exits within
+ * about `HOOK_BUDGET_MS` of its start, Node's start-up included. Never rejects; never resolves any code but 0 or
  * 2 (board-cli "Exit codes": the codes 1, 3, 4 and 5 and the board-error
  * 2 are never reported).
  */
