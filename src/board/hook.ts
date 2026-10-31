@@ -21,9 +21,11 @@
  * (folds no event file, writes no due grant, reaps no temporary file) and
  * never creates, recreates, migrates or rebuilds the cache, so a missing
  * cache or one of another schema version counts as unreadable (opening it
- * the ordinary way would recreate it). The only state it may write is the
- * inbox cursor of the actor in `session-start` (board-harness-hooks
- * "Session start hook"). It never claims, renews, releases, queues or
+ * the ordinary way would recreate it). The only board state it may write
+ * is the inbox cursor of the actor in `session-start` (board-harness-hooks
+ * "Session start hook"); outside the board, `pre-tool-use` in warn mode
+ * writes its rate-limit file in the OS temporary directory
+ * (`warnStatePath`). It never claims, renews, releases, queues or
  * unqueues.
  *
  * The event behaviour itself (what each event prints) is specified by
@@ -66,6 +68,63 @@ export const HOOK_BUDGET_MS = 2000;
  * Any other value (`on`, `0`, `OFF`, empty) leaves the hooks on.
  */
 export const HOOKS_ENV = 'AGENTBOARD_HOOKS';
+
+/**
+ * The most characters the `session-start` context (the
+ * `additionalContext` text) may hold (board-harness-hooks "Session start
+ * hook"). A longer answer is cut at an inbox entry boundary: the entries
+ * that fit are kept from the start, in fold order, and a last line says
+ * how many entries were left out and names `agentboard inbox --as
+ * <actor>`; the inbox cursor advances over the delivered entries only, so
+ * the next `inbox` lists exactly the ones left out. The held-ticket line
+ * is cut at a ticket boundary to at most `HELD_LINE_LIMIT` characters,
+ * ending with `and <n> more`.
+ */
+export const SESSION_CONTEXT_LIMIT = 4000;
+
+/** The most characters of the `session-start` held-ticket line (see `SESSION_CONTEXT_LIMIT`). */
+export const HELD_LINE_LIMIT = 2000;
+
+/**
+ * The tools whose calls `pre-tool-use` checks (board-harness-hooks
+ * "Pre-tool-use claim check"), matched exactly, case included. The target
+ * is `tool_input.file_path`, or for `NotebookEdit` `tool_input.notebook_path`
+ * (then `file_path`); a relative target is resolved against the directory
+ * discovery started from. Any other tool, and a target that is missing,
+ * empty or not a string, is passed silently.
+ */
+export const EDIT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] as const;
+
+/**
+ * The warn-mode rate limit of `pre-tool-use`: a session is warned at most
+ * once per this many milliseconds (board-harness-hooks "Pre-tool-use claim
+ * check"). Strict mode is not rate limited: it denies every unclaimed edit.
+ */
+export const WARN_INTERVAL_MS = 600_000;
+
+/**
+ * The file that records when the session `sessionId` was last warned by
+ * `pre-tool-use` in warn mode: `<stateDir>/agentboard-hook-<h>`, where
+ * `<h>` is the lowercase hex SHA-256 of `sessionId` (UTF-8), so the file
+ * name never repeats the session id and any id is a safe name. Pure.
+ *
+ * The file holds the time of the last warning printed, in milliseconds
+ * on the hook's clock, as decimal digits. A warning is suppressed when the
+ * recorded time `t` satisfies `t <= now < t + WARN_INTERVAL_MS`; a missing
+ * or unreadable file, any other content, or a time later than `now` (a
+ * clock set back) counts as no warning. The file is written only when a
+ * warning is printed in warn mode, replaced atomically (a temporary file
+ * in `stateDir`, then a rename, so a symbolic link at the name is replaced
+ * and never followed), and a failure to read or write it never stops the
+ * warning. A payload with no `session_id` (missing, empty or not a string)
+ * is warned every time and writes no file. Strict mode neither reads nor
+ * writes it.
+ */
+export function warnStatePath(stateDir: string, sessionId: string): string {
+  void stateDir;
+  void sessionId;
+  throw new Error('not implemented');
+}
 
 /** A parsed hook payload: always a plain object. */
 export type HookPayload = Readonly<Record<string, unknown>>;
@@ -237,6 +296,12 @@ export interface HookRequest {
   readonly startedAt?: number;
   /** The budget of this run in milliseconds; defaults to `HOOK_BUDGET_MS`. */
   readonly budgetMs?: number;
+  /**
+   * The directory of the `pre-tool-use` warning state (`warnStatePath`);
+   * defaults to `os.tmpdir()`, the OS temporary directory (which honours
+   * `TMPDIR` on POSIX). Never inside the board.
+   */
+  readonly stateDir?: string;
 }
 
 /** The answer of one hook run. */
@@ -350,10 +415,8 @@ function sessionStartContext(text: string): HookOutcome {
 }
 
 /**
- * The answer of `event` for `actor` on a readable board. No event prints
- * anything yet: every one continues silently (board-harness-hooks
- * "Session start hook", "Stop hook" and "Pre-tool-use claim check" say
- * what each will print).
+ * The answer of `event` for `actor` on a readable board (see `runHook`
+ * step 6). Not implemented yet: every event continues silently.
  */
 function answerEvent(
   event: HookEvent,
@@ -401,7 +464,58 @@ function answerEvent(
  *    at most one stderr line.
  * 6. The event answers as its requirement says (board-harness-hooks
  *    "Session start hook", "Stop hook", "Pre-tool-use claim check"),
- *    holding computed with `heldTickets`.
+ *    holding computed with `heldTickets` and lease states at `now()`:
+ *    - `session-start`: exit 0, stderr empty, stdout one
+ *      `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":<text>}}`
+ *      document, always (an empty inbox still gets the first line). The
+ *      first line of `<text>` names the actor and, for each held ticket in
+ *      id order, `<id> <token>` (the full id, one space, `assigneeToken`
+ *      at `now()`, as `list` shows it), or says the actor holds none; each
+ *      further line is one inbox entry exactly as `agentboard inbox --as
+ *      <actor>` prints it (`renderInboxLine(entry, actor)`), in fold order,
+ *      for the entries pending for the actor's cursor in the cache as it
+ *      is (no catch-up: an event file not yet folded is neither delivered
+ *      nor skipped). The cursor then advances over the delivered entries
+ *      (only those, when truncated: see `SESSION_CONTEXT_LIMIT`); with no
+ *      entry delivered nothing is written. This is the only write any
+ *      event makes to the board.
+ *    - `stop`: the tickets to name are the held tickets whose status is
+ *      not `blocked` and that have no comment (`ticket.comment` or
+ *      hand-off note) by the actor after the event that last made the
+ *      actor their assignee (its claim, a takeover, a grant from the
+ *      queue, a hand-off or an assignment to it), in id order. None: exit
+ *      0, nothing printed. Otherwise the text names each such ticket with
+ *      `agentboard handoff`, `agentboard comment` and `agentboard move
+ *      <id> blocked`, preceded, for a ticket with a lease (`lease` not
+ *      null, whatever its state), by `agentboard release <id> --as
+ *      <actor>`; a ticket without a lease gets no `release`. Warn mode,
+ *      and strict mode when the payload's `stop_hook_active` is JSON
+ *      `true`: exit 0, stdout `{"systemMessage":<text>}` (that key only,
+ *      never `decision`). Strict mode otherwise: exit 2, stdout empty,
+ *      stderr `<text>` and a newline (the text may span lines). So one stop
+ *      blocks at most once.
+ *    - `pre-tool-use`: acts only for a tool of `EDIT_TOOLS` whose target is
+ *      inside the project and not exempt; everything else is exit 0 with
+ *      nothing printed. The project is the parent of the board directory
+ *      and, when there is one, the nearest directory at or above the
+ *      discovery directory holding a `.git` entry (the checkout or linked
+ *      worktree the session works in); inside means the target, after
+ *      `path.resolve`, is one of them or below it, component by component
+ *      (a sibling sharing a name prefix is outside). Exempt: a target in
+ *      the board directory, or with a path component `.board` below the
+ *      project directory. An actor holding a ticket passes silently.
+ *      Otherwise the text names `agentboard claim` and `agentboard
+ *      inbox` and says to carry on if the work is not ticketed. Warn mode:
+ *      exit 0, stdout
+ *      `{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":<text>}}`
+ *      (never a `permissionDecision`: `allow` would skip the user's
+ *      permission prompt), rate limited per session (`warnStatePath`).
+ *      Strict mode: exit 2, stdout empty, stderr `<text>` and a newline,
+ *      every time.
+ *    No text of any event names `renew`, a queue, `--wait`, `--ttl`,
+ *    `watch`, or waiting, polling, sleeping or retrying in a loop
+ *    (board-agent-guidance "Mutex ticket recipe"); every `agentboard
+ *    <command>` it names is a command of the registry.
  *
  * Any error thrown inside, and running past the deadline, is exit 0
  * with stdout empty and at most one stderr line. The answer is given by
