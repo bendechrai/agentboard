@@ -175,11 +175,8 @@ the known gaps below and the draft `openspec/add-harness-integration`
   that ref if `.board` is then replaced by a different board before the
   move is re-run; whether the re-run must detect and refuse this is open:
   ticket 01M5XYG0VT09DBAW7PZJK1CZ5Y.
-- The draft branch `openspec/add-harness-integration` (not merged)
-  predates both archives: before it is proposed it re-syncs board-cli
-  "Command surface", "Exit codes" and "MCP server" and board-agent-guidance
-  "Installing guidance into a host project" (six rules, guidance version
-  2) and "Checking installed guidance" with the main specs, keeping
-  `remote`, `init --remote | --into-host` and the scope disposition
-  flags, and takes the next free `GUIDANCE_VERSION` and ADR number after
-  `add-claim-leases` (version 4, and ADR 0016 since 0015 is taken).
+- The proposal `add-harness-integration` (draft PR #67, not merged) was
+  re-synced on 2026-10-31 with the main specs as of `a455011` (guidance
+  version stays 3, ADR 0016; its design.md lists what the newer archives
+  forced). Any change archived after that which touches the requirements
+  it modifies needs one more re-sync before it is archived.
