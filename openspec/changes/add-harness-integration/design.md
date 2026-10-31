@@ -204,6 +204,29 @@ the group's ticket and pinned by the tests and the stub contracts in
   tools (decision 10, no line added) is done in task 1.2, not 7.1;
   task 7.1 keeps the README and checks the line counts.
 
+## Rulings from review round 1 of task group 1
+
+- **Fail open beyond the runner.** A removed process directory and a
+  stdout or stderr that is closed or failing (EPIPE, ENOSPC) are failures
+  of the hook like any other: exit 0, at most one stderr line, no stack
+  trace. So `src/cli.ts` reads `process.cwd()` inside the hook's guard (a
+  missing directory leaves only the payload `cwd` for discovery) and the
+  hook path ignores stream errors.
+- **The budget covers discovery.** `git rev-parse` in board discovery is
+  bounded by the time left; a `git` that does not answer in time counts as
+  git failing (discovery falls back to `./.board`, the usual rule when git
+  fails), so the hook still answers within the budget.
+- **No stderr line names the payload `cwd` or the actor**, on every path
+  (unreadable, missing, older or locked cache, out of time), not only on
+  argument errors.
+- **WAL checkpoint limit.** The inspect-only open is read-write (a
+  `readOnly` connection leaves empty `-wal` and `-shm` files behind on a
+  clean cache). After an unclean shutdown that left a non-empty `-wal`,
+  the hook's connection is the last to close and checkpoints the log into
+  `cache.sqlite`: the content is the same, the bytes are not. Accepted
+  and recorded in the spec delta rather than fixed in this change;
+  `rebuild --check` has the same property.
+
 ## Risks / Trade-offs
 
 - **PreToolUse is intrusive and adds latency to every edit** -> warn-only
