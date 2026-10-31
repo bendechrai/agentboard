@@ -23,7 +23,6 @@ import {
   suggestCommands,
   suggestFlags,
   unknownCommandMessage,
-  unknownCommandToken,
   unknownFlagMessage,
 } from '../suggest.js';
 
@@ -173,17 +172,6 @@ describe('suggestFlags', () => {
     const flags = fake('x', ['aaab', 'aaaa', 'aabb', 'abbb', 'aacc']).flags;
     // distances from "aaaa": aaab 1, aaaa 0, aabb 2, abbb 3, aacc 2
     expect(suggestFlags('aaaa', flags)).toEqual(['--aaaa', '--aaab', '--aabb']);
-  });
-});
-
-describe('unknownCommandToken', () => {
-  it('is the first argument', () => {
-    expect(unknownCommandToken(['clam', '01J9K3'], COMMANDS)).toBe('clam');
-  });
-
-  it('is the first two arguments after the first word of a multi-word command', () => {
-    expect(unknownCommandToken(['checklist', 'tik', '01J9K3'], COMMANDS)).toBe('checklist tik');
-    expect(unknownCommandToken(['checklist'], COMMANDS)).toBe('checklist');
   });
 });
 

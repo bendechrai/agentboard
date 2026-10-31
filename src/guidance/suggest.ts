@@ -4,7 +4,6 @@
  * parser (`parseArgs`) and by `help <topic>`.
  */
 
-import { asciiText } from '../board/text.js';
 import type { ArgSpec, CommandSpec } from '../cli/types.js';
 
 /** At most this many suggestions are offered. */
@@ -83,26 +82,6 @@ export function suggestFlags(name: string, flags: readonly ArgSpec[]): string[] 
     .map((flag) => ({ name: `--${flag.name}`, distance: editDistance(flag.name, name) }))
     .filter((candidate) => candidate.distance <= MAX_SUGGESTION_DISTANCE);
   return closest(candidates);
-}
-
-/**
- * The unknown command word(s) of `argv`: the first argument, or,
- * when the first argument is the first word of a command of several words
- * and a second argument exists, the first two arguments joined by a space
- * (`checklist tik`). Passed through `asciiText`. No refusal message uses
- * it (an unknown command is never repeated; see `unknownCommandMessage`).
- * Pure.
- */
-export function unknownCommandToken(
-  argv: readonly string[],
-  commands: readonly CommandSpec[],
-): string {
-  const [first = '', second] = argv;
-  const multiWord = commands.some((command) => {
-    const words = command.name.split(' ');
-    return words.length > 1 && words[0] === first;
-  });
-  return asciiText(multiWord && second !== undefined ? `${first} ${second}` : first);
 }
 
 /**

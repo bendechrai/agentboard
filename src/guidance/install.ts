@@ -756,8 +756,9 @@ function selectTargets(
  *    and saying why (empty, or contains a newline), before anything else is
  *    checked and before anything is written. Every `--target` value must
  *    be one of `GUIDANCE_TARGETS`, else `BoardError(1, 'usage', 'unknown
- *    target <t>; expected one of claude, agents-md, openspec, mcp-json')`
- *    before anything is written. Given targets are de-duplicated, each with
+ *    target given with --target; expected one of claude, agents-md,
+ *    openspec, mcp-json')`, which does not repeat the target, before
+ *    anything is written. Given targets are de-duplicated, each with
  *    reason `requested with --target`. With none given, `detectTargets(root)`
  *    (`autoDetected` true). When `mcpCommand` is given, `mcp-json` is
  *    selected as well, in its `GUIDANCE_TARGETS` position, with reason

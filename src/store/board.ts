@@ -6,6 +6,7 @@
 import { join, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
+import { asciiText } from '../board/text.js';
 import { CACHE_FILE, catchUp, openCache, type CatchUpReport } from './cache.js';
 import { BoardError } from './errors.js';
 import type { WriteHooks } from './eventfile.js';
@@ -86,7 +87,11 @@ export interface OpenBoardOptions {
 export function openBoard(dir: string, options?: OpenBoardOptions): Board {
   const abs = resolve(dir);
   if (!boardExists(abs)) {
-    throw new BoardError(2, 'board-not-found', `no board found at ${abs} (no events directory)`);
+    throw new BoardError(
+      2,
+      'board-not-found',
+      `no board found at ${asciiText(abs)} (no events directory)`,
+    );
   }
   const cachePath = join(abs, CACHE_FILE);
   const prepare = options?.prepare !== false;

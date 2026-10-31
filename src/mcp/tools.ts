@@ -251,10 +251,11 @@ export function findTool(
  * `unknownArgumentMessage(command)`; the unknown property's name is never
  * repeated (board-cli "Refusals never repeat the refused input").
  *
- * @throws BoardError exit 1: reason `usage` naming the property for a
- *   non-object `args`, an unknown property (including `json`), a value of
- *   the wrong type, or a missing required argument; or the reason of a
- *   missing required exclusive group.
+ * @throws BoardError exit 1: reason `usage` for a non-object `args`, an
+ *   unknown property (including `json`; the message lists the tool's
+ *   arguments and not the property), a value of the wrong type (naming the
+ *   argument), or a missing required argument (naming it); or the reason
+ *   of a missing required exclusive group.
  */
 export function toolArguments(command: CommandSpec, args: unknown): ArgValues {
   const given = argumentObject(args);

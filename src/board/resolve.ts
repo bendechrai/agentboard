@@ -30,7 +30,7 @@ export const MIN_PREFIX_LENGTH = 6;
  * (`src/guidance/hints.ts`) decide with this. Pure.
  */
 export function isIdShaped(text: string): boolean {
-  return /^[0-9A-HJKMNP-TV-Z]{1,26}$/.test(text.toUpperCase());
+  return /^[0-7][0-9A-HJKMNP-TV-Z]{0,25}$/i.test(text);
 }
 
 /**

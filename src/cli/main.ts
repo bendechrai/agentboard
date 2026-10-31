@@ -20,7 +20,7 @@ import {
   resolveActor,
   type ParsedCommand,
 } from './parse.js';
-import { COMMANDS } from './registry.js';
+import { COMMANDS, findCommand } from './registry.js';
 import type { TerminalIo } from '../tui/terminal.js';
 import type { BoardOpenOptions, CommandSpec, Env, RunContext } from './types.js';
 
@@ -343,10 +343,11 @@ function cliHintContext(io: CliIo, parsed: ParsedCommand | null): HintContext {
       ...(force ? { force } : {}),
     };
   }
-  const actor = argvActor(io.argv) ?? fromEnv;
+  const command = leadingCommand(io.argv);
+  const actor = parsedActor(io.argv, command) ?? fromEnv;
   return {
     surface: 'cli',
-    command: leadingCommand(io.argv),
+    command,
     ...(actor === undefined ? {} : { actor }),
   };
 }
@@ -370,24 +371,33 @@ function leadingCommand(argv: readonly string[]): string | null {
 }
 
 /**
- * The actor of arguments that failed to parse: the argument after the
- * first `--as`, or the value of the first `--as=<value>`, before any lone
- * `--`; undefined when empty or absent.
+ * The `--as` value of arguments that failed to parse for `command`: the
+ * arguments are parsed again against the command with its exclusive
+ * groups and its required arguments relaxed, and the actor is the `as`
+ * value that parse yields; undefined when the arguments do not parse even
+ * then (an unknown flag, a flag given twice, a bad integer), when `command`
+ * is null, or when no `--as` was parsed. The raw arguments are never
+ * scanned for `--as`, so a flag that took `--as` as its value (`close
+ * --unplanned --as <text>`) names no actor and the following text, which
+ * the parser read as the `<id>`, is not repeated as one (board-cli
+ * "Refusals never repeat the refused input", review round 1 F1).
  */
-function argvActor(argv: readonly string[]): string | undefined {
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (arg === '--') {
-      return undefined;
-    }
-    if (arg === '--as') {
-      return nonEmpty(argv[i + 1]);
-    }
-    if (arg?.startsWith('--as=') === true) {
-      return nonEmpty(arg.slice('--as='.length));
-    }
+function parsedActor(argv: readonly string[], command: string | null): string | undefined {
+  const spec = command === null ? undefined : findCommand(command);
+  if (spec === undefined) {
+    return undefined;
   }
-  return undefined;
+  const relaxed: CommandSpec = {
+    ...spec,
+    positionals: spec.positionals.map((p) => ({ ...p, required: false })),
+    flags: spec.flags.map((f) => ({ ...f, required: false })),
+    exclusive: [],
+  };
+  try {
+    return nonEmpty(parseArgs(argv, [relaxed]).values.as);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

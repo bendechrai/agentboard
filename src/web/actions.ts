@@ -272,8 +272,9 @@ export function actionStatus(error: unknown): number {
  * object holding any of `REFUSED_PROPERTIES` (whatever its value), and
  * otherwise returns `toolArguments(command, body)` (`src/mcp/tools.ts`),
  * with its own refusals, reasons and messages (a body that is not an
- * object, an unknown property, a wrong type, a missing argument, an
- * exclusive group given twice or not at all). Pure.
+ * object, an unknown property, which is refused by `unknownArgumentMessage`
+ * listing the tool's arguments without naming the property, a wrong type,
+ * a missing argument, an exclusive group given twice or not at all). Pure.
  */
 export function actionArguments(command: CommandSpec, body: unknown): ArgValues {
   if (isObject(body)) {

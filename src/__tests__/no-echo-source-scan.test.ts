@@ -35,10 +35,14 @@
  * when its own output is pinned by unit tests that pass token fixtures
  * through it. A literal-only message needs no entry.
  *
- * Precision. A value is keyed by file, function and text, so allowing
- * `asciiText(text)` in `resolveTicketId` (id-shaped only) does not allow it
- * in `parseTaskFilter` of the same file; a refusal that interpolates a new
- * value fails here until an entry with its reason is added in review. The
+ * Precision. A value is keyed by file, function and text, not by branch:
+ * allowing `asciiText(text)` in `resolveTicketId` (id-shaped only) does
+ * not allow it in `parseTaskFilter` of the same file, but it does allow it
+ * on every branch of `resolveTicketId`, so a branch that interpolated it
+ * without the `isIdShaped` guard would pass the scan (the behavioural
+ * tests, which run the token fixtures through every branch, catch that).
+ * A refusal that interpolates a new value fails here until an entry with
+ * its reason is added in review. The
  * old echoing forms (`unknown status ${asciiText(text)}` in `status`,
  * `${asciiText(raw)}` in `parseInteger`, ...) are deliberately absent, so
  * restoring one fails (recorded in the PR: the test fails when `status`'s
