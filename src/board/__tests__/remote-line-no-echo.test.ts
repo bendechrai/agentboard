@@ -256,3 +256,52 @@ describe('proxy user information git and curl split differently (review round 2:
     ).toBe("fatal: Invalid proxy URL '<url>': only SOCKS proxies support paths");
   });
 });
+
+describe('split pieces never mangle or unmask (review round 3: S2, S3)', () => {
+  const unlisted = `fatal: could not read Password for 'http://${GH_TOKEN}@proxy.local:3128': terminal prompts disabled`;
+  const redacted = "fatal: could not read Password for 'http://<redacted>@proxy.local:3128': terminal prompts disabled";
+
+  it.each(['https://a@http@git.example.com/x.git', 'https://a@:@git.example.com/x.git', 'https://a@ftp@git.example.com/x.git'])(
+    'S2: with %s listed, the catch-all still redacts an unlisted URL (it runs before the pieces)',
+    (listed) => {
+      const out = sanitizeRemoteLine(unlisted, [listed]);
+      expectNoLeak(out);
+      expect(out).toBe(redacted);
+    },
+  );
+
+  it.each([
+    'https://a@b@git.example.com/x.git',
+    'https://ab@board@git.example.com/x.git',
+    'https://a@http@git.example.com/x.git',
+    'https://a@-.-@git.example.com/x.git',
+  ])('S2: with %s listed, a short, scheme or punctuation piece mangles no word', (listed) => {
+    for (const line of [
+      `pushing ${BOARD_REF_TEXT} to origin failed: error: failed to push some refs to 'https://other.example/y.git'`,
+      "fatal: unable to access 'https://git.example.com/other.git/': The requested URL returned error: 500",
+      'error: RPC failed; HTTP 500 curl 22 - boards and shared remotes',
+    ]) {
+      expect(sanitizeRemoteLine(line, [listed])).toBe(line);
+    }
+  });
+
+  it('S2: a piece of at least the minimum length is still redacted', () => {
+    const proxy = `http://a@${GH_TOKEN}@127.0.0.1:3128`;
+    const out = sanitizeRemoteLine(`fatal: proxy ${GH_TOKEN} refused`, [proxy]);
+    expectNoLeak(out);
+  });
+
+  it('S3: a multi-byte character between the two raw @ of a proxy, in git 2.53 host encoding (per UTF-8 byte)', () => {
+    const proxy = `http://a@${GH_TOKEN}\u00e9@127.0.0.1:3128`;
+    const host = `${GH_TOKEN.replace('_', '%5F')}%C3%A9%40127.0.0.1:3128`;
+    const out = sanitizeRemoteLine(
+      `fatal: could not read Password for 'http://a@${host}': terminal prompts disabled`,
+      [proxy],
+    );
+    expectNoLeak(out);
+    expect(out).not.toContain('%C3%A9');
+  });
+});
+
+/** The board ref, spelled out so a one-letter piece would visibly mangle it. */
+const BOARD_REF_TEXT = 'refs/agentboard/board';
