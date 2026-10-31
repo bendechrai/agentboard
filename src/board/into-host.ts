@@ -208,6 +208,22 @@ const TIP_RECORD = 'agentboard-source-tip';
 const BEFORE_RECORD = 'agentboard-board-before';
 
 /**
+ * The file in a temporary worktree's git directory that marks a temporary
+ * of another board whose update of `BOARD_REF` the leftover pass is
+ * setting back (ruling 7): written with `writeRecord` immediately before
+ * the reset command and removed again when the reset loses its
+ * compare-and-swap, so a kill between the reset and the removal of the
+ * temporary leaves a dead temporary carrying the marker whose HEAD is no
+ * longer in the ref, which the next run removes and names as left by a
+ * move of another board, whatever its HEAD, printing no reset line (the
+ * killed run made the reset). A marked temporary whose HEAD is still in
+ * the ref (a kill between the marker and the reset command) is judged
+ * again as any candidate. Its content is the HEAD the reset compared
+ * against and a newline; only its presence is read.
+ */
+const UNDONE_RECORD = 'agentboard-board-undone';
+
+/**
  * The file in a temporary worktree's git directory that records a replay
  * in progress (round 4 ruling 2): its two lines are the worktree's HEAD
  * when the `cherry-pick` started and the tip of `MIGRATING_FETCH_REF` it
@@ -347,17 +363,25 @@ export function findMigratingWorktrees(
  * `MIGRATING_REF` or whose ref is gone (a rebase finished in it, which
  * the re-run adopts when it belongs to the board at `.board`). Also
  * deletes `MIGRATING_REF` and `MIGRATING_FETCH_REF` when no temporary
- * worktree remains at all. Returns the paths removed, ascending. Never
- * throws for a missing directory; nothing else in the repository changes.
+ * worktree remains at all. The worktree at `keep`, when given, is left
+ * alone whatever its HEAD: the evidence of this board's unpublished
+ * update, which `moveBoardIntoHost` removes itself once its own temporary
+ * carries the record (design.md "Carry the record forward"). Returns the
+ * paths removed, ascending. Never throws for a missing directory; nothing
+ * else in the repository changes.
  */
-export function removeDeadMigratingWorktrees(hostDir: string, options?: HostInitOptions): string[] {
+export function removeDeadMigratingWorktrees(
+  hostDir: string,
+  options?: HostInitOptions,
+  keep?: string,
+): string[] {
   const git = hostGit(hostDir, options);
   const migratingRef = refValue(git, MIGRATING_REF);
   const removed: string[] = [];
   // The ref may be gone while worktrees remain: then every registered
   // HEAD differs from it and is kept for the re-run to judge.
   for (const worktree of findMigratingWorktrees(hostDir, options)) {
-    if (worktree.alive || worktree.rebasing) {
+    if (worktree.alive || worktree.rebasing || worktree.path === keep) {
       continue;
     }
     // A registered worktree whose HEAD left the temporary ref (or whose
@@ -832,7 +856,24 @@ export interface IntoHostResult extends InitResult {
  * remedy, nothing changed; a reset that loses its compare-and-swap is the
  * same exit saying the ref moved meanwhile. A temporary whose update was
  * set back is removed and named as left by a move of another board
- * whatever its HEAD. Otherwise `removeDeadMigratingWorktrees(hostRoot)`
+ * whatever its HEAD, also when a kill between the reset and the removal
+ * left it marked (`agentboard-board-undone`) for this run; one whose
+ * record equals its HEAD is removed and named the same way with no
+ * command run and no line; a refusal after resets made earlier in the
+ * run says they were kept; a live temporary of another board whose HEAD
+ * is in the ref is `BoardError(3, 'sync-in-progress')` naming it, before
+ * any reset. Then the evidence of this board's own unpublished update is
+ * found (design.md "Carry the record forward"): a dead temporary of this
+ * board whose HEAD equals the ref. It is kept through the leftover pass
+ * (renamed to `<pid>-kept` when named by this process's pid, which the
+ * fresh temporary takes), adopted when it integrated something, and
+ * otherwise removed, named as left by an interrupted move, only after
+ * this run's swap of step 4 succeeded; at that swap, when `<old>` still
+ * equals the value the leftover pass read, the record written is the
+ * evidence's own `agentboard-board-before` (so it never names this
+ * board's unpublished commits), or none when the evidence has no well
+ * formed one, so a later run with another board refuses rather than
+ * resets. Otherwise `removeDeadMigratingWorktrees(hostRoot)`
  * removes the temporaries that hold nothing (the message names what was
  * removed), and a dead-pid temporary worktree without rebase or
  * cherry-pick state whose HEAD differs from `MIGRATING_REF` (or whose ref
@@ -1497,7 +1538,35 @@ function lockedMove(
     removeLeftoverWorktree(host, path);
     foreign.push(path);
   }
-  const removed = removeDeadMigratingWorktrees(hostRoot, { env });
+  // The evidence of this board's own unpublished update (design.md "Carry
+  // the record forward"): a dead temporary of this board whose HEAD is
+  // the ref as the leftover pass finds it. The ref then already holds
+  // this board's commits, so the value this run's swap compares against
+  // is not the undo point; the record to write at step 4 is that
+  // temporary's own (`carried`; null for no well formed record: none is
+  // written, so a later run with another board refuses). The temporary
+  // is kept, not removed or adopted away, until this run's swap has
+  // succeeded with that record in place, so a run that stops before then
+  // leaves the evidence for the next. One named by this process's own pid
+  // is renamed first, as the fresh temporary of this run takes that path.
+  const refAtLeftover = refValue(host, BOARD_REF);
+  const evidence =
+    refAtLeftover === ''
+      ? undefined
+      : findMigratingWorktrees(hostRoot, { env }).find(
+          (w) => dead(w) && !w.rebasing && w.registered && w.head === refAtLeftover && belongs(w.path),
+        );
+  let evidencePath = evidence?.path;
+  let carriedRecord: string | null = null;
+  if (evidence !== undefined) {
+    const record = nameRecord(host, evidence.path, BEFORE_RECORD, plan.head.length);
+    carriedRecord = record.present ? record.name : null;
+    if (evidence.pid === process.pid) {
+      evidencePath = `${evidence.path}-kept`;
+      host.run('worktree', 'move', evidence.path, evidencePath);
+    }
+  }
+  const removed = removeDeadMigratingWorktrees(hostRoot, { env }, evidencePath);
   // The source tip the adopted temporary worktree integrated (what the
   // ref records; the fetch of step 2 never moves it): the base of the
   // replay of what reached the standalone board since.
@@ -1506,7 +1575,11 @@ function lockedMove(
   // call in this process; the helper leaves it alone, the move treats it
   // as dead: removed when nothing was integrated in it, adopted otherwise.
   for (const own of findMigratingWorktrees(hostRoot, { env }).filter(
-    (w) => w.pid === process.pid && !w.rebasing && (w.head === null || w.head === oldSource),
+    (w) =>
+      w.pid === process.pid &&
+      w.path !== evidencePath &&
+      !w.rebasing &&
+      (w.head === null || w.head === oldSource),
   )) {
     removeLeftoverWorktree(host, own.path);
     removed.push(own.path);
@@ -1534,7 +1607,7 @@ function lockedMove(
       if (!nameRecord(host, candidate.path, TIP_RECORD, plan.head.length).present) {
         writeRecord(host, candidate.path, TIP_RECORD, `${oldSource}\n`);
       }
-    } else {
+    } else if (candidate.path !== evidencePath) {
       removeLeftoverWorktree(host, candidate.path);
       foreign.push(candidate.path);
     }
@@ -1624,7 +1697,7 @@ function lockedMove(
   }
   const old = refValue(host, BOARD_REF);
   if (old !== '' && !isAncestor(worktree, BOARD_REF, 'HEAD')) {
-    rebaseOnto(host, worktree, dir, temp, adopted, [BOARD_REF], `the local ${BOARD_REF}`);
+    rebaseOnto(host, hostRoot, env, worktree, dir, temp, adopted, [BOARD_REF], `the local ${BOARD_REF}`);
   }
   const warnings: string[] = [];
   let joined = false;
@@ -1645,7 +1718,7 @@ function lockedMove(
       const fetched = worktree.attempt('fetch', '--no-tags', target, BOARD_REF);
       if (isGitFailure(fetched)) {
         if (!adopted) {
-          discardTemporary(host, temp);
+          discardTemporary(host, hostRoot, temp, env);
         }
         // `host` (the same repository): the temporary worktree may be gone.
         throw syncFailed(`fetching ${BOARD_REF} from ${remote.name}`, fetched, host);
@@ -1653,6 +1726,8 @@ function lockedMove(
       if (!isAncestor(worktree, 'FETCH_HEAD', 'HEAD')) {
         rebaseOnto(
           host,
+          hostRoot,
+          env,
           worktree,
           dir,
           temp,
@@ -1669,7 +1744,14 @@ function lockedMove(
   // a re-run with another board can set the ref back; then the
   // compare-and-swap, then the host .gitignore entry.
   const head = worktree.run('rev-parse', 'HEAD').trim();
-  writeRecord(host, temp, BEFORE_RECORD, `${old === '' ? zeroObjectName(plan) : old}\n`);
+  const resuming = evidencePath !== undefined && old === refAtLeftover;
+  if (!resuming) {
+    writeRecord(host, temp, BEFORE_RECORD, `${old === '' ? zeroObjectName(plan) : old}\n`);
+  } else if (carriedRecord === null) {
+    removeRecord(host, temp, BEFORE_RECORD);
+  } else {
+    writeRecord(host, temp, BEFORE_RECORD, `${carriedRecord}\n`);
+  }
   if (isGitFailure(host.attempt('update-ref', BOARD_REF, head, old))) {
     throw new BoardError(
       3,
@@ -1679,6 +1761,13 @@ function lockedMove(
         `temporary worktree at ${asciiText(temp)} is kept; run ${AGAIN} again, which integrates ` +
         "the ref's new value",
     );
+  }
+  // The evidence has served: this temporary now carries its record and
+  // holds the ref, so the leftover goes as a plain leftover does.
+  if (resuming && evidencePath !== undefined && evidencePath !== temp) {
+    removeLeftoverWorktree(host, evidencePath);
+    removed.push(evidencePath);
+    removed.sort();
   }
   const hostGitignore = ignoreBoardInHost(hostRoot);
 
@@ -2015,7 +2104,7 @@ function stoppedInTemporary(
   );
 }
 
-/** What `undoForeignUpdates` did: the output lines of the resets, in the order made, and the temporaries whose update was set back. */
+/** What `undoForeignUpdates` did: the output lines of the resets, in the order made, and the temporaries to remove and name as another board's. */
 interface UndoneUpdates {
   readonly lines: string[];
   readonly paths: string[];
@@ -2026,37 +2115,56 @@ interface UndoneUpdates {
  * `BOARD_REF`, in the leftover pass, before any leftover is removed or
  * adopted. A move killed, or refused at step 6, after its step 4 swap
  * leaves a dead temporary whose HEAD is in the local ref without having
- * published it (nothing after step 4 moves the temporary's HEAD). Every
- * dead temporary without rebase or cherry-pick state (`stoppedInTemporary`
- * has already refused for those) whose HEAD is an ancestor of, or equal
- * to, the ref is a candidate, a plain leftover (HEAD still
- * `MIGRATING_REF`, as in a host whose remote has no board ref) included,
- * each judged once by `belongs` (`belongsToBoard`):
+ * published it (nothing after step 4 moves the temporary's HEAD).
+ *
+ * First, a temporary named by a live pid (not this process), without
+ * rebase or cherry-pick state, whose HEAD is in the ref and which is not
+ * this board's (`belongs`, `belongsToBoard`) is `BoardError(3,
+ * 'sync-in-progress')` naming it, before any reset (ruling 6): another
+ * move may be running, or the pid was reused, and either way its commits
+ * are not integrated. A live temporary of this board is left alone.
+ *
+ * Then a dead temporary carrying `UNDONE_RECORD` whose HEAD is not in the
+ * ref (a kill between a reset and the removal) is returned for removal
+ * and naming, with no reset line (ruling 7).
+ *
+ * Then every dead temporary without rebase or cherry-pick state
+ * (`stoppedInTemporary` has already refused for those) whose HEAD is an
+ * ancestor of, or equal to, the ref is a candidate, a plain leftover
+ * (HEAD still `MIGRATING_REF`, as in a host whose remote has no board
+ * ref) included, each judged once by `belongs`:
  *
  * - this board's: nothing happens here; the ref's commits are this
  *   board's history, which step 3 integrates, and the temporary is
- *   removed or adopted by the rules that follow;
+ *   removed, kept as the evidence or adopted by the rules that follow;
  * - another board's, with the ref equal to its HEAD and a well formed
- *   `BEFORE_RECORD`: the ref is set back to the recorded value with the
- *   compare-and-swap `update-ref BOARD_REF <recorded> <HEAD>` (which
- *   deletes the ref when the value is the zero object name), a line says
- *   so, and the remaining candidates are judged again against the new
- *   value, so a chain of such updates is undone newest first; the
- *   temporaries set back are returned for the caller to remove and name
- *   as left by a move of another board, whatever their HEAD;
+ *   `BEFORE_RECORD` equal to that HEAD: the ref's content was there
+ *   independently of that move, so no command runs and no line is
+ *   printed; the temporary is returned for removal and naming (ruling 8);
+ * - another board's, with the ref equal to its HEAD and a well formed
+ *   `BEFORE_RECORD` naming the zero object name or a commit of the host:
+ *   the temporary is marked with `UNDONE_RECORD`, the ref is set back to
+ *   the recorded value with the compare-and-swap `update-ref BOARD_REF
+ *   <recorded> <HEAD>` (which deletes the ref for the zero object name),
+ *   a line says so, and the remaining candidates are judged again against
+ *   the new value, so a chain of such updates is undone newest first; the
+ *   temporary is returned for removal and naming, whatever its HEAD;
  * - another board's otherwise: `BoardError(3, 'sync-failed')` naming the
  *   ref, the temporary and the `git update-ref` remedy, saying why (no
- *   well formed record, as from a version that did not write it; or the
+ *   well formed record, as from a version that did not write it; a
+ *   recorded value that is not a commit of the host, ruling 11; or the
  *   ref moved on past the HEAD of every such candidate, naming the one
- *   whose HEAD is the furthest along), taken before anything is removed,
- *   so the temporary stays as the evidence and the next run judges again.
- *   A reset that loses its compare-and-swap (something moved the ref after
- *   it was read) is the same exit saying the ref moved meanwhile; resets
- *   already made stay, each was exact.
+ *   whose HEAD is the furthest along, ruling 10), taken before anything
+ *   is removed, so the temporary stays as the evidence and the next run
+ *   judges again. The refusal says which resets this run already made,
+ *   when it made any (ruling 9). A reset that loses its compare-and-swap
+ *   (something moved the ref after it was read) is the same exit saying
+ *   the ref moved meanwhile, the marker removed again; resets already
+ *   made stay, each was exact.
  *
  * Nothing is removed here: a refusal part way through a chain leaves the
- * temporaries already set back in place, their HEAD no longer in the ref,
- * for the next run's ordinary rules.
+ * temporaries already set back in place, their HEAD no longer in the ref
+ * and their marker set, for the next run.
  */
 function undoForeignUpdates(
   host: GitRunner,
@@ -2068,6 +2176,7 @@ function undoForeignUpdates(
 ): UndoneUpdates {
   const lines: string[] = [];
   const paths: string[] = [];
+  const resets: string[] = [];
   const judged = new Map<string, boolean>();
   const ours = (path: string): boolean => {
     let verdict = judged.get(path);
@@ -2077,6 +2186,23 @@ function undoForeignUpdates(
     }
     return verdict;
   };
+  const inRef = (worktree: MigratingWorktree, ref: string): worktree is MigratingWorktree & { head: string } =>
+    !worktree.rebasing &&
+    worktree.registered &&
+    worktree.head !== null &&
+    ref !== '' &&
+    isAncestor(host, worktree.head, ref);
+  const initial = refValue(host, BOARD_REF);
+  const found = findMigratingWorktrees(hostRoot, { env });
+  const live = found.find((w) => !dead(w) && inRef(w, initial) && !ours(w.path));
+  if (live !== undefined) {
+    throw liveForeignTemporary(live.path, dir);
+  }
+  for (const marked of found.filter(
+    (w) => dead(w) && !w.rebasing && w.registered && hasRecord(host, w.path, UNDONE_RECORD) && !inRef(w, initial),
+  )) {
+    paths.push(marked.path);
+  }
   for (;;) {
     const ref = refValue(host, BOARD_REF);
     if (ref === '') {
@@ -2084,13 +2210,7 @@ function undoForeignUpdates(
     }
     const candidates = findMigratingWorktrees(hostRoot, { env }).filter(
       (w): w is MigratingWorktree & { head: string } =>
-        dead(w) &&
-        !w.rebasing &&
-        w.registered &&
-        w.head !== null &&
-        !paths.includes(w.path) &&
-        isAncestor(host, w.head, ref) &&
-        !ours(w.path),
+        dead(w) && !paths.includes(w.path) && inRef(w, ref) && !ours(w.path),
     );
     if (candidates.length === 0) {
       return { lines, paths };
@@ -2100,13 +2220,28 @@ function undoForeignUpdates(
       // The ref holds every candidate's HEAD and more: name the one
       // furthest along (a descendant of the others, where they are related).
       const furthest = candidates.reduce((best, w) => (isAncestor(host, best.head, w.head) ? w : best));
-      throw cannotSetBack(furthest.path, dir, 'the ref has moved on past what that move put into it');
+      throw cannotSetBack(furthest.path, dir, 'the ref has moved on past what that move put into it', resets);
     }
     const record = nameRecord(host, equal.path, BEFORE_RECORD, plan.head.length);
     if (!record.present || record.name === null) {
-      throw cannotSetBack(equal.path, dir, "that move left no record of the ref's value before it");
+      throw cannotSetBack(equal.path, dir, "that move left no record of the ref's value before it", resets);
     }
+    if (record.name === equal.head) {
+      paths.push(equal.path);
+      continue;
+    }
+    const zero = record.name === zeroObjectName(plan);
+    if (!zero && refValue(host, record.name) === '') {
+      throw cannotSetBack(
+        equal.path,
+        dir,
+        'the value that move recorded for the ref is not a commit in the host repository',
+        resets,
+      );
+    }
+    writeRecord(host, equal.path, UNDONE_RECORD, `${equal.head}\n`);
     if (isGitFailure(host.attempt('update-ref', BOARD_REF, record.name, equal.head))) {
+      removeRecord(host, equal.path, UNDONE_RECORD);
       throw new BoardError(
         3,
         'sync-failed',
@@ -2117,28 +2252,65 @@ function undoForeignUpdates(
       );
     }
     lines.push(
-      record.name === zeroObjectName(plan)
+      zero
         ? `deleted ${BOARD_REF} in the host repository, as before the interrupted move at ` +
             `${asciiText(equal.path)}, which had created it for another board and not published it`
         : `set ${BOARD_REF} in the host repository back to its value before the interrupted move at ` +
             `${asciiText(equal.path)}, which had updated it for another board and not published it`,
     );
     paths.push(equal.path);
+    resets.push(equal.path);
   }
 }
 
-/** The refusal of `undoForeignUpdates` when the ref cannot be set back for the temporary at `path`, `why` saying what is missing. */
-function cannotSetBack(path: string, dir: string, why: string): BoardError {
+/**
+ * The refusal of `undoForeignUpdates` when the ref cannot be set back for
+ * the temporary at `path`, `why` saying what is missing and `kept` the
+ * temporaries whose update this run already set back (ruling 9).
+ */
+function cannotSetBack(path: string, dir: string, why: string, kept: readonly string[]): BoardError {
+  const changed = keptResets(kept);
   return new BoardError(
     3,
     'sync-failed',
     `the interrupted move at ${asciiText(path)} put commits of another board (not the one at ` +
       `${asciiText(dir)}, or one whose history no longer holds where that move began) into ` +
       `${BOARD_REF} in the host repository without publishing them, and ${why}, so the move cannot ` +
-      `set the ref back by itself; nothing was changed; set it back by hand with git update-ref -d ` +
+      `set the ref back by itself; ${changed} set it back by hand with git update-ref -d ` +
       `${BOARD_REF} when the host's remote holds the board or the ref did not exist before that ` +
       `move, else with git update-ref ${BOARD_REF} <its earlier commit>, then run ${AGAIN} again`,
   );
+}
+
+/** The clause of `cannotSetBack` saying what the run changed: nothing, or the resets already made for the temporaries `kept`. */
+function keptResets(kept: readonly string[]): string {
+  if (kept.length === 0) {
+    return 'nothing was changed;';
+  }
+  const moves = kept.length === 1 ? 'move' : 'moves';
+  return (
+    `${BOARD_REF} was set back for the interrupted ${moves} at ` +
+    `${kept.map((p) => asciiText(p)).join(', ')} earlier in this run, and nothing else was changed;`
+  );
+}
+
+/** The refusal of `undoForeignUpdates` for a live temporary of another board whose HEAD is in the ref (ruling 6). */
+function liveForeignTemporary(path: string, dir: string): BoardError {
+  return new BoardError(
+    3,
+    'sync-in-progress',
+    `the temporary worktree at ${asciiText(path)} was made by a move that may still be running ` +
+      '(its process is alive) and put commits of another board (not the one at ' +
+      `${asciiText(dir)}, or one whose history no longer holds where that move began) into ` +
+      `${BOARD_REF} in the host repository without publishing them; nothing was changed; run ` +
+      `${AGAIN} again once that move has finished`,
+  );
+}
+
+/** Whether the file `name` exists in the git directory of the worktree at `path`. */
+function hasRecord(host: GitRunner, path: string, name: string): boolean {
+  const gitDir = worktreeGitDir(host, path);
+  return gitDir !== null && existsSync(join(gitDir, name));
 }
 
 /** The zero object name of the board's hash algorithm: as many `0` digits as a full object name of it (`plan.head`) has. */
@@ -2519,6 +2691,8 @@ function refreshLock(lock: string): void {
  */
 function rebaseOnto(
   host: GitRunner,
+  hostRoot: string,
+  env: Env,
   worktree: GitRunner,
   dir: string,
   temp: string,
@@ -2542,15 +2716,22 @@ function rebaseOnto(
     );
   }
   if (!adopted) {
-    discardTemporary(host, temp);
+    discardTemporary(host, hostRoot, temp, env);
   }
   throw syncFailed(`integrating ${what}`, out, worktree);
 }
 
-/** Removes the temporary worktree at `temp`, the temporary refs and an empty `migrating` directory after a refusal in step 3. */
-function discardTemporary(host: GitRunner, temp: string): void {
+/**
+ * Removes the temporary worktree at `temp` after a refusal in step 3, the
+ * temporary refs when no temporary worktree remains (a leftover kept as
+ * the evidence of this board's unpublished update, see `lockedMove`, keeps
+ * the tip it was judged by) and an empty `migrating` directory.
+ */
+function discardTemporary(host: GitRunner, hostRoot: string, temp: string, env: Env): void {
   removeLeftoverWorktree(host, temp);
-  deleteTemporaryRefs(host);
+  if (findMigratingWorktrees(hostRoot, { env }).length === 0) {
+    deleteTemporaryRefs(host);
+  }
   const base = dirname(temp);
   if (existsSync(base) && readdirSync(base).length === 0) {
     rmdirSync(base);

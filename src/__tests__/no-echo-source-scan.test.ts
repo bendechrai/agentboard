@@ -287,9 +287,22 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
     {
       fn: 'cannotSetBack',
       value: 'why',
-      why: 'one of two fixed phrases from the caller; a record that failed validation is never quoted',
+      why: 'one of three fixed phrases from the caller; a record that failed validation is never quoted',
+    },
+    {
+      fn: 'cannotSetBack',
+      value: 'changed',
+      why: 'a fixed phrase, or the ref constant with the paths of temporary worktrees under the host git directory set back earlier in the run (keptResets), not refused input',
     },
     { fn: 'cannotSetBack', value: 'AGAIN', why: REGISTRY },
+    {
+      fn: 'liveForeignTemporary',
+      value: 'asciiText(path)',
+      why: 'configuration: the path of a temporary worktree under the host git directory, not refused input',
+    },
+    { fn: 'liveForeignTemporary', value: 'asciiText(dir)', why: CONFIG },
+    { fn: 'liveForeignTemporary', value: 'BOARD_REF', why: REGISTRY },
+    { fn: 'liveForeignTemporary', value: 'AGAIN', why: REGISTRY },
   ],
   'src/board/leases.ts': [{ fn: 'parseDuration', value: 'form.message', why: REGISTRY }],
   'src/board/openspec.ts': [
