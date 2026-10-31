@@ -64,8 +64,11 @@
  * - The hint of a refusal of the command (from `toolArguments` or the
  *   command's `run`) is rendered with `{ surface: 'cli', command: <the
  *   registry command>, id: <the body's id when a non-empty string>,
- *   actor: <the server's actor> }`, so a claim refused `already-assigned`
- *   hints `'agentboard inbox --as <server actor>'`. The server's own
+ *   actor: <the server's actor>, web: true }`, so a claim refused
+ *   `already-assigned` hints `'agentboard inbox --as <server actor>'`,
+ *   and a hand-off whose `to` is refused `invalid-actor` gets the web
+ *   form of that hint (`'agentboard serve --as <actor>'` and the `to`
+ *   argument; `HintContext.web`, `src/guidance/hints.ts`). The server's own
  *   refusals (`read-only`, `csrf-failed`, `body-too-large`, `not-found`)
  *   are rendered with `API_HINT_CONTEXT` (command `serve`, no actor).
  */
@@ -337,14 +340,16 @@ export interface ActionContext {
 /**
  * The `RunContext` of an action (shared shape with the CLI's and the MCP
  * server's contexts, `runContext` in `src/cli/main.ts`): `cwd` is
- * `ctx.root`, `env` is `ctx.env`, `actor` is `ctx.actor`, `boardDir()`
- * returns `ctx.board.dir` and `board()` returns `ctx.board` itself, whatever
- * options it is given (the server's board is already open and caught up;
- * the transaction catches up again under the write lock), never opening or
- * closing anything. Pure.
+ * `ctx.root`, `env` is `ctx.env`, `actor` is `ctx.actor`, `surface` is
+ * `mcp` (a body's properties are the MCP argument names, so a refused
+ * `to` is reported as `the argument to`; board-cli "Actor names are
+ * checked"), `boardDir()` returns `ctx.board.dir` and `board()` returns
+ * `ctx.board` itself, whatever options it is given (the server's board is
+ * already open and caught up; the transaction catches up again under the
+ * write lock), never opening or closing anything. Pure.
  */
 export function actionContext(ctx: ActionContext): RunContext {
-  return runContext(ctx.root, ctx.env, ctx.actor, new ServerBoard(ctx.board));
+  return runContext(ctx.root, ctx.env, ctx.actor, new ServerBoard(ctx.board), 'mcp');
 }
 
 /**
@@ -426,7 +431,12 @@ export function runAction(ctx: ActionContext, action: string, text: string): Api
       ),
     };
   }
-  let context: HintContext = { surface: 'cli', command: command.name, actor: ctx.actor };
+  let context: HintContext = {
+    surface: 'cli',
+    command: command.name,
+    actor: ctx.actor,
+    web: true,
+  };
   try {
     const notObject = new BoardError(1, 'usage', 'the request body must be one JSON object');
     let body: unknown;
