@@ -146,6 +146,18 @@ them on it (see "Known gaps").
   scan fails if a refusal starts echoing input again. Delivered in PRs
   #117 and #113 (ticket 01M5X7EGBFRQA4BH7R0A35ZW50); archived as
   `openspec/changes/archive/2026-10-31-no-echo-refusals`.
+- **MCP protocol errors never repeat the request** (`board-cli`,
+  `board-agent-guidance`): an MCP `resources/read` of an unknown URI is
+  JSON-RPC error `-32602` whose message is `unknown resource; the
+  resources are ` followed by the listed URIs in `resources/list` order,
+  with no `data` member and without the SDK's `MCP error -32602: ` prefix
+  on the wire, so the URI (which may hold a token) is never repeated and
+  SDK clients no longer show the prefix twice. The code, exact matching,
+  the resource list and the read results are unchanged; unknown methods
+  and malformed parameters keep the SDK's errors, which name only the
+  method or the parameter path. Delivered on `mcp/mcp-unknown-resource`
+  (ticket 01M6925XB4S9713NM17QKZ3Y86); the change
+  `openspec/changes/mcp-unknown-resource` is archived once merged.
 
 ## What is next
 
@@ -168,8 +180,6 @@ the known gaps below and the draft `openspec/add-harness-integration`
 - The actor (`--as`, `AGENTBOARD_ACTOR`) is repeated in messages and
   hints and never checked against the secret patterns: ticket
   01M5Y9MQB9E3969DZ29VX5MZD0.
-- An MCP `resources/read` of an unknown URI repeats the URI in the SDK's
-  own error text: ticket 01M5YD930V39N0203HTTMQHYMW.
 - `init --into-host` killed after its step 4 (the local
   `refs/agentboard/board` updated) leaves the first board's events in
   that ref if `.board` is then replaced by a different board before the
