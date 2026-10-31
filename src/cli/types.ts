@@ -58,8 +58,9 @@ export interface ArgSpec {
    * set <key>`: `lease.grace` and `queue.window`). The synopsis and the
    * argument line of help write the argument as `<a|b>` (`[<a|b>]` when
    * optional) instead of `<name>`, and `parseArgs` refuses any other value
-   * with `BoardError(1, 'usage')` whose message names the value given
-   * (through `asciiText`) and lists every choice. Absent means any value.
+   * with `BoardError(1, 'usage')` whose message names the argument and
+   * lists every choice but never the value given (`choicesMessage`).
+   * Absent means any value.
    */
   readonly choices?: readonly string[];
 }

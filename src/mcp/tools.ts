@@ -22,7 +22,6 @@
 
 import { parseArgs } from '../cli/parse.js';
 import { ACTOR_FLAG, COMMANDS } from '../cli/registry.js';
-import { asciiText } from '../cli/render.js';
 import type { ArgSpec, ArgValues, CommandSpec, ExclusiveGroup } from '../cli/types.js';
 import { BoardError } from '../store/errors.js';
 
@@ -248,10 +247,15 @@ export function findTool(
  * and an exclusive group that names a CLI-only flag (`claim`'s `--wait`
  * with `--timeout`) is not checked, so `wait` alone is accepted.
  *
- * @throws BoardError exit 1: reason `usage` naming the property for a
- *   non-object `args`, an unknown property (including `json`), a value of
- *   the wrong type, or a missing required argument; or the reason of a
- *   missing required exclusive group.
+ * An unknown property (including `json`) is refused with
+ * `unknownArgumentMessage(command)`; the unknown property's name is never
+ * repeated (board-cli "Refusals never repeat the refused input").
+ *
+ * @throws BoardError exit 1: reason `usage` for a non-object `args`, an
+ *   unknown property (including `json`; the message lists the tool's
+ *   arguments and not the property), a value of the wrong type (naming the
+ *   argument), or a missing required argument (naming it); or the reason
+ *   of a missing required exclusive group.
  */
 export function toolArguments(command: CommandSpec, args: unknown): ArgValues {
   const given = argumentObject(args);
@@ -264,7 +268,7 @@ export function toolArguments(command: CommandSpec, args: unknown): ArgValues {
   for (const [key, value] of Object.entries(given)) {
     const spec = specs.get(key);
     if (spec === undefined) {
-      throw usage(`unknown argument ${asciiText(key)} for ${toolName(command.name)}`);
+      throw usage(unknownArgumentMessage(command));
     }
     const checked = argumentValue(spec, value);
     if (checked !== null) {
@@ -356,6 +360,20 @@ function argumentValue(
       }
       return value ? true : null;
   }
+}
+
+/**
+ * The message of the refusal of an unknown tool argument of `command`'s
+ * tool, exactly `unknown argument for <tool>; its arguments are <names>`,
+ * where `<tool>` is `toolName(command.name)` and `<names>` the keys of
+ * `toolInputSchema(command).properties` in schema order joined by `, `
+ * (`unknown argument for board_show; its arguments are id, raw, as`).
+ * Built only from the registry, so it never repeats the unknown name.
+ * Pure.
+ */
+export function unknownArgumentMessage(command: CommandSpec): string {
+  const names = Object.keys(toolInputSchema(command).properties).join(', ');
+  return `unknown argument for ${toolName(command.name)}; its arguments are ${names}`;
 }
 
 function usage(message: string): BoardError {

@@ -17,7 +17,6 @@ import { inSnapshot, loadMeta } from '../store/engine.js';
 import { BoardError } from '../store/errors.js';
 import { runCommand } from '../store/transaction.js';
 import { requireActor } from './lookup.js';
-import { asciiText } from './text.js';
 import type { WriteOptions } from './types.js';
 
 /** The setting keys `config` accepts, in this order. */
@@ -60,9 +59,15 @@ export interface ConfigSetResult {
  * the duration with `parseSetting`).
  *
  * Refused before anything is written, with `BoardError(1, 'usage')`:
- * - `key` not one of `SETTING_KEYS`: the message names the key given
- *   (through `asciiText`) and lists `lease.grace` and `queue.window`;
- * - `value` not a safe integer in `SETTING_MIN_MS`..`SETTING_MAX_MS`.
+ * - `key` not one of `SETTING_KEYS`: exactly `unknown setting: the keys
+ *   are lease.grace and queue.window`;
+ * - `value` not a safe integer in `SETTING_MIN_MS`..`SETTING_MAX_MS`:
+ *   exactly `invalid value for <key>: a setting is a whole number of
+ *   milliseconds from 30000 (30s) to 600000 (10m)` (the key is checked by
+ *   then).
+ * Neither message repeats the key or the number given (board-cli
+ * "Refusals never repeat the refused input"): the library entry point
+ * follows the same rule as the command line parsers that refuse first.
  *
  * Setting a key to the value it already has still writes an event (the
  * history records every setting). The new value applies to claims written
@@ -84,7 +89,7 @@ export function setConfig(
     throw new BoardError(
       1,
       'usage',
-      `invalid value ${String(value)} for ${key}: a setting is a whole number of milliseconds from ${String(SETTING_MIN_MS)} (30s) to ${String(SETTING_MAX_MS)} (10m)`,
+      `invalid value for ${key}: a setting is a whole number of milliseconds from ${String(SETTING_MIN_MS)} (30s) to ${String(SETTING_MAX_MS)} (10m)`,
     );
   }
   const result = runCommand(
@@ -96,14 +101,14 @@ export function setConfig(
   return { hash: result.hash, key, value };
 }
 
-/** `text` as a `SettingKey`, or `BoardError(1, 'usage')` naming it and listing the keys. */
+/** `text` as a `SettingKey`, or `BoardError(1, 'usage')` listing the keys (not the text). */
 function settingKey(text: string): SettingKey {
   const found = SETTING_KEYS.find((key) => key === text);
   if (found === undefined) {
     throw new BoardError(
       1,
       'usage',
-      `unknown setting ${asciiText(text)}: the keys are ${SETTING_KEYS.join(' and ')}`,
+      `unknown setting: the keys are ${SETTING_KEYS.join(' and ')}`,
     );
   }
   return found;

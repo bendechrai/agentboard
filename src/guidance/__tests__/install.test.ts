@@ -200,7 +200,7 @@ describe('selection', () => {
       1,
       'usage',
     );
-    expect(err.message).toContain('cursor');
+    expect(err.message).not.toContain('cursor');
     for (const target of GUIDANCE_TARGETS) {
       expect(err.message).toContain(target);
     }

@@ -566,7 +566,11 @@ describe('renderCommandHelp', () => {
       const c = command(name);
       const text = help(c);
       const usage = text.split('\n')[0] ?? '';
-      for (const flag of ['--task <task>', '--change <change> --group <group>', '--unplanned <unplanned>']) {
+      for (const flag of [
+        '--task <task>',
+        '--change <change> --group <group>',
+        '--unplanned <unplanned>',
+      ]) {
         expect(usage, flag).toContain(flag);
       }
       expect(text).toMatch(/^ {2}4 needs-scope-disposition {2,}\S/m);
@@ -603,7 +607,9 @@ describe('renderCommandHelp', () => {
     const adhoc = c.flags.find((f) => f.name === 'adhoc');
     expect(adhoc).toBeDefined();
     // The --adhoc flag: the ticket is worked like any other.
-    expect(adhoc?.summary ?? '').toMatch(/\b(?:worked|work)\b[^.]*\b(?:normally|like any other)\b/i);
+    expect(adhoc?.summary ?? '').toMatch(
+      /\b(?:worked|work)\b[^.]*\b(?:normally|like any other)\b/i,
+    );
     // The description: the disposition is given when it is merged or closed.
     expect(c.description).toMatch(/ad hoc/i);
     expect(c.description).toContain('--unplanned');
@@ -844,7 +850,7 @@ describe('helpOutput', () => {
 
   it('refuses an unknown topic with a suggestion and a pointer to agentboard help', () => {
     const err = expectBoardError(() => helpOutput(HELP_SOURCE, ['clam']), 1, 'usage');
-    expect(err.message).toContain('clam');
+    expect(err.message).not.toContain('clam');
     expect(err.message).toContain('did you mean claim?');
     expect(err.message).toContain("'agentboard help'");
   });
@@ -871,14 +877,16 @@ describe('helpOutput', () => {
 
   it('refuses a subtopic after a one-word command, pointing to its help', () => {
     const err = expectBoardError(() => helpOutput(HELP_SOURCE, ['claim', 'extra']), 1, 'usage');
-    expect(err.message).toBe("claim has no help subtopic extra; run 'agentboard help claim'");
+    expect(err.message).toBe(
+      "claim has no help subtopic of that name; run 'agentboard help claim'",
+    );
     const odd = expectBoardError(
       () => helpOutput(HELP_SOURCE, ['version', `x${String.fromCharCode(0xe4)}`]),
       1,
       'usage',
     );
-    expect(odd.message).toMatch(
-      /^version has no help subtopic \S+; run 'agentboard help version'$/,
+    expect(odd.message).toBe(
+      "version has no help subtopic of that name; run 'agentboard help version'",
     );
     expect(odd.message).toMatch(/^[\x20-\x7e]+$/);
   });
@@ -886,7 +894,7 @@ describe('helpOutput', () => {
   it('keeps the suggestion message for an unknown two-word topic', () => {
     const err = expectBoardError(() => helpOutput(HELP_SOURCE, ['checklist', 'tik']), 1, 'usage');
     expect(err.message).toBe(
-      "unknown command checklist tik; did you mean checklist tick or checklist untick? run 'agentboard help' to list the commands",
+      "unknown command; did you mean checklist tick or checklist untick? run 'agentboard help' to list the commands",
     );
   });
 

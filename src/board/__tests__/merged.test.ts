@@ -294,7 +294,7 @@ describe('closeMerged: a per-ticket error while closing is skipped, never fatal'
       where(root, fakeRunner({ '7': 'MERGED', '8': 'MERGED' }).gh),
     );
     expect(out.skipped.map((x) => [x.id, x.reason])).toEqual([[t.id, 'path-outside-tree']]);
-    expect(out.skipped[0]?.message).toContain('docs/adr/0002.md');
+    expect(out.skipped[0]?.message).toBe(`the path given is outside the working tree ${root}`);
     expect(out.closed.map((c) => c.id)).toEqual([next.id]);
     expect(eventCount(board)).toBe(before + 1);
     expect(current(board, t.id).closed).toBe(false);
@@ -424,7 +424,9 @@ describe('closeMerged: the scope disposition (add-adhoc-ticket-lifecycle task 2.
   function undisposedMerged(board: Board, pr: number): Ticket {
     const ticket = mergedWithPr(board, pr);
     board.db
-      .prepare('UPDATE tickets SET task_source = NULL, task_ref = NULL, task_item = NULL WHERE id = ?')
+      .prepare(
+        'UPDATE tickets SET task_source = NULL, task_ref = NULL, task_item = NULL WHERE id = ?',
+      )
       .run(ticket.id);
     const edited = current(board, ticket.id);
     expect(edited).toMatchObject({ status: 'merged', task: null, unplanned: null, closed: false });

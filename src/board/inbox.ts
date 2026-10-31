@@ -138,7 +138,8 @@ export interface InboxResult {
  * @throws BoardError exit 1 `usage` when `since` is not a 64-character
  *   lowercase hex string.
  * @throws BoardError exit 1 `unknown-cursor` when `since` names no
- *   well-formed event of this board.
+ *   well-formed event of this board, exactly `no event matches --since on
+ *   this board` (the hash given is not repeated).
  */
 export function readInbox(board: Board, actor: string, options?: InboxOptions): InboxResult {
   if (actor === '') {
@@ -192,7 +193,7 @@ function readSince(board: Board, actor: string, since: string): InboxResult {
   return inSnapshot(db, () => {
     const start = recordedPosition(db, since);
     if (start === null) {
-      throw new BoardError(1, 'unknown-cursor', `no event ${since} on this board`);
+      throw new BoardError(1, 'unknown-cursor', 'no event matches --since on this board');
     }
     const after = recordedPositions(db, { effectiveOnly: true, minWall: start.ts.wall }).filter(
       (p) => comparePositions(p, start) > 0,

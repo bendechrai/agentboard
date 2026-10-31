@@ -139,21 +139,23 @@ describe('agentboard import-change', SLOW, () => {
     expect(doc.tickets.map((t) => t.ticket.createdBy)).toEqual(['env-orch']);
   });
 
-  it('exits 1 naming the tasks file path when the change does not exist', () => {
+  it('exits 1 naming the tasks file form, not the change, when the change does not exist', () => {
     const { root, boardDir } = project();
     const out = run(['import-change', 'no-such-change', ...AS, '--json'], root);
     expect(out.code).toBe(1);
     expect(errorOf(out).reason).toBe('tasks-not-found');
-    expect(out.stderr).toContain('openspec/changes/no-such-change/tasks.md');
+    expect(out.stderr).toContain('openspec/changes/<name>/tasks.md');
+    expect(out.stdout + out.stderr).not.toContain('no-such-change');
     expect(count(boardDir)).toBe(0);
   });
 
-  it('exits 1 naming a source that has no adapter', () => {
+  it('exits 1 for a source that has no adapter, without naming it', () => {
     const { root, boardDir } = project();
     const out = run(['import-change', 'speckit:001-photo-albums', ...AS, '--json'], root);
     expect(out.code).toBe(1);
     expect(errorOf(out).reason).toBe('unsupported-source');
-    expect(out.stderr).toContain('speckit');
+    expect(out.stderr).toContain('only openspec can be imported');
+    expect(out.stdout + out.stderr).not.toContain('speckit');
     expect(count(boardDir)).toBe(0);
   });
 

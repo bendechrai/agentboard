@@ -263,7 +263,12 @@ describe('scenario: CLI-only flag is refused over MCP', () => {
     }
     expect(thrown).toBeInstanceOf(BoardError);
     expect(thrown instanceof BoardError ? thrown.reason : null).toBe('usage');
-    expect(thrown instanceof BoardError ? thrown.message : '').toContain('timeout');
+    // The unknown argument is not repeated; the tool's own arguments
+    // (which do not include the CLI-only timeout) are listed.
+    expect(thrown instanceof BoardError ? thrown.message : '').toMatch(
+      /^unknown argument for board_claim; its arguments are /,
+    );
+    expect(thrown instanceof BoardError ? thrown.message : '').not.toContain('timeout');
     expect(toolArguments(claim, { id: '01J9K3', ttl: '30m', wait: true })).toEqual({
       id: '01J9K3',
       ttl: '30m',

@@ -46,7 +46,6 @@
  * `src/board/openspec.ts` may name it (src/board/__tests__/sources.test.ts).
  */
 
-import { asciiText } from '../board/text.js';
 import type { CommandOutput } from '../cli/types.js';
 import { BoardError } from '../store/errors.js';
 
@@ -268,9 +267,9 @@ export function renderRoleChecklist(role: Role): string {
  * - a role in `ROLES`: text `renderGuide(version) + renderRoleChecklist(role)`
  *   (the guide unchanged, then the checklist), json with that `role`.
  * - any other role (including an empty string): throws
- *   `BoardError(1, 'usage')` whose message names the role given (through
- *   `asciiText`) and lists the four valid roles, for example
- *   `unknown role tester; the roles are orchestrator, test-author, implementer, reviewer`.
+ *   `BoardError(1, 'usage')`, exactly
+ *   `unknown role given with --role; the roles are orchestrator, test-author, implementer, reviewer`,
+ *   which does not repeat the role given.
  *
  * Needs no board and no actor. Pure.
  */
@@ -284,7 +283,7 @@ export function agentsHelpOutput(version: string, role: string | undefined): Com
     throw new BoardError(
       1,
       'usage',
-      `unknown role ${asciiText(role)}; the roles are ${ROLES.join(', ')}`,
+      `unknown role given with --role; the roles are ${ROLES.join(', ')}`,
     );
   }
   const out = renderGuide(version) + renderRoleChecklist(role);

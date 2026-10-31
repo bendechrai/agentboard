@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 
+import { asciiText } from '../board/text.js';
 import { BoardError } from './errors.js';
 
 /** Name of the board directory at the root of the main checkout. */
@@ -129,7 +130,7 @@ export function findBoard(options?: LocateOptions): BoardLocation {
     throw new BoardError(
       2,
       'board-not-found',
-      `no board found at ${location.dir} (${SOURCE_TEXT[location.source]}); run agentboard init to create one`,
+      `no board found at ${asciiText(location.dir)} (${SOURCE_TEXT[location.source]}); run agentboard init to create one`,
     );
   }
   return location;

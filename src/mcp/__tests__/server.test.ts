@@ -221,7 +221,9 @@ describe('over the protocol', () => {
     const unknown = await client.callTool({ name: 'board_nope', arguments: {} });
     expect(unknown.isError).toBe(true);
     expect(unknown.structuredContent).toMatchObject({ exitCode: 1, reason: 'usage' });
-    expect((unknown.structuredContent as { message: string }).message).toContain('board_nope');
+    expect((unknown.structuredContent as { message: string }).message).toBe(
+      'unknown tool; call tools/list for the tool names',
+    );
   });
 });
 

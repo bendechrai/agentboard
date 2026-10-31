@@ -22,7 +22,6 @@ import type {
   ExclusiveGroup,
   ExitCodeSpec,
 } from '../cli/types.js';
-import { asciiText } from '../board/text.js';
 import { COMMAND_GROUPS } from '../cli/types.js';
 import { BoardError } from '../store/errors.js';
 import { agentsHelpOutput } from './guide.js';
@@ -333,8 +332,8 @@ export function overviewDocument(source: HelpSource): CommandHelpDocument[] {
  *   prints the help of `config set` and then of `config get`.
  * - two words whose first alone is a command name (`['claim', 'extra']`):
  *   throws `BoardError(1, 'usage')` with exactly
- *   `<command> has no help subtopic <word>; run 'agentboard help <command>'`
- *   (`<word>` passed through `asciiText`).
+ *   `<command> has no help subtopic of that name; run 'agentboard help <command>'`
+ *   (the second word is not repeated).
  * - anything else: throws `BoardError(1, 'usage',
  *   unknownCommandMessage(topic, source.commands))`, so `help clam`
  *   suggests `claim` and points to `agentboard help`.
@@ -375,7 +374,7 @@ export function helpOutput(
   }
   const name = topic.join(' ');
   const command = source.commands.find((candidate) => candidate.name === name);
-  const [first = '', word = ''] = topic;
+  const [first = ''] = topic;
   if (command === undefined && topic.length === 1) {
     // A group word: the help of each command it starts, in registry order.
     const group = source.commands.filter((candidate) => candidate.name.startsWith(`${first} `));
@@ -394,7 +393,7 @@ export function helpOutput(
     throw new BoardError(
       1,
       'usage',
-      `${first} has no help subtopic ${asciiText(word)}; run 'agentboard help ${first}'`,
+      `${first} has no help subtopic of that name; run 'agentboard help ${first}'`,
     );
   }
   if (command === undefined) {
@@ -422,7 +421,7 @@ function needsActor(command: CommandSpec): boolean {
 }
 
 /** `<name>` for a positional, or `<a|b>` for one with `choices`. */
-function positionalForm(arg: ArgSpec): string {
+export function positionalForm(arg: ArgSpec): string {
   return `<${arg.choices === undefined ? arg.name : arg.choices.join('|')}>`;
 }
 

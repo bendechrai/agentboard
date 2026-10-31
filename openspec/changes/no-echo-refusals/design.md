@@ -63,10 +63,11 @@ or an extra positional, its position among the arguments after the
 program name (1-based), and the expected form or the valid choices.
 
 The one exception is a ticket id. A ticket id argument (a positional
-`<id>` or the tool argument `id`) whose text is 1 to 26 characters of
-Crockford base32, compared case-insensitively (`^[0-9A-HJKMNP-TV-Z]{1,26}$`
-after upper-casing: digits and the letters other than I, L, O and U), MAY
-be repeated in a refusal. An id of any other shape is not repeated
+`<id>` or the tool argument `id`) whose text could be a ULID or a prefix
+of one, 1 to 26 characters of Crockford base32 whose first character is
+0 (`^0[0-9A-HJKMNP-TV-Z]{0,25}$`, ASCII letters compared without regard
+to case and no Unicode upper-casing: digits and the letters other than
+I, L, O and U), MAY be repeated in a refusal. An id of any other shape is not repeated
 anywhere, including the hints, which write the placeholder `<id>` for it
 as they do for an unknown id today.
 
@@ -86,11 +87,47 @@ GitHub (`ghp_`, `github_pat_`), Stripe (`sk_live_`) and Slack (`xoxb-`)
 tokens contain `_` or `-`; AWS key ids (`AKIA...`) contain `I`; base64
 and JWTs contain `+`, `/`, `.`, `=` or letters outside the alphabet in
 almost every value of useful length; hex secrets (MD5 32, SHA-1 40,
-SHA-256 64 characters) are longer than 26. What remains is a short
-secret that happens to use only those 32 characters (a lowercase hex
-string of at most 26 characters, or a short password without I, L, O
-or U). That residual risk is accepted for ids because of their value and
-because an id that is not on the board is rarely a secret in practice.
+SHA-256 64 characters) are longer than 26.
+
+Base32 secrets are the class the alphabet alone does not exclude (review
+rounds 1 and 2, finding F2): a TOTP seed (RFC 4648 base32, A to Z and 2
+to 7, often 16 characters) is all Crockford base32 whenever it has no I,
+L, O or U, about 12 percent of 16-character seeds; a 128-bit secret in
+unpadded base32 is exactly 26 characters, about 3 percent of them
+id-shaped by the alphabet; and a token encoded in Crockford base32
+itself (ULID-like session ids and API keys) always is. So the shape also
+constrains the first character, which in a ULID carries the top 3 bits
+of the 48-bit time.
+
+Review round 1 first required that character to be 0 to 7, the range of
+every ULID. That still repeats a lot of random text: half of random hex
+(8 of 16 first characters), a quarter of random Crockford base32, and
+about 19 percent of standard base32 TOTP seeds (6 of the 32 RFC 4648
+characters, 2 to 7, are digits 0 to 7; about 2.5 percent of 16-character
+seeds are then wholly id-shaped). Review round 2 requires 0. A ULID
+starts with 0 while its time is below 2^45 milliseconds, that is until
+about the year 3084, so every id the board creates for the next thousand
+years keeps being named, and the echo of random text falls to 1/16 of
+hex and 1/32 of Crockford base32. A standard base32 TOTP seed is never
+id-shaped, since the RFC 4648 alphabet has no 0. Requiring `01` instead,
+the prefix of every id created from 2004 to about 2039 (time from 2^40
+to 2^41 milliseconds), would cut random text to about 1 in 1000 (1/256
+of hex, 1/1024 of Crockford base32), but ids created after about 2039
+start with `02` and would stop being named, and a board that outlives
+that date must keep naming its own ids; `0` costs a factor of about 16
+to 32 in random text against `01` and has no such date within reach.
+
+The check is an ASCII-only, case-insensitive test of the pattern, with
+no Unicode upper-casing, so a character such as U+017F (upper-cases to
+`S`) or U+FB06 (to `ST`) never makes text id-shaped (finding F3).
+
+What remains is a secret that happens to start with 0 and use only those
+32 characters: one in 16 short lowercase hex strings (at most 26
+characters), a short password starting with 0 and without I, L, O or U,
+and a Crockford base32 token of at most 26 characters that starts with 0
+(a ULID-shaped token is indistinguishable from an id). That residual
+risk is accepted for ids because of their value and because an id that
+is not on the board is rarely a secret in practice.
 
 ### Why no exception for words
 
@@ -154,7 +191,7 @@ board or the working tree, never from the refused input.
 |---|---|---|---|---|---|---|
 | 1 | Unknown command (`selectCommand`, `unknownCommandMessage`; also `help <topic>`) | `usage` | the first argument, or the first two for a two-word command | raw | low: the suggestions carry it | `unknown command; did you mean <list>? run 'agentboard help' to list the commands` (without suggestions: `unknown command; run 'agentboard help' to list the commands`) |
 | 2 | Unknown flag (`unknownFlagMessage`) | `usage` | the flag name (before any `=`) | raw | low: suggestions and position carry it | `unknown flag at argument <n> for <command>; did you mean <list>? run 'agentboard help <command>' to list its flags` (without suggestions likewise, without the `did you mean` part) |
-| 3 | Extra positional (`parseArgs`) | `usage` | the extra argument (often unquoted free text) | raw | no | `unexpected argument at position <n> for <command>; it takes <positionals>, and text with spaces must be quoted` where `<positionals>` is the synopsis of its positionals (`<id> <text>`) |
+| 3 | Extra positional (`parseArgs`) | `usage` | the extra argument (often unquoted free text) | raw | no | `unexpected argument at position <n> for <command>; it takes <positionals>, and text with spaces must be quoted` where `<positionals>` is the synopsis of its positionals (`<id> <text>`); for a command with no positionals `unexpected argument at position <n> for <command>; it takes no positional arguments` (built by `unexpectedArgumentMessage`) |
 | 4 | Integer expected (`parseInteger`: `checklist tick` index, `--port`) | `usage` | the value | raw | no | `--<name> must be an integer` for a flag, `<name> must be an integer` for a positional (the MCP form) |
 | 5 | Not a choice (`parseArgs`, `config set`/`get` key) | `usage` | nothing (add-claim-leases) | - | - | unchanged: `<command> takes <<name>> as one of <choices>` |
 | 6 | Help subtopic (`help.ts`) | `usage` | the subtopic word | raw | low | `<command> has no help subtopic of that name; run 'agentboard help <command>'` |
@@ -166,14 +203,14 @@ board or the working tree, never from the refused input.
 
 | # | Refusal (where) | Reason | Echoes today | Shape when built | Useful? | Proposed message |
 |---|---|---|---|---|---|---|
-| 10 | Unknown status (`registry.ts status()`: `move <status>`, `handoff --status`, `list --status`) | `usage` | the status | raw | no: statuses are listed | `move takes <status> as one of todo, tests, implementing, review, merged, blocked`; `handoff takes --status as one of ...`; `list takes --status as one of ...` |
+| 10 | Unknown status (`registry.ts status()`: `move <status>`, `handoff --status`, `list --status`) | `usage` | the status | raw | no: statuses are listed | `move takes <status> as one of todo, tests, implementing, review, merged, blocked`; `handoff takes --status as one of ...`; `list takes --status as one of ...` (built by `choicesMessage`, which the choices refusal of row 5 also uses) |
 | 11 | `health` durations (`durationFlag`: `--stale-after`, `--blocked-after`, `--unplanned-within`) | `usage` | the value | raw | no | `invalid --<name>: a duration is <n>m, <n>h or <n>d with <n> a positive integer of at most 5 digits (for example 30m, 2h or 1d)` |
 | 12 | Malformed task reference (`taskRefFromArgs`: `--task` of `new`, `link`, `move`, `close`) | `malformed-task-ref` | the reference | raw | no: the form is shown | `malformed task reference: --task expects <source>:<ref>#<item>, for example openspec:add-board-core#3` |
 | 13 | Malformed change name (`taskRefFromArgs`; `listTaskFilter` in the registry) | `malformed-task-ref` | the name | raw | no | `malformed change name: --change must be non-empty and contain no #` |
 | 14 | Malformed group (`taskRefFromArgs`) | `malformed-task-ref` | the group | raw | no | `malformed group: --group must be a positive decimal number such as 3` |
 | 15 | Malformed task filter (`parseTaskFilter`, `list --task`) | `malformed-task-ref` | the filter | raw | no | `malformed task filter: --task expects <source>:<ref>[#<item>]` |
 | 16 | Id too short (`resolveTicketId`) | `id-too-short` | the prefix | raw (shorter than 6) | yes, when id-shaped | id-shaped: unchanged (`ticket id prefix <text> is too short: give at least 6 characters`); otherwise `the ticket id given is too short: give at least 6 characters` |
-| 17 | Unknown ticket (`resolveTicketId`) | `unknown-ticket` (exit 4) | the id or prefix | raw | yes, when id-shaped | id-shaped: unchanged (`no ticket matches <text>`); otherwise `no ticket matches the id given, which is not a ticket id: an id is 26 characters of Crockford base32 (digits and letters other than I, L, O and U), or a unique prefix of at least 6 of them` |
+| 17 | Unknown ticket (`resolveTicketId`) | `unknown-ticket` (exit 4) | the id or prefix | raw | yes, when id-shaped | id-shaped: unchanged (`no ticket matches <text>`); otherwise `no ticket matches the id given, which is not a ticket id: an id is 26 characters of Crockford base32 (digits and letters other than I, L, O and U) starting with 0, or a unique prefix of at least 6 of them` (review round 2) |
 | 18 | Ambiguous prefix (`resolveTicketId`) | `ambiguous-id` | the prefix and the matching full ids | always id-shaped (a prefix of an id is) | yes | unchanged |
 | 19 | Unknown cursor (`inbox --since`) | `unknown-cursor` | the cursor, not through `asciiText` | raw | no | `no event matches --since on this board` |
 | 20 | Decision record missing (`closeTicket`) | `decision-path-missing` | the path as given | checked (inside the tree) but refused | low: the caller has it | `the decision record given with --decision-recorded-in does not exist` |
@@ -199,7 +236,7 @@ board or the working tree, never from the refused input.
 | # | Refusal (where) | Reason | Echoes today | Useful? | Proposed message |
 |---|---|---|---|---|---|
 | 32 | Unknown tool name (`server.ts`) | `usage` | the name, through `JSON.stringify` only | no: `tools/list` has them | `unknown tool; call tools/list for the tool names` |
-| 33 | Unknown argument name (`toolArguments`) | `usage` | the argument name | no | `unknown argument for <tool>; its arguments are <names>` (the schema's property names in schema order) |
+| 33 | Unknown argument name (`toolArguments`) | `usage` | the argument name | no | `unknown argument for <tool>; its arguments are <names>` (the schema's property names in schema order, joined by `, `; built by `unknownArgumentMessage`) |
 | 34 | Wrong type, missing argument, not an object | `usage` | registry names only | - | unchanged |
 | 35 | Every value refusal above (statuses, references, ids, ...) | as above | as above | - | as above: `toolArguments` builds an argument list and runs `parseArgs` and the same command code |
 
@@ -255,6 +292,77 @@ they were checked (rows 5, 9, 18, 34, 35 as a pointer, 37-39).
   (`malformed-tasks` line numbers and group items), and the `DECISION:`
   comments `unpromoted-decision` quotes.
 - The web API's `after` cursor refusal already names no value.
+
+## Rulings during the tests (group 1)
+
+The test author of group 1 ruled on these points (DECISION comments on
+ticket 01M5YAB4P61Q911JF44AEKVQ30):
+
+- The board-cli scenario "Unknown ticket id that is id-shaped" ran
+  `show 01NOPE0000` and expected the message to name `01J9K3ZZZZ`. `O` is
+  not a Crockford base32 letter, so `01NOPE0000` is not id-shaped and is
+  not named; the scenario runs `show 01J9K3ZZZZ`, and a second scenario
+  covers `01NOPE0000`. Existing tests that expected `no ticket matches
+  01NOPE00` change accordingly.
+- "Unknown inbox cursor": only 64 lowercase hex characters pass the form
+  check of `--since` and reach `unknown-cursor`; the fixture for it is a
+  64-character hex string. Any other value gets the unchanged `usage`
+  refusal, which already names no value.
+- The three new messages that are built from the registry are message
+  builders with their own contracts, so that the source scan can allow
+  them by name: `choicesMessage(command, argument, choices)`
+  (`src/board/text.ts`, re-exported from `src/cli/parse.ts`; rows 5 and
+  10), `unexpectedArgumentMessage(command, position)` (`src/cli/parse.ts`;
+  row 3) and `unknownArgumentMessage(command)` (`src/mcp/tools.ts`; row
+  33). `unknownFlagMessage` takes the flag's position as a new second
+  parameter.
+- Positions count every argument after the program name, including the
+  command words, flags, flag values and a lone `--`.
+- The web app's unknown body property is refused by the same
+  `unknownArgumentMessage` as the MCP tool, so its list of arguments
+  includes `as` and `allow-secret-like`, which the web app refuses with
+  their own message; that is accepted, the list being the tool schema.
+- The source scan (task 1.6) collects the message of every `new
+  BoardError`, every `super(code, reason, message)` of a subclass and its
+  construction sites, and every `usage(...)` call, splits it into the
+  values it interpolates, and requires each to be allowed for its file
+  and enclosing function, with a reason; the method is documented on the
+  test (`src/__tests__/no-echo-source-scan.test.ts`). Hint templates are
+  covered by a behavioural test instead (every reason, both surfaces,
+  every command, every fixture as the id). `src/board/init-remote.ts` is
+  left out of the scan on the group 1 branch because group 2 rewrites its
+  refusals; whichever group merges second adds it.
+- Review round 1 (orchestrator DECISION on the ticket): when argument
+  parsing fails, the actor a hint or message names comes from the parsed
+  values or `AGENTBOARD_ACTOR`, never from scanning the raw arguments for
+  `--as` (finding F1: in `close --unplanned --as <token>` the flag takes
+  `--as` as its value and the token is the `<id>`, which the hint used to
+  repeat as the actor); the id shape requires a first character of 0 to 7
+  (narrowed to 0 in review round 2) and is tested without Unicode
+  upper-casing (F2, F3; "Why the id exception"); and configuration a refusal repeats, the `AGENTBOARD_DIR`
+  directory in `board-not-found` included, is escaped with `asciiText`
+  like other repeated text, so an ESC sequence in the variable never
+  reaches a terminal raw. The value itself stays out of scope ("Out of
+  scope": configuration).
+- Review round 2 (orchestrator DECISION on the ticket): the id shape
+  requires a first character of 0 (`^0[0-9A-HJKMNP-TV-Z]{0,25}$`), and
+  `NOT_AN_ID_MESSAGE` states it: `no ticket matches the id given, which
+  is not a ticket id: an id is 26 characters of Crockford base32 (digits
+  and letters other than I, L, O and U) starting with 0, or a unique
+  prefix of at least 6 of them`.
+- Two echoes found by the scan or the review are out of scope here: the
+  `port-in-use` refusal names the `--port` number, which passed the
+  integer and range checks and cannot hold a token, and is allowed; and an
+  MCP `resources/read` of an unknown URI is refused with the SDK's own
+  text `Resource <uri> not found`, a JSON-RPC error rather than a tool
+  error, which repeats the URI. The second is left for a follow-up
+  ticket, since it changes a recorded decision (board-agent-guidance
+  "Guide over MCP").
+- The token fixtures (`src/__tests__/harness/secret-fixtures.ts`) add a
+  64-character hex string to the five of "Testing approach", compare
+  without regard to case, and apply the eight-character substring rule
+  of the URL with credentials to its user information only, so that a
+  message naming another URL's scheme or host does not count as a leak.
 
 ## Compatibility
 

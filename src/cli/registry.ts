@@ -36,7 +36,7 @@ import { boardHealth } from '../board/health.js';
 import { closeMerged } from '../board/merged.js';
 import { remoteReport, renderRemote } from '../board/remote.js';
 import { syncBoard } from '../board/sync.js';
-import { TASK_RULE } from '../board/text.js';
+import { TASK_RULE, choicesMessage } from '../board/text.js';
 import { parseTaskFilter, taskRefFromArgs, type TaskFilter } from '../board/resolve.js';
 import { listTickets, newTicket, showRaw, showTicket } from '../board/tickets.js';
 import type { WriteOutcome } from '../board/types.js';
@@ -376,15 +376,19 @@ function bool(values: ArgValues, name: string): boolean {
   return values[name] === true;
 }
 
-/** A status argument; anything but one of `STATUSES` is a usage error. */
-function status(text: string): Status {
+/**
+ * A status argument; anything but one of `STATUSES` is a usage error that
+ * names the argument and lists the statuses but never repeats the value:
+ * exactly `choicesMessage(command, argument, STATUSES)`, that is `move
+ * takes <status> as one of todo, tests, implementing, review, merged,
+ * blocked` for `move <status>`, and `handoff takes --status as one of
+ * ...` and `list takes --status as one of ...` for those commands'
+ * `--status`.
+ */
+function status(text: string, command: string, argument: string): Status {
   const found = STATUSES.find((s) => s === text);
   if (found === undefined) {
-    throw new BoardError(
-      1,
-      'usage',
-      `unknown status ${asciiText(text)}; expected one of ${STATUSES.join(', ')}`,
-    );
+    throw new BoardError(1, 'usage', choicesMessage(command, argument, STATUSES));
   }
   return found;
 }
@@ -475,7 +479,7 @@ function listTaskFilter(values: ArgValues): TaskFilter | undefined {
     throw new BoardError(
       1,
       'malformed-task-ref',
-      `malformed change name ${asciiText(change)}: it must be non-empty and contain no #`,
+      'malformed change name: --change must be non-empty and contain no #',
     );
   }
   return { source: 'openspec', ref: change };
@@ -562,9 +566,9 @@ function noCacheOutput(cachePath: string): CommandOutput {
  * First, before the board is located or opened, each of `--stale-after`,
  * `--blocked-after` and `--unplanned-within` that is given is parsed, in
  * that order, with `parseDuration` (`src/view/health.ts`); a value it
- * refuses is `BoardError(1, 'usage')` whose message names the flag, the
- * value given (through `asciiText`) and the accepted forms, for example:
- * `invalid --stale-after 2hours: a duration is <n>m, <n>h or <n>d with <n> a positive integer of at most 5 digits (for example 30m, 2h or 1d)`.
+ * refuses is `BoardError(1, 'usage')` whose message names the flag and the
+ * accepted forms but not the value given, exactly:
+ * `invalid --stale-after: a duration is <n>m, <n>h or <n>d with <n> a positive integer of at most 5 digits (for example 30m, 2h or 1d)`.
  * When several are invalid, the first in that order is reported. So a
  * malformed duration exits 1 even where there is no board.
  *
@@ -610,7 +614,7 @@ function durationFlag(values: ArgValues, name: string): number | undefined {
     throw new BoardError(
       1,
       'usage',
-      `invalid --${name} ${asciiText(text)}: a duration is <n>m, <n>h or <n>d with <n> a positive integer of at most 5 digits (for example 30m, 2h or 1d)`,
+      `invalid --${name}: a duration is <n>m, <n>h or <n>d with <n> a positive integer of at most 5 digits (for example 30m, 2h or 1d)`,
     );
   }
   return ms;
@@ -1111,7 +1115,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       const tickets = listTickets(
         ctx.board(),
         {
-          status: given === undefined ? undefined : status(given),
+          status: given === undefined ? undefined : status(given, 'list', '--status'),
           assignee: str(values, 'assignee'),
           task,
           labels: list(values, 'label'),
@@ -1446,7 +1450,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     operation: 'moveTicket',
     run: (ctx, values) => {
       const given = str(values, 'status');
-      const to = given === undefined ? undefined : status(given);
+      const to = given === undefined ? undefined : status(given, 'move', '<status>');
       // The disposition and its target are checked before the board is
       // opened, so a usage error exits 1 even where there is no board.
       const disposition = scopeDispositionFromArgs(dispositionArgs(values));
@@ -1547,7 +1551,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     writes: true,
     operation: 'handoffTicket',
     run: (ctx, values) => {
-      const to = status(req(values, 'status'));
+      const to = status(req(values, 'status'), 'handoff', '--status');
       return written(
         handoffTicket(ctx.board(), actorOf(ctx), {
           id: req(values, 'id'),

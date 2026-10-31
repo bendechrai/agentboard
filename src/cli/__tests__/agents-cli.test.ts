@@ -121,7 +121,10 @@ describe('agents install through the built CLI', SPAWNS, () => {
     const out = cli(['agents', 'install', '--target', 'cursor', '--json'], plainProject());
     expect(out.code).toBe(1);
     expect(errorOf(out)).toMatchObject({ exitCode: 1, reason: 'usage' });
-    expect(errorOf(out).message).toContain('cursor');
+    expect(errorOf(out).message).toBe(
+      'unknown target given with --target; expected one of claude, agents-md, openspec, mcp-json',
+    );
+    expect(out.stdout + out.stderr).not.toContain('cursor');
   });
 
   it('scenario: a foreign SKILL.md is refused and named, and the other targets still install', () => {

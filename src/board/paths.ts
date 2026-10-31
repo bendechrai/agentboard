@@ -51,7 +51,9 @@ export interface TreePath {
  *   resolved form, so a path through an in-tree symlink records the real
  *   in-tree location.
  * - When the result is the root itself or lies outside it,
- *   `BoardError(1, 'path-outside-tree')` naming `text`.
+ *   `BoardError(1, 'path-outside-tree')`, exactly `the path given is
+ *   outside the working tree <root>` (`<root>` the resolved root through
+ *   `asciiText`), which does not repeat `text`.
  * - Otherwise returns the absolute path and the root-relative path with
  *   `/` separators. Existence is not checked here.
  *
@@ -69,7 +71,7 @@ export function treePath(text: string, options?: TreePathOptions): TreePath {
     throw new BoardError(
       1,
       'path-outside-tree',
-      `path ${asciiText(text)} is outside the working tree ${asciiText(root)}`,
+      `the path given is outside the working tree ${asciiText(root)}`,
     );
   }
   return { absolute, recorded: rel.split(sep).join('/') };

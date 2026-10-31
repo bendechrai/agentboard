@@ -19,11 +19,18 @@ call.
 
 Input of the same call that was not refused MAY be repeated (the actor,
 a decision path that passed its checks, a ticket id resolved on the
-board), and so MAY board data and configuration. The one exception to
-the rule is a ticket id of the id shape (see "Ticket ids in refusals").
+board), and so MAY board data and configuration, each escaped as plain
+ASCII on one line like any other text a refusal repeats (so the board
+directory named by `AGENTBOARD_DIR` in `board-not-found` cannot carry a
+terminal escape sequence). The one exception to the rule is a ticket id
+of the id shape (see "Ticket ids in refusals").
 
 Exit codes, reasons and the fields of the error documents are unchanged
 by this rule; only message and hint text are.
+
+#### Scenario: Board directory from the environment is escaped
+- **WHEN** `AGENTBOARD_DIR` names a missing directory whose name holds an ESC sequence, a BEL and a newline, and `agentboard list` (with and without `--json`) or `agentboard mcp` runs
+- **THEN** it exits 2 with reason `board-not-found`, the message names the directory through the plain ASCII escaping (`\u001B`), and no ESC, BEL or newline from the variable is written to stdout or stderr
 
 #### Scenario: Unknown status
 - **WHEN** `agentboard move T1 <token> --as orch` runs with a token-shaped value, with and without `--json`
@@ -46,8 +53,8 @@ by this rule; only message and hint text are.
 - **THEN** it exits 1 with reason `usage`, the message names `--stale-after` and the duration form, and the token appears in no output
 
 #### Scenario: Unknown inbox cursor
-- **WHEN** `agentboard inbox --as a --since <token>` runs
-- **THEN** it exits 1 with reason `unknown-cursor`, the message names `--since`, and the token appears in no output
+- **WHEN** `agentboard inbox --as a --since <token>` runs with a token of 64 lowercase hex characters (the only shape that passes the form check) that names no event
+- **THEN** it exits 1 with reason `unknown-cursor`, the message names `--since`, and the token appears in no output; a token of any other shape is refused with reason `usage` by the unchanged form message, which names no value either
 
 #### Scenario: Decision path outside the working tree
 - **WHEN** `agentboard link T1 --decision ../<token> --as a` runs
@@ -71,14 +78,21 @@ by this rule; only message and hint text are.
 
 ### Requirement: Ticket ids in refusals
 A ticket id argument (the positional `<id>`, or the tool argument `id`)
-whose text, upper-cased, matches `^[0-9A-HJKMNP-TV-Z]{1,26}$` (1 to 26
-Crockford base32 characters) MAY be repeated in a refusal and in its
-hint, even when it matches no ticket. Any other text given as a ticket
+whose text could be a ULID or a prefix of one, that is, matches
+`^0[0-9A-HJKMNP-TV-Z]{0,25}$` with ASCII letters compared without
+regard to case (1 to 26 Crockford base32 characters, the first of them 0,
+as in every ULID until about the year 3084; no character outside ASCII
+counts, whatever it upper-cases to),
+MAY be repeated in a refusal and in its hint, even when it matches no
+ticket. Any other text given as a ticket
 id SHALL NOT be repeated anywhere in a refusal: an unknown id is refused
 with its usual exit code and reason (`unknown-ticket`, or `id-too-short`
 below 6 characters) by a message that says the text given is not a
-ticket id and states the id form, and every hint writes the placeholder
-`<id>` in its place.
+ticket id and states the id form, exactly `no ticket matches the id
+given, which is not a ticket id: an id is 26 characters of Crockford
+base32 (digits and letters other than I, L, O and U) starting with 0, or
+a unique prefix of at least 6 of them` for `unknown-ticket`, and every
+hint writes the placeholder `<id>` in its place.
 
 #### Scenario: Ticket id that is not an id
 - **WHEN** `agentboard show <token>` and `agentboard move <token> review --as orch` run with a token that is not id-shaped, on the CLI with and without `--json`, and `board_move` is called with that `id`
@@ -89,8 +103,28 @@ ticket id and states the id form, and every hint writes the placeholder
 - **THEN** each is refused with reason `no-disposition`, the hint names the `close` step with `<id>` in place of the id, and the token appears in no output
 
 #### Scenario: Unknown ticket id that is id-shaped
-- **WHEN** `agentboard show 01NOPE0000` runs and no ticket id starts with it
+- **WHEN** `agentboard show 01J9K3ZZZZ` runs and no ticket id starts with it
 - **THEN** it exits 4 with reason `unknown-ticket` and the message names `01J9K3ZZZZ`
+
+#### Scenario: Base32 secret that is not a ULID
+- **WHEN** `agentboard show <text>` runs, with and without `--json`, where `<text>` is `JBSWY3DPEHPK3PXP` (a TOTP-style seed whose characters are all Crockford base32) or 26 Crockford base32 characters starting with a letter, and `board_show` is called with that `id`
+- **THEN** each exits 4 (or returns `exitCode` 4) with reason `unknown-ticket`, the message says the text given is not a ticket id, and the text appears in no output
+
+#### Scenario: Crockford text that starts with 1 to 7
+- **WHEN** `agentboard show <text>` runs, with and without `--json`, where `<text>` is 26 Crockford base32 characters starting with 7, or `1J9K3ZZZZ`, and `board_show` is called with that `id`
+- **THEN** each exits 4 (or returns `exitCode` 4) with reason `unknown-ticket` and the message above, and the text appears in no output
+
+#### Scenario: Characters that upper-case into the id alphabet
+- **WHEN** `agentboard show 01<U+017F><U+017F>ABCDEFGH23` runs (U+017F, the long s, upper-cases to `S`), or a text of `0` and twelve U+FB06 ligatures (each upper-cases to `ST`)
+- **THEN** the text is not id-shaped, it exits 4 with reason `unknown-ticket` and the message says the text given is not a ticket id
+
+#### Scenario: Actor read from a command line that failed to parse
+- **WHEN** `agentboard close --unplanned --as <token>` or `agentboard close --task --as <token>` runs, with and without `--json` and with and without `AGENTBOARD_ACTOR` (the string flag takes `--as` as its value, so the token is the `<id>` positional and no `--as` is parsed)
+- **THEN** it exits 1 with reason `no-disposition`, the hint writes `<id>` for the id and, for the actor, the value of `AGENTBOARD_ACTOR` or else `<actor>`, and the token appears in no output; when parsing fails, the actor a hint or message names comes from the parsed values or `AGENTBOARD_ACTOR`, never from a scan of the raw arguments
+
+#### Scenario: Unknown ticket id with a letter outside the id alphabet
+- **WHEN** `agentboard show 01NOPE0000` runs (`O` is not a Crockford base32 letter)
+- **THEN** it exits 4 with reason `unknown-ticket`, the message says the text given is not a ticket id, and `01NOPE0000` appears in no output
 
 ## MODIFIED Requirements
 
