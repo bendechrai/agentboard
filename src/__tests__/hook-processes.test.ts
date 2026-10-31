@@ -492,6 +492,7 @@ describe('scenario: read-only', SLOW, () => {
     const tempMtime = statSync(temp, { bigint: true }).mtimeNs;
     const files = tree(boardDir);
     const hashes = cacheHashes(join(boardDir, 'cache.sqlite'));
+    const warnState = scratchDir();
 
     for (const actor of ['merger-2', 'merger-1', 'impl']) {
       for (const argv of [
@@ -502,7 +503,13 @@ describe('scenario: read-only', SLOW, () => {
       ]) {
         const payload =
           argv[0] === 'stop' ? stopPayload(root) : editPayload(root, join(root, 'src', 'a.ts'));
-        const out = await runHook([...argv, '--as', actor], root, payload);
+        // The warning state of pre-tool-use goes to a scratch TMPDIR, not the real one.
+        const out = await runHook(
+          [...argv, '--as', actor],
+          root,
+          payload,
+          cliEnv({ TMPDIR: warnState }),
+        );
         expect([0, 2], `${argv.join(' ')} ${actor}: ${out.stderr}`).toContain(out.code);
       }
     }
