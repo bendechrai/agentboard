@@ -34,6 +34,7 @@ import { COMMANDS, expectCheckClean, expectKilled, canonicalDump } from '../../_
 import { git, tempDir } from '../../board/__tests__/helpers.js';
 import {
   agentboardDir,
+  cloneProject,
   cloneWithStandalone,
   conflictingClones,
   eventFiles,
@@ -1208,6 +1209,326 @@ describe('guard-stale-temporary: a temporary of another board is named as design
         expect(oneJson(out)).toMatchObject({ action: 'moved', events: 4 });
       }
       expectMoved(root, env);
+    },
+  );
+});
+
+describe('into-host-replaced-after-step-4: a move killed after it updated the host ref, re-run with another board or the same', () => {
+  const BEFORE_RECORD = 'agentboard-board-before';
+  /** The zero object name of SHA-1, the hash algorithm of every repository these tests make. */
+  const ZERO = '0'.repeat(40);
+
+  /** The record `name` in the git directory of the temporary worktree at `temporary`. */
+  function recordPath(temporary: string, name: string): string {
+    return join(git(temporary, 'rev-parse', '--absolute-git-dir').trim(), name);
+  }
+
+  /** The content of the record `name` of `temporary`, or null when it has none. */
+  function readRecordFile(temporary: string, name: string): string | null {
+    const path = recordPath(temporary, name);
+    return existsSync(path) ? readFileSync(path, 'utf8') : null;
+  }
+
+  /** design.md: the output line of a reset to a recorded commit. */
+  function setBackLine(temporary: string): string {
+    return (
+      `set ${BOARD_REF} in the host repository back to its value before the interrupted move at ` +
+      `${temporary}, which had updated it for another board and not published it`
+    );
+  }
+
+  /** design.md "Test author rulings": the output line of a reset to the zero object name. */
+  function deletedLine(temporary: string): string {
+    return (
+      `deleted ${BOARD_REF} in the host repository, as before the interrupted move at ` +
+      `${temporary}, which had created it for another board and not published it`
+    );
+  }
+
+  /** The existing line naming one removed temporary of another board. */
+  function removedAsAnotherBoard(temporary: string, dir: string): string {
+    return (
+      `removed ${temporary}, left by a move of another board (not the one at ${dir}, or one ` +
+      'whose history no longer holds where that move began), so nothing of it was adopted'
+    );
+  }
+
+  /** design.md "Test author rulings": the refusal when the ref cannot be set back. */
+  function cannotSetBack(temporary: string, dir: string, why: string): string {
+    return (
+      `the interrupted move at ${temporary} put commits of another board (not the one at ${dir}, ` +
+      `or one whose history no longer holds where that move began) into ${BOARD_REF} in the host ` +
+      `repository without publishing them, and ${why}, so the move cannot set the ref back by ` +
+      `itself; nothing was changed; set it back by hand with git update-ref -d ${BOARD_REF} when ` +
+      "the host's remote holds the board or the ref did not exist before that move, else with " +
+      `git update-ref ${BOARD_REF} <its earlier commit>, then run agentboard init --into-host again`
+    );
+  }
+
+  /** design.md "Test author rulings": the refusal of a lost compare-and-swap of the reset. */
+  function lostReset(temporary: string, dir: string): string {
+    return (
+      `setting ${BOARD_REF} in the host repository back to its value before the interrupted move ` +
+      `at ${temporary} failed because something else moved it meanwhile; nothing was removed, the ` +
+      `board at ${dir} is untouched and the temporary worktree is kept; run agentboard init ` +
+      '--into-host again'
+    );
+  }
+
+  /** Asserts no commit of `ref` in `repo` ever added any of `files` (`<hash>.json`) under `events/`. */
+  function expectNeverIn(repo: string, files: readonly string[]): void {
+    for (const file of files) {
+      expect(git(repo, 'log', '--format=%H', BOARD_REF, '--', `events/${file}`).trim(), `${repo} ${file}`).toBe('');
+    }
+  }
+
+  /** Publishes, from another clone of the project at `remote`, a host-model board with one event; returns its file name. */
+  function otherClonePublished(remote: string, env: Env): string {
+    const other = hostBoard(env, cloneProject(remote, 'other-clone'));
+    const hash = commitHostEvent(other.dir, ev(P.create(T2, 'From the other clone'), 'x', 2000), env);
+    git(other.root, 'push', '-q', 'origin', `${BOARD_REF}:${BOARD_REF}`);
+    return `${hash}.json`;
+  }
+
+  /** What `killedAfterUpdate` leaves. */
+  interface Killed {
+    readonly root: string;
+    readonly remote: string;
+    readonly dir: string;
+    readonly tip: string;
+    readonly files: string[];
+    readonly otherFiles: string[];
+    readonly temporary: string;
+    /** The value the killed move gave the local ref. */
+    readonly updated: string;
+  }
+
+  /**
+   * A move of standalone board A (two events, its own remote), in a
+   * project whose `origin` holds no board ref or (`joined`) another
+   * clone's, killed right after (`after`) or right before (`before`) the
+   * step 4 `update-ref refs/agentboard/board`.
+   */
+  function killedAtUpdate(env: Env, joined: boolean, when: KillWhen = 'after'): Killed {
+    const { root, remote, dir, tip } = standaloneProject(env, 2);
+    const files = eventFiles(dir);
+    const otherFiles = joined ? [otherClonePublished(remote, env)] : [];
+
+    expectKilled(intoHost(root, withKillingGitShim(env, COMMANDS.updateRef, when)));
+
+    const [temporary] = registeredMigrating(root);
+    expect(registeredMigrating(root)).toHaveLength(1);
+    expect(detectBoardModel(dir, { env }).model).toBe('standalone');
+    if (when === 'after') {
+      expect(refCommit(root)).toBe(revParse(String(temporary)));
+    } else {
+      expect(refCommit(root)).toBeNull();
+    }
+    return { root, remote, dir, tip, files, otherFiles, temporary: String(temporary), updated: String(refCommit(root)) };
+  }
+
+  /** Moves `.board` aside and builds an unrelated standalone board B (one event by `bee`, its own remote) at its path; returns B's tip and files. */
+  function replaceBoard(fx: Killed, env: Env): { tip: string; files: string[] } {
+    renameSync(fx.dir, join(tempDir(), 'a-aside'));
+    const { tip } = syncedStandalone(fx.root, env, 1, bareRemote(), 'bee');
+    return { tip, files: eventFiles(fx.dir) };
+  }
+
+  it('1.1: a move killed right after the update leaves the record equal to the ref value before it (the zero object name; a hand-fetched commit, which a re-run with another board sets the ref back to)', () => {
+    const env = syncEnv();
+    const fx = killedAtUpdate(env, false);
+    expect(readRecordFile(fx.temporary, BEFORE_RECORD)).toBe(`${ZERO}\n`);
+
+    const { root } = standaloneProject(env, 2);
+    const other = hostBoard(env);
+    commitHostEvent(other.dir, ev(P.create(T2, 'From the host ref'), 'x', 2000), env);
+    git(root, 'fetch', '-q', other.root, `${BOARD_REF}:${BOARD_REF}`);
+    const local = String(refCommit(root));
+
+    expectKilled(intoHost(root, withKillingGitShim(env, COMMANDS.updateRef, 'after')));
+
+    const [temporary] = registeredMigrating(root);
+    expect(refCommit(root)).toBe(revParse(String(temporary)));
+    expect(readRecordFile(String(temporary), BEFORE_RECORD)).toBe(`${local}\n`);
+
+    // Re-run with another board: the ref is set back to the hand-fetched commit, said in the text output.
+    const dir = join(root, '.board');
+    const aFiles = eventFiles(dir);
+    renameSync(dir, join(tempDir(), 'a-aside'));
+    syncedStandalone(root, env, 1, bareRemote(), 'bee');
+
+    const out = intoHost(root, env, false);
+
+    expect(out.code, out.stderr).toBe(0);
+    expect(out.stdout.split('\n')).toContain(setBackLine(String(temporary)));
+    expect(out.stdout.split('\n')).toContain(removedAsAnotherBoard(String(temporary), dir));
+    expect(git(root, 'merge-base', '--is-ancestor', local, BOARD_REF)).toBe('');
+    expectNeverIn(root, aFiles);
+  });
+
+  it('scenario: Board replaced after the move updated the host ref (no board ref on the host remote): B moved with exit 0, the text output says the ref was deleted and names the temporary as another board, nothing of A anywhere', () => {
+    const env = syncEnv();
+    const fx = killedAtUpdate(env, false);
+    const b = replaceBoard(fx, env);
+
+    const out = intoHost(fx.root, env, false);
+
+    expect(out.code, out.stderr).toBe(0);
+    const lines = out.stdout.split('\n');
+    expect(lines).toContain(deletedLine(fx.temporary));
+    expect(lines).toContain(removedAsAnotherBoard(fx.temporary, fx.dir));
+    expect(out.stdout).not.toContain('left by an interrupted move');
+    syncOk(fx.root, env);
+    expectMoved(fx.root, env);
+    expect(eventFiles(fx.dir)).toEqual(b.files);
+    expect(refEvents(fx.root)).toEqual(b.files);
+    expect(refEvents(fx.remote)).toEqual(b.files);
+    expectNeverIn(fx.root, fx.files);
+    expectNeverIn(fx.remote, fx.files);
+    expectCheckClean(fx.root, env);
+  });
+
+  it("scenario: Board replaced after a move that joined the host remote updated the host ref: B moved with exit 0, the --json message says the ref was deleted, the other clone's event and B's everywhere, nothing of A", () => {
+    const env = syncEnv();
+    const fx = killedAtUpdate(env, true);
+    expect(readRecordFile(fx.temporary, BEFORE_RECORD)).toBe(`${ZERO}\n`);
+    const b = replaceBoard(fx, env);
+
+    const doc = intoHostOk(fx.root, env);
+
+    expect(doc).toMatchObject({ action: 'moved', joined: true });
+    const lines = String(doc.message).split('\n');
+    expect(lines).toContain(deletedLine(fx.temporary));
+    expect(lines).toContain(removedAsAnotherBoard(fx.temporary, fx.dir));
+    syncOk(fx.root, env);
+    expectMoved(fx.root, env);
+    const all = [...b.files, ...fx.otherFiles].sort();
+    expect(eventFiles(fx.dir)).toEqual(all);
+    expect(refEvents(fx.root)).toEqual(all);
+    expect(refEvents(fx.remote)).toEqual(all);
+    expectNeverIn(fx.root, fx.files);
+    expectNeverIn(fx.remote, fx.files);
+    expectCheckClean(fx.root, env);
+  });
+
+  it.each([
+    ['the host remote holding no board ref', false],
+    ["the host remote holding another clone's board ref", true],
+  ])(
+    'scenario: Move killed after it updated the host ref resumes with the same board (%s): exit 0, every event everywhere, the killed value an ancestor of the ref, nothing set back',
+    (_label, joined) => {
+      const env = syncEnv();
+      const fx = killedAtUpdate(env, joined);
+      expect(readRecordFile(fx.temporary, BEFORE_RECORD)).toBe(`${ZERO}\n`);
+
+      const doc = intoHostOk(fx.root, env);
+
+      expect(doc).toMatchObject({ action: 'moved', joined });
+      const message = String(doc.message);
+      expect(message).not.toContain('back to its value before the interrupted move');
+      expect(message).not.toContain(`deleted ${BOARD_REF}`);
+      expect(message).not.toContain('another board');
+      syncOk(fx.root, env);
+      expectMoved(fx.root, env);
+      const all = [...fx.files, ...fx.otherFiles].sort();
+      expect(eventFiles(fx.dir)).toEqual(all);
+      expect(refEvents(fx.root)).toEqual(all);
+      expect(refEvents(fx.remote)).toEqual(all);
+      expect(git(fx.root, 'merge-base', '--is-ancestor', fx.updated, BOARD_REF)).toBe('');
+      const [kept] = keptRepositories(fx.root);
+      expectKept(String(kept), fx.tip, fx.files);
+      expectCheckClean(fx.root, env);
+    },
+  );
+
+  it('scenario: Killed before the host ref was updated: the record is there and the ref is not; B moved with exit 0, nothing set back, the temporary removed as today, nothing of A in the ref', () => {
+    const env = syncEnv();
+    const fx = killedAtUpdate(env, false, 'before');
+    expect(readRecordFile(fx.temporary, BEFORE_RECORD)).toBe(`${ZERO}\n`);
+    const b = replaceBoard(fx, env);
+
+    const doc = intoHostOk(fx.root, env);
+
+    expect(doc).toMatchObject({ action: 'moved' });
+    const message = String(doc.message);
+    expect(message).not.toContain('back to its value before the interrupted move');
+    expect(message).not.toContain(`deleted ${BOARD_REF}`);
+    expect(message.split('\n')).toContain(`removed ${fx.temporary}, left by an interrupted move`);
+    syncOk(fx.root, env);
+    expectMoved(fx.root, env);
+    expect(eventFiles(fx.dir)).toEqual(b.files);
+    expect(refEvents(fx.root)).toEqual(b.files);
+    expect(refEvents(fx.remote)).toEqual(b.files);
+    expectNeverIn(fx.root, fx.files);
+  });
+
+  it.each([
+    ['no record (a temporary of 0.3.0)', 'no-record'],
+    ['the ref moved past the temporary HEAD', 'moved-past'],
+    ['the reset losing its compare-and-swap', 'race'],
+  ] as const)(
+    'the refusal for %s: exit 3 sync-failed with the existing hint, the exact text on stderr and in the --json error document, nothing changed',
+    (_label, variant) => {
+      const env = syncEnv();
+      const fx = killedAtUpdate(env, false);
+      replaceBoard(fx, env);
+      let run = env;
+      let expected: string;
+      if (variant === 'no-record') {
+        rmSync(recordPath(fx.temporary, BEFORE_RECORD));
+        expected = cannotSetBack(fx.temporary, fx.dir, "that move left no record of the ref's value before it");
+      } else if (variant === 'moved-past') {
+        const tree = git(fx.root, 'rev-parse', `${fx.updated}^{tree}`).trim();
+        const past = git(fx.root, '-c', 'user.name=h', '-c', 'user.email=h@localhost', 'commit-tree', tree, '-p', fx.updated, '-m', 'on top').trim();
+        git(fx.root, 'update-ref', BOARD_REF, past);
+        expected = cannotSetBack(fx.temporary, fx.dir, 'the ref has moved on past what that move put into it');
+      } else {
+        // The reset deletes the ref: `update-ref refs/agentboard/board <zero> <HEAD>` (design.md).
+        // Each racing write is a commit on top of the ref's value at that moment.
+        run = withGitShimBefore(
+          env,
+          ['update-ref', BOARD_REF, ZERO],
+          [
+            `p=$("$GIT" -C '${fx.root}' rev-parse ${BOARD_REF})`,
+            `t=$("$GIT" -C '${fx.root}' rev-parse "$p^{tree}")`,
+            `c=$("$GIT" -C '${fx.root}' -c user.name=h -c user.email=h@localhost commit-tree "$t" -p "$p" -m race)`,
+            `"$GIT" -C '${fx.root}' update-ref ${BOARD_REF} "$c" "$p"`,
+          ].join('; '),
+          2,
+        );
+        expected = lostReset(fx.temporary, fx.dir);
+      }
+      const before = untouched(fx.root, fx.dir);
+      const remoteRefs = git(fx.remote, 'for-each-ref');
+
+      const text = intoHost(fx.root, run, false);
+
+      expect(text.code, text.stderr).toBe(3);
+      expect(text.stdout).toBe('');
+      expect(text.stderr).toContain(`agentboard: ${expected}\n`);
+      const hint = hintOf(text);
+      expect(hint).toBe(renderHint('sync-failed', { surface: 'cli', command: 'init' }));
+      if (variant === 'race') {
+        // The other writer's commit stays; put the ref back by hand so the --json run races the same way.
+        expect(git(fx.root, 'rev-parse', `${BOARD_REF}^`).trim()).toBe(fx.updated);
+        git(fx.root, 'update-ref', BOARD_REF, fx.updated);
+      }
+      expect(untouched(fx.root, fx.dir)).toEqual(before);
+
+      const json = intoHost(fx.root, run);
+
+      expect(json.code).toBe(3);
+      expect(errorOf(json)).toEqual({ exitCode: 3, reason: 'sync-failed', message: expected, hint });
+      if (variant === 'race') {
+        expect(git(fx.root, 'rev-parse', `${BOARD_REF}^`).trim()).toBe(fx.updated);
+        git(fx.root, 'update-ref', BOARD_REF, fx.updated);
+      }
+      expect(untouched(fx.root, fx.dir)).toEqual(before);
+      expect(registeredMigrating(fx.root)).toEqual([fx.temporary]);
+      expect(revParse(fx.temporary)).toBe(fx.updated);
+      expect(detectBoardModel(fx.dir, { env }).model).toBe('standalone');
+      expect(keptRepositories(fx.root)).toEqual([]);
+      expect(git(fx.remote, 'for-each-ref')).toBe(remoteRefs);
     },
   );
 });
