@@ -36,12 +36,24 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  openSync,
+  readSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
-import { compareFoldOrder, type BoardState, type Ticket } from '../events/fold.js';
+import type { BoardState, Ticket } from '../events/fold.js';
 import { isKnownEvent, SYSTEM_ACTOR } from '../events/schema.js';
 import { CACHE_FILE, openCache, readState } from '../store/cache.js';
 import {
@@ -49,10 +61,11 @@ import {
   comparePositions,
   readCursor,
   writeCursor,
+  type Cursor,
   type CursorPosition,
 } from '../store/cursors.js';
-import { inImmediate, inSnapshot } from '../store/engine.js';
-import { readEventFile, readEventLog } from '../store/eventfile.js';
+import { inSnapshot, isBusy, rollback } from '../store/engine.js';
+import { readEventFile } from '../store/eventfile.js';
 import { recordedPositions } from '../store/folded.js';
 import { boardExists, locateBoard } from '../store/locate.js';
 import { assigneeToken } from './leases.js';
@@ -141,6 +154,13 @@ export const EDIT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] as cons
 export const WARN_INTERVAL_MS = 600_000;
 
 /**
+ * The most bytes of a rate-limit state file (`warnStatePath`) that count
+ * as a record: a regular file longer than this is read no further and
+ * counts as no warning, so the read is bounded whatever is at the name.
+ */
+const WARN_STATE_BYTES = 64;
+
+/**
  * The file that records when the session `sessionId` was last warned by
  * `pre-tool-use` in warn mode: `<stateDir>/agentboard-hook-<h>`, where
  * `<h>` is the lowercase hex SHA-256 of `sessionId` (UTF-8), so the file
@@ -152,10 +172,11 @@ export const WARN_INTERVAL_MS = 600_000;
  * or unreadable file, any other content, or a time later than `now` (a
  * clock set back) counts as no warning. The file is read without
  * following a symbolic link and without blocking (opened `O_RDONLY |
- * O_NOFOLLOW | O_NONBLOCK`), only when `fstat` says it is a regular file,
- * and at most its first 64 bytes: a symbolic link (to anything, a FIFO or
- * a file holding a recent time included), a FIFO, a directory or any other
- * kind of file at the name counts as no warning. The file is written only when a
+ * O_NOFOLLOW | O_NONBLOCK`), only when `fstat` says it is a regular file
+ * of at most 64 bytes, and at most its first 64 bytes: a symbolic link (to
+ * anything, a FIFO or a file holding a recent time included), a FIFO, a
+ * directory or any other kind of file at the name, and a regular file
+ * longer than 64 bytes, count as no warning. The file is written only when a
  * warning is printed in warn mode, replaced atomically (a temporary file
  * in `stateDir`, then a rename, so a symbolic link at the name is replaced
  * and never followed), and a failure to read or write it never stops the
@@ -261,7 +282,10 @@ function discoverBoard(cwd: string, env: Env, deadline: number, now: () => numbe
   try {
     const { dir } = locateBoard({ cwd, env, timeoutMs: Math.max(1, deadline - now()) });
     return boardExists(dir) ? dir : null;
-  } catch {
+  } catch (error) {
+    if (error instanceof OutOfTime) {
+      throw error;
+    }
     return null;
   }
 }
@@ -300,7 +324,10 @@ function openHookCache(boardDir: string, deadline: number, now: () => number): D
   const left = Math.max(0, deadline - now());
   try {
     return openCache(join(boardDir, CACHE_FILE), { prepare: false, busyTimeoutMs: left });
-  } catch {
+  } catch (error) {
+    if (error instanceof OutOfTime) {
+      throw error;
+    }
     return null;
   }
 }
@@ -395,7 +422,36 @@ const LINES = {
   internal: 'agentboard hook: internal error; continuing without checking the board',
   noActor:
     'agentboard: no actor is set, so the board hooks do nothing; set AGENTBOARD_ACTOR or add --as <actor> to the hook commands',
+  invalidActor:
+    'agentboard: the actor set for the board hooks is not a valid actor name, so they do nothing; set AGENTBOARD_ACTOR or --as <actor> to a name of up to 32 letters, digits, dots, underscores, @ signs and hyphens, starting with a letter or digit',
 } as const;
+
+/**
+ * Thrown by a bounded clock (`boundedClock`) when a reading is past the
+ * deadline: the run ends as out of time wherever it was, so no event file
+ * is opened, no cursor written and no exit 2 given after the deadline.
+ */
+class OutOfTime extends Error {
+  constructor() {
+    super('agentboard hook: out of time');
+    this.name = 'OutOfTime';
+  }
+}
+
+/**
+ * `now`, except that a reading past `deadline` throws `OutOfTime` instead
+ * of returning. Every reading of the clock after the deadline is set goes
+ * through this, so none is ever ignored.
+ */
+function boundedClock(now: () => number, deadline: number): () => number {
+  return () => {
+    const t = now();
+    if (t > deadline) {
+      throw new OutOfTime();
+    }
+    return t;
+  };
+}
 
 /** The arguments of one hook run, parsed. */
 interface HookArgs {
@@ -492,7 +548,10 @@ interface EventContext {
   readonly db: DatabaseSync;
   /** The directory discovery started from (`discoveryCwd`). */
   readonly cwd: string;
+  /** The bounded clock of the run (`boundedClock`): a reading past `deadline` throws. */
   readonly now: () => number;
+  /** The deadline of the run on the `now` clock, `startedAt + budgetMs`. */
+  readonly deadline: number;
   /** `HookRequest.stateDir`, resolved. */
   readonly stateDir: string;
 }
@@ -530,89 +589,180 @@ function omittedLine(omitted: number, actor: string): string {
   return `${String(omitted)} more inbox ${entries} not shown; read them with: agentboard inbox --as ${actor}`;
 }
 
+/** The text of a `session-start` context: `lines` joined with a newline. */
+function joinedLength(lines: readonly string[]): number {
+  return lines.join('\n').length;
+}
+
+/** True when `a` and `b` are the same stored cursor: same position and same seen set. */
+function sameCursor(a: Cursor, b: Cursor): boolean {
+  const samePosition =
+    a.position === null || b.position === null
+      ? a.position === b.position
+      : comparePositions(a.position, b.position) === 0;
+  return (
+    samePosition &&
+    a.seen.length === b.seen.length &&
+    a.seen.every((s, i) => s.hash === b.seen[i]?.hash && s.wall === b.seen[i]?.wall)
+  );
+}
+
 /**
- * The `session-start` context from the held line and the inbox lines:
- * every line when the whole fits in `SESSION_CONTEXT_LIMIT`, else the
- * most entries, from the start, that fit together with `omittedLine`;
- * `delivered` counts the entries included. Lines are joined with a
- * newline and nothing follows the last. Pure.
+ * `BEGIN IMMEDIATE` on `db` in one attempt that waits at most until
+ * `deadline` (the connection's busy timeout is set to the time left);
+ * false when the lock was not had by then. Never retried.
  */
-function sessionText(
-  held: string,
-  entries: readonly string[],
-  actor: string,
-): { text: string; delivered: number } {
-  const full = [held, ...entries].join('\n');
-  if (full.length <= SESSION_CONTEXT_LIMIT) {
-    return { text: full, delivered: entries.length };
-  }
-  let best = { text: [held, omittedLine(entries.length, actor)].join('\n'), delivered: 0 };
-  for (let k = 1; k < entries.length; k += 1) {
-    const text = [held, ...entries.slice(0, k), omittedLine(entries.length - k, actor)].join('\n');
-    if (text.length > SESSION_CONTEXT_LIMIT) {
-      break;
+function lockOnce(db: DatabaseSync, deadline: number, now: () => number): boolean {
+  db.exec(`PRAGMA busy_timeout = ${String(Math.max(0, Math.floor(deadline - now())))}`);
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    return true;
+  } catch (error) {
+    if (isBusy(error)) {
+      return false;
     }
-    best = { text, delivered: k };
+    throw error;
   }
-  return best;
 }
 
 /**
  * `session-start` (board-harness-hooks "Session start hook"; `runHook`
- * step 6). The pending entries are listed in one snapshot first; only
- * when there is at least one does a write transaction list them again
- * (so two concurrent runs never deliver one entry twice) and advance the
- * cursor over the delivered ones. Nothing else of the board is written.
+ * step 6). The pending positions are listed in one snapshot (their count
+ * is the omitted count's source); the event files are then read outside
+ * any transaction, in fold order, one at a time with a deadline check
+ * before each, only until the next entry no longer fits with the omitted
+ * line (so at most one more file than delivered is read). Only when at
+ * least one entry is delivered is the write lock taken, in one attempt
+ * bounded by the deadline, to read the cursor again (nothing is delivered
+ * when it moved meanwhile) and advance it over the delivered entries.
+ * Nothing else of the board is written.
  */
 function sessionStart(ctx: EventContext): HookOutcome {
-  const { actor, db, now } = ctx;
+  const { actor, db, now, deadline } = ctx;
   const held = heldLine(actor, heldTickets(ctx.view.state, actor), now());
   const board = { eventsDir: join(ctx.view.boardDir, 'events') };
-  const pending = inSnapshot(db, () => pendingPositions(db, readCursor(db, actor)));
-  if (pending.length === 0) {
+  const chosen = inSnapshot(db, () => {
+    const cursor = readCursor(db, actor);
+    return { cursor, pending: pendingPositions(db, cursor).sort(comparePositions) };
+  });
+  const total = chosen.pending.length;
+  if (total === 0) {
     return sessionStartContext(held);
   }
-  return inImmediate(db, () => {
-    const cursor = readCursor(db, actor);
-    const entries = toEntries(board, pendingPositions(db, cursor), readEventFile);
-    const { text, delivered } = sessionText(
-      held,
-      entries.map((entry) => renderInboxLine(entry, actor)),
-      actor,
-    );
-    if (delivered > 0) {
-      const positions: CursorPosition[] = entries
-        .slice(0, delivered)
-        .map((entry) => ({ hash: entry.hash, ts: entry.ts }));
-      writeCursor(db, advanceCursor(cursor, positions));
+  const lines: string[] = [];
+  const delivered: CursorPosition[] = [];
+  for (const position of chosen.pending) {
+    now();
+    const [entry] = toEntries(board, [position], readEventFile);
+    if (entry === undefined) {
+      break;
     }
+    const line = renderInboxLine(entry, actor);
+    const left = total - delivered.length - 1;
+    const candidate =
+      left === 0 ? [held, ...lines, line] : [held, ...lines, line, omittedLine(left, actor)];
+    if (joinedLength(candidate) > SESSION_CONTEXT_LIMIT) {
+      break;
+    }
+    lines.push(line);
+    delivered.push({ hash: entry.hash, ts: entry.ts });
+  }
+  const omitted = total - delivered.length;
+  const text = [held, ...lines, ...(omitted > 0 ? [omittedLine(omitted, actor)] : [])].join('\n');
+  if (delivered.length === 0) {
     return sessionStartContext(text);
-  });
+  }
+  now();
+  if (!lockOnce(db, deadline, now)) {
+    throw new OutOfTime();
+  }
+  try {
+    if (!sameCursor(readCursor(db, actor), chosen.cursor)) {
+      // Another inbox or hook delivered meanwhile: nothing of ours is delivered.
+      rollback(db);
+      return sessionStartContext(held);
+    }
+    writeCursor(db, advanceCursor(chosen.cursor, delivered));
+    db.exec('COMMIT');
+  } catch (error) {
+    rollback(db);
+    throw error;
+  }
+  return sessionStartContext(text);
+}
+
+/** The position of `comment` as a cursor position. */
+function commentPosition(comment: { hash: string; ts: CursorPosition['ts'] }): CursorPosition {
+  return { hash: comment.hash, ts: comment.ts };
 }
 
 /**
- * For each ticket of `tickets`, the position of the applied event that
- * last made `actor` its assignee (a `ticket.claim` by the actor, a
- * takeover included; a `ticket.grant`, `ticket.handoff` or
- * `ticket.assign` to the actor), read from the board's event files; a
- * ticket with no such event is absent. Applied means recorded as
- * effective in the cache (`folded.folded = 1`).
+ * The tickets of `candidates` (held by `actor`, in id order) with no
+ * comment or hand-off note by the actor at or after the applied event
+ * that last made the actor their assignee, in id order.
+ *
+ * A ticket without a comment by the actor is named without reading
+ * anything. For the others the question is whether an assigning event (a
+ * `ticket.claim` by the actor, a `ticket.grant`, `ticket.handoff` or
+ * `ticket.assign` to it) was applied strictly after the actor's last
+ * comment on the ticket (the event at that very position is the actor's
+ * own hand-off, which counts as the comment). Only applied events after
+ * the earliest such comment, listed from the cache, can be one; among
+ * them the comment events the cache knows (every comment row, except
+ * those by other actors on the tickets in question, which may be
+ * hand-offs to the actor) are skipped without a read. Each remaining
+ * event file is read after a deadline check.
  */
-function assignedAt(
-  db: DatabaseSync,
-  eventsDir: string,
-  actor: string,
-  tickets: readonly Ticket[],
-): Map<string, CursorPosition> {
-  const wanted = new Set(tickets.map((ticket) => ticket.id));
-  const applied = new Set(
-    recordedPositions(db, { effectiveOnly: true }).map((position) => position.hash),
-  );
-  const inputs = readEventLog(eventsDir).inputs.filter((input) => applied.has(input.hash));
-  const last = new Map<string, CursorPosition>();
-  for (const input of inputs.sort(compareFoldOrder)) {
-    const { event } = input;
-    if (!isKnownEvent(event) || event.kind === 'board.meta' || !wanted.has(event.ticket)) {
+function unansweredTickets(ctx: EventContext, candidates: readonly Ticket[]): Ticket[] {
+  const { actor, db, now } = ctx;
+  const lastComment = new Map<string, CursorPosition>();
+  for (const ticket of candidates) {
+    for (const comment of ticket.comments) {
+      if (comment.actor !== actor) {
+        continue;
+      }
+      const at = commentPosition(comment);
+      const best = lastComment.get(ticket.id);
+      if (best === undefined || comparePositions(at, best) > 0) {
+        lastComment.set(ticket.id, at);
+      }
+    }
+  }
+  if (lastComment.size === 0) {
+    return [...candidates];
+  }
+  const floor = [...lastComment.values()].sort(comparePositions)[0];
+  if (floor === undefined) {
+    return [...candidates];
+  }
+  const skip = new Set<string>();
+  for (const ticket of Object.values(ctx.view.state.tickets)) {
+    const inQuestion = lastComment.has(ticket.id);
+    for (const comment of ticket.comments) {
+      if (!inQuestion || comment.actor === actor) {
+        skip.add(comment.hash);
+      }
+    }
+  }
+  const after = inSnapshot(db, () =>
+    recordedPositions(db, { effectiveOnly: true, minWall: floor.ts.wall }),
+  )
+    .filter((p) => comparePositions(p, floor) > 0 && !skip.has(p.hash))
+    .sort(comparePositions);
+  const eventsDir = join(ctx.view.boardDir, 'events');
+  const reassigned = new Set<string>();
+  for (const position of after) {
+    now();
+    const outcome = readEventFile(eventsDir, `${position.hash}.json`);
+    if (outcome.status !== 'ok') {
+      continue;
+    }
+    const { event } = outcome.input;
+    if (!isKnownEvent(event) || event.kind === 'board.meta') {
+      continue;
+    }
+    const since = lastComment.get(event.ticket);
+    if (since === undefined || comparePositions(position, since) <= 0) {
       continue;
     }
     const assignee =
@@ -624,58 +774,81 @@ function assignedAt(
           ? event.body.to
           : null;
     if (assignee === actor) {
-      last.set(event.ticket, { hash: input.hash, ts: event.ts });
+      reassigned.add(event.ticket);
     }
   }
-  return last;
+  return candidates.filter(
+    (ticket) => !lastComment.has(ticket.id) || reassigned.has(ticket.id),
+  );
 }
 
-/** The `stop` text naming `tickets` (in id order), for `actor`. */
-function stopText(actor: string, tickets: readonly Ticket[]): string {
-  const ids = tickets.map((ticket) => ticket.id).join(', ');
-  const lines = [
-    `agentboard: ${actor} still holds ${ids} with no comment or hand-off since taking it. Before stopping, record where it stands:`,
-  ];
-  for (const ticket of tickets) {
-    const { id } = ticket;
-    if (ticket.lease !== null) {
-      lines.push(
-        `  agentboard release ${id} --as ${actor}   (it is held under a lease: release it when the work it locks is done)`,
-      );
-    }
+/** The command lines of one ticket in the `stop` text (`release` first under a lease). */
+function stopCommands(actor: string, ticket: Ticket): string[] {
+  const { id } = ticket;
+  const lines: string[] = [];
+  if (ticket.lease !== null) {
     lines.push(
-      `  agentboard handoff ${id} --to <actor> --status <status> --note "<what is done, what is next>" --as ${actor}`,
-      `  agentboard comment ${id} "<progress so far>" --as ${actor}`,
-      `  agentboard move ${id} blocked --as ${actor}   (when stuck)`,
+      `  agentboard release ${id} --as ${actor}   (it is held under a lease: release it when the work it locks is done)`,
     );
   }
-  return lines.join('\n');
+  lines.push(
+    `  agentboard handoff ${id} --to <actor> --status <status> --note "<what is done, what is next>" --as ${actor}`,
+    `  agentboard comment ${id} "<progress so far>" --as ${actor}`,
+    `  agentboard move ${id} blocked --as ${actor}   (when stuck)`,
+  );
+  return lines;
+}
+
+/** The first line of the `stop` text, naming the `shown` tickets. */
+function stopHeader(actor: string, shown: readonly Ticket[]): string {
+  const ids = shown.map((ticket) => ticket.id).join(', ');
+  const them = shown.length === 1 ? 'it' : 'them';
+  return `agentboard: ${actor} still holds ${ids} with no comment or hand-off since taking ${them}. Before stopping, record where ${shown.length === 1 ? 'it' : 'each'} stands:`;
+}
+
+/**
+ * The `stop` text naming `tickets` (in id order) for `actor`: as many
+ * tickets from the start as fit in `STOP_TEXT_LIMIT` with their commands,
+ * then, when any are left out, a last line `and <n> more`. Pure.
+ */
+function stopText(actor: string, tickets: readonly Ticket[]): string {
+  const render = (shown: readonly Ticket[]): string => {
+    const lines = [stopHeader(actor, shown), ...shown.flatMap((t) => stopCommands(actor, t))];
+    if (shown.length < tickets.length) {
+      lines.push(`and ${String(tickets.length - shown.length)} more`);
+    }
+    return lines.join('\n');
+  };
+  const full = render(tickets);
+  if (full.length <= STOP_TEXT_LIMIT) {
+    return full;
+  }
+  let best = render([]);
+  for (let k = 1; k < tickets.length; k += 1) {
+    const text = render(tickets.slice(0, k));
+    if (text.length > STOP_TEXT_LIMIT) {
+      break;
+    }
+    best = text;
+  }
+  return best;
 }
 
 /** `stop` (board-harness-hooks "Stop hook"; `runHook` step 6). Reads only. */
 function stop(strict: boolean, ctx: EventContext): HookOutcome {
-  const { actor, view } = ctx;
+  const { actor, view, now } = ctx;
   const candidates = heldTickets(view.state, actor).filter((ticket) => ticket.status !== 'blocked');
   if (candidates.length === 0) {
     return SILENT;
   }
-  const eventsDir = join(view.boardDir, 'events');
-  const since = inSnapshot(ctx.db, () => assignedAt(ctx.db, eventsDir, actor, candidates));
-  const silent = candidates.filter((ticket) => {
-    const start = since.get(ticket.id);
-    return ticket.comments.some(
-      (comment) =>
-        comment.actor === actor &&
-        (start === undefined ||
-          comparePositions({ hash: comment.hash, ts: comment.ts }, start) > 0),
-    );
-  });
-  const named = candidates.filter((ticket) => !silent.includes(ticket));
+  const named = unansweredTickets(ctx, candidates);
   if (named.length === 0) {
     return SILENT;
   }
   const text = stopText(actor, named);
-  if (strict && ctx.payload.stop_hook_active !== true) {
+  // The last deadline check before the answer: never a block after the budget.
+  now();
+  if (strict && ctx.payload.stop_hook_active === false) {
     return block(text);
   }
   return { exitCode: 0, stdout: document({ systemMessage: text }), stderr: '' };
@@ -719,19 +892,44 @@ function gitRoot(dir: string): string | null {
 }
 
 /**
+ * The real path of `path` (absolute): the path with every symbolic link
+ * resolved, or, when it does not exist, the real path of its nearest
+ * existing ancestor with the rest of the path appended. `path` itself
+ * when nothing of it can be resolved.
+ */
+function realPathOf(path: string): string {
+  const rest: string[] = [];
+  for (let current = path; ; current = dirname(current)) {
+    try {
+      return join(realpathSync(current), ...rest);
+    } catch {
+      // Not there (or not resolvable): try the parent.
+    }
+    if (dirname(current) === current) {
+      return path;
+    }
+    rest.unshift(basename(current));
+  }
+}
+
+/**
  * True when `target` (absolute) is a project file `pre-tool-use` checks:
  * inside the parent of `boardDir` or inside the checkout or linked
  * worktree `cwd` is in (`gitRoot`), and not exempt (in the board
  * directory, or with a `.board` component below the project directory).
+ * Decided on real paths (`realPathOf`) on every side.
  */
 function isProjectFile(target: string, boardDir: string, cwd: string): boolean {
-  if (within(target, boardDir)) {
+  const real = realPathOf(target);
+  const board = realPathOf(boardDir);
+  if (within(real, board)) {
     return false;
   }
-  const roots = [dirname(boardDir), gitRoot(cwd)];
+  const checkout = gitRoot(cwd);
+  const roots = [dirname(board), checkout === null ? null : realPathOf(checkout)];
   for (const root of roots) {
-    if (root !== null && within(target, root)) {
-      return !relative(root, target).split(sep).includes('.board');
+    if (root !== null && within(real, root)) {
+      return !relative(root, real).split(sep).includes('.board');
     }
   }
   return false;
@@ -739,11 +937,21 @@ function isProjectFile(target: string, boardDir: string, cwd: string): boolean {
 
 /**
  * True when the state file `file` records a warning at `t` with
- * `t <= now < t + WARN_INTERVAL_MS` (see `warnStatePath`). Never throws.
+ * `t <= now < t + WARN_INTERVAL_MS` (see `warnStatePath`): opened without
+ * following a link and without blocking, a regular file of at most
+ * `WARN_STATE_BYTES` bytes, read once. Never throws.
  */
 function recentlyWarned(file: string, now: number): boolean {
+  let fd: number | null = null;
   try {
-    const text = readFileSync(file, 'utf8').trim();
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > WARN_STATE_BYTES) {
+      return false;
+    }
+    const bytes = Buffer.alloc(WARN_STATE_BYTES);
+    const read = readSync(fd, bytes, 0, WARN_STATE_BYTES, 0);
+    const text = bytes.subarray(0, read).toString('utf8').trim();
     if (!/^\d+$/.test(text)) {
       return false;
     }
@@ -751,6 +959,14 @@ function recentlyWarned(file: string, now: number): boolean {
     return at <= now && now < at + WARN_INTERVAL_MS;
   } catch {
     return false;
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Already closed; nothing to release.
+      }
+    }
   }
 }
 
@@ -769,12 +985,28 @@ function recordWarning(file: string, now: number): void {
   }
 }
 
-/** The `pre-tool-use` text for `actor`. */
+/** The commands the `pre-tool-use` texts name, for `actor`. */
+function claimCommands(actor: string): string {
+  return `agentboard inbox --as ${actor} shows what is new, and agentboard claim <id> --as ${actor} takes a ticket.`;
+}
+
+/** The warn-mode `pre-tool-use` text for `actor`: claim, or carry on if the work is not ticketed. */
 function claimText(actor: string): string {
   return (
     `agentboard: ${actor} holds no ticket on the board. Claim the ticket this edit belongs to before changing project files: ` +
-    `agentboard inbox --as ${actor} shows what is new, and agentboard claim <id> --as ${actor} takes a ticket. ` +
-    'If this work is not ticketed, carry on.'
+    `${claimCommands(actor)} If this work is not ticketed, carry on.`
+  );
+}
+
+/**
+ * The strict `pre-tool-use` text for `actor`: the edit is refused, claim
+ * first, and if the work is not ticketed stop and ask the user. It never
+ * says to carry on and names no waiting or repeating of the edit.
+ */
+function denialText(actor: string): string {
+  return (
+    `agentboard: this edit is refused because ${actor} holds no ticket on the board. Claim the ticket it belongs to first: ` +
+    `${claimCommands(actor)} If this work is not ticketed, stop and ask the user instead of making the same edit once more.`
   );
 }
 
@@ -792,14 +1024,15 @@ function preToolUse(strict: boolean, ctx: EventContext): HookOutcome {
   if (heldTickets(view.state, actor).length > 0) {
     return SILENT;
   }
-  const text = claimText(actor);
+  // The last deadline check before the answer: never a block after the budget.
+  const now = ctx.now();
   if (strict) {
-    return block(text);
+    return block(denialText(actor));
   }
+  const text = claimText(actor);
   const session = payload.session_id;
   const file =
     typeof session === 'string' && session !== '' ? warnStatePath(ctx.stateDir, session) : null;
-  const now = ctx.now();
   if (file !== null) {
     if (recentlyWarned(file, now)) {
       return SILENT;
@@ -955,8 +1188,9 @@ export function runHook(request: HookRequest): HookOutcome {
     if (args === null) {
       return continueWith(LINES.arguments);
     }
-    const now = request.now ?? Date.now;
-    const deadline = (request.startedAt ?? now()) + (request.budgetMs ?? HOOK_BUDGET_MS);
+    const clock = request.now ?? Date.now;
+    const deadline = (request.startedAt ?? clock()) + (request.budgetMs ?? HOOK_BUDGET_MS);
+    const now = boundedClock(clock, deadline);
     const payload = parseHookPayload(request.payload);
     const cwd = discoveryCwd(payload, request.cwd);
     const actor = resolveHookActor(args.as, request.env);
@@ -966,7 +1200,12 @@ export function runHook(request: HookRequest): HookOutcome {
       return SILENT;
     }
     if (actor === null) {
-      return args.event === 'session-start' ? sessionStartContext(LINES.noActor) : SILENT;
+      if (args.event !== 'session-start') {
+        return SILENT;
+      }
+      const given = args.as !== undefined && args.as !== '' ? args.as : request.env.AGENTBOARD_ACTOR;
+      const set = given !== undefined && given !== '';
+      return sessionStartContext(set ? LINES.invalidActor : LINES.noActor);
     }
     const db = openHookCache(boardDir, deadline, now);
     if (db === null) {
@@ -979,9 +1218,8 @@ export function runHook(request: HookRequest): HookOutcome {
       } catch {
         return continueWith(LINES.unreadable);
       }
-      if (now() > deadline) {
-        return continueWith(LINES.budget);
-      }
+      // The deadline check after the cache read: a reading past it throws.
+      now();
       return answerEvent(args.event, args.strict, {
         actor,
         payload,
@@ -989,13 +1227,15 @@ export function runHook(request: HookRequest): HookOutcome {
         db,
         cwd,
         now,
+        deadline,
         stateDir: request.stateDir ?? tmpdir(),
       });
     } finally {
+      rollback(db);
       db.close();
     }
-  } catch {
-    return continueWith(LINES.internal);
+  } catch (error) {
+    return continueWith(error instanceof OutOfTime ? LINES.budget : LINES.internal);
   }
 }
 
@@ -1019,6 +1259,7 @@ export function readHookStdin(input: HookInput, timeoutMs: number): Promise<stri
   return new Promise((resolvePayload) => {
     let settled = false;
     let text = '';
+    let bytes = 0;
     const decoder = new TextDecoder('utf-8');
     const iterator = input[Symbol.asyncIterator]();
     const settle = (value: string): void => {
@@ -1028,22 +1269,26 @@ export function readHookStdin(input: HookInput, timeoutMs: number): Promise<stri
         resolvePayload(value);
       }
     };
-    // At the deadline the payload is given up and the input let go, so an
-    // input that never ends does not keep the process alive: a stream is
-    // destroyed (its iterator's `return` would only be queued behind the
-    // pending `next`), any other input is asked to return.
+    // Lets the input go, so an input that never ends does not keep the
+    // process alive: a stream is destroyed (its iterator's `return` would
+    // only be queued behind a pending `next`), any other input is asked to
+    // return.
+    const letGo = (): void => {
+      try {
+        if ('destroy' in input && typeof input.destroy === 'function') {
+          input.destroy();
+        } else {
+          iterator.return?.()?.catch(() => undefined);
+        }
+      } catch {
+        // The input refused to be released; nothing more can be done.
+      }
+    };
+    // At the deadline the payload is given up and the input let go.
     const timer = setTimeout(
       () => {
         settle('');
-        try {
-          if ('destroy' in input && typeof input.destroy === 'function') {
-            input.destroy();
-          } else {
-            iterator.return?.()?.catch(() => undefined);
-          }
-        } catch {
-          // The input refused to be released; nothing more can be done.
-        }
+        letGo();
       },
       Math.max(0, timeoutMs),
     );
@@ -1059,6 +1304,13 @@ export function readHookStdin(input: HookInput, timeoutMs: number): Promise<stri
             return;
           }
           const chunk = next.value;
+          bytes += typeof chunk === 'string' ? Buffer.byteLength(chunk, 'utf8') : chunk.byteLength;
+          if (bytes > HOOK_STDIN_LIMIT) {
+            // Over the cap: the payload is unreadable and the rest is not read.
+            settle('');
+            letGo();
+            return;
+          }
           text += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true });
         }
       } catch {
