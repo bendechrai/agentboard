@@ -168,11 +168,13 @@ export function errorDocument(error: unknown, context?: HintContext): ErrorDocum
  *    null; `id` the parsed `id` value when there is one (undefined when
  *    parsing failed); `actor` the parsed `--as` when non-empty (when
  *    parsing failed: the `as` of the relaxed re-parse, `parsedActor`),
- *    else `AGENTBOARD_ACTOR` from `io.env` when non-empty, else
- *    undefined, and in every case only when that name passes the actor
- *    check (`checkActorName`), else undefined, so the hint writes
- *    `<actor>` for a refused or unchecked name (actor-secret-check
- *    design.md "No echo of an unchecked actor"). So `close <id> --as orch`
+ *    else `AGENTBOARD_ACTOR` from `io.env` when non-empty and the command
+ *    uses the variable as its actor (`usesActorEnv`; a command that
+ *    ignores it never repeats it), else undefined, and in every case
+ *    only when that name passes the actor check (`checkActorName`), else
+ *    undefined, so the hint writes `<actor>` for a refused or unchecked
+ *    name (actor-secret-check design.md "No echo of an unchecked
+ *    actor"). So `close <id> --as orch`
  *    without a disposition hints commands with `--as orch`, and the same
  *    with a token in place of `orch` hints `--as <actor>`. The same
  *    applies to a failing streaming command in `runCliAsync`.
@@ -303,7 +305,7 @@ export function commandActor(
   if (given !== undefined && given !== '') {
     checkActorName(given, givenSource);
   }
-  if (!(command.writes || command.tracksCursor === true)) {
+  if (!usesActorEnv(command)) {
     return null;
   }
   const actor = resolveActor(given, env);
@@ -312,6 +314,15 @@ export function commandActor(
     checkActorName(actor, ACTOR_ENV);
   }
   return actor;
+}
+
+/**
+ * True when `command` uses `AGENTBOARD_ACTOR` as its actor when `--as` is
+ * not given: it writes or tracks a per-actor cursor (`commandActor`
+ * resolves an actor for exactly these). Pure.
+ */
+export function usesActorEnv(command: CommandSpec): boolean {
+  return command.writes || command.tracksCursor === true;
 }
 
 /**
@@ -381,14 +392,18 @@ function nonEmpty(value: unknown): string | undefined {
 
 /**
  * The hint context of a failed CLI run (step 5 of `runCli`): its actor is
- * the `--as` or `AGENTBOARD_ACTOR` the run would have used, only when that
- * name passes the actor check (`checkedActor`).
+ * the `--as` or, for a command that uses the variable as its actor
+ * (`usesActorEnv`), the `AGENTBOARD_ACTOR` the run would have used, only
+ * when that name passes the actor check (`checkedActor`). A command that
+ * ignores the variable never repeats it, whatever its value.
  */
 function cliHintContext(io: CliIo, parsed: ParsedCommand | null): HintContext {
   const fromEnv = nonEmpty(io.env[ACTOR_ENV]);
   if (parsed !== null) {
     const id = nonEmpty(parsed.values.id);
-    const actor = checkedActor(nonEmpty(parsed.values.as) ?? fromEnv);
+    const actor = checkedActor(
+      nonEmpty(parsed.values.as) ?? (usesActorEnv(parsed.command) ? fromEnv : undefined),
+    );
     const closeDecision =
       parsed.command.name === 'close' ? closeDecisionOf(parsed.values) : undefined;
     const force = parsed.command.name === 'release' && parsed.values.force === true;
@@ -402,7 +417,11 @@ function cliHintContext(io: CliIo, parsed: ParsedCommand | null): HintContext {
     };
   }
   const command = leadingCommand(io.argv);
-  const actor = checkedActor(parsedActor(io.argv, command) ?? fromEnv);
+  const spec = command === null ? undefined : findCommand(command);
+  const actor = checkedActor(
+    parsedActor(io.argv, command) ??
+      (spec !== undefined && usesActorEnv(spec) ? fromEnv : undefined),
+  );
   return {
     surface: 'cli',
     command,

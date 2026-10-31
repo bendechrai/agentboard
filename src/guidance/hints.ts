@@ -362,11 +362,13 @@ export function hintStep(
  * - `invalid-actor` (board-cli "Actor names are checked"): says to choose
  *   a name of the actor form (the word `form` and the form itself appear),
  *   one stable name per role, and how to pass it on the surface: CLI:
- *   `--as <actor>` or `AGENTBOARD_ACTOR` (both literally), and for
- *   `handoff` also `--to <actor>`; MCP: the `as argument` and the step
- *   `'agentboard mcp --as <actor>'`, and for `handoff` also the `to
- *   argument`, never `set AGENTBOARD_ACTOR`. Ends with step `help
- *   <command>`. Always the placeholder `<actor>`, never A: the context's
+ *   `--as <actor>`, and `set AGENTBOARD_ACTOR` exactly when the command
+ *   uses the variable as its actor (it writes or tracks a cursor; no
+ *   other command's hint names the variable), and for `handoff`, after
+ *   the actor, `, and the new assignee with --to <actor>`; MCP: the `as
+ *   argument` and the step `'agentboard mcp --as <actor>'`, and for
+ *   `handoff` `, and the new assignee in the to argument`, never `set
+ *   AGENTBOARD_ACTOR`. Ends with step `help <command>`. Always the placeholder `<actor>`, never A: the context's
  *   actor is the refused name or has not been checked (actor-secret-check
  *   design.md "No echo of an unchecked actor"), and the hint does not know
  *   which name was refused, so it is the same for every context actor
@@ -708,15 +710,23 @@ const rebuildHint: HintTemplate = (h) =>
 const ACTOR_FORM_TEXT =
   'the actor form (1 to 32 ASCII letters, digits, . _ - or @, the first a letter or digit)';
 
-/** The template of `invalid-actor` (always the placeholder `<actor>`, see `renderHint`). */
+/**
+ * The template of `invalid-actor` (always the placeholder `<actor>`, see
+ * `renderHint`). On the CLI, `set AGENTBOARD_ACTOR` is named only for a
+ * command that uses the variable as its actor (one that writes or tracks
+ * a cursor); for `handoff`, the new assignee follows the actor.
+ */
 const invalidActorHint: HintTemplate = (h) => {
   const handoff = h.command?.name === 'handoff';
+  const choose = `choose a name of ${ACTOR_FORM_TEXT}, one stable name per role, and`;
   if (h.context.surface === 'mcp') {
-    const to = handoff ? ' and the new assignee in the to argument' : '';
-    return `choose a name of ${ACTOR_FORM_TEXT}, one stable name per role, and pass it in the as argument of each call${to}, or start the server with ${h.step('mcp', [['as', '<actor>']])}; see ${h.help()}`;
+    const to = handoff ? ', and the new assignee in the to argument' : '';
+    return `${choose} pass it in the as argument of each call or start the server with ${h.step('mcp', [['as', '<actor>']])}${to}; see ${h.help()}`;
   }
-  const to = handoff ? ' and the new assignee with --to <actor>' : '';
-  return `choose a name of ${ACTOR_FORM_TEXT}, one stable name per role, and pass it with --as <actor> or set AGENTBOARD_ACTOR${to}; see ${h.help()}`;
+  const usesEnv = h.command !== undefined && (h.command.writes || h.command.tracksCursor === true);
+  const env = usesEnv ? ' or set AGENTBOARD_ACTOR' : '';
+  const to = handoff ? ', and the new assignee with --to <actor>' : '';
+  return `${choose} pass it with --as <actor>${env}${to}; see ${h.help()}`;
 };
 
 /** The template of `secret-like`. */
@@ -1047,13 +1057,7 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     `a human must inspect the file named in the message; compare the cache with the events using ${h.step('rebuild', [['check', true]])}`,
   busy: (h) =>
     h.command?.name === 'claim'
-      ? `another process held the board cache too long; if you were waiting, you are still in the queue: leave it with ${h.step(
-          'unqueue',
-          [
-            ['id', h.id],
-            ['as', h.actor],
-          ],
-        )}, or run the command again`
+      ? `another process held the board cache too long; if you were waiting, you are still in the queue: leave it with ${h.step('unqueue', [['id', h.id], ['as', h.actor]])}, or run the command again`
       : 'another process held the board cache too long; run the command again',
   'no-cache': rebuildHint,
   'schema-mismatch': rebuildHint,

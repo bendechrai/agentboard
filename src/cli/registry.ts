@@ -102,7 +102,7 @@ export const ACTOR_FLAG: ArgSpec = {
   required: false,
   repeatable: false,
   summary:
-    'Actor recorded on the event (falls back to AGENTBOARD_ACTOR); 1 to 32 ASCII letters, digits, . _ - or @, the first a letter or digit',
+    'Actor recorded on the event (falls back to AGENTBOARD_ACTOR); checked: 1 to 32 ASCII letters, digits, . _ - or @, the first a letter or digit',
 };
 
 /** Flags accepted by every command, in addition to its own: `--json` and `--as`. */
@@ -888,10 +888,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       },
     ],
     exitCodes: [
-      {
-        code: 0,
-        meaning: 'The board was created, already existed, or was moved into the host repository',
-      },
+      { code: 0, meaning: 'The board was created, already existed, or was moved into the host repository' },
       EXIT_USAGE,
       EXIT_INVALID_ACTOR,
       { code: 1, reason: 'git-missing', meaning: 'git could not be run' },
@@ -922,8 +919,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       {
         code: 1,
         reason: 'remote-mismatch',
-        meaning:
-          'The existing standalone board already has a remote with another URL; nothing changed',
+        meaning: 'The existing standalone board already has a remote with another URL; nothing changed',
       },
       {
         code: 1,
@@ -1116,14 +1112,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         summary: 'List the tickets of the OpenSpec change add-parser as JSON',
       },
     ],
-    exitCodes: [
-      EXIT_OK,
-      EXIT_USAGE,
-      EXIT_INVALID_ACTOR,
-      EXIT_TASK_REF,
-      EXIT_NO_BOARD,
-      EXIT_INTEGRITY,
-    ],
+    exitCodes: [EXIT_OK, EXIT_USAGE, EXIT_INVALID_ACTOR, EXIT_TASK_REF, EXIT_NO_BOARD, EXIT_INTEGRITY],
     positionals: [],
     flags: [
       flag('status', 'string', 'Only tickets in this status'),
@@ -1384,12 +1373,13 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'release',
     summary: 'Give up a ticket you hold',
     description:
-      "Clears the assignment of a ticket the actor holds, leaving its status unchanged, so another actor (or the next waiter) can have it. Only the current assignee can release a ticket, except with --force and a --reason, which breaks another actor's hold and records who did it and why; reserve it for the orchestrator or a human, after checking the holder is gone.",
+      'Clears the assignment of a ticket the actor holds, leaving its status unchanged, so another actor (or the next waiter) can have it. Only the current assignee can release a ticket, except with --force and a --reason, which breaks another actor\'s hold and records who did it and why; reserve it for the orchestrator or a human, after checking the holder is gone.',
     group: 'lifecycle',
     examples: [
       { command: 'agentboard release 01J9K3 --as impl', summary: 'Give up ticket 01J9K3' },
       {
-        command: 'agentboard release 01J9K3 --force --reason "merger-1 crashed" --as orchestrator',
+        command:
+          'agentboard release 01J9K3 --force --reason "merger-1 crashed" --as orchestrator',
         summary: 'Break the hold of a crashed holder on ticket 01J9K3',
       },
     ],
@@ -1737,8 +1727,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         summary: 'Close ticket 01J9K3, which made no decision',
       },
       {
-        command:
-          'agentboard close 01J9K3 --no-decision --unplanned "abandoned: superseded" --as orch',
+        command: 'agentboard close 01J9K3 --no-decision --unplanned "abandoned: superseded" --as orch',
         summary: 'Close a blocked ad hoc ticket, recording why its work was never planned',
       },
       {
@@ -1859,7 +1848,9 @@ export const COMMANDS: readonly CommandSpec[] = [
       });
       return {
         json: result,
-        text: result.entries.map((entry) => `${renderInboxLine(entry, actorOf(ctx))}\n`).join(''),
+        text: result.entries
+          .map((entry) => `${renderInboxLine(entry, actorOf(ctx))}\n`)
+          .join(''),
       };
     },
   },
@@ -1957,7 +1948,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       EXIT_INTEGRITY,
     ],
     actorHelp:
-      'The actor of the write actions of the page; only this enables writes (AGENTBOARD_ACTOR is ignored)',
+      'The actor of the write actions of the page; only this enables writes (AGENTBOARD_ACTOR is ignored); checked: 1 to 32 ASCII letters, digits, . _ - or @, the first a letter or digit',
     positionals: [],
     flags: [
       flag('port', 'integer', 'Port to listen on, 0 to 65535 (default 0: a free port)'),
@@ -2414,7 +2405,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       EXIT_NO_BOARD,
     ],
     actorHelp:
-      "Default actor for tool calls: a call's own as comes first, then this, then AGENTBOARD_ACTOR",
+      "Default actor for tool calls: a call's own as comes first, then this, then AGENTBOARD_ACTOR; checked: 1 to 32 ASCII letters, digits, . _ - or @, the first a letter or digit",
     positionals: [],
     flags: [],
     exclusive: [],

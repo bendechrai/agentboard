@@ -168,7 +168,10 @@ export function synopsis(command: CommandSpec): string {
  * that writes or tracks a cursor; for any other it reads `string, optional`
  * with the summary `command.actorHelp` when present (`serve`: the actor of
  * the web app's write actions; `mcp`: the server's default actor for tool
- * calls), else `Accepted and ignored by this command`.
+ * calls), else `ACTOR_UNUSED_HELP`, which says that a given name is
+ * checked, gives the actor form and says the command does not otherwise
+ * use it (board-agent-guidance "Guide states the actor form", scenario
+ * "Help of --as states the check").
  *
  * Every line has no trailing spaces; the text ends with one newline. Pure.
  */
@@ -221,7 +224,7 @@ export function renderCommandHelp(source: HelpSource, command: CommandSpec): str
           : [
               ACTOR_FORM,
               typeText({ ...flag, required: false }),
-              command.actorHelp ?? 'Accepted and ignored by this command',
+              command.actorHelp ?? ACTOR_UNUSED_HELP,
             ];
       }),
     ),
@@ -414,6 +417,14 @@ const WRAP_COLUMNS = 78;
 /** The name of the global actor flag, and its form in help. */
 const ACTOR = 'as';
 const ACTOR_FORM = '--as <actor>';
+
+/**
+ * The `--as` summary of a command that neither writes nor tracks a cursor
+ * and has no `actorHelp`: a given name is still checked (board-cli "Actor
+ * names are checked"), and otherwise not used.
+ */
+const ACTOR_UNUSED_HELP =
+  'Accepted by every command and checked when given (1 to 32 ASCII letters, digits, . _ - or @, the first a letter or digit); not otherwise used by this command';
 
 /** True when `command` requires an actor (`--as` or `AGENTBOARD_ACTOR`). */
 function needsActor(command: CommandSpec): boolean {

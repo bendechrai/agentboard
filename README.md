@@ -412,8 +412,8 @@ Every command that writes, and `inbox` and `watch` (which keep a per-actor
 cursor), needs an actor: `--as <actor>` or, as the fallback, the
 `AGENTBOARD_ACTOR` environment variable. With neither, the command exits 1
 and says so. The actor is never inferred from the OS user. Every command
-accepts `--as`, and commands that do not need it ignore it, so an agent can
-pass it on every call.
+accepts `--as`, so an agent can pass it on every call; a command that needs
+no actor checks a given name (below) and does not otherwise use it.
 
 The one exception is `serve`: it needs no actor, ignores
 `AGENTBOARD_ACTOR`, and accepts write actions from its web page only when
@@ -2599,7 +2599,7 @@ argument and `agentboard mcp --as <actor>`.
 | Code | Meaning |
 | ---- | ------- |
 | 0 | success |
-| 1 | usage error (including an unknown command or flag), missing actor, refused text or close disposition, `rebuild --check` found a difference, an `agents install` target was refused or nothing was detected, `agents check` found guidance that is not current, `serve` could not use its port (`port-in-use`) or was given an empty `--as` or both `--open` and `--no-open`, or `top` was not run in an interactive terminal (`not-a-tty`) |
+| 1 | usage error (including an unknown command or flag), missing actor, a refused actor name (`invalid-actor`: a secret pattern or not of the actor form), refused text or close disposition, `rebuild --check` found a difference, an `agents install` target was refused or nothing was detected, `agents check` found guidance that is not current, `serve` could not use its port (`port-in-use`) or was given an empty `--as` or both `--open` and `--no-open`, or `top` was not run in an interactive terminal (`not-a-tty`) |
 | 2 | board not found or unreadable |
 | 3 | sync problem that needs a human |
 | 4 | action rejected by board state: `invalid-transition`, `already-assigned`, `queued`, `not-assignee`, `invalid-queue`, `wait-timeout`, `wait-interrupted`, `unknown-ticket`, `duplicate-create`, `needs-scope-disposition`, `already-linked`, `checklist-index`, `reconcile-blocked`, `reconcile-ambiguous` |

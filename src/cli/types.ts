@@ -289,9 +289,11 @@ export interface CommandSpec {
   readonly exitCodes: readonly ExitCodeSpec[];
   /**
    * Help text for `--as` on a command that neither writes nor tracks a
-   * cursor but still uses the actor: one ASCII line replacing
-   * `Accepted and ignored by this command` on the `--as` line of its help
-   * (the line still reads `string, optional`). Only `serve` and `mcp`
+   * cursor but still uses the actor: one ASCII line replacing the default
+   * summary (that a given name is checked and otherwise not used) on the
+   * `--as` line of its help (the line still reads `string, optional`); it
+   * states the actor form too (board-agent-guidance "Guide states the
+   * actor form"). Only `serve` and `mcp`
    * have it: on `serve`, `--as` is the actor of the web app's write
    * actions and the only way to enable them; on `mcp`, the server's
    * default actor for tool calls. Absent on

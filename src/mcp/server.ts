@@ -101,6 +101,7 @@ import {
   errorDocument,
   exitCodeFor,
   runContext,
+  usesActorEnv,
 } from '../cli/main.js';
 import { ACTOR_ENV } from '../cli/parse.js';
 import type { Env } from '../cli/types.js';
@@ -137,9 +138,10 @@ export interface ToolErrorContent {
    * context)` with surface `mcp`, `command` the tool's command (null for an
    * unknown or excluded tool name), `id` the call's `id` argument when it
    * is a string, and `actor` the call's `as`, else the server's `--as`,
-   * else the server's `AGENTBOARD_ACTOR` (undefined when none is set, and
-   * undefined when that name fails the actor check, so the hint writes
-   * `<actor>`).
+   * else, for a tool that uses the variable as its actor (one whose
+   * command writes or tracks a cursor), the server's `AGENTBOARD_ACTOR`
+   * (undefined when none is set, when the tool ignores the variable, or
+   * when that name fails the actor check, so the hint writes `<actor>`).
    * Null only when `reason` is null. Always present. The exit code, reason
    * and message are exactly the CLI's for the same failure; the hint may
    * differ, because it is written for a tool caller (tool calls instead of
@@ -480,10 +482,13 @@ function nonEmpty(value: unknown): string | undefined {
 function mcpHintContext(options: McpServerOptions, name: string, args: unknown): HintContext {
   const given = isObject(args) ? args : {};
   const id = nonEmpty(given.id);
-  const actor = checkedActor(
-    nonEmpty(given.as) ?? nonEmpty(options.actor) ?? nonEmpty(options.env[ACTOR_ENV]),
-  );
-  const command = findTool(name)?.command.name ?? null;
+  const tool = findTool(name);
+  // The server's AGENTBOARD_ACTOR is named only for a tool that uses it as
+  // its actor; a tool that ignores it never repeats it.
+  const fromEnv =
+    tool !== undefined && usesActorEnv(tool.command) ? nonEmpty(options.env[ACTOR_ENV]) : undefined;
+  const actor = checkedActor(nonEmpty(given.as) ?? nonEmpty(options.actor) ?? fromEnv);
+  const command = tool?.command.name ?? null;
   const closeDecision = command === 'close' ? closeDecisionOf(given) : undefined;
   const force = command === 'release' && given.force === true;
   return {
