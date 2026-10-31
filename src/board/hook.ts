@@ -34,7 +34,7 @@
  */
 
 import { statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 
 import type { BoardState, Ticket } from '../events/fold.js';
 import { CACHE_FILE, openCache, readState } from '../store/cache.js';
@@ -154,12 +154,15 @@ export interface HookViewOptions {
 
 /**
  * Discovery for a hook: the board directory `locateBoard` resolves from
- * `cwd`, when a board exists there (`boardExists`), else null. Creates
- * nothing and never throws.
+ * `cwd`, when a board exists there (`boardExists`), else null. The `git`
+ * child of discovery is bounded by the time left until `deadline`; one
+ * that has not answered by then counts as git failing, so discovery
+ * falls back to `./.board` (board-harness-hooks "Hook command and
+ * protocol"). Creates nothing and never throws.
  */
-function discoverBoard(cwd: string, env: Env): string | null {
+function discoverBoard(cwd: string, env: Env, deadline: number, now: () => number): string | null {
   try {
-    const { dir } = locateBoard({ cwd, env });
+    const { dir } = locateBoard({ cwd, env, timeoutMs: Math.max(1, deadline - now()) });
     return boardExists(dir) ? dir : null;
   } catch {
     return null;
@@ -203,11 +206,12 @@ function readCacheState(boardDir: string, deadline: number, now: () => number): 
  * until `options.deadline`. Never throws.
  */
 export function readHookView(options: HookViewOptions): HookView | null {
-  const boardDir = discoverBoard(options.cwd, options.env);
+  const now = options.now ?? Date.now;
+  const boardDir = discoverBoard(options.cwd, options.env, options.deadline, now);
   if (boardDir === null) {
     return null;
   }
-  const state = readCacheState(boardDir, options.deadline, options.now ?? Date.now);
+  const state = readCacheState(boardDir, options.deadline, now);
   return state === null ? null : { boardDir, state };
 }
 
@@ -322,18 +326,21 @@ function parseHookArgs(argv: readonly string[]): HookArgs | null {
 /**
  * The directory discovery starts from: the payload's `cwd` when it is a
  * non-empty string naming an existing directory (relative to `cwd`),
- * else `cwd` itself.
+ * else `cwd` itself. An empty `cwd` is a process whose directory no
+ * longer exists (`HookProcessIo.cwd`): then only an absolute payload
+ * `cwd` can name a directory, and null means there is nowhere to look.
  */
-function discoveryCwd(payload: HookPayload, cwd: string): string {
+function discoveryCwd(payload: HookPayload, cwd: string): string | null {
   const given = payload.cwd;
+  const fallback = cwd === '' ? null : cwd;
   if (typeof given !== 'string' || given === '') {
-    return cwd;
+    return fallback;
   }
   try {
-    const dir = resolve(cwd, given);
-    return statSync(dir).isDirectory() ? dir : cwd;
+    const dir = cwd === '' ? given : resolve(cwd, given);
+    return isAbsolute(dir) && statSync(dir).isDirectory() ? dir : fallback;
   } catch {
-    return cwd;
+    return fallback;
   }
 }
 
@@ -354,11 +361,10 @@ function sessionStartContext(text: string): HookOutcome {
 }
 
 /**
- * The answer of `event` for `actor` on a readable board. The events do
- * not answer yet: every event continues silently once the board is
- * readable. What each prints (board-harness-hooks "Session start hook",
- * "Stop hook", "Pre-tool-use claim check") is task group 2 of
- * add-harness-integration (`hooks/events`), which replaces this body.
+ * The answer of `event` for `actor` on a readable board. No event prints
+ * anything yet: every one continues silently (board-harness-hooks
+ * "Session start hook", "Stop hook" and "Pre-tool-use claim check" say
+ * what each will print).
  */
 function answerEvent(
   event: HookEvent,
@@ -427,9 +433,9 @@ export function runHook(request: HookRequest): HookOutcome {
     const payload = parseHookPayload(request.payload);
     const cwd = discoveryCwd(payload, request.cwd);
     const actor = resolveHookActor(args.as, request.env);
-    const boardDir = discoverBoard(cwd, request.env);
+    const boardDir = cwd === null ? null : discoverBoard(cwd, request.env, deadline, now);
     if (boardDir === null) {
-      // No board: silent, whether or not there is an actor.
+      // No board (or nowhere to look): silent, whether or not there is an actor.
       return SILENT;
     }
     if (actor === null) {
@@ -537,6 +543,11 @@ export function isHookInvocation(argv: readonly string[]): boolean {
 export interface HookProcessIo {
   /** The arguments after `hook`. */
   readonly argv: readonly string[];
+  /**
+   * The process directory, or `''` when the process has none any more
+   * (`process.cwd()` fails after the directory was removed under it):
+   * discovery then starts from the payload's `cwd` alone.
+   */
   readonly cwd: string;
   readonly env: Env;
   readonly stdin: HookInput;

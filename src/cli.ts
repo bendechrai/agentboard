@@ -123,22 +123,58 @@ const stderr = (text: string): void => {
  * argument error is the hook's exit 0 and one line, never the parser's
  * exit 1), unless `--help` or `-h` asks for the command's help
  * (`isHookInvocation`). The module is loaded only for `hook`.
+ *
+ * The hook fails open beyond the runner too (board-harness-hooks "Hook
+ * command and protocol"): a process directory removed under it makes
+ * `process.cwd()` throw, so it is read here, inside the guard, and an
+ * empty directory is passed (discovery then uses the payload's `cwd`
+ * alone); stdout and stderr get an `error` listener that drops a broken
+ * pipe or a full device, which would otherwise end the process with a
+ * stack trace and exit 1; and any other error is exit 0 with nothing
+ * printed.
  */
 const hook = argv[0] === 'hook' ? await import('./board/hook.js') : null;
 const isHook = hook !== null && hook.isHookInvocation(argv);
 const mcp = isHook ? null : mcpInvocation();
 
+/** `process.cwd()`, or `''` when the directory no longer exists. */
+function hookCwd(): string {
+  try {
+    return process.cwd();
+  } catch {
+    return '';
+  }
+}
+
+/** Writes `text` to `stream`, dropping any failure (the stream's own errors are dropped too). */
+function writeDropping(stream: NodeJS.WriteStream, text: string): void {
+  try {
+    stream.write(text);
+  } catch {
+    // A closed or failing stream: the hook has nothing more to say.
+  }
+}
+
 if (hook !== null && isHook) {
-  process.exitCode = await hook.runHookProcess({
-    argv: argv.slice(1),
-    cwd: process.cwd(),
-    env: process.env,
-    stdin: process.stdin,
-    stdout: (text) => {
-      process.stdout.write(text);
-    },
-    stderr,
-  });
+  const dropStreamError = (): void => undefined;
+  process.stdout.on('error', dropStreamError);
+  process.stderr.on('error', dropStreamError);
+  try {
+    process.exitCode = await hook.runHookProcess({
+      argv: argv.slice(1),
+      cwd: hookCwd(),
+      env: process.env,
+      stdin: process.stdin,
+      stdout: (text) => {
+        writeDropping(process.stdout, text);
+      },
+      stderr: (text) => {
+        writeDropping(process.stderr, text);
+      },
+    });
+  } catch {
+    process.exitCode = 0;
+  }
 } else if (mcp !== null) {
   const { serveMcp } = await import('./mcp/server.js');
   process.exitCode = await serveMcp({
