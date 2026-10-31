@@ -102,6 +102,28 @@ export const SESSION_CONTEXT_LIMIT = 4000;
 export const HELD_LINE_LIMIT = 2000;
 
 /**
+ * The most characters of the `stop` text (board-harness-hooks "Stop
+ * hook"), the `systemMessage` in warn mode and the stderr text (without
+ * its final newline) in strict mode. The tickets to name are written in
+ * id order, each with its commands (`release` first for a ticket with a
+ * lease), as many as fit, cut at a ticket boundary; when any are left out
+ * the text ends with a line `and <n> more`, `<n>` the number left out,
+ * and the text including that line is still at most this long. A ticket
+ * left out is named nowhere in the text.
+ */
+export const STOP_TEXT_LIMIT = 2000;
+
+/**
+ * The most bytes of payload the hook reads from stdin (board-harness-hooks
+ * "Hook command and protocol"). A payload of exactly this many bytes is
+ * read and parsed; a longer one is not read past the limit (the input is
+ * let go at once, without waiting for its end) and is treated as an
+ * unreadable payload, `{}`: `pre-tool-use` then passes silently and strict
+ * `stop` answers as warn mode.
+ */
+export const HOOK_STDIN_LIMIT = 1_048_576;
+
+/**
  * The tools whose calls `pre-tool-use` checks (board-harness-hooks
  * "Pre-tool-use claim check"), matched exactly, case included. The target
  * is `tool_input.file_path`, or for `NotebookEdit` `tool_input.notebook_path`
@@ -128,7 +150,12 @@ export const WARN_INTERVAL_MS = 600_000;
  * on the hook's clock, as decimal digits. A warning is suppressed when the
  * recorded time `t` satisfies `t <= now < t + WARN_INTERVAL_MS`; a missing
  * or unreadable file, any other content, or a time later than `now` (a
- * clock set back) counts as no warning. The file is written only when a
+ * clock set back) counts as no warning. The file is read without
+ * following a symbolic link and without blocking (opened `O_RDONLY |
+ * O_NOFOLLOW | O_NONBLOCK`), only when `fstat` says it is a regular file,
+ * and at most its first 64 bytes: a symbolic link (to anything, a FIFO or
+ * a file holding a recent time included), a FIFO, a directory or any other
+ * kind of file at the name counts as no warning. The file is written only when a
  * warning is printed in warn mode, replaced atomically (a temporary file
  * in `stateDir`, then a rename, so a symbolic link at the name is replaced
  * and never followed), and a failure to read or write it never stops the
@@ -175,6 +202,13 @@ export function parseHookPayload(text: string): HookPayload {
  * (`isActorName`: a secret pattern, or outside the actor form
  * `^[A-Za-z0-9][A-Za-z0-9._@-]{0,31}$`; board-cli "Actor names are
  * checked"). Such a name is therefore never repeated in hook output. Pure.
+ *
+ * `session-start` tells the two cases apart (board-harness-hooks "Hook
+ * actor resolution"): with no actor set (neither a non-empty `--as` nor a
+ * non-empty `AGENTBOARD_ACTOR`) its line says no actor is set; with an
+ * actor set that this function refuses, its line says the actor is not a
+ * valid actor name. Both lines name `AGENTBOARD_ACTOR` and `--as`, differ
+ * from each other, and repeat no part of the refused name.
  */
 export function resolveHookActor(given: string | undefined, env: Env): string | null {
   const fromEnv = env.AGENTBOARD_ACTOR;
@@ -815,7 +849,9 @@ function answerEvent(event: HookEvent, strict: boolean, ctx: EventContext): Hook
  *    `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":<text>}}`
  *    and a newline, whose text is one line naming `AGENTBOARD_ACTOR` and
  *    `--as` (and no actor value); where there is no board, stdout is
- *    empty. The cache is not read.
+ *    empty. The cache is not read. When an actor was set (`--as` or
+ *    `AGENTBOARD_ACTOR` non-empty) but refused, the line is the
+ *    invalid-actor line instead (see `resolveHookActor`).
  * 5. The board is read with `readHookView` (discovery from the payload's
  *    `cwd`, see `HookViewOptions.cwd`), with the deadline
  *    `startedAt + budgetMs`. A null view is exit 0 with stdout empty and
@@ -836,22 +872,39 @@ function answerEvent(event: HookEvent, strict: boolean, ctx: EventContext): Hook
  *      nor skipped). The cursor then advances over the delivered entries
  *      (only those, when truncated: see `SESSION_CONTEXT_LIMIT`); with no
  *      entry delivered nothing is written. This is the only write any
- *      event makes to the board.
+ *      event makes to the board. The event files read are those of the
+ *      entries delivered and at most one more (to know there are more):
+ *      the omitted count comes from the cache, not from reading the
+ *      omitted entries' files. No event file is read while the cache
+ *      write lock is held: the lock is taken only to write the cursor, in
+ *      one attempt bounded by the time left (no retry past the deadline);
+ *      when it is not had in time, the run ends as out of time (exit 0,
+ *      stdout empty, at most the out-of-time line), delivering nothing and
+ *      writing nothing. Under the lock the cursor is read again; when it
+ *      differs from the cursor the entries were chosen against (another
+ *      `inbox` or hook delivered meanwhile), nothing is delivered or
+ *      written and the context is the held-ticket line alone.
  *    - `stop`: the tickets to name are the held tickets whose status is
  *      not `blocked` and that have no comment (`ticket.comment` or
- *      hand-off note) by the actor after the event that last made the
- *      actor their assignee (its claim, a takeover, a grant from the
- *      queue, a hand-off or an assignment to it), in id order. None: exit
+ *      hand-off note) by the actor at or after the event that last made
+ *      the actor their assignee (its claim, a takeover, a grant from the
+ *      queue, a hand-off or an assignment to it; only applied events
+ *      count, a rejected one is ignored), in id order. "At or after": a
+ *      hand-off to the actor itself, with its note, is both the event
+ *      that made it assignee and a comment, so it counts. None: exit
  *      0, nothing printed. Otherwise the text names each such ticket with
  *      `agentboard handoff`, `agentboard comment` and `agentboard move
  *      <id> blocked`, preceded, for a ticket with a lease (`lease` not
  *      null, whatever its state), by `agentboard release <id> --as
- *      <actor>`; a ticket without a lease gets no `release`. Warn mode,
- *      and strict mode when the payload's `stop_hook_active` is JSON
- *      `true`: exit 0, stdout `{"systemMessage":<text>}` (that key only,
- *      never `decision`). Strict mode otherwise: exit 2, stdout empty,
- *      stderr `<text>` and a newline (the text may span lines). So one stop
- *      blocks at most once.
+ *      <actor>`; a ticket without a lease gets no `release`. The text is
+ *      bounded by `STOP_TEXT_LIMIT`. Strict mode when the payload's
+ *      `stop_hook_active` is exactly JSON `false`: exit 2, stdout empty,
+ *      stderr `<text>` and a newline (the text may span lines). Warn mode,
+ *      and strict mode otherwise (`true`, missing, any other value, an
+ *      empty, malformed or oversized payload): exit 0, stdout
+ *      `{"systemMessage":<text>}` (that key only, never `decision`). So
+ *      one stop blocks at most once, and never on a payload the hook
+ *      cannot read.
  *    - `pre-tool-use`: acts only for a tool of `EDIT_TOOLS` whose target is
  *      inside the project and not exempt; everything else is exit 0 with
  *      nothing printed. The project is the parent of the board directory
@@ -859,12 +912,20 @@ function answerEvent(event: HookEvent, strict: boolean, ctx: EventContext): Hook
  *      discovery directory holding a `.git` entry (the checkout or linked
  *      worktree the session works in); inside means the target, after
  *      `path.resolve`, is one of them or below it, component by component
- *      (a sibling sharing a name prefix is outside). Exempt: a target in
+ *      (a sibling sharing a name prefix is outside). Containment and the
+ *      exemptions are decided on real paths: the target (or, when it does
+ *      not exist, its nearest existing ancestor with the rest of the path
+ *      appended), the board directory and the project roots are resolved
+ *      through symbolic links (`realpath`) first. Exempt: a target in
  *      the board directory, or with a path component `.board` below the
  *      project directory. An actor holding a ticket passes silently.
- *      Otherwise the text names `agentboard claim` and `agentboard
- *      inbox` and says to carry on if the work is not ticketed. Warn mode:
- *      exit 0, stdout
+ *      Otherwise, in warn mode, the text names `agentboard claim` and
+ *      `agentboard inbox` and says to carry on if the work is not
+ *      ticketed; in strict mode the text says the edit is refused because
+ *      the actor holds no ticket, names `agentboard claim` and
+ *      `agentboard inbox`, and says that if the work is not ticketed the
+ *      agent should stop and ask the user rather than retry the edit (it
+ *      never says to carry on). Warn mode: exit 0, stdout
  *      `{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":<text>}}`
  *      (never a `permissionDecision`: `allow` would skip the user's
  *      permission prompt), rate limited per session (`warnStatePath`).
@@ -876,9 +937,14 @@ function answerEvent(event: HookEvent, strict: boolean, ctx: EventContext): Hook
  *    <command>` it names is a command of the registry.
  *
  * Any error thrown inside, and running past the deadline, is exit 0
- * with stdout empty and at most one stderr line. The answer is given by
- * the deadline plus the time of one bounded step, so well within 3
- * seconds of `startedAt` for the default budget.
+ * with stdout empty and at most one stderr line. The deadline is checked
+ * during each event's work as well as before it: after the cache read,
+ * between event-file reads and before the cursor write. Once any reading
+ * of `now` is past the deadline, the answer is exit 0, stdout empty and
+ * stderr empty or the out-of-time line, never an exit 2 and never a
+ * cursor write; and no event file is opened after such a reading. The
+ * answer is given by the deadline plus the time of one bounded step, so
+ * well within 3 seconds of `startedAt` for the default budget.
  */
 export function runHook(request: HookRequest): HookOutcome {
   try {
@@ -940,8 +1006,11 @@ export type HookInput = AsyncIterable<string | Uint8Array> & { readonly isTTY?: 
  * Reads the whole payload from `input` as UTF-8, resolving at end of
  * input. Resolves `''` at once when `input.isTTY` is true (a person ran
  * the command in a terminal), and resolves `''` when the input has not
- * ended within `timeoutMs`, or fails. Never rejects, and never keeps the
- * process alive after it has resolved.
+ * ended within `timeoutMs`, or fails. Resolves `''` as soon as more than
+ * `HOOK_STDIN_LIMIT` bytes have arrived, without waiting for the end of
+ * the input or for `timeoutMs`, and lets the input go as at the deadline;
+ * exactly `HOOK_STDIN_LIMIT` bytes are a payload like any other. Never
+ * rejects, and never keeps the process alive after it has resolved.
  */
 export function readHookStdin(input: HookInput, timeoutMs: number): Promise<string> {
   if (input.isTTY === true) {
