@@ -94,8 +94,9 @@ order, joined with `, `.
 Neither contains any part of the name. The hint of `invalid-actor` says
 to choose a name of the actor form, one stable name per role, and how to
 pass it on that surface: on the CLI `--as <actor>` or `AGENTBOARD_ACTOR`
-(or `--to <actor>` when `--to` was refused), over MCP the `as` argument
-or `agentboard mcp --as <actor>`, on the web restarting the server with
+(and `--to <actor>` when the command is `handoff`), over MCP the `as`
+argument or `agentboard mcp --as <actor>` (and the `to` argument for
+`board_handoff`), on the web restarting the server with
 `agentboard serve --as <actor>` (or the hand-off's `to`), always with the
 placeholder `<actor>`. Its exact text is the implementer's, following the
 existing hint templates (`src/guidance/hints.ts`), and is pinned by the
@@ -255,3 +256,43 @@ the risk is the same as for any text the board accepts. It is accepted.
 - The reviewer recomputes the form decision for the accepted and refused
   tables with a throwaway program that does not import the code under
   review.
+
+### Rulings of the group 1 test author
+
+Points the spec left open, ruled when the group 1 tests were written
+(each pinned by a test and posted as a `DECISION:` comment on the group 1
+ticket):
+
+- **The hint does not know the source.** A hint is a pure function of the
+  reason and the hint context (`renderHint`), and the context does not
+  carry which name was refused. So the `invalid-actor` hint always writes
+  the placeholder `<actor>` and never a context actor or id (the
+  context's actor is either the refused name or unchecked), and for
+  `handoff` it names both ways: `--as <actor>` and `AGENTBOARD_ACTOR`, and
+  `--to <actor>` (over MCP the `as` and `to` arguments). Every hint names
+  the word `form`.
+- **The actor before the new assignee.** When both the actor and `--to`
+  (or `as` and `to`) fail, the refusal names the actor's source:
+  `commandActor` runs before the command's arguments are converted, on
+  the CLI and over MCP alike.
+- **An empty name is not a given name.** An empty `--as`, `as` or
+  `AGENTBOARD_ACTOR` is treated as absent, as `resolveActor` does today:
+  it is not checked, a command that needs an actor falls back to the next
+  source or refuses with `missing-actor`, and a read command ignores it.
+  `checkActorName('')` itself refuses (the form needs one character), but
+  no caller passes it an empty name.
+- **Every command lists the reason.** Every command checks a given
+  `--as`, so every registry command (`help`, `version`, `init` and
+  `agents` included) lists exit 1 `invalid-actor` in its exit codes.
+- **"States the form" in help.** The summaries of `--as` and `--to`
+  contain `1 to 32` and `ASCII`; the rest of the wording is the
+  implementer's.
+- **Accepted secret-shaped fixtures.** The no-echo fixtures `CROCKFORD_26`,
+  `CROCKFORD_26_SEVEN` and `TOTP_SEED`, and 32 hexadecimal characters,
+  have the form and match no pattern, so they are accepted actor names
+  (see "Residual risk"); they are in the accepted table, not the refused
+  ones.
+- **The no-echo source scan.** `checkActorName` may interpolate exactly
+  the values `source` and `names` in its messages; the scan's allow-list
+  has those two entries.
+
