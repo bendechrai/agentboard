@@ -62,8 +62,8 @@
  * fixture as the id and requires the hint with no id known, which covers
  * every template, present and future. `src/board/init-remote.ts` was left
  * to task group 2 (`sharing/no-echo-remote-url`) while it rewrote its
- * refusals; group 2 merged second, so `PENDING_GROUP_2` is empty and its
- * entries are listed with the rest (the git lines it quotes go through
+ * refusals; group 2 merged second, so it is scanned like every other file
+ * and its entries are listed with the rest (the git lines it quotes go through
  * `sanitizeRemoteLine`, and the remote names and URLs it shows through
  * `withoutUserinfo`).
  */
@@ -80,9 +80,6 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC = join(ROOT, 'src');
-
-/** Files whose refusals another task group of no-echo-refusals rewrites. */
-const PENDING_GROUP_2: readonly string[] = [];
 
 /** One interpolated value of one refusal message. */
 interface Site {
@@ -162,7 +159,11 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
     { fn: 'push', callee: 'remoteMessage', why: SANITISED },
     { fn: 'rebaseOnto', value: "conflicted.map((p)=>asciiText(p)).join(',')", why: BOARD },
     { fn: 'rebaseOnto', value: 'dir', why: CONFIG },
-    { fn: 'rebaseOnto', value: 'what', why: 'a fixed phrase from the callers' },
+    {
+      fn: 'rebaseOnto',
+      value: 'what',
+      why: 'a phrase from the callers that names the remote only as withoutUserinfo(name)',
+    },
   ],
   'src/board/import.ts': [
     { fn: 'ImportRefusedError.constructor', value: 'message', why: PASS },
@@ -179,8 +180,16 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
     { fn: 'checkNothingInTheWay', value: 'dir', why: CONFIG },
     { fn: 'checkNothingInTheWay', value: 'kind', why: 'a fixed phrase naming what is in the way' },
     { fn: 'cloneBoard', callee: 'quote', why: SANITISED },
-    { fn: 'cloneBoard', value: "asciiText(checkout.branch??'')", why: 'configuration: a branch name read from the remote' },
-    { fn: 'cloneBoard', value: 'asciiText(branch)', why: 'configuration: a branch name read from the remote' },
+    {
+      fn: 'cloneBoard',
+      value: "asciiText(checkout.branch??'')",
+      why: 'server-supplied: a branch name read from the remote (not the value given; accepted as board data)',
+    },
+    {
+      fn: 'cloneBoard',
+      value: 'asciiText(branch)',
+      why: 'server-supplied: a branch name read from the remote (not the value given; accepted as board data)',
+    },
     { fn: 'existingBoard', value: 'BOARD_REF', why: REGISTRY },
     { fn: 'existingBoard', value: 'dir', why: CONFIG },
     { fn: 'existingBoard', value: 'asciiText(chosen.name)', why: 'configuration: the name of an existing remote (git refuses a URL as a remote name)' },
@@ -236,7 +245,11 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
     { fn: 'rebaseOnto', value: 'asciiText(dir)', why: CONFIG },
     { fn: 'rebaseOnto', value: 'asciiText(temp)', why: CONFIG },
     { fn: 'rebaseOnto', value: "conflicted.map((p)=>asciiText(p)).join(',')", why: BOARD },
-    { fn: 'rebaseOnto', value: 'what', why: 'a fixed phrase from the callers' },
+    {
+      fn: 'rebaseOnto',
+      value: 'what',
+      why: 'a phrase from the callers that names the remote only as withoutUserinfo(name)',
+    },
     { fn: 'replayFreshCommits', value: 'asciiText(dir)', why: CONFIG },
     { fn: 'replayFreshCommits', value: 'asciiText(temp)', why: CONFIG },
     {
@@ -582,7 +595,7 @@ function violations(
   allowed: Readonly<Record<string, readonly Allowed[]>> = ALLOWED,
 ): string[] {
   return scan(files)
-    .filter((site) => !PENDING_GROUP_2.includes(site.file) && !isAllowed(site, allowed))
+    .filter((site) => !isAllowed(site, allowed))
     .map((site) => `${site.file}:${String(site.line)} ${site.fn}: ${site.value}`);
 }
 
@@ -682,7 +695,8 @@ describe('refusal messages under src/', () => {
     }
   });
 
-  it('leaves only init-remote.ts to group 2', () => {
-    expect(PENDING_GROUP_2).toEqual([]);
+  it('scans init-remote.ts like every other file, with its own allow-list entries', () => {
+    expect(srcFiles().map(([file]) => file)).toContain('src/board/init-remote.ts');
+    expect(ALLOWED['src/board/init-remote.ts']?.length ?? 0).toBeGreaterThan(0);
   });
 });
