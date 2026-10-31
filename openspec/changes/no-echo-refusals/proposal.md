@@ -35,7 +35,7 @@ Ticket 01M5X7EGBFRQA4BH7R0A35ZW50.
   choices. design.md "The rule" states it with its one exception.
 - The exception: a ticket id or id prefix is repeated when it has the
   shape of one (1 to 26 Crockford base32 characters, case-insensitive,
-  the first of them 0 to 7 as in every ULID),
+  the first of them 0 as in every ULID until about the year 3084),
   because naming the id that matched nothing is useful and that shape
   cannot hold a typical token. An id of any other shape is not repeated,
   in the message or in a hint, which writes `<id>` for it.

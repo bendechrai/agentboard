@@ -65,9 +65,9 @@ program name (1-based), and the expected form or the valid choices.
 The one exception is a ticket id. A ticket id argument (a positional
 `<id>` or the tool argument `id`) whose text could be a ULID or a prefix
 of one, 1 to 26 characters of Crockford base32 whose first character is
-0 to 7 (`^[0-7][0-9A-HJKMNP-TV-Z]{0,25}$`, ASCII letters compared without
-regard to case and no Unicode upper-casing: digits and the letters other
-than I, L, O and U), MAY be repeated in a refusal. An id of any other shape is not repeated
+0 (`^0[0-9A-HJKMNP-TV-Z]{0,25}$`, ASCII letters compared without regard
+to case and no Unicode upper-casing: digits and the letters other than
+I, L, O and U), MAY be repeated in a refusal. An id of any other shape is not repeated
 anywhere, including the hints, which write the placeholder `<id>` for it
 as they do for an unknown id today.
 
@@ -90,30 +90,44 @@ almost every value of useful length; hex secrets (MD5 32, SHA-1 40,
 SHA-256 64 characters) are longer than 26.
 
 Base32 secrets are the class the alphabet alone does not exclude (review
-round 1, finding F2): a TOTP seed (RFC 4648 base32, A to Z and 2 to 7,
-often 16 characters) is all Crockford base32 whenever it has no I, L, O
-or U, about 12 percent of 16-character seeds; a 128-bit secret in
+rounds 1 and 2, finding F2): a TOTP seed (RFC 4648 base32, A to Z and 2
+to 7, often 16 characters) is all Crockford base32 whenever it has no I,
+L, O or U, about 12 percent of 16-character seeds; a 128-bit secret in
 unpadded base32 is exactly 26 characters, about 3 percent of them
 id-shaped by the alphabet; and a token encoded in Crockford base32
 itself (ULID-like session ids and API keys) always is. So the shape also
-requires the first character to be 0 to 7, which every ULID has (its
-first character carries the top 3 bits of the 48-bit time, and every id
-created today starts with `01`) and which only about a quarter of random
-base32 or hex text has. The check is an ASCII-only, case-insensitive test
-of the pattern, with no Unicode upper-casing, so a character such as
-U+017F (upper-cases to `S`) or U+FB06 (to `ST`) never makes text
-id-shaped (finding F3).
+constrains the first character, which in a ULID carries the top 3 bits
+of the 48-bit time.
 
-What remains is a secret that happens to start with 0 to 7 and use only
-those 32 characters: a short lowercase hex string (at most 26
-characters), a short password without I, L, O or U, about a quarter of
-16-character TOTP seeds without those letters, and a Crockford base32
-token of at most 26 characters that starts with 0 to 7 (a ULID-shaped
-token is indistinguishable from an id). Requiring `01`, which would cut
-the random case to about 1 in 1000, was not chosen because ids created
-after 2039 start with `02`, and the board's own ids must keep being
-named. That residual risk is accepted for ids because of their value and
-because an id that is not on the board is rarely a secret in practice.
+Review round 1 first required that character to be 0 to 7, the range of
+every ULID. That still repeats a lot of random text: half of random hex
+(8 of 16 first characters), a quarter of random Crockford base32, and
+about 19 percent of standard base32 TOTP seeds (6 of the 32 RFC 4648
+characters, 2 to 7, are digits 0 to 7; about 2.5 percent of 16-character
+seeds are then wholly id-shaped). Review round 2 requires 0. A ULID
+starts with 0 while its time is below 2^45 milliseconds, that is until
+about the year 3084, so every id the board creates for the next thousand
+years keeps being named, and the echo of random text falls to 1/16 of
+hex and 1/32 of Crockford base32. A standard base32 TOTP seed is never
+id-shaped, since the RFC 4648 alphabet has no 0. Requiring `01` instead,
+the prefix of every id created from 2004 to about 2039 (time from 2^40
+to 2^41 milliseconds), would cut random text to about 1 in 1000 (1/256
+of hex, 1/1024 of Crockford base32), but ids created after about 2039
+start with `02` and would stop being named, and a board that outlives
+that date must keep naming its own ids; `0` costs a factor of about 16
+to 32 in random text against `01` and has no such date within reach.
+
+The check is an ASCII-only, case-insensitive test of the pattern, with
+no Unicode upper-casing, so a character such as U+017F (upper-cases to
+`S`) or U+FB06 (to `ST`) never makes text id-shaped (finding F3).
+
+What remains is a secret that happens to start with 0 and use only those
+32 characters: one in 16 short lowercase hex strings (at most 26
+characters), a short password starting with 0 and without I, L, O or U,
+and a Crockford base32 token of at most 26 characters that starts with 0
+(a ULID-shaped token is indistinguishable from an id). That residual
+risk is accepted for ids because of their value and because an id that
+is not on the board is rarely a secret in practice.
 
 ### Why no exception for words
 
@@ -196,7 +210,7 @@ board or the working tree, never from the refused input.
 | 14 | Malformed group (`taskRefFromArgs`) | `malformed-task-ref` | the group | raw | no | `malformed group: --group must be a positive decimal number such as 3` |
 | 15 | Malformed task filter (`parseTaskFilter`, `list --task`) | `malformed-task-ref` | the filter | raw | no | `malformed task filter: --task expects <source>:<ref>[#<item>]` |
 | 16 | Id too short (`resolveTicketId`) | `id-too-short` | the prefix | raw (shorter than 6) | yes, when id-shaped | id-shaped: unchanged (`ticket id prefix <text> is too short: give at least 6 characters`); otherwise `the ticket id given is too short: give at least 6 characters` |
-| 17 | Unknown ticket (`resolveTicketId`) | `unknown-ticket` (exit 4) | the id or prefix | raw | yes, when id-shaped | id-shaped: unchanged (`no ticket matches <text>`); otherwise `no ticket matches the id given, which is not a ticket id: an id is 26 characters of Crockford base32 (digits and letters other than I, L, O and U), or a unique prefix of at least 6 of them` |
+| 17 | Unknown ticket (`resolveTicketId`) | `unknown-ticket` (exit 4) | the id or prefix | raw | yes, when id-shaped | id-shaped: unchanged (`no ticket matches <text>`); otherwise `no ticket matches the id given, which is not a ticket id: an id is 26 characters of Crockford base32 (digits and letters other than I, L, O and U) starting with 0, or a unique prefix of at least 6 of them` (review round 2) |
 | 18 | Ambiguous prefix (`resolveTicketId`) | `ambiguous-id` | the prefix and the matching full ids | always id-shaped (a prefix of an id is) | yes | unchanged |
 | 19 | Unknown cursor (`inbox --since`) | `unknown-cursor` | the cursor, not through `asciiText` | raw | no | `no event matches --since on this board` |
 | 20 | Decision record missing (`closeTicket`) | `decision-path-missing` | the path as given | checked (inside the tree) but refused | low: the caller has it | `the decision record given with --decision-recorded-in does not exist` |
@@ -324,12 +338,18 @@ ticket 01M5YAB4P61Q911JF44AEKVQ30):
   `--as` (finding F1: in `close --unplanned --as <token>` the flag takes
   `--as` as its value and the token is the `<id>`, which the hint used to
   repeat as the actor); the id shape requires a first character of 0 to 7
-  and is tested without Unicode upper-casing (F2, F3; "Why the id
-  exception"); and configuration a refusal repeats, the `AGENTBOARD_DIR`
+  (narrowed to 0 in review round 2) and is tested without Unicode
+  upper-casing (F2, F3; "Why the id exception"); and configuration a refusal repeats, the `AGENTBOARD_DIR`
   directory in `board-not-found` included, is escaped with `asciiText`
   like other repeated text, so an ESC sequence in the variable never
   reaches a terminal raw. The value itself stays out of scope ("Out of
   scope": configuration).
+- Review round 2 (orchestrator DECISION on the ticket): the id shape
+  requires a first character of 0 (`^0[0-9A-HJKMNP-TV-Z]{0,25}$`), and
+  `NOT_AN_ID_MESSAGE` states it: `no ticket matches the id given, which
+  is not a ticket id: an id is 26 characters of Crockford base32 (digits
+  and letters other than I, L, O and U) starting with 0, or a unique
+  prefix of at least 6 of them`.
 - Two echoes found by the scan or the review are out of scope here: the
   `port-in-use` refusal names the `--port` number, which passed the
   integer and range checks and cannot hold a token, and is allowed; and an

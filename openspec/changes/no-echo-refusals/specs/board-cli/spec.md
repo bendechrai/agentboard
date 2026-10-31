@@ -79,16 +79,20 @@ by this rule; only message and hint text are.
 ### Requirement: Ticket ids in refusals
 A ticket id argument (the positional `<id>`, or the tool argument `id`)
 whose text could be a ULID or a prefix of one, that is, matches
-`^[0-7][0-9A-HJKMNP-TV-Z]{0,25}$` with ASCII letters compared without
-regard to case (1 to 26 Crockford base32 characters, the first of them 0
-to 7; no character outside ASCII counts, whatever it upper-cases to),
+`^0[0-9A-HJKMNP-TV-Z]{0,25}$` with ASCII letters compared without
+regard to case (1 to 26 Crockford base32 characters, the first of them 0,
+as in every ULID until about the year 3084; no character outside ASCII
+counts, whatever it upper-cases to),
 MAY be repeated in a refusal and in its hint, even when it matches no
 ticket. Any other text given as a ticket
 id SHALL NOT be repeated anywhere in a refusal: an unknown id is refused
 with its usual exit code and reason (`unknown-ticket`, or `id-too-short`
 below 6 characters) by a message that says the text given is not a
-ticket id and states the id form, and every hint writes the placeholder
-`<id>` in its place.
+ticket id and states the id form, exactly `no ticket matches the id
+given, which is not a ticket id: an id is 26 characters of Crockford
+base32 (digits and letters other than I, L, O and U) starting with 0, or
+a unique prefix of at least 6 of them` for `unknown-ticket`, and every
+hint writes the placeholder `<id>` in its place.
 
 #### Scenario: Ticket id that is not an id
 - **WHEN** `agentboard show <token>` and `agentboard move <token> review --as orch` run with a token that is not id-shaped, on the CLI with and without `--json`, and `board_move` is called with that `id`
@@ -105,6 +109,10 @@ ticket id and states the id form, and every hint writes the placeholder
 #### Scenario: Base32 secret that is not a ULID
 - **WHEN** `agentboard show <text>` runs, with and without `--json`, where `<text>` is `JBSWY3DPEHPK3PXP` (a TOTP-style seed whose characters are all Crockford base32) or 26 Crockford base32 characters starting with a letter, and `board_show` is called with that `id`
 - **THEN** each exits 4 (or returns `exitCode` 4) with reason `unknown-ticket`, the message says the text given is not a ticket id, and the text appears in no output
+
+#### Scenario: Crockford text that starts with 1 to 7
+- **WHEN** `agentboard show <text>` runs, with and without `--json`, where `<text>` is 26 Crockford base32 characters starting with 7, or `1J9K3ZZZZ`, and `board_show` is called with that `id`
+- **THEN** each exits 4 (or returns `exitCode` 4) with reason `unknown-ticket` and the message above, and the text appears in no output
 
 #### Scenario: Characters that upper-case into the id alphabet
 - **WHEN** `agentboard show 01<U+017F><U+017F>ABCDEFGH23` runs (U+017F, the long s, upper-cases to `S`), or a text of `0` and twelve U+FB06 ligatures (each upper-cases to `ST`)
