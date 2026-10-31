@@ -1,8 +1,10 @@
 /**
- * The argument parser driven by the command registry, and actor resolution
- * (board-cli: "Command surface", "Actor is explicit").
+ * The argument parser driven by the command registry, actor resolution and
+ * the actor check (board-cli: "Command surface", "Actor is explicit",
+ * "Actor names are checked").
  */
 
+import { secretPatternsIn } from '../board/secrets.js';
 import { choicesMessage } from '../board/text.js';
 import { SYSTEM_ACTOR } from '../events/schema.js';
 import { BoardError } from '../store/errors.js';
@@ -353,6 +355,88 @@ export function refuseReservedActor(actor: string | undefined): void {
       1,
       'usage',
       `the actor ${SYSTEM_ACTOR} is reserved for the grants the board writes itself; pass your own name with --as <actor>`,
+    );
+  }
+}
+
+/**
+ * Where an actor name came from, as an `invalid-actor` refusal names it
+ * (board-cli "Actor names are checked"; actor-secret-check design.md
+ * "Messages"): `--as`, `AGENTBOARD_ACTOR` or `--to` on the CLI;
+ * `the argument as`, `AGENTBOARD_ACTOR` or `the argument to` over MCP (and
+ * on the web, whose body properties are the MCP argument names).
+ */
+export type ActorSource =
+  '--as' | 'AGENTBOARD_ACTOR' | '--to' | 'the argument as' | 'the argument to';
+
+/**
+ * The actor form (board-cli "Actor names are checked"): 1 to 32 ASCII
+ * letters, digits, `.`, `_`, `-` or `@`, the first a letter or digit. No
+ * `i` or `u` flag and no `m` flag: ASCII only, no case folding, and `^`
+ * and `$` are the ends of the whole string, so a trailing newline fails.
+ */
+const ACTOR_FORM = /^[A-Za-z0-9][A-Za-z0-9._@-]{0,31}$/;
+
+/**
+ * The actor check (board-cli "Actor names are checked"; actor-secret-check
+ * design.md "The actor check"): returns normally when `name` passes, and
+ * throws otherwise. Pure; reads nothing and writes nothing.
+ *
+ * `name` passes when both hold, tested in this order:
+ * 1. it matches none of the secret patterns (`secretPatternsIn(name)`,
+ *    `src/board/secrets.ts`, is empty);
+ * 2. it has the actor form `^[A-Za-z0-9][A-Za-z0-9._@-]{0,31}$`: 1 to 32
+ *    characters, each an ASCII letter, digit, `.`, `_`, `-` or `@`, the
+ *    first a letter or digit. The test is on ASCII only, with no Unicode
+ *    case folding or normalisation (a long s, a Kelvin sign or a
+ *    fullwidth letter fails), and the whole string must match (a trailing
+ *    newline fails). The empty string fails.
+ *
+ * On failure throws `BoardError(1, 'invalid-actor', message)`:
+ * - when (1) fails, exactly `refused: the actor name given with <source>
+ *   matches the secret pattern(s) <names>; an actor name is recorded on
+ *   every event and shared with the board, so choose another name
+ *   (--allow-secret-like does not apply to actor names)`, where `<names>`
+ *   is the matching pattern names in `SECRET_PATTERN_NAMES` order joined
+ *   with `, ` (as `refuseSecretLike` writes them), so a name that also
+ *   fails the form gets this message;
+ * - when only (2) fails, exactly `refused: the actor name given with
+ *   <source> is not of the actor form: 1 to 32 ASCII letters, digits,
+ *   dots, underscores, hyphens or @ signs, the first a letter or digit,
+ *   such as impl-1`.
+ * `<source>` is `source`. The message contains no part of `name`: it
+ * interpolates only `source` and the pattern names (the no-echo source
+ * scan allows exactly the values `source` and `names` in this function).
+ *
+ * There is no override: `--allow-secret-like` does not apply to actor
+ * names. The reserved actor `agentboard` passes (it is refused separately
+ * by `refuseReservedActor`, reason `usage`).
+ *
+ * Callers (actor-secret-check design.md "Where the check runs"), all
+ * before the board is opened: `commandActor` (`src/cli/main.ts`, shared
+ * by the CLI and the MCP server) with a given non-empty `--as` (source
+ * `--as`) or call `as` (source `the argument as`) on every command, after
+ * `refuseReservedActor`, and with the resolved actor of a command that
+ * needs one when it came from `AGENTBOARD_ACTOR` (source
+ * `AGENTBOARD_ACTOR`); the conversion of the `handoff` arguments with the
+ * new assignee (source `--to`, or `the argument to` over MCP and the
+ * web). An empty `--as`, `as` or `AGENTBOARD_ACTOR` is not a given name
+ * (as for `resolveActor`) and is never checked.
+ */
+export function checkActorName(name: string, source: ActorSource): void {
+  const names = secretPatternsIn(name).join(', ');
+  if (names !== '') {
+    throw new BoardError(
+      1,
+      'invalid-actor',
+      `refused: the actor name given with ${source} matches the secret pattern(s) ${names}; an actor name is recorded on every event and shared with the board, so choose another name (--allow-secret-like does not apply to actor names)`,
+    );
+  }
+  if (!ACTOR_FORM.test(name)) {
+    throw new BoardError(
+      1,
+      'invalid-actor',
+      `refused: the actor name given with ${source} is not of the actor form: 1 to 32 ASCII letters, digits, dots, underscores, hyphens or @ signs, the first a letter or digit, such as impl-1`,
     );
   }
 }

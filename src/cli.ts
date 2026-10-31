@@ -65,7 +65,7 @@ process.on('warning', (warning) => {
 });
 
 const argv = process.argv.slice(2);
-const { runCliAsync } = await import('./cli/main.js');
+const { commandActor, runCliAsync } = await import('./cli/main.js');
 const { parseArgs } = await import('./cli/parse.js');
 
 /** Removes the signal handlers `stopSignal` installed; a no-op until it ran. */
@@ -91,7 +91,14 @@ function stopSignal(): AbortSignal {
   return controller.signal;
 }
 
-/** The parsed `mcp` command's `--as`, or null when argv is not `mcp`. */
+/**
+ * The parsed `mcp` command's `--as`, or null when argv is not `mcp` or
+ * when its `--as` is refused (`commandActor`: the reserved actor, or a
+ * name that fails the actor check; board-cli "Actor names are checked").
+ * With null the ordinary CLI path runs, and for a refused `--as` it
+ * reports the refusal as every command does (exit 1, the message and the
+ * hint on stderr, the `--json` document) and serves nothing.
+ */
 function mcpInvocation(): { actor: string | undefined } | null {
   try {
     const parsed = parseArgs(argv);
@@ -99,7 +106,9 @@ function mcpInvocation(): { actor: string | undefined } | null {
       return null;
     }
     const given = parsed.values.as;
-    return { actor: typeof given === 'string' ? given : undefined };
+    const actor = typeof given === 'string' ? given : undefined;
+    commandActor(parsed.command, actor, process.env);
+    return { actor };
   } catch {
     return null;
   }

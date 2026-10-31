@@ -94,8 +94,9 @@ order, joined with `, `.
 Neither contains any part of the name. The hint of `invalid-actor` says
 to choose a name of the actor form, one stable name per role, and how to
 pass it on that surface: on the CLI `--as <actor>` or `AGENTBOARD_ACTOR`
-(or `--to <actor>` when `--to` was refused), over MCP the `as` argument
-or `agentboard mcp --as <actor>`, on the web restarting the server with
+(and `--to <actor>` when the command is `handoff`), over MCP the `as`
+argument or `agentboard mcp --as <actor>` (and the `to` argument for
+`board_handoff`), on the web restarting the server with
 `agentboard serve --as <actor>` (or the hand-off's `to`), always with the
 placeholder `<actor>`. Its exact text is the implementer's, following the
 existing hint templates (`src/guidance/hints.ts`), and is pinned by the
@@ -219,8 +220,11 @@ the risk is the same as for any text the board accepts. It is accepted.
   received event's actor.
 - Per-actor `inbox` cursors (local cache state) of a refused name simply
   stop being used.
-- This repository's board: 82 distinct actor names in 950 events, all of
-  `[a-z0-9-]`, the longest 15 characters, all of the form. The docs, the
+- This repository's board: 91 distinct actor names in 1032 events (every
+  event's `actor` and every hand-off's `to`, counted after review round
+  1; an earlier count of 82 in 950 events wrongly included five statuses
+  from the `to` of move events, and was 77), all of `[a-z0-9-]`, the
+  longest 15 characters, all of the form. The docs, the
   guide, the help examples and README use `orch`, `orchestrator`,
   `impl`, `impl-1`, `impl-2`, `reviewer`, `reviewer-1`, `reviewer-3-2`,
   `merger-1` to `merger-4`, `releaser-1`, `test-1`, `ben`, `a` and `x`,
@@ -255,3 +259,55 @@ the risk is the same as for any text the board accepts. It is accepted.
 - The reviewer recomputes the form decision for the accepted and refused
   tables with a throwaway program that does not import the code under
   review.
+
+### Rulings of the group 1 test author
+
+Points the spec left open, ruled when the group 1 tests were written
+(each pinned by a test and posted as a `DECISION:` comment on the group 1
+ticket):
+
+- **The hint does not know the source.** A hint is a pure function of the
+  reason and the hint context (`renderHint`), and the context does not
+  carry which name was refused. So the `invalid-actor` hint always writes
+  the placeholder `<actor>` and never a context actor or id (the
+  context's actor is either the refused name or unchecked), and for
+  `handoff` it names both ways: the actor first, then `, and the new
+  assignee with --to <actor>` (over MCP the `as` and `to` arguments).
+  Every hint names the word `form`. On the CLI it says `set
+  AGENTBOARD_ACTOR` only for a command that uses the variable as its
+  actor (one that writes or tracks a cursor), and no other command's hint
+  names the variable (review round 1, F5).
+- **An ignored AGENTBOARD_ACTOR is never repeated.** A hint names
+  `AGENTBOARD_ACTOR`'s value only for a command that uses it as the actor,
+  even when the value passes the check; for any other command (`top`,
+  `list`, `show`, a read tool over MCP) the hint writes `<actor>`
+  (reviewer-ac1-2 finding 1).
+- **The actor before the new assignee.** When both the actor and `--to`
+  (or `as` and `to`) fail, the refusal names the actor's source:
+  `commandActor` runs before the command's arguments are converted, on
+  the CLI and over MCP alike.
+- **An empty name is not a given name.** An empty `--as`, `as` or
+  `AGENTBOARD_ACTOR` is treated as absent, as `resolveActor` does today:
+  it is not checked, a command that needs an actor falls back to the next
+  source or refuses with `missing-actor`, and a read command ignores it.
+  `checkActorName('')` itself refuses (the form needs one character), but
+  no caller passes it an empty name.
+- **Every command lists the reason.** Every command checks a given
+  `--as`, so every registry command (`help`, `version`, `init` and
+  `agents` included) lists exit 1 `invalid-actor` in its exit codes.
+- **"States the form" in help.** The `--as` line of the text and the
+  `--json` help of every command (`serve` and `mcp` included) says that a
+  given name is checked and gives the form in the words `1 to 32 ASCII
+  letters, digits, . _ - or @, the first a letter or digit`, and no
+  longer says `Accepted and ignored by this command`; the `--to` summary
+  gives the form in the same words (review round 1, F1). The rest of the
+  wording is the implementer's.
+- **Accepted secret-shaped fixtures.** The no-echo fixtures `CROCKFORD_26`,
+  `CROCKFORD_26_SEVEN` and `TOTP_SEED`, and 32 hexadecimal characters,
+  have the form and match no pattern, so they are accepted actor names
+  (see "Residual risk"); they are in the accepted table, not the refused
+  ones.
+- **The no-echo source scan.** `checkActorName` may interpolate exactly
+  the values `source` and `names` in its messages; the scan's allow-list
+  has those two entries.
+

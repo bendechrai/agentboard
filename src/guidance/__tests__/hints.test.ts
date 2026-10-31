@@ -65,6 +65,8 @@ const PINNED: Readonly<Record<string, number>> = {
   'holder-changed': 4,
   'id-too-short': 1,
   integrity: 5,
+  // An actor name that fails the actor check (actor-secret-check task 1.1).
+  'invalid-actor': 1,
   'invalid-queue': 4,
   'invalid-transition': 4,
   'malformed-event': 1,
@@ -314,7 +316,10 @@ describe('renderHint for every reason', () => {
       expect(text.startsWith('hint:')).toBe(false);
     }
     expect(known).not.toContain('<id>');
-    if (reason !== 'missing-actor') {
+    // missing-actor has no actor to write; invalid-actor always writes the
+    // placeholder, since its context actor is the refused name or unchecked
+    // (actor-secret-check design.md "Rulings of the group 1 test author").
+    if (reason !== 'missing-actor' && reason !== 'invalid-actor') {
       expect(known).not.toContain('<actor>');
     }
   });

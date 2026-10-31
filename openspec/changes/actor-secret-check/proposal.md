@@ -28,7 +28,8 @@ this follow-up. Ticket 01M5Y9MQB9E3969DZ29VX5MZD0.
   before anything is written: it matches none of the secret patterns, and
   it has the actor form, 1 to 32 ASCII letters, digits, `.`, `_`, `-` or
   `@`, the first a letter or digit. Every actor on this repository's own
-  board (82 names in 950 events, the longest 15 characters) and every
+  board (77 names in 950 events when proposed, 91 in 1032 by review, the
+  longest 15 characters) and every
   example in the docs (`orch`, `impl-1`, `reviewer-3-2`, `merger-2`,
   `ben`) has that form.
 - A name that fails is refused with exit 1 and the new reason
