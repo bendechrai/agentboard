@@ -157,11 +157,14 @@ describe('scenario: Piped output (no interactive terminal)', () => {
     },
   );
 
-  it('names the actor in the watch hint when one is known', async () => {
+  it('does not repeat an ignored AGENTBOARD_ACTOR in the watch hint (it writes <actor>)', async () => {
+    // top does not use the variable as its actor, so its hint never repeats
+    // it (actor-secret-check review round 1, reviewer-ac1-2 finding 1).
     const { root } = project();
     const running = start(['top'], root, ttyEnv({ AGENTBOARD_ACTOR: 'impl' }), null);
     expect(await running.done).toBe(1);
-    expect(running.stderr()).toContain("'agentboard watch --as impl'");
+    expect(running.stderr()).toContain("'agentboard watch --as <actor>'");
+    expect(running.stderr()).not.toContain('--as impl');
   });
 });
 

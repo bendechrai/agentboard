@@ -34,6 +34,15 @@ import {
 } from '../help.js';
 import { splitCommandLine } from './command-line.js';
 
+/**
+ * The actor form in the words of the help (board-agent-guidance "Guide
+ * states the actor form", actor-secret-check review round 1 F1).
+ */
+const ACTOR_FORM_WORDS = '1 to 32 ASCII letters, digits, . _ - or @, the first a letter or digit';
+
+/** The `--as` help of a command that does not use the actor. */
+const UNUSED_ACTOR_HELP = `Accepted by every command and checked when given (${ACTOR_FORM_WORDS}); not otherwise used by this command`;
+
 const ASCII_LINE = /^[\x20-\x7e]*$/;
 const NAMES = COMMANDS.map((c) => c.name);
 
@@ -229,7 +238,7 @@ describe('the help data of record in the registry', () => {
 
   it('gives actorHelp to serve and mcp only, which neither write nor track a cursor', () => {
     // serve --as is the actor of the web app's write actions, so its --as
-    // line does not say "ignored".
+    // line does not say "not otherwise used".
     expect(COMMANDS.filter((c) => c.actorHelp !== undefined).map((c) => c.name)).toEqual([
       'serve',
       'mcp',
@@ -240,8 +249,11 @@ describe('the help data of record in the registry', () => {
     expect(serve.actorHelp).toContain('AGENTBOARD_ACTOR');
     const mcp = command('mcp');
     expect(needsActor(mcp)).toBe(false);
+    // Both also say the name is checked and give the form (actor-secret-check
+    // review round 1 F1).
+    expect(serve.actorHelp).toContain(`checked: ${ACTOR_FORM_WORDS}`);
     expect(mcp.actorHelp).toBe(
-      "Default actor for tool calls: a call's own as comes first, then this, then AGENTBOARD_ACTOR",
+      `Default actor for tool calls: a call's own as comes first, then this, then AGENTBOARD_ACTOR; checked: ${ACTOR_FORM_WORDS}`,
     );
   });
 
@@ -521,7 +533,7 @@ describe('renderCommandHelp', () => {
         ),
       );
     } else {
-      const summary = c.actorHelp ?? 'Accepted and ignored by this command';
+      const summary = c.actorHelp ?? UNUSED_ACTOR_HELP;
       expect(text).toMatch(
         new RegExp(`^  --as <actor> {2,}string, optional {2,}${escapeRe(summary)}$`, 'm'),
       );
@@ -913,8 +925,12 @@ describe('helpOutput', () => {
   it("describes mcp's --as as the default actor for tool calls", () => {
     const text = help(command('mcp'));
     expect(text).toMatch(
-      /^ {2}--as <actor> {2,}string, optional {2,}Default actor for tool calls: a call's own as comes first, then this, then AGENTBOARD_ACTOR$/m,
+      new RegExp(
+        `^ {2}--as <actor> {2,}string, optional {2,}${escapeRe(`Default actor for tool calls: a call's own as comes first, then this, then AGENTBOARD_ACTOR; checked: ${ACTOR_FORM_WORDS}`)}$`,
+        'm',
+      ),
     );
     expect(text).not.toContain('Accepted and ignored');
+    expect(text).not.toContain('not otherwise used');
   });
 });
