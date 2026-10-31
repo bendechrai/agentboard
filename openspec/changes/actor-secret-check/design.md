@@ -346,10 +346,16 @@ group 2 tests were written (each pinned by a test and posted as a
   included, is a valid `to` from the browser; every one but `agentboard`
   is a valid `serve --as` (`serve --as agentboard` keeps its reserved
   refusal, `usage`).
-- **The server takes a checked actor.** The check of the server's actor is
-  the CLI's (`commandActor`, before `serve` runs); `startServer` and
-  `runAction` are given the actor `serve` was started with and do not
-  check it again.
+- **The server takes a checked actor, and checks it once more at
+  start-up.** The check of the server's actor is the CLI's
+  (`commandActor`, before `serve` runs). As defence in depth,
+  `startServer` (`src/web/server.ts`) also refuses an actor that fails
+  `checkActorName`, beside its refusal of an empty one: it rejects with
+  `BoardError(1, 'invalid-actor')` and the message naming `--as`, before
+  listening and without repeating the name (review round 1). Apart from
+  that start-up check the library trusts its caller's actor: `runAction`,
+  `actionContext` and the other functions given an actor do not check it
+  again.
 - **The guide stays within 180 lines by tightening, not long lines.** The
   orchestrator output was already at 180 lines, so the actor rule's new
   sentence is paid for by tightening the guide's prose. Every prose line
