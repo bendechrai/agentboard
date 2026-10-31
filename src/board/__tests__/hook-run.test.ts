@@ -50,7 +50,11 @@ function hookEnv(
   });
 }
 
-/** Runs a hook with `argv` (after `hook`) in `cwd`. */
+/**
+ * Runs a hook with `argv` (after `hook`) in `cwd`. The pre-tool-use
+ * warning state goes to a fresh directory per call (never the real
+ * temporary directory), so no run is rate limited by another.
+ */
 function hook(
   argv: readonly string[],
   cwd: string,
@@ -61,6 +65,7 @@ function hook(
     cwd,
     payload: options.payload ?? '',
     env: options.env ?? hookEnv(),
+    stateDir: options.stateDir ?? tempDir(),
     ...options,
   });
 }
