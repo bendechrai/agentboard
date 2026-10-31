@@ -13,7 +13,13 @@ import { basename, dirname, join } from 'node:path';
 
 import type { Board } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
-import { firstErrorLine, isGitFailure, type GitFailure, type GitRunner } from './git.js';
+import {
+  isGitFailure,
+  rawErrorLine,
+  sanitizeRemoteLine,
+  type GitFailure,
+  type GitRunner,
+} from './git.js';
 import { asciiText } from './text.js';
 
 /**
@@ -159,9 +165,33 @@ export function unmergedPaths(git: GitRunner): string[] {
   return zList(git.run('diff', '--name-only', '--diff-filter=U', '-z')).sort();
 }
 
-/** `BoardError(3, 'sync-failed')` for a git step that failed. */
-export function syncFailed(what: string, failure: GitFailure): BoardError {
-  return new BoardError(3, 'sync-failed', `${what} failed: ${firstErrorLine(failure)}`);
+/**
+ * `BoardError(3, 'sync-failed')` for a git step run by `git` that failed:
+ * `<what> failed: <line>`, the whole message sanitised against the URLs
+ * configured for the repository `git` runs in (board-cli "Git lines quoted
+ * from remote commands"), so neither git's line nor a remote named by URL
+ * in `what` repeats a credential. `what` is given raw (not through
+ * `asciiText`): the message is escaped once, after it is sanitised. A
+ * local step's line names no remote and passes unchanged.
+ */
+export function syncFailed(what: string, failure: GitFailure, git: GitRunner): BoardError {
+  return new BoardError(3, 'sync-failed', remoteMessage(`${what} failed: ${rawErrorLine(failure)}`, git));
+}
+
+/**
+ * `text`, a raw message that quotes git talking to a remote, sanitised
+ * against the remote URLs of the repository `git` runs in
+ * (`sanitizeRemoteLine`) and then escaped for output (`asciiText`), in that
+ * order: a URL holding a non-ASCII character or a backslash is only found
+ * before escaping.
+ */
+export function remoteMessage(text: string, git: GitRunner): string {
+  return asciiText(sanitizeRemoteLine(text, git.remoteUrls()));
+}
+
+/** The first error line of `failure`, sanitised against the remote URLs of the repository `git` runs in, then escaped. */
+export function remoteErrorLine(failure: GitFailure, git: GitRunner): string {
+  return remoteMessage(rawErrorLine(failure), git);
 }
 
 /**

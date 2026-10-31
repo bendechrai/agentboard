@@ -16,3 +16,5 @@ design, in MADR format. Index:
 - [0011. Hosted CI on GitHub Actions](0011-hosted-ci-on-github-actions.md)
 - [0012. Board history in the host repository, under a hidden ref](0012-board-in-host-repository-refs.md)
 - [0013. Unplanned scope is disclosed, not blocked](0013-unplanned-scope-is-disclosed-not-blocked.md)
+- [0014. Grace leases, derived grants and an unrestricted forced release](0014-grace-leases-derived-grants-and-forced-release.md)
+- [0015. Markdown descriptions rendered to elements, never HTML](0015-markdown-descriptions-rendered-to-elements.md)

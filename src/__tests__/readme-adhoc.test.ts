@@ -186,13 +186,24 @@ describe('STATUS.md records the lifecycle as built', () => {
     expect(next).not.toContain('add-board-sharing');
   });
 
-  it('notes the add-claim-leases re-sync and the into-host snapshot flake as known gaps', () => {
+  it('notes the add-claim-leases re-sync as a known gap, and the fixed into-host snapshot flake nowhere', () => {
     const gaps = section(status(), 'Known gaps');
     expect(gaps).not.toMatch(/None open/);
     expect(gaps).toContain('`add-claim-leases`');
     expect(gaps).toContain('`GUIDANCE_VERSION`');
     expect(gaps).toMatch(/180/);
-    expect(gaps).toContain('01M54J9C8VWG6V6E751JHHVW66');
+    // PR #88 settled snapshotDir on git's transient files; the flake's ticket is closed.
+    expect(status()).not.toContain('01M54J9C8VWG6V6E751JHHVW66');
+  });
+
+  it('records add-claim-leases as archived, and no longer under What is next', () => {
+    const exists = section(status(), 'What exists');
+    expect(exists).toContain('`openspec/changes/archive/2026-10-27-add-claim-leases`');
+    expect(exists).toMatch(/#69/);
+    expect(exists).toMatch(/#70/);
+    expect(exists).toMatch(/#72/);
+    const next = section(status(), 'What is next');
+    expect(next).not.toContain('add-claim-leases');
   });
 });
 

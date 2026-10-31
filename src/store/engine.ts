@@ -308,6 +308,7 @@ function toTicket(row: Row, comments: Row[], links: Row[], waiters: Row[]): Tick
     })),
     links: links.map(toLink),
     closed,
+    superseded: nullableText(row, 'superseded'),
     disposition: closed ? (decision === null ? { noDecision: true } : { decision }) : null,
     createdBy: text(row, 'created_by'),
     createdAt: decodeHlc(text(row, 'created_at')),
@@ -401,8 +402,8 @@ function saveTicket(db: DatabaseSync, ticket: Ticket, stored: Stored | null): vo
     `INSERT INTO tickets (id, title, description, status, blocked_from, assignee, lease_ttl,
        lease_expires_at, lease_event, lease_confirmed, available_at, available_event, version,
        updated_at, created_by, created_at, task_source, task_ref, task_item, adhoc, unplanned,
-       labels, closed, decision, checklist)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       labels, closed, superseded, decision, checklist)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (id) DO UPDATE SET
        title = excluded.title, description = excluded.description, status = excluded.status,
        blocked_from = excluded.blocked_from, assignee = excluded.assignee,
@@ -413,8 +414,8 @@ function saveTicket(db: DatabaseSync, ticket: Ticket, stored: Stored | null): vo
        created_by = excluded.created_by, created_at = excluded.created_at,
        task_source = excluded.task_source, task_ref = excluded.task_ref,
        task_item = excluded.task_item, adhoc = excluded.adhoc, unplanned = excluded.unplanned,
-       labels = excluded.labels, closed = excluded.closed, decision = excluded.decision,
-       checklist = excluded.checklist`,
+       labels = excluded.labels, closed = excluded.closed, superseded = excluded.superseded,
+       decision = excluded.decision, checklist = excluded.checklist`,
   ).run(
     ticket.id,
     ticket.title,
@@ -439,6 +440,7 @@ function saveTicket(db: DatabaseSync, ticket: Ticket, stored: Stored | null): vo
     ticket.unplanned === null ? null : jsonText(ticket.unplanned),
     jsonText(ticket.labels),
     ticket.closed ? 1 : 0,
+    ticket.superseded,
     disposition !== null && 'decision' in disposition ? disposition.decision : null,
     jsonText(ticket.checklist),
   );
@@ -887,6 +889,72 @@ export function recordedFlags(db: DatabaseSync): Map<string, number> {
   );
 }
 
+/** The prior of an incremental fold on a cache that has folded: nothing recorded applies to its inputs. */
+const EMPTY_PRIOR: ReadonlyMap<string, number> = new Map();
+
+/**
+ * The prior applied set of a fold (keep-cursors-on-upgrade design.md:
+ * "Remember what the old cache applied until the first fold"): what the
+ * cache recorded as applied before the fold, as a map from hash to flag
+ * like `recordedFlags`, for `becameEffective` and the incremental path of
+ * `foldNew` to decide which events became effective in the fold.
+ *
+ * - When `folded` has at least one row: exactly `recordedFlags(db)` (every
+ *   recorded hash to its flag, 1 applied, 0 anything else). A
+ *   `carried_applied` table present beside it is stale and not read.
+ * - When `folded` is empty and the `carried_applied` table exists (left by
+ *   a recreate that carried the cursors, see `openCache`): each hash of
+ *   `carried_applied` mapped to 1, and nothing else.
+ * - When `folded` is empty and there is no `carried_applied` table: the
+ *   empty map.
+ *
+ * Read-only: never drops `carried_applied` or writes any row; the fold
+ * that records events drops it in its own transaction. Reads on `db` as it
+ * is (the caller holds the transaction). Used by `refoldWithCursors` and
+ * by `foldNew` on its refold path and on its first fold after a recreate
+ * (`last_position` null); an incremental fold on a cache that has folded
+ * before does not call it, so such a fold reads `folded` once (to find the
+ * unrecorded files) and never a second time for the prior.
+ */
+export function priorApplied(db: DatabaseSync): ReadonlyMap<string, number> {
+  const recorded = recordedFlags(db);
+  if (recorded.size > 0 || !hasCarriedApplied(db)) {
+    return recorded;
+  }
+  return new Map(
+    db
+      .prepare('SELECT hash FROM carried_applied')
+      .all()
+      .map((row): [string, number] => [text(row, 'hash'), 1]),
+  );
+}
+
+/** Whether the cache holds a `carried_applied` table (see `openCache`). */
+function hasCarriedApplied(db: DatabaseSync): boolean {
+  return (
+    db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'carried_applied'")
+      .get() !== undefined
+  );
+}
+
+/**
+ * Drops `carried_applied` once `folded` has a row: the fold that just
+ * recorded events into an empty `folded` has consumed it as its prior, and
+ * one found beside an already non-empty `folded` is stale (left by a
+ * version that does not know the table) and is dropped unused. A fold that
+ * records nothing into an empty `folded` leaves it for the fold that does.
+ * Caller holds the transaction.
+ */
+function dropConsumedCarry(db: DatabaseSync): void {
+  if (!hasCarriedApplied(db)) {
+    return;
+  }
+  if (stmt(db, 'SELECT 1 FROM folded LIMIT 1').get() !== undefined) {
+    db.exec('DROP TABLE carried_applied');
+  }
+}
+
 /**
  * The events applied now that were not applied according to `prior` (a
  * `recordedFlags` snapshot taken before a refold): recorded for the first
@@ -909,8 +977,9 @@ export function refoldWithCursors(
   db: DatabaseSync,
   eventsDir: string,
 ): { result: RefoldResult; late: LateEvent[] } {
-  const prior = recordedFlags(db);
+  const prior = priorApplied(db);
   const result = refold(db, eventsDir);
+  dropConsumedCarry(db);
   return { result, late: resetLateCursors(db, becameEffective(db, prior)) };
 }
 
@@ -993,23 +1062,41 @@ function foldNew(
   const { db } = board;
   const last = readLastPosition(db);
   const late = last !== null && inputs.some((input) => compareToPosition(input, last) < 0);
+  // What the cache had applied before this fold, read only where it can
+  // matter: a refold needs the recorded flags to tell which events it made
+  // effective, and the first fold after a recreate that carried the
+  // cursors (`last_position` null, `folded` empty) needs the old cache's
+  // applied set (`carried_applied`), so that an event the old cache had
+  // applied and delivered is not treated as newly effective. An
+  // incremental fold on a cache that has folded before needs no prior: its
+  // inputs are unrecorded by contract, so no recorded flag applies to
+  // them, and `folded` is not read again (keep-cursors-on-upgrade, the
+  // cost guard of task 1.2).
+  const prior = late || last === null ? priorApplied(db) : EMPTY_PRIOR;
   if (!late) {
     const batch = applyBatch(db, inputs, malformed);
     const applied = new Set(batch.applied);
-    // Every event here sorts after last_position, so after every cursor (a
-    // cursor only points at a folded event): this moves no cursor, grants
-    // included, and keeps the incremental path to the same contract.
+    // Every event here sorts after last_position, so on a cache that has
+    // folded before this moves no cursor (a cursor only points at a folded
+    // event), grants included, and keeps the incremental path to the same
+    // contract. After a carrying recreate last_position is null and the
+    // carried cursors may sit past these events: the ones the old cache
+    // had applied are left out, and the others move cursors back as late
+    // events do.
     resetLateCursors(
       db,
       inputs
-        .filter((input) => applied.has(input.hash))
+        .filter((input) => applied.has(input.hash) && prior.get(input.hash) !== 1)
         .map((input) => ({ hash: input.hash, ts: input.event.ts })),
     );
+    dropConsumedCarry(db);
     return { ...batch, malformed: [...malformed], corrupt: null, refolded: false };
   }
-  const prior = recordedFlags(db);
   const full = refold(db, board.eventsDir, readAllFiles(board, probe));
+  dropConsumedCarry(db);
   resetLateCursors(db, becameEffective(db, prior));
+  // `last_position` is only ever written beside `folded` rows, so on this
+  // path `folded` was not empty and `prior` is exactly the recorded flags.
   const isNew = (hash: string): boolean => !prior.has(hash);
   return {
     applied: full.applied.filter(isNew),

@@ -229,17 +229,36 @@ override never changes what the user's own `git pull` does.
 
 ### Requirement: Re-import is idempotent
 Running `import-change <name>` twice for the same change SHALL create no
-duplicate tickets: tickets are keyed by their task reference (source, ref,
-item) and a second import
-SHALL update checklists for existing tickets by appending new lines only,
-with one `ticket.checklist.add` event per ticket that gained lines. Existing
-lines are matched by position and never edited or removed; a re-import never
-changes a ticket's title, labels or status. `import-change` also accepts
+duplicate tickets: existing tickets are paired to groups by identity (see
+board-openspec-integration "Pair tickets to groups by identity"), and a
+second import SHALL renumber, reconcile or supersede them to match the
+current tasks file, writing at most one `ticket.renumber`, one
+`ticket.reconcile` and one `ticket.supersede` event per ticket, and none
+when nothing differs. A re-import never changes a ticket's status or
+assignee, and changes its labels only by renumbering the `group:<n>`
+label. Inserting, deleting, reordering or renaming groups SHALL never move
+a ticket's claim, comments or ticked lines onto a different group's
+work. Two concurrent imports SHALL each validate against the caught-up
+state inside their own transaction, so the second finds nothing left to
+change. `import-change` also accepts
 `<source>:<ref>` so an unsupported source can be named.
+An import killed between a new ticket's `ticket.create` and the ticks
+and moves that follow it leaves that ticket in `todo` with unticked
+lines; a later import reports it `unchanged`, because unchanged lines
+keep the board's done flags. That window is accepted: the lines are
+ticked by hand or the ticket is closed.
 
 #### Scenario: Second import adds nothing
 - **WHEN** `import-change add-board-core` runs twice with an unchanged tasks file
 - **THEN** the ticket count is unchanged and no new events are written
+
+#### Scenario: Concurrent re-imports of a revised change
+- **WHEN** two child processes run `import-change` for the same revised change at once
+- **THEN** each ticket has exactly one applied `ticket.reconcile`, and `rebuild --check` reports no divergence
+
+#### Scenario: Property: group edits never move work
+- **WHEN** a property test imports a random change, adds random claims, comments and ticks to its tickets, applies a random sequence of group insertions, deletions, reorderings, renames and partial rewordings to tasks.md while tracking each group's true identity, and re-imports after each step
+- **THEN** after every step each ticket that has a claim, comment or tick is either paired with the group that truly continues its original group or superseded, never paired with another group; an ambiguous step writes no event; and a second re-import of the same file writes nothing
 
 ### Requirement: Moving a board into the host repository loses no event
 `agentboard init --into-host` SHALL move a standalone board into the host
@@ -290,7 +309,37 @@ content does not match its name is an `integrity` refusal. The move SHALL
 refuse with exit 3 instead of keeping the old repository aside when
 `.board` is no longer the standalone repository it checked. A temporary
 worktree is named by the pid of the move that made it, and one left by a
-process that is still running is never touched.
+process that is still running is never touched. A dead temporary worktree
+without rebase or cherry-pick state that integrated something (its HEAD
+differs from the tip `refs/agentboard/migrating` records as integrated)
+SHALL be adopted only when it was made from the board at `.board` now:
+from the same standalone repository (the same git directory, by realpath,
+device and inode) and from the same history (the HEAD that board had when
+the move that made the temporary began is an ancestor of, or equal to, the
+board's HEAD now, and the tip the temporary integrated, as the temporary
+itself records it, is an ancestor of, or equal to, the tip of the board's
+branch, as fetched from its remote when it has one). Every temporary
+SHALL record the tip it integrated, and the record SHALL follow it when
+it integrates more; the tip `refs/agentboard/migrating` holds, which the
+whole host shares, SHALL stand for that record only for a temporary made
+before the record existed and only when no other temporary worktree
+exists on the host, otherwise such a temporary SHALL NOT be adopted. A temporary left by a move of a board replaced since,
+even one whose git directory has the same realpath, device and inode as
+the old one's and whose history holds that HEAD, or by a move that began
+before the board's history or its remote's was rewritten so that it no
+longer holds that HEAD or that tip, SHALL never be adopted,
+and none of its commits or events SHALL reach `refs/agentboard/board`: it
+is removed and named as left by a move of another board, or, with rebase
+or cherry-pick state, it is the `sync-in-progress` refusal saying so,
+which removes nothing. A record of the temporary that cannot be read
+counts as naming another board, never as an error of the move. A
+temporary made by an earlier version, which
+recorded no starting HEAD, SHALL be judged by the tip it integrated
+instead: it is this board's when the git directory it recorded, if it
+recorded one, is the board's and that tip is an ancestor of, or equal to,
+the tip of the board's branch (as fetched from its remote when it has
+one). It SHALL never be refused for being made by an earlier version, and
+once adopted it is judged as one made by this version.
 
 #### Scenario: Migration success
 - **WHEN** a standalone board with a remote, fully synced, holding 40 committed events, runs `agentboard init --into-host` in a host repository with no board ref, and `sync` then runs
@@ -327,3 +376,133 @@ process that is still running is never touched.
 #### Scenario: Interrupted migration resumes
 - **WHEN** `agentboard init --into-host` is killed after the old `.board` was moved aside but before the new worktree was moved into place, and it runs again
 - **THEN** it completes the move, `.board` is the host-model board with every event, and exactly one old repository is kept
+
+#### Scenario: Temporary of a replaced board whose git directory reuses the inode
+- **WHEN** a move of standalone board A (three events) stopped after its temporary integrated a commit, `.board` is then replaced by an unrelated standalone board B (two events, its own history) whose git directory has the same realpath, device and inode that A's had, and `agentboard init --into-host` runs
+- **THEN** it moves B with exit 0, the output names the temporary as left by a move of another board, no event file or commit of A is in `.board/events` or `refs/agentboard/board`, and no temporary worktree or temporary ref remains
+
+#### Scenario: Stopped temporary of a replaced board whose git directory reuses the inode
+- **WHEN** a move of standalone board A stopped on a conflict with its rebase still in progress in the temporary, `.board` is then replaced by an unrelated standalone board B whose git directory has the same realpath, device and inode that A's had, and `agentboard init --into-host` runs
+- **THEN** it exits 3 with reason `sync-in-progress` naming the temporary and saying it was left by a move of another board, the temporary, `.board` and the host's refs are unchanged, and nothing is removed
+
+#### Scenario: Board history rewritten since the interrupted move
+- **WHEN** a move of a standalone board without a remote stopped after its temporary integrated a commit, the board's branch is then reset to a commit older than its HEAD when that move began (the same git directory), and `agentboard init --into-host` runs
+- **THEN** the temporary is removed and named as left by a move of another board, and the move completes with exit 0 from the board as it is now: no event file added only by the commits the reset removed is in `.board/events` or `refs/agentboard/board`
+
+#### Scenario: Board remote rewritten since the interrupted move
+- **WHEN** another clone synced two events to the remote of a standalone board that this clone had not pulled, a move here integrated them from the remote-tracking tip and stopped after its temporary integrated a commit, the remote's branch was then force-reset to the HEAD this clone had when that move began (dropping the two events), this clone synced one new event (the same git directory, its HEAD a descendant of the one the move began from), and `agentboard init --into-host` runs
+- **THEN** the temporary is removed and named as left by a move of another board, the move completes with exit 0, and neither dropped event is in `.board/events` or in any commit of `refs/agentboard/board`
+
+#### Scenario: Temporary of a replaced board forked at or after the HEAD the move began from
+- **WHEN** a move of standalone board A integrated two events A's remote held beyond A's HEAD and stopped after its temporary integrated a commit, `.board` is then replaced by board B, a fork of A at that HEAD with a remote of its own and one event of its own, whose git directory has the same realpath, device and inode that A's had, and `agentboard init --into-host` runs
+- **THEN** it moves B with exit 0, the output names the temporary as left by a move of another board, and neither of the two events is in `.board/events` or in any commit of `refs/agentboard/board`
+
+#### Scenario: Temporary that looked alive while a fork of the board moved
+- **WHEN** a move of standalone board A integrated two events A's remote held beyond A's HEAD and stopped after its temporary integrated a commit, the pid that temporary is named by then belongs to a running process, `.board` is replaced by board B, a fork of A at A's HEAD with a remote and an event of its own whose git directory has the same realpath, device and inode that A's had, a move of B stops after its own temporary integrated a commit, the first temporary's pid then exits, and `agentboard init --into-host` runs
+- **THEN** it moves B with exit 0, the first temporary is removed and named as left by a move of another board, and neither of the two events is in `.board/events` or in any commit of `refs/agentboard/board`
+
+#### Scenario: Temporary that looked alive while its board's remote was rewritten
+- **WHEN** a move of a standalone board integrated two events its remote held beyond its HEAD and stopped after its temporary integrated a commit, the pid that temporary is named by then belongs to a running process, the remote's branch is force-reset to that HEAD (dropping the two events), the board syncs one new event, a second move stops after its own temporary integrated a commit, the first temporary's pid then exits, and `agentboard init --into-host` runs
+- **THEN** the first temporary is removed and named as left by a move of another board, the move completes with exit 0, and neither dropped event is in `.board/events` or in any commit of `refs/agentboard/board`
+
+#### Scenario: Board whose remote is ahead of its HEAD is adopted
+- **WHEN** another clone synced an event to a standalone board's remote that this board fetched but did not merge, a move of the board integrated that remote-tracking tip, stopped on a conflict, and a human finished the rebase in its temporary, and `agentboard init --into-host` runs
+- **THEN** it adopts the temporary and completes the move with exit 0: the resolution is an ancestor of `refs/agentboard/board`, which holds the other clone's event, and the output does not name the temporary as removed
+
+#### Scenario: Unreadable record of a temporary
+- **WHEN** a dead temporary that integrated a commit has an `agentboard-source` record that cannot be read as a file, and `agentboard init --into-host` runs
+- **THEN** the temporary is removed and named as left by a move of another board and the move completes with exit 0, or, with rebase state, it is the `sync-in-progress` refusal saying so; no raw file error is reported
+
+#### Scenario: Board that only grew since the interrupted move is adopted
+- **WHEN** a move of a standalone board stopped on a conflict, a human finished the rebase in the temporary, the board then synced two new events (the same git directory, its HEAD a descendant of the one the move began from), and `agentboard init --into-host` runs
+- **THEN** it adopts the temporary and completes the move with exit 0: the resolved commit is an ancestor of `refs/agentboard/board`, both new events are in it, and the output does not name the temporary as removed
+
+#### Scenario: Temporary of an earlier version on this board is adopted
+- **WHEN** a temporary made by agentboard 0.2.0 (it recorded the git directory and no starting HEAD) holds a finished resolution of a conflict of the board at `.board`, the tip it integrated is in that board's history, and `agentboard init --into-host` runs
+- **THEN** it adopts the temporary and completes the move with exit 0, the resolution kept as an ancestor of `refs/agentboard/board`, every event of the board in it, and a run interrupted after the adoption judges the temporary as one made by this version
+
+#### Scenario: Temporary of an earlier version on a replaced board whose git directory reuses the inode
+- **WHEN** a temporary made by agentboard 0.2.0 records a git directory identity equal to that of the board now at `.board`, which replaced the board the temporary was made from, the tip it integrated is not in the new board's history, and `agentboard init --into-host` runs
+- **THEN** the temporary is removed and named as left by a move of another board, the new board is moved with exit 0, and no event file or commit of the old board is in `refs/agentboard/board`
+
+### Requirement: Expired-lease claim race has exactly one winner
+When N processes concurrently run `claim` on a ticket with no waiters whose
+lease is claimable, the board SHALL end with exactly one new assignee,
+exactly one process SHALL exit 0, and every other process SHALL exit 4
+with reason `already-assigned` naming the winner. Exactly one takeover
+SHALL be folded as effective; any others written SHALL be recorded as
+rejected, never deleted. The same SHALL hold in the fold for any set of
+takeover events naming the same lease, whatever their timestamps and read
+order.
+
+#### Scenario: Ten concurrent takeovers
+- **WHEN** `holder` claimed T1 with `--ttl 30m` and never renewed, the children's clocks are advanced past the claimable time, and ten child processes run `claim T1 --ttl 30m --as agent-<n>` started within the same millisecond
+- **THEN** one exits 0, nine exit 4, `show T1` reports a single assignee other than `holder`, and `rebuild --check` reports no divergence
+
+#### Scenario: Property: one effective takeover per lease
+- **WHEN** a property test generates a lease and a random set of takeover, renew, release and forced release events with random walls and actors, and folds every permutation it samples
+- **THEN** at most one takeover naming that lease is applied, the ticket has at most one assignee, and every permutation folds to byte-identical state
+
+### Requirement: Queue grants are fair and single
+Grants SHALL be made in join order: for any set of join, leave, release,
+renew, forced release and grant events on one ticket, every applied grant
+SHALL go to the waiter that joined earliest in fold order among those
+still queued at the grant's position, no actor SHALL be granted the
+ticket while an earlier-joined waiter still queued has not been granted,
+and at no fold position SHALL the ticket have more than one assignee.
+A grant that is not accepted within its window plus `LEASE_SKEW_MS` SHALL
+pass to the next waiter.
+
+#### Scenario: Concurrent joins and releases
+- **WHEN** ten child processes run `claim T1 --ttl 30m --wait --timeout 5m` concurrently against a holder that then releases, and each granted process renews and releases in turn
+- **THEN** every process is granted exactly once, in the fold order of its join event, and `rebuild --check` reports no divergence
+
+#### Scenario: Property: grants follow join order
+- **WHEN** a property test generates random joins, leaves, renews, releases and forced releases with random walls, derives and writes every due grant at random clock points, and folds sampled permutations
+- **THEN** every permutation folds to byte-identical state, grants follow join order among remaining waiters, and no position has two assignees
+
+#### Scenario: Reservation passes on non-acceptance
+- **WHEN** waiters `a`, `b` and `c` are queued, the holder releases, and `a` never renews
+- **THEN** after `a`'s window plus the tolerance the grant passes to `b`, and `a` is no longer queued
+
+#### Scenario: Grace expiry without renew
+- **WHEN** a child process claims T1 with `--ttl 30m`, never renews, and `b` is queued
+- **THEN** the grant to `b` is due at the claim's wall plus 120000 plus 60000 plus 1, and no grant is due before it
+
+### Requirement: Crashed holder recovery through lease expiry
+When the process holding a leased claim or a grant dies without releasing,
+the ticket SHALL pass to the next waiter, or become claimable when there
+are none, without impersonating the holder and without any other action.
+
+#### Scenario: Holder killed while holding the lock
+- **WHEN** a child process claims T1 with `--ttl 30m`, renews, and is killed with SIGKILL, and a second actor runs `claim T1 --ttl 30m` first before and then after the claimable time (the child clocks are advanced by the test harness)
+- **THEN** the first attempt exits 4 `already-assigned` naming the dead holder and the second exits 0 with a takeover naming its lease
+
+#### Scenario: Waiter killed while waiting
+- **WHEN** a process blocked in `claim --wait` is killed with SIGKILL and is then granted T1
+- **THEN** the grant lapses after its window and passes to the next waiter
+
+#### Scenario: Holder killed after the claim file is renamed
+- **WHEN** a child process running `claim T1 --ttl 30m` is killed after its event file is renamed into place but before commit
+- **THEN** the next command folds the claim with its grace lease, and a takeover after the claimable time succeeds
+
+### Requirement: Lease and queue folds converge across replicas with skewed clocks
+Two clones of a board whose machines' clocks differ by at most 60 seconds
+SHALL, after both have synced, fold every lease, renew, takeover, queue,
+grant and forced release event to byte-identical state, with no double
+grant, and no takeover or grant after a lapse SHALL be applied whose wall
+precedes the real lapse of the lease it names. Within one machine the
+rules SHALL be exact: a takeover is accepted at and only at walls from
+`expiresAt` plus 60000 on, and a grant exactly at its slot time.
+
+#### Scenario: Skewed replicas converge
+- **WHEN** clone A (clock 45 seconds fast) and clone B (clock correct) each write claims, renews, joins, leaves, releases and grants of the same ticket while disconnected, then both sync and A syncs again
+- **THEN** both rebuilt caches are identical, identical grants written on both clones are one file, and no fold position has two assignees
+
+#### Scenario: Fast clock inside tolerance cannot steal a live lease
+- **WHEN** B holds T1 with a lease expiring at real time E, and A, whose clock is 59 seconds fast, attempts a takeover at real time E minus 1 second
+- **THEN** the command refuses with `already-assigned`, and a takeover event crafted with that wall is rejected by the fold on both replicas
+
+#### Scenario: Renew synced late still wins
+- **WHEN** B renews T1 before expiry but syncs only after A has written a grant or takeover past the old lease's lapse
+- **THEN** after both sync, T1 is held by B with the renewed lease and A's event is rejected (`stale-grant` or `already-assigned`) on both replicas

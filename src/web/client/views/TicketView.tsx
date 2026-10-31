@@ -16,9 +16,18 @@
  *   or `ad hoc: <reason>`, or `none`), `Unplanned` (only when
  *   `ticket.unplanned` is not null: `<reason> (by <actor>)`, the line
  *   `agentboard show` prints, ADR 0013), `Labels` (comma separated),
- *   `Created by`, `Description` (only when not null);
+ *   `Created by`;
+ * - right after the fields, when the description is neither null nor
+ *   empty, a `section` with class `description`: an `h3` `Description`,
+ *   then the description rendered as Markdown by `renderMarkdown`
+ *   (board-web: "Description rendered as Markdown", "Description links and
+ *   images"), with no wrapper of its own, so the plain-text fallback is a
+ *   bare text node in the section. The parse is memoised on the
+ *   description text, so a reload of the detail with the same text does
+ *   not parse it again. No section without a description;
  * - a `ul` with class `checklist`: one `li` per line, in order, holding
- *   its text, with class `done` when done;
+ *   its text, with class `done` when done; a removed line is an `li` with
+ *   the class `removed` only, holding its text followed by ` (removed)`;
  * - a `ul` with class `links`: one `li` per link, in order, with the text
  *   `pr <pr>` or `decision <path>`;
  * - when closed, an element with class `disposition` holding
@@ -37,8 +46,9 @@
  *
  * Write mode (board-web-actions: "Action controls in the web app"):
  * - when `session.writable` is false, the view is exactly as above: no
- *   `form`, `input`, `textarea`, `select` or `button` anywhere in it, and
- *   no request other than `GET`s is ever made;
+ *   action control (no `form`, `textarea`, `select` or `button` anywhere
+ *   in it; the only inputs are the disabled checkboxes of a description
+ *   task list), and no request other than `GET`s is ever made;
  * - when `session.writable` is true, the `ActionControls` of the shown
  *   ticket are rendered inside the `article`, after the fields (and the
  *   disposition), and the checklist is the `ChecklistControl` (the same
@@ -55,7 +65,7 @@
  */
 
 import type { JSX } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useMemo, useState } from 'preact/hooks';
 
 import type { Ticket } from '../../../events/fold.js';
 import { formatTaskRef } from '../../../events/schema.js';
@@ -70,7 +80,8 @@ import {
   type TicketDetail,
 } from '../api.js';
 import type { ActionSuccess } from '../actions.js';
-import { ActionControls, ChecklistControl } from './ActionControls.js';
+import { renderMarkdown } from '../markdown.js';
+import { ActionControls, ChecklistControl, RemovedLine } from './ActionControls.js';
 import { isoTime } from './controls.js';
 
 export interface TicketViewProps {
@@ -145,6 +156,9 @@ export function TicketView(props: TicketViewProps): JSX.Element {
     <article class="ticket" data-ticket={ticket.id}>
       <h2 class="ticket-title">{ticket.title}</h2>
       <Fields ticket={ticket} />
+      {ticket.description !== null && ticket.description !== '' ? (
+        <Description text={ticket.description} />
+      ) : null}
       {ticket.closed ? <Disposition ticket={ticket} /> : null}
       {writable ? <ActionControls key={ticket.id} {...controlProps} /> : null}
       <h3>Checklist</h3>
@@ -152,11 +166,15 @@ export function TicketView(props: TicketViewProps): JSX.Element {
         <ChecklistControl key={ticket.id} {...controlProps} />
       ) : (
         <ul class="checklist">
-          {ticket.checklist.map((line, index) => (
-            <li key={String(index)} class={line.done ? 'done' : undefined}>
-              {line.text}
-            </li>
-          ))}
+          {ticket.checklist.map((line, index) =>
+            line.removed === true ? (
+              <RemovedLine key={String(index)} text={line.text} />
+            ) : (
+              <li key={String(index)} class={line.done ? 'done' : undefined}>
+                {line.text}
+              </li>
+            ),
+          )}
         </ul>
       )}
       <h3>Links</h3>
@@ -204,9 +222,6 @@ function Fields({ ticket }: { ticket: Ticket }): JSX.Element {
     rows.push(['Unplanned', `${ticket.unplanned.reason} (by ${ticket.unplanned.actor})`]);
   }
   rows.push(['Labels', ticket.labels.join(', ')], ['Created by', ticket.createdBy]);
-  if (ticket.description !== null) {
-    rows.push(['Description', ticket.description]);
-  }
   return (
     <dl class="fields">
       {rows.map(([name, value]) => [
@@ -214,6 +229,17 @@ function Fields({ ticket }: { ticket: Ticket }): JSX.Element {
         <dd key={`dd-${name}`}>{value}</dd>,
       ])}
     </dl>
+  );
+}
+
+/** The description section; the Markdown is parsed once per description text. */
+function Description({ text }: { text: string }): JSX.Element {
+  const rendered = useMemo(() => renderMarkdown(text), [text]);
+  return (
+    <section class="description">
+      <h3>Description</h3>
+      {rendered}
+    </section>
   );
 }
 

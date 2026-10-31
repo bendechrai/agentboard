@@ -412,6 +412,14 @@ describe('rebuild and rebuild --check with leases and queues', () => {
   });
 });
 
+/** Every row of `table`, as plain objects. */
+function rows(db: DatabaseSync, table: string): Record<string, unknown>[] {
+  return db
+    .prepare(`SELECT * FROM ${table}`)
+    .all()
+    .map((r) => ({ ...r }));
+}
+
 describe('old cache is rebuilt (spec scenario)', () => {
   /** The cache schema written by versions without leases (schema version 1). */
   const V1_SCHEMA = `
@@ -476,10 +484,15 @@ INSERT INTO meta (key, value) VALUES ('schema_version', '1'), ('last_position', 
     expect(board.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
       value: String(CACHE_SCHEMA_VERSION),
     });
-    expect(CACHE_SCHEMA_VERSION).toBe(4);
-    // Cursors are dropped: entries may be delivered again, none is skipped.
-    expect(board.db.prepare('SELECT * FROM cursors').all()).toEqual([]);
-    expect(board.db.prepare('SELECT * FROM cursor_seen').all()).toEqual([]);
+    expect(CACHE_SCHEMA_VERSION).toBe(5);
+    // The cursor and its seen set are carried across the recreate
+    // (keep-cursors-on-upgrade): the version 1 tables have the expected
+    // shape. Nothing became effective more than an hour before it, so the
+    // first fold leaves it where it was.
+    expect(rows(board.db, 'cursors')).toEqual([
+      { actor: 'a', last_wall: 1000, last_counter: 0, last_actor: 'orch', last_hash: create },
+    ]);
+    expect(rows(board.db, 'cursor_seen')).toEqual([{ actor: 'a', hash: create, wall: 1000 }]);
     // The leased claim it had recorded as malformed is folded now.
     expect(folded(board, claim ?? '')).toMatchObject({ folded: 1, reason: null });
     expect(readTicket(board.db, T1)).toMatchObject({
@@ -514,11 +527,14 @@ describe('cache without the watermark is rebuilt (spec scenario)', () => {
     old.close();
 
     const board = openB(dir);
-    expect(CACHE_SCHEMA_VERSION).toBe(4);
+    expect(CACHE_SCHEMA_VERSION).toBe(5);
     expect(board.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: '4',
+      value: '5',
     });
-    expect(board.db.prepare('SELECT * FROM cursors').all()).toEqual([]);
+    // The cursor is carried across the recreate (keep-cursors-on-upgrade).
+    expect(rows(board.db, 'cursors')).toEqual([
+      { actor: 'b', last_wall: 0, last_counter: 0, last_actor: 'orch', last_hash: 'x' },
+    ]);
     expect(board.db.prepare("SELECT value FROM meta WHERE key = 'grant_watermark'").get()).toEqual({
       value: String(lapse),
     });

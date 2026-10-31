@@ -3,11 +3,15 @@
  * (board-cli: "Command surface", "Actor is explicit").
  */
 
+import { choicesMessage } from '../board/text.js';
+import { SYSTEM_ACTOR } from '../events/schema.js';
 import { BoardError } from '../store/errors.js';
+import { positionalForm } from '../guidance/help.js';
 import { unknownCommandMessage, unknownFlagMessage } from '../guidance/suggest.js';
 import { COMMANDS, GLOBAL_FLAGS, JSON_FLAG } from './registry.js';
-import { asciiText } from './render.js';
 import type { ArgSpec, ArgValue, ArgValues, CommandSpec, Env } from './types.js';
+
+export { choicesMessage };
 
 /** The environment variable naming the actor when `--as` is not given. */
 export const ACTOR_ENV = 'AGENTBOARD_ACTOR';
@@ -51,8 +55,8 @@ export interface ParsedCommand {
  * - The command is the longest command name whose words equal the leading
  *   arguments (`checklist tick 01ABCD 2` is `checklist tick`). No match is
  *   `BoardError(1, 'usage')` with `unknownCommandMessage(argv, commands)`
- *   (it names the token, suggests up to three commands within edit
- *   distance 2 and points to `agentboard help`).
+ *   (it suggests up to three commands within edit distance 2 and points to
+ *   `agentboard help`, without repeating the token).
  * - After the command words, an argument starting with `--` is a flag,
  *   written `--name value` or `--name=value`; a boolean flag takes no value
  *   (`--name=value` on it is a usage error). The value of a string or
@@ -64,15 +68,30 @@ export interface ParsedCommand {
  * - `--json` and `--as` (`GLOBAL_FLAGS`) are accepted by every command.
  *   `--json` sets `json` and is not in `values`; `--as` is in `values` as
  *   `as` when given, for every command (only writing commands use it).
- * - Unknown flag: usage error with `unknownFlagMessage(name, command,
- *   [...command.flags, ...GLOBAL_FLAGS])`, which names it, suggests up to
- *   three of the command's flags within edit distance 2 and points to
- *   `agentboard help <command>`.
- * - A non-repeatable flag given twice, more positionals than the command
- *   declares, or a missing required positional or flag: usage error naming
- *   the argument.
+ * - Unknown flag: usage error with `unknownFlagMessage(name, position,
+ *   command, [...command.flags, ...GLOBAL_FLAGS])`, where `position` is the
+ *   flag's 1-based position in `argv` (the command words count): it names
+ *   that position, suggests up to three of the command's flags within edit
+ *   distance 2 and points to `agentboard help <command>`, and repeats
+ *   neither the flag's name nor an inline `=value`.
+ * - A non-repeatable flag given twice, or a missing required positional or
+ *   flag: usage error naming the argument from the registry.
+ * - More positionals than the command declares: usage error with
+ *   `unexpectedArgumentMessage(command, n)`, where `n` is the 1-based
+ *   position in `argv` of the first extra positional (the command words,
+ *   flags, flag values and a lone `--` count). The extra argument is never
+ *   repeated.
  * - `integer` values must match `^-?[0-9]+$` and be safe integers; the
- *   value is the number. Repeatable flags produce string arrays.
+ *   value is the number. Anything else is a usage error, exactly
+ *   `--<name> must be an integer` for a flag and `<name> must be an
+ *   integer` for a positional (`index must be an integer`), never
+ *   repeating the value. Repeatable flags produce string arrays.
+ * - A positional with `choices` (`config set <key>`) must be one of them;
+ *   any other value is a usage error listing every choice, exactly
+ *   `choicesMessage(command.name, '<' + name + '>', choices)`, which never
+ *   repeats the value (a token pasted there must not land in a terminal
+ *   or a log).
+ * - A CLI-only flag (`ArgSpec.cliOnly`) is parsed like any other flag.
  * - Then each of the command's exclusive groups is checked as documented
  *   on `ExclusiveGroup` (a missing required group throws with the group's
  *   own reason and message, for example `needs-task-or-adhoc` for `new`
@@ -111,17 +130,25 @@ export function parseArgs(
   }
   const values: Record<string, ArgValue> = {};
   const positionals: string[] = [];
+  // The 1-based position in argv of each positional, for the refusal of an
+  // extra one (the command words come first, so index i of rest is at
+  // words.length + i + 1).
+  const positions: number[] = [];
   let json = false;
   let jsonSeen = false;
 
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i] ?? '';
     if (arg === '--') {
-      positionals.push(...rest.slice(i + 1));
+      for (let k = i + 1; k < rest.length; k += 1) {
+        positionals.push(rest[k] ?? '');
+        positions.push(words.length + k + 1);
+      }
       break;
     }
     if (!arg.startsWith('--')) {
       positionals.push(arg);
+      positions.push(words.length + i + 1);
       continue;
     }
     const eq = arg.indexOf('=');
@@ -129,7 +156,12 @@ export function parseArgs(
     const inline = eq < 0 ? undefined : arg.slice(eq + 1);
     const spec = flags.get(name);
     if (spec === undefined) {
-      throw usage(unknownFlagMessage(name, command, [...command.flags, ...GLOBAL_FLAGS]));
+      throw usage(
+        unknownFlagMessage(name, words.length + i + 1, command, [
+          ...command.flags,
+          ...GLOBAL_FLAGS,
+        ]),
+      );
     }
     if (spec.type === 'boolean') {
       if (inline !== undefined) {
@@ -166,8 +198,8 @@ export function parseArgs(
   }
 
   if (positionals.length > command.positionals.length) {
-    const extra = positionals[command.positionals.length] ?? '';
-    throw usage(`unexpected argument ${asciiText(extra)} for ${command.name}`);
+    const position = positions[command.positionals.length] ?? positions.length;
+    throw usage(unexpectedArgumentMessage(command, position));
   }
   command.positionals.forEach((spec, index) => {
     const raw = positionals[index];
@@ -176,6 +208,9 @@ export function parseArgs(
         throw usage(`${command.name} needs the argument <${spec.name}>`);
       }
       return;
+    }
+    if (spec.choices !== undefined && !spec.choices.includes(raw)) {
+      throw usage(choicesMessage(command.name, `<${spec.name}>`, spec.choices));
     }
     values[spec.name] = spec.type === 'integer' ? parseInteger(spec.name, raw) : raw;
   });
@@ -210,6 +245,33 @@ export function parseArgs(
   return { command, values, json };
 }
 
+/**
+ * The message of the refusal of an extra positional of `command` at the
+ * 1-based `position` among the arguments after the program name, exactly
+ * `unexpected argument at position <position> for <command>; it takes
+ * <positionals>, and text with spaces must be quoted`, where
+ * `<positionals>` is the positional part of `synopsis(command)`
+ * (`src/guidance/help.ts`): each positional `<name>` when required,
+ * `[<name>]` when optional, with its choices joined by `|` in place of its
+ * name when it has choices, separated by single spaces (`<id> <text>` for
+ * `comment`, `<id> [<status>]` for `move`, `<lease.grace|queue.window>
+ * <value>` for `config set`). For a command with no positionals it is
+ * exactly `unexpected argument at position <position> for <command>; it
+ * takes no positional arguments`. Built only from the registry and the
+ * position, so it never repeats the argument. Pure.
+ */
+export function unexpectedArgumentMessage(command: CommandSpec, position: number): string {
+  const head = `unexpected argument at position ${String(position)} for ${command.name}; it takes`;
+  if (command.positionals.length === 0) {
+    return `${head} no positional arguments`;
+  }
+  const forms = command.positionals.map((arg) => {
+    const form = positionalForm(arg);
+    return arg.required ? form : `[${form}]`;
+  });
+  return `${head} ${forms.join(' ')}, and text with spaces must be quoted`;
+}
+
 /** The command whose words are the longest match for the leading arguments. */
 function selectCommand(argv: readonly string[], commands: readonly CommandSpec[]): CommandSpec {
   let best: CommandSpec | undefined;
@@ -231,11 +293,14 @@ function selectCommand(argv: readonly string[], commands: readonly CommandSpec[]
   return best;
 }
 
-/** A decimal integer argument, or a usage error naming it. */
+/**
+ * A decimal integer argument, or a usage error naming the argument (`name`
+ * is `--<flag>` or the positional's name) and not the value.
+ */
 function parseInteger(name: string, raw: string): number {
   const value = Number(raw);
   if (!/^-?[0-9]+$/.test(raw) || !Number.isSafeInteger(value)) {
-    throw usage(`${name} must be an integer, not ${asciiText(raw)}`);
+    throw usage(`${name} must be an integer`);
   }
   return value;
 }
@@ -265,4 +330,29 @@ export function resolveActor(given: string | undefined, env: Env): string {
     'missing-actor',
     `this command needs an actor: pass --as <actor> or set ${ACTOR_ENV}`,
   );
+}
+
+/**
+ * Refuses the reserved system actor (board-cli: "Claim, release and
+ * handoff"; board-events: "Reserved system actor"): when `actor` is
+ * exactly `SYSTEM_ACTOR` (`agentboard`), throws `BoardError(1, 'usage')`
+ * whose message says that `agentboard` is reserved for the grants the
+ * board writes itself and names `--as <actor>`; for any other value,
+ * undefined included, does nothing.
+ *
+ * `runCli` calls it, before the board is opened, with the parsed `--as` of
+ * every command (so `show T1 --as agentboard` exits 1 too) and with the
+ * actor `resolveActor` resolves for a command that needs one (so
+ * `AGENTBOARD_ACTOR=agentboard` is refused there); the MCP server calls it
+ * with the call's `as`, and with the resolved actor of a tool that needs
+ * one. Nothing is written. Pure.
+ */
+export function refuseReservedActor(actor: string | undefined): void {
+  if (actor === SYSTEM_ACTOR) {
+    throw new BoardError(
+      1,
+      'usage',
+      `the actor ${SYSTEM_ACTOR} is reserved for the grants the board writes itself; pass your own name with --as <actor>`,
+    );
+  }
 }

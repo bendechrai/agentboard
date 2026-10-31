@@ -1,0 +1,403 @@
+[
+  {
+    "id": "01MB0000000000000000000001",
+    "title": "Free lock",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": null,
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": null,
+    "queue": [],
+    "available": null,
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012400000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 1,
+    "updatedAt": {
+      "wall": 1793012400000,
+      "counter": 0,
+      "actor": "orchestrator"
+    }
+  },
+  {
+    "id": "01MB0000000000000000000002",
+    "title": "Lock in grace",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": "merger-1",
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": {
+      "ttl": 1800000,
+      "expiresAt": 1793016090000,
+      "event": "66a6cd76fb02f56649d0dea9836485b592547d2519d2a32c13ef85c4b1f561f3",
+      "confirmed": false,
+      "state": "live",
+      "claimableAt": 1793016150000
+    },
+    "queue": [],
+    "available": {
+      "at": 1793016150000,
+      "event": "66a6cd76fb02f56649d0dea9836485b592547d2519d2a32c13ef85c4b1f561f3"
+    },
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012401000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 2,
+    "updatedAt": {
+      "wall": 1793015970000,
+      "counter": 0,
+      "actor": "merger-1"
+    }
+  },
+  {
+    "id": "01MB0000000000000000000003",
+    "title": "Confirmed lock",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": "impl-1",
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": {
+      "ttl": 1800000,
+      "expiresAt": 1793017500000,
+      "event": "256ea778bc757a25444d597d882d2b00f687e366000011f01514e18046e22a54",
+      "confirmed": true,
+      "state": "live",
+      "claimableAt": 1793017560000
+    },
+    "queue": [],
+    "available": {
+      "at": 1793017560000,
+      "event": "256ea778bc757a25444d597d882d2b00f687e366000011f01514e18046e22a54"
+    },
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012402000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 3,
+    "updatedAt": {
+      "wall": 1793015700000,
+      "counter": 0,
+      "actor": "impl-1"
+    }
+  },
+  {
+    "id": "01MB0000000000000000000004",
+    "title": "Expired lock",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": "impl-2",
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": {
+      "ttl": 1800000,
+      "expiresAt": 1793015980000,
+      "event": "6b408e7221a5492a0fd115cbdb63ae4b4f5eb7ccadc7f442477fadc73c604c2b",
+      "confirmed": false,
+      "state": "expired",
+      "claimableAt": 1793016040000
+    },
+    "queue": [],
+    "available": {
+      "at": 1793016040000,
+      "event": "6b408e7221a5492a0fd115cbdb63ae4b4f5eb7ccadc7f442477fadc73c604c2b"
+    },
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012403000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 2,
+    "updatedAt": {
+      "wall": 1793015860000,
+      "counter": 0,
+      "actor": "impl-2"
+    }
+  },
+  {
+    "id": "01MB0000000000000000000005",
+    "title": "Claimable lock",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": "impl-3",
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": {
+      "ttl": 600000,
+      "expiresAt": 1793015700000,
+      "event": "4578f2cdcca6c8e725200d310954399209ce22453290aa2a877aaf2d379ffebb",
+      "confirmed": true,
+      "state": "claimable",
+      "claimableAt": 1793015760000
+    },
+    "queue": [],
+    "available": {
+      "at": 1793015760000,
+      "event": "4578f2cdcca6c8e725200d310954399209ce22453290aa2a877aaf2d379ffebb"
+    },
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012404000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 3,
+    "updatedAt": {
+      "wall": 1793015100000,
+      "counter": 0,
+      "actor": "impl-3"
+    }
+  },
+  {
+    "id": "01MB0000000000000000000006",
+    "title": "Queued lock",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": "merger-1",
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": {
+      "ttl": 1800000,
+      "expiresAt": 1793017700000,
+      "event": "0e41d5763dda22b313b7c4452f81bdaf37366528166fe8d58a62843336ece98e",
+      "confirmed": true,
+      "state": "live",
+      "claimableAt": 1793017760000
+    },
+    "queue": [
+      {
+        "actor": "merger-2",
+        "ttl": 1800000,
+        "event": "9a3a6b5a2b84e9f29718a88308643c0c0c768fd8f4b02a514c6f004b33b33fd4",
+        "joined": {
+          "wall": 1793015910000,
+          "counter": 0,
+          "actor": "merger-2"
+        }
+      },
+      {
+        "actor": "merger-3",
+        "ttl": 600000,
+        "event": "5f2303626b85d5a224b906c7ce50bb1955e7e6485138fe8553f04fb358654977",
+        "joined": {
+          "wall": 1793015920000,
+          "counter": 0,
+          "actor": "merger-3"
+        }
+      },
+      {
+        "actor": "merger-4",
+        "ttl": 3600000,
+        "event": "9b8c15b520f2da7824de4fd3dfa69f5a4f9f4a8f393339105d6e8b0ea00d6d2f",
+        "joined": {
+          "wall": 1793015930000,
+          "counter": 0,
+          "actor": "merger-4"
+        }
+      }
+    ],
+    "available": {
+      "at": 1793017760000,
+      "event": "0e41d5763dda22b313b7c4452f81bdaf37366528166fe8d58a62843336ece98e"
+    },
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012405000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 6,
+    "updatedAt": {
+      "wall": 1793015930000,
+      "counter": 0,
+      "actor": "merger-4"
+    }
+  },
+  {
+    "id": "01MB0000000000000000000007",
+    "title": "Granted lock",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": "merger-6",
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": {
+      "ttl": 1800000,
+      "expiresAt": 1793016060001,
+      "event": "d20dfef32a03d1c38ad52ff9a3a8a7a6122953c46bf73716b52b25dbdd632b2d",
+      "confirmed": false,
+      "state": "live",
+      "claimableAt": 1793016120001
+    },
+    "queue": [],
+    "available": {
+      "at": 1793016120001,
+      "event": "d20dfef32a03d1c38ad52ff9a3a8a7a6122953c46bf73716b52b25dbdd632b2d"
+    },
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012406000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 5,
+    "updatedAt": {
+      "wall": 1793015940001,
+      "counter": 0,
+      "actor": "agentboard"
+    }
+  },
+  {
+    "id": "01MB0000000000000000000008",
+    "title": "Taken over lock",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": "impl-5",
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": {
+      "ttl": 3600000,
+      "expiresAt": 1793018950000,
+      "event": "76ba46d565a2150046febd53770f7c9627af61d8f5b774fe23770186a7eff36f",
+      "confirmed": true,
+      "state": "live",
+      "claimableAt": 1793019010000
+    },
+    "queue": [],
+    "available": {
+      "at": 1793019010000,
+      "event": "76ba46d565a2150046febd53770f7c9627af61d8f5b774fe23770186a7eff36f"
+    },
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012407000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 4,
+    "updatedAt": {
+      "wall": 1793015350000,
+      "counter": 0,
+      "actor": "impl-5"
+    }
+  },
+  {
+    "id": "01MB0000000000000000000009",
+    "title": "Force-released lock",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": null,
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": null,
+    "queue": [],
+    "available": {
+      "at": 1793014900000,
+      "event": "7fedeabb49346f4250e6714f8fb3edc0c92c818d440f7b895f756bb663acec74"
+    },
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012408000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 3,
+    "updatedAt": {
+      "wall": 1793014900000,
+      "counter": 0,
+      "actor": "orchestrator"
+    }
+  }
+]

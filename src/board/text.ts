@@ -46,3 +46,23 @@ export function asciiText(text: string): string {
   }
   return out;
 }
+
+/**
+ * The message of a refusal of a value that is not one of `choices`,
+ * exactly `<command> takes <argument> as one of <choice>, <choice>`, for
+ * example `move takes <status> as one of todo, tests, implementing,
+ * review, merged, blocked` or `handoff takes --status as one of ...`.
+ * `argument` names the argument as the user writes it (`<status>` for a
+ * positional, `--status` for a flag). Built only from registry text, so
+ * it never repeats the refused value. Used by `parseArgs` for a positional
+ * with `choices` and by the registry's status arguments. Pure.
+ *
+ * Re-exported unchanged from `src/cli/parse.ts`.
+ */
+export function choicesMessage(
+  command: string,
+  argument: string,
+  choices: readonly string[],
+): string {
+  return `${command} takes ${argument} as one of ${choices.join(', ')}`;
+}

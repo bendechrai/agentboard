@@ -5,6 +5,7 @@
  * process with captured streams.
  */
 
+import { ImportRefusedError, type ImportResult } from '../board/import.js';
 import { MoveSyncFailure } from '../board/into-host.js';
 import { openBoard, type Board } from '../store/board.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
@@ -12,8 +13,14 @@ import type { WriteHooks } from '../store/eventfile.js';
 import { pauseHooks } from '../store/transaction.js';
 import { findBoard } from '../store/locate.js';
 import { closeDecisionOf, hintFor, type HintContext } from '../guidance/hints.js';
-import { ACTOR_ENV, parseArgs, resolveActor, type ParsedCommand } from './parse.js';
-import { COMMANDS } from './registry.js';
+import {
+  ACTOR_ENV,
+  parseArgs,
+  refuseReservedActor,
+  resolveActor,
+  type ParsedCommand,
+} from './parse.js';
+import { COMMANDS, findCommand } from './registry.js';
 import type { TerminalIo } from '../tui/terminal.js';
 import type { BoardOpenOptions, CommandSpec, Env, RunContext } from './types.js';
 
@@ -72,6 +79,13 @@ export interface ErrorDocument {
      */
     hint: string | null;
     /**
+     * Present only for the `import-change` refusals `reconcile-blocked` and
+     * `reconcile-ambiguous` (an `ImportRefusedError`): the import's result,
+     * what was written for a blocked import and the dry run with the
+     * candidates for an ambiguous one. Absent for every other error.
+     */
+    result?: ImportResult;
+    /**
      * The kept old repository of a completed `init --into-host` whose
      * final `sync` failed (`MoveSyncFailure` in `src/board/into-host.ts`),
      * and the old remote's URL; present exactly when the error is one.
@@ -94,7 +108,8 @@ export function exitCodeFor(error: unknown): Exclude<ExitCode, 0> {
  * `BoardError` reason (null for other errors), the error message and
  * `hintFor(error, context)`. `context` defaults to
  * `{ surface: 'cli', command: null }` (placeholders for the id and actor).
- * Pure.
+ * A `MoveSyncFailure` adds its `keptAt` and `oldRemoteUrl`, and an
+ * `ImportRefusedError` its `result`. Pure.
  */
 export function errorDocument(error: unknown, context?: HintContext): ErrorDocument {
   const base: ErrorDocument['error'] = {
@@ -107,7 +122,9 @@ export function errorDocument(error: unknown, context?: HintContext): ErrorDocum
     error:
       error instanceof MoveSyncFailure
         ? { ...base, keptAt: error.keptAt, oldRemoteUrl: error.oldRemoteUrl }
-        : base,
+        : error instanceof ImportRefusedError
+          ? { ...base, result: error.result }
+          : base,
   };
 }
 
@@ -115,8 +132,10 @@ export function errorDocument(error: unknown, context?: HintContext): ErrorDocum
  * Runs one CLI invocation and returns its exit code.
  *
  * 1. `parseArgs(io.argv)`.
- * 2. For a writing command or one that tracks a cursor
- *    (`CommandSpec.tracksCursor`), `resolveActor(values.as, io.env)`.
+ * 2. `refuseReservedActor(values.as)` for every command, then, for a
+ *    writing command or one that tracks a cursor
+ *    (`CommandSpec.tracksCursor`), `resolveActor(values.as, io.env)` and
+ *    `refuseReservedActor` of the result (both in `commandActor`).
  * 3. `command.run(ctx, values)` with a context whose `board()` finds and
  *    opens the board lazily (`findBoard` with `io.cwd` and `io.env`, then
  *    `openBoard`, passing `catchUp: false` when the first call asks for
@@ -244,15 +263,25 @@ function cliBoard(io: CliIo): LazyBoard {
 /**
  * The actor of `command`: `resolveActor(given, env)` for a writing or
  * cursor-tracking command, null for any other (shared with the MCP server).
+ * The reserved actor is refused first as `given` (every command, so `show
+ * --as agentboard` exits 1) and then as the resolved actor (so
+ * `AGENTBOARD_ACTOR=agentboard` is refused by a command that needs one).
  *
- * @throws BoardError exit 1, reason `missing-actor`, from `resolveActor`.
+ * @throws BoardError exit 1, reason `missing-actor`, from `resolveActor`,
+ *   or reason `usage` from `refuseReservedActor`.
  */
 export function commandActor(
   command: CommandSpec,
   given: string | undefined,
   env: Env,
 ): string | null {
-  return command.writes || command.tracksCursor === true ? resolveActor(given, env) : null;
+  refuseReservedActor(given);
+  if (!(command.writes || command.tracksCursor === true)) {
+    return null;
+  }
+  const actor = resolveActor(given, env);
+  refuseReservedActor(actor);
+  return actor;
 }
 
 /** The `RunContext` of one command run on `opened` (shared with the MCP server). */
@@ -304,18 +333,21 @@ function cliHintContext(io: CliIo, parsed: ParsedCommand | null): HintContext {
     const actor = nonEmpty(parsed.values.as) ?? fromEnv;
     const closeDecision =
       parsed.command.name === 'close' ? closeDecisionOf(parsed.values) : undefined;
+    const force = parsed.command.name === 'release' && parsed.values.force === true;
     return {
       surface: 'cli',
       command: parsed.command.name,
       ...(id === undefined ? {} : { id }),
       ...(actor === undefined ? {} : { actor }),
       ...(closeDecision === undefined ? {} : { closeDecision }),
+      ...(force ? { force } : {}),
     };
   }
-  const actor = argvActor(io.argv) ?? fromEnv;
+  const command = leadingCommand(io.argv);
+  const actor = parsedActor(io.argv, command) ?? fromEnv;
   return {
     surface: 'cli',
-    command: leadingCommand(io.argv),
+    command,
     ...(actor === undefined ? {} : { actor }),
   };
 }
@@ -339,31 +371,46 @@ function leadingCommand(argv: readonly string[]): string | null {
 }
 
 /**
- * The actor of arguments that failed to parse: the argument after the
- * first `--as`, or the value of the first `--as=<value>`, before any lone
- * `--`; undefined when empty or absent.
+ * The `--as` value of arguments that failed to parse for `command`: the
+ * arguments are parsed again against the command with its exclusive
+ * groups and its required arguments relaxed, and the actor is the `as`
+ * value that parse yields; undefined when the arguments do not parse even
+ * then (an unknown flag, a flag given twice, a bad integer), when `command`
+ * is null, or when no `--as` was parsed. The raw arguments are never
+ * scanned for `--as`, so a flag that took `--as` as its value (`close
+ * --unplanned --as <text>`) names no actor and the following text, which
+ * the parser read as the `<id>`, is not repeated as one (board-cli
+ * "Refusals never repeat the refused input", review round 1 F1).
  */
-function argvActor(argv: readonly string[]): string | undefined {
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (arg === '--') {
-      return undefined;
-    }
-    if (arg === '--as') {
-      return nonEmpty(argv[i + 1]);
-    }
-    if (arg?.startsWith('--as=') === true) {
-      return nonEmpty(arg.slice('--as='.length));
-    }
+function parsedActor(argv: readonly string[], command: string | null): string | undefined {
+  const spec = command === null ? undefined : findCommand(command);
+  if (spec === undefined) {
+    return undefined;
   }
-  return undefined;
+  const relaxed: CommandSpec = {
+    ...spec,
+    positionals: spec.positionals.map((p) => ({ ...p, required: false })),
+    flags: spec.flags.map((f) => ({ ...f, required: false })),
+    exclusive: [],
+  };
+  try {
+    return nonEmpty(parseArgs(argv, [relaxed]).values.as);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
  * `runCli` for the executable (`src/cli.ts`): identical to `runCli`, with
  * the same output and exit codes, for every command without `stream`.
  *
- * For a streaming command (`watch`, `serve`, `top`): steps 1 and 2 of
+ * A command streams when it has `stream` and either has no `streams`
+ * predicate or `streams(values)` is true for the parsed values (`claim`
+ * streams only with `--wait`); a command that does not stream is run
+ * exactly as `runCli` runs it, without asking for a stop signal.
+ *
+ * For a streaming command (`watch`, `serve`, `top`, `claim --wait`):
+ * steps 1 and 2 of
  * `runCli` (parse, resolve the actor; failures exit 1 before any board
  * lookup), then, for a command whose spec has `terminal` true (`top`)
  * only, `terminal = await io.terminal?.()`, then `io.stopSignal()`, then
@@ -378,7 +425,7 @@ function argvActor(argv: readonly string[]): string | undefined {
  * more line after any lines already streamed; the result is
  * `exitCodeFor(error)`.
  *
- * Output of `watch`: one line per entry, `renderInboxLine(entry)` without
+ * Output of `watch`: one line per entry, `renderInboxLine(entry, actor)` without
  * `--json`, and with `--json` `JSON.stringify(entry)` of the `InboxEntry`
  * (newline-delimited JSON, one document per line). This is the single
  * exception to "exactly one JSON document on stdout": a stream has no end
@@ -393,7 +440,7 @@ export async function runCliAsync(io: AsyncCliIo): Promise<ExitCode> {
     return runCli(io);
   }
   const { command, values } = parsed;
-  if (command.stream === undefined) {
+  if (command.stream === undefined || command.streams?.(values) === false) {
     return runCli(io);
   }
   const opened = cliBoard(io);

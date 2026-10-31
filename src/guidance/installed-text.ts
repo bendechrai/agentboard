@@ -19,9 +19,11 @@
  * this module changes (not on every package release). Written into every
  * installed artifact's marker and compared by `agents check`. Version 2
  * adds the ad hoc rule (add-adhoc-ticket-lifecycle), so `agents check`
- * reports a version 1 installation `stale`.
+ * reports a version 1 installation `stale`. Version 3 adds the mutex
+ * recipe (add-claim-leases, board-agent-guidance: "Mutex ticket recipe"),
+ * so a version 2 installation is `stale`: this constant is 3.
  */
-export const GUIDANCE_VERSION = 2;
+export const GUIDANCE_VERSION = 3;
 
 /** The command every installed artifact points to for the full guide. */
 export const GUIDE_COMMAND = 'agentboard help agents';
@@ -70,6 +72,26 @@ const POINTER: readonly string[] = [
   'shows any command with its arguments, exit codes and examples.',
 ];
 
+/**
+ * Paragraph shared by the skill and the AGENTS.md block: the short mutex
+ * recipe (board-agent-guidance: "Mutex ticket recipe"). Every command is in
+ * backticks with `--as <you>`, so the drift guard parses it; the only tools
+ * it names are `board_claim`, `board_inbox` and `board_renew`.
+ */
+const MUTEX_RECIPE: readonly string[] = [
+  'A mutex (a merge lock, say) is one standing ad hoc ticket, never closed',
+  'while in use. Claim it with a lease, `agentboard claim <id> --ttl 30m --as <you>`,',
+  'then run `agentboard renew <id> --as <you>` as the first action of real work',
+  '(an unconfirmed claim lapses) and again at about half the ttl; when `renew`',
+  'is refused the lock is lost: stop. Release when done, including on failure:',
+  '`agentboard release <id> --as <you>`. Never wait on a mutex in a loop and',
+  'never claim one from a background process: wait in the foreground with',
+  '`agentboard claim <id> --ttl 30m --wait --timeout 10m --as <you>` and renew',
+  'on return, or report ready to the orchestrator and stop. Over MCP,',
+  '`board_claim` with `wait` only joins the queue; the grant arrives in',
+  '`board_inbox` and is accepted with `board_renew` within the accept window.',
+];
+
 /** The rules as a numbered Markdown list, one line per rule. */
 function numberedRules(): string[] {
   return GUIDANCE_RULES.map((rule, index) => `${String(index + 1)}. ${rule}`);
@@ -96,7 +118,11 @@ export function skillMarker(version: number): string {
  * `version` (default `GUIDANCE_VERSION`): YAML frontmatter (`name:
  * agentboard` and `SKILL_DESCRIPTION`), which Claude Code requires at the
  * very top, then the marker line `skillMarker(version)`, then the intro,
- * the rules and the pointer. Ends with one newline. Pure.
+ * the rules, a section headed `## Mutex tickets` with the short mutex
+ * recipe (board-agent-guidance: "Mutex ticket recipe": the worker rules and
+ * the backticked claim with `--ttl`, renew, claim with `--ttl --wait
+ * --timeout` and release commands, each with `--as <you>`), and the
+ * pointer. At most 45 lines. Ends with one newline. Pure.
  */
 export function renderSkill(version: number = GUIDANCE_VERSION): string {
   return `${[
@@ -113,6 +139,10 @@ export function renderSkill(version: number = GUIDANCE_VERSION): string {
     '## Rules you must never break',
     '',
     ...numberedRules(),
+    '',
+    '## Mutex tickets',
+    '',
+    ...MUTEX_RECIPE,
     '',
     '## Everything else',
     '',
@@ -133,7 +163,10 @@ export const BLOCK_END = '<!-- agentboard:end -->';
 
 /**
  * The managed AGENTS.md block for guidance version `version` (default
- * `GUIDANCE_VERSION`): from the first byte of `blockStart(version)` to the
+ * `GUIDANCE_VERSION`), with the intro, the rules, a paragraph introduced
+ * by the line `Mutex tickets:` holding the same short mutex recipe as the
+ * skill, and the pointer, at most 40 lines: from the first byte of
+ * `blockStart(version)` to the
  * last byte of `BLOCK_END`, lines joined by `\n`, with NO trailing newline
  * (the installer owns the markers and what lies between them, not the line
  * break after the end marker). Pure.
@@ -148,6 +181,9 @@ export function renderAgentsBlock(version: number = GUIDANCE_VERSION): string {
     'Rules you must never break:',
     '',
     ...numberedRules(),
+    '',
+    'Mutex tickets:',
+    ...MUTEX_RECIPE,
     '',
     ...POINTER,
     BLOCK_END,

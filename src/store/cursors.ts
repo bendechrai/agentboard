@@ -5,8 +5,11 @@
  *
  * A cursor records what one actor has acknowledged through `inbox`. It is
  * the only state in the cache that cannot be derived from the event files,
- * so losing it (a deleted cache, a schema version change) only causes
- * events to be delivered again, never skipped.
+ * so losing it (a deleted cache, a cache of a later or unknown schema
+ * version, cursor tables of an unexpected shape) only causes events to be
+ * delivered again, never skipped. A schema upgrade keeps it: `openCache`
+ * carries the cursor tables of an earlier version across the recreate
+ * (`src/store/cache.ts`, "Schema upgrade").
  *
  * A cursor is a fold position (the last delivered event) plus a bounded
  * seen set: the hashes of the events delivered to the actor whose wall is
@@ -36,15 +39,24 @@
  *
  * `cursor_seen` is treated exactly like `cursors`: `openCache` creates it
  * (with `CREATE TABLE IF NOT EXISTS` on every open, so a version 1 cache
- * without it gains it without a schema version change) and
- * drops it with every other table when the schema version differs;
- * `rebuild` keeps its rows; `dumpCache`, `diffCaches` and `rebuild --check`
- * do not cover it. A cursor with no `cursors` row is the empty cursor
- * (position null, empty seen set); stray `cursor_seen` rows of an actor with
- * no `cursors` row are ignored.
+ * without it gains it without a schema version change), carries it with
+ * `cursors` across a schema upgrade, and drops it with every other table
+ * when the carry is not possible; `rebuild` keeps its rows; `dumpCache`,
+ * `diffCaches` and `rebuild --check` do not cover it. A cursor with no
+ * `cursors` row is the empty cursor (position null, empty seen set); stray
+ * `cursor_seen` rows of an actor with no `cursors` row are ignored.
  *
  * Fold order of positions is the fold's own: `compareHlc` on `ts`, then the
  * hash as a string.
+ *
+ * The carry across a schema upgrade is sound only because the version that
+ * wrote a cursor and the version that reads it agree on three things: the
+ * shapes of `cursors` and `cursor_seen`, the delivery rule (`isPending`,
+ * `SEEN_WINDOW_MS`) and the fold order of positions. All three are
+ * unchanged since 0.1.0 (cache schema 1). A change to the delivery rule or
+ * the fold order must stop the carry from the versions before it: either
+ * change the shape of the cursor tables, so the shape check in
+ * `openCache` refuses the carry, or make the carry skip those versions.
  */
 
 import type { DatabaseSync, SQLOutputValue } from 'node:sqlite';

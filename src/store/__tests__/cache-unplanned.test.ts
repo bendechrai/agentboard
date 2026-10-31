@@ -56,6 +56,14 @@ function freshDump(eventsDir: string): string {
   return dumpCache(openB(copyBoard(eventsDir)).db);
 }
 
+/** Every row of `table`, as plain objects. */
+function rows(db: DatabaseSync, table: string): Record<string, unknown>[] {
+  return db
+    .prepare(`SELECT * FROM ${table}`)
+    .all()
+    .map((r) => ({ ...r }));
+}
+
 function ticketRow(board: Board, id = T1): Row {
   return board.db.prepare('SELECT * FROM tickets WHERE id = ?').get(id) as Row;
 }
@@ -95,11 +103,11 @@ const UNPLANNED_JSON =
   '{"actor":"merger","reason":"hotfix","ts":{"actor":"merger","counter":0,"wall":5000}}';
 
 describe('the unplanned column', () => {
-  it('is part of the tickets table and the schema version is 4', () => {
+  it('is part of the tickets table and the schema version is 5', () => {
     const db = openCache(join(tempDir(), 'c.sqlite'));
     extra.push(db);
     expect(columns(db, 'tickets')).toContain('unplanned');
-    expect(CACHE_SCHEMA_VERSION).toBe(4);
+    expect(CACHE_SCHEMA_VERSION).toBe(5);
   });
 
   it('holds the disposition as canonical JSON, and null without one', () => {
@@ -278,11 +286,17 @@ describe('scenario: cache from an earlier schema is rebuilt', () => {
 
     const board = openB(dir);
     expect(board.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: '4',
+      value: '5',
     });
     expect(columns(board.db, 'tickets')).toContain('unplanned');
-    // Cursors are dropped: entries may be delivered again, none is skipped.
-    expect(board.db.prepare('SELECT * FROM cursors').all()).toEqual([]);
+    // The cursor is carried across the recreate (keep-cursors-on-upgrade):
+    // the version 3 tables have the expected shape.
+    expect(rows(board.db, 'cursors')).toEqual([
+      { actor: 'b', last_wall: 0, last_counter: 0, last_actor: 'orch', last_hash: 'x' },
+    ]);
+    expect(
+      board.db.prepare("SELECT name FROM sqlite_master WHERE name = 'carried_applied'").get(),
+    ).toBeUndefined();
     expect(ticketRow(board)).toMatchObject({ status: 'merged', unplanned: UNPLANNED_JSON });
     expect(readTicket(board.db, T1)?.unplanned?.reason).toBe('hotfix');
     expect(dumpCache(board.db)).toBe(freshDump(events));
@@ -297,7 +311,7 @@ describe('scenario: cache from an earlier schema is rebuilt', () => {
     old.exec("UPDATE meta SET value = '3' WHERE key = 'schema_version'");
     old.close();
     expect(() => openCache(join(dir, CACHE_FILE), { prepare: false })).toThrow(
-      /schema version 4.*schema version 3/,
+      /schema version 5.*schema version 3/,
     );
   });
 });

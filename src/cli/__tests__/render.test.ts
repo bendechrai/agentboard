@@ -8,7 +8,7 @@ const E = String.fromCharCode(0xe9);
 const ID = '01ARYZ6S41TSV4RRFFQ69G5FAV';
 const TS = { wall: 1000, counter: 0, actor: 'orch' };
 
-function ticket(extra: Partial<Ticket> = {}): Ticket {
+function ticket(extra: Partial<Omit<Ticket, 'lease'>> = {}): Ticket & { lease: null } {
   return {
     id: ID,
     title: 'Build the CLI',
@@ -27,6 +27,7 @@ function ticket(extra: Partial<Ticket> = {}): Ticket {
     comments: [],
     links: [],
     closed: false,
+    superseded: null,
     disposition: null,
     createdBy: 'orch',
     createdAt: TS,

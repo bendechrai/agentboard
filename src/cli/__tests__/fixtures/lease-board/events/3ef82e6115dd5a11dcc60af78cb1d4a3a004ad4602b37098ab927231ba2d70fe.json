@@ -1,0 +1,1 @@
+{"actor":"impl-5","body":{"lease":{"expiresAt":1793015420000,"grace":120000,"ttl":3600000},"supersedes":{"event":"161429173b998349d61a9972c197b923f381c99a48bc7d9f089e768a7b63ccae","expiresAt":1793015070000,"holder":"impl-4"}},"kind":"ticket.claim","ticket":"01MB0000000000000000000008","ts":{"actor":"impl-5","counter":0,"wall":1793015300000},"v":1}

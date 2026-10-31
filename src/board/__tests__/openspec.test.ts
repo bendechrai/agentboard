@@ -193,7 +193,8 @@ describe('openspecAdapter', () => {
       1,
       'tasks-not-found',
     );
-    expect(err.message).toContain('openspec/changes/no-such-change/tasks.md');
+    expect(err.message).toContain('openspec/changes/<name>/tasks.md');
+    expect(err.message).not.toContain('no-such-change');
   });
 
   it('passes the tasks file path to parse errors', () => {

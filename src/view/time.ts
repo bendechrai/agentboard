@@ -1,5 +1,6 @@
 /**
- * Relative times (board-view-model: "Relative time"). Pure and
+ * Relative times (board-view-model: "Relative time") and exact durations
+ * (board-view-model: "Activity feed entries", the ttl rule). Pure and
  * browser-safe; see `types.ts`.
  */
 
@@ -37,4 +38,32 @@ export function relativeTime(ms: number): string {
     return `${String(Math.floor(ms / HOUR))}h ago`;
   }
   return `${String(Math.floor(ms / DAY))}d ago`;
+}
+
+/** Milliseconds per unit letter, largest first. */
+const DURATION_UNITS: readonly [string, number][] = [
+  ['d', DAY],
+  ['h', HOUR],
+  ['m', MINUTE],
+  ['s', SECOND],
+];
+
+/**
+ * A duration in milliseconds written in the largest unit that divides it
+ * exactly, among `d`, `h`, `m` and `s` (board-view-model: "Activity feed
+ * entries", the ttl rule), else in `ms`: 604800000 is `7d`, 7200000 `2h`,
+ * 1800000 `30m`, 90000 `90s`, 30500 `30500ms`, 0 `0s`. Used for ttls,
+ * windows and settings in feed summaries, `show`, `config get` and
+ * `config set`. Pure.
+ */
+export function formatDuration(ms: number): string {
+  if (ms === 0) {
+    return '0s';
+  }
+  for (const [unit, size] of DURATION_UNITS) {
+    if (ms % size === 0) {
+      return `${String(ms / size)}${unit}`;
+    }
+  }
+  return `${String(ms)}ms`;
 }

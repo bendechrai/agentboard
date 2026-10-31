@@ -46,7 +46,8 @@ export interface InboxEntry {
   ts: Hlc;
   /**
    * The actor the event hands the ticket to: `body.to` of
-   * `ticket.handoff` and `ticket.assign`; null for every other kind.
+   * `ticket.handoff`, `ticket.assign` and `ticket.grant` (the grantee);
+   * null for every other kind.
    */
   to: string | null;
   /**
@@ -57,9 +58,24 @@ export interface InboxEntry {
   status: Status | null;
   /**
    * The free text a reader acts on: `body.note` of `ticket.handoff`,
-   * `body.text` of `ticket.comment`; null for every other kind.
+   * `body.text` of `ticket.comment`, `body.reason` of
+   * `ticket.release.force`; null for every other kind.
    */
   note: string | null;
+  /**
+   * The actor the event acts on behind its back (board-cli: "Lease and
+   * queue events in the inbox"): `body.holder` of a
+   * `ticket.release.force` (the holder released); `body.supersedes.holder`
+   * of a `ticket.claim` that carries `supersedes` (the holder whose lease
+   * was taken over); `body.after.lease.holder` of a `ticket.grant` after a
+   * lapse (the holder whose lease lapsed; null for a grant after a
+   * release); `body.holder` of a forced `ticket.reconcile` (the assignee
+   * whose checklist was rewritten, board-openspec-integration: "Reconcile
+   * on re-import"); null for every other event, and for a reconcile
+   * without `holder`. Only applied events are listed, so the claim is one
+   * the fold applied.
+   */
+  affects: string | null;
   /** The whole event as written (its canonical encoding is the file). */
   event: BoardEvent;
 }
@@ -122,7 +138,8 @@ export interface InboxResult {
  * @throws BoardError exit 1 `usage` when `since` is not a 64-character
  *   lowercase hex string.
  * @throws BoardError exit 1 `unknown-cursor` when `since` names no
- *   well-formed event of this board.
+ *   well-formed event of this board, exactly `no event matches --since on
+ *   this board` (the hash given is not repeated).
  */
 export function readInbox(board: Board, actor: string, options?: InboxOptions): InboxResult {
   if (actor === '') {
@@ -176,7 +193,7 @@ function readSince(board: Board, actor: string, since: string): InboxResult {
   return inSnapshot(db, () => {
     const start = recordedPosition(db, since);
     if (start === null) {
-      throw new BoardError(1, 'unknown-cursor', `no event ${since} on this board`);
+      throw new BoardError(1, 'unknown-cursor', 'no event matches --since on this board');
     }
     const after = recordedPositions(db, { effectiveOnly: true, minWall: start.ts.wall }).filter(
       (p) => comparePositions(p, start) > 0,

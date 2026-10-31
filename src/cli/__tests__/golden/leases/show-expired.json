@@ -1,0 +1,47 @@
+{
+  "ticket": {
+    "id": "01MB0000000000000000000004",
+    "title": "Expired lock",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": "impl-2",
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": {
+      "ttl": 1800000,
+      "expiresAt": 1793015980000,
+      "event": "6b408e7221a5492a0fd115cbdb63ae4b4f5eb7ccadc7f442477fadc73c604c2b",
+      "confirmed": false,
+      "state": "expired",
+      "claimableAt": 1793016040000
+    },
+    "queue": [],
+    "available": {
+      "at": 1793016040000,
+      "event": "6b408e7221a5492a0fd115cbdb63ae4b4f5eb7ccadc7f442477fadc73c604c2b"
+    },
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012403000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 2,
+    "updatedAt": {
+      "wall": 1793015860000,
+      "counter": 0,
+      "actor": "impl-2"
+    }
+  },
+  "events": 2,
+  "unknown": []
+}

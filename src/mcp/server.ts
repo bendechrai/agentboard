@@ -94,6 +94,7 @@ import {
   renderGuideSummary,
   type Role,
 } from '../guidance/guide.js';
+import type { ImportResult } from '../board/import.js';
 import { closeDecisionOf, type HintContext } from '../guidance/hints.js';
 import { BoardError, type ExitCode } from '../store/errors.js';
 import { findBoard } from '../store/locate.js';
@@ -126,6 +127,11 @@ export interface ToolErrorContent {
    * command lines, the `as` argument instead of `--as`).
    */
   hint: string | null;
+  /**
+   * The import's result, present only for `reconcile-blocked` and
+   * `reconcile-ambiguous` (as `ErrorDocument.error.result`).
+   */
+  result?: ImportResult;
 }
 
 /** The result of one `tools/call`, as sent to the client. */
@@ -179,7 +185,8 @@ export interface BoardMcpServer {
    * throws, every failure is a tool error.
    *
    * 1. `findTool(name)`; an unknown or excluded name is a tool error with
-   *    exit code 1, reason `usage`, naming the tool.
+   *    exit code 1, reason `usage`, exactly `unknown tool; call tools/list
+   *    for the tool names`, which does not repeat the name.
    * 2. `toolArguments(command, args)`.
    * 3. The actor, for a command that writes or tracks a per-actor cursor
    *    (as `runCli` decides): `resolveActor(given, options.env)`, the
@@ -188,7 +195,10 @@ export interface BoardMcpServer {
    *    so the order is call `as`, server `--as`, `AGENTBOARD_ACTOR`. With
    *    none, the `missing-actor` error (exit 1) names both `--as` and
    *    `AGENTBOARD_ACTOR`. For any other command the actor is null. This
-   *    happens before the board is opened.
+   *    happens before the board is opened. The reserved actor is refused
+   *    here too (`refuseReservedActor`: the call's `as` for every tool,
+   *    and the resolved actor of a tool that needs one), as exit 1
+   *    `usage`, writing nothing.
    * 4. `command.run(ctx, values)` with a `RunContext` like the CLI's:
    *    `cwd` and `env` from the options, the actor, `boardDir()` returning
    *    `boardDir`, and `board(options)` opening `boardDir` with `openBoard`
@@ -349,7 +359,7 @@ function runTool(
   try {
     const tool = findTool(name);
     if (tool === undefined) {
-      throw new BoardError(1, 'usage', `unknown tool ${JSON.stringify(name)}`);
+      throw new BoardError(1, 'usage', 'unknown tool; call tools/list for the tool names');
     }
     const { command } = tool;
     const values = toolArguments(command, args);
@@ -405,12 +415,14 @@ function mcpHintContext(options: McpServerOptions, name: string, args: unknown):
   const actor = nonEmpty(given.as) ?? nonEmpty(options.actor) ?? nonEmpty(options.env[ACTOR_ENV]);
   const command = findTool(name)?.command.name ?? null;
   const closeDecision = command === 'close' ? closeDecisionOf(given) : undefined;
+  const force = command === 'release' && given.force === true;
   return {
     surface: 'mcp',
     command,
     ...(id === undefined ? {} : { id }),
     ...(actor === undefined ? {} : { actor }),
     ...(closeDecision === undefined ? {} : { closeDecision }),
+    ...(force ? { force } : {}),
   };
 }
 

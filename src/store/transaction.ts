@@ -6,7 +6,7 @@
 
 import { writeSync } from 'node:fs';
 
-import { canonicalHash } from '../events/canonical.js';
+import { canonicalHash, type JsonValue } from '../events/canonical.js';
 import type { ApplyOutcome, BoardState, FoldInput, Ticket } from '../events/fold.js';
 import { nextHlc, type Hlc } from '../events/hlc.js';
 import { formatTaskRef, validateEvent, type BoardEvent, type TaskRef } from '../events/schema.js';
@@ -17,6 +17,7 @@ import {
   beginImmediate,
   catchUpLocked,
   commitOwnEvent,
+  loadMeta,
   readLastPosition,
   rollback,
 } from './engine.js';
@@ -59,23 +60,60 @@ export type Decision =
   | { ok: false; exitCode: 1 | 4 | 5; reason: string; message: string };
 
 /**
- * What an operation sees: the command's actor and the cache state after
+ * What an operation sees: the command's actor, the clock and the hybrid
+ * timestamp of the event it may propose, and the cache state after
  * catch-up, read inside the write lock.
  */
 export interface TxContext {
   readonly actor: string;
+  /**
+   * The command's clock reading `t` (`CommandOptions.now`, called once
+   * after the write lock was taken): the time the catch-up wrote due
+   * grants at, and the local clock a takeover is checked against
+   * (add-claim-leases design.md: "Command-time validation matches the
+   * fold").
+   */
+  readonly now: number;
+  /**
+   * The hybrid timestamp the first proposed event gets, `nextHlc(latest,
+   * t, actor)` with `latest` the fold position of the greatest folded
+   * event, built before the operation decides so that a body derived from
+   * it (a lease's `expiresAt`) and a rule that reads it (a takeover) see
+   * exactly the timestamp the event is written and validated with. Nothing
+   * changes between the two under the write lock.
+   */
+  readonly ts: Hlc;
   /** `readTicket` on the transaction's connection. */
   ticket(id: string): Ticket | null;
   /** `readState` on the transaction's connection. */
   state(): BoardState;
+  /** `loadMeta` on the transaction's connection: the folded `board.*` settings alone. */
+  meta(): Record<string, JsonValue>;
 }
 
 /**
  * A command's logic: inspects the current state and proposes one event or
  * refuses. Must be synchronous and must not write to the board itself. It
- * may throw; the exception propagates after rollback.
+ * may throw; the exception propagates after rollback, except a `NoWrite`,
+ * which propagates after the catch-up is committed.
  */
 export type Operation = (ctx: TxContext) => Decision;
+
+/**
+ * Thrown by an operation that has decided, from the caught-up state, that
+ * the command has nothing to write and is not refused either (a claim by
+ * the actor that already holds the ticket, a repeated join by a queued
+ * actor). `runCommand` commits what the catch-up did (folded files and
+ * written grants, which do not depend on the command) and rethrows it, so
+ * the caller turns it into a result without an event. The state the
+ * subclass carries was read inside the transaction.
+ */
+export class NoWrite extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NoWrite';
+  }
+}
 
 /** Options for `runCommand`. */
 export interface CommandOptions {
@@ -188,11 +226,14 @@ export interface CommandResult {
  * reverse cannot happen. `CommandResult.events` lists both, and `hash`,
  * `path` and `event` are the second's.
  *
- * If steps 2 to 4 refuse, the command's own event is never written (no file,
- * not even a temporary one, and no row of its own), and the transaction is
- * committed with only what step 1 did: a grant catch-up wrote is a derived
- * event independent of this command, so its file stays and the cache keeps
- * it folded. If anything else throws after `BEGIN` (including a hook, which
+ * If steps 2 to 4 refuse, or the operation throws `NoWrite`, the command's
+ * own event is never written (no file, not even a temporary one, and no row
+ * of its own), and the transaction is committed with only what step 1 did:
+ * a grant catch-up wrote is a derived event independent of this command, so
+ * its file stays and the cache keeps it folded. The operation sees `t` as
+ * `TxContext.now` and the first event's timestamp as `TxContext.ts`, built
+ * in step 3's way before step 2 (nothing changes between them under the
+ * lock). If anything else throws after `BEGIN` (including a hook, which
  * is how tests simulate a crash), the transaction is rolled back and the
  * exception propagates; an event file already renamed into place stays and
  * is folded by the next catch-up. If `BEGIN IMMEDIATE` is still busy after
@@ -221,13 +262,14 @@ export function runCommand(
     // 1. Catch-up, under the write lock, writing the grants due at t.
     const catchUp = catchUpLocked(board, t, { hooks });
 
-    // 2 to 4. Decide. A refusal commits what catch-up did (folded files and
-    // written grants, which do not depend on this command) and nothing else.
+    // 2 to 4. Decide. A refusal, or a decision that nothing needs writing,
+    // commits what catch-up did (folded files and written grants, which do
+    // not depend on this command) and nothing else.
     let decided: Decided;
     try {
       decided = decide(board, actor, operation, t);
     } catch (error) {
-      if (error instanceof BoardError) {
+      if (error instanceof BoardError || error instanceof NoWrite) {
         db.exec('COMMIT');
       }
       throw error;
@@ -305,10 +347,16 @@ interface Decided {
  */
 function decide(board: Board, actor: string, operation: Operation, t: number): Decided {
   const { db } = board;
+  // The first event's timestamp, built before the decision: the operation
+  // may derive a body from it, and it is the one the event is written with.
+  let ts = nextHlc(readLastPosition(db)?.ts ?? null, t, actor);
   const decision = operation({
     actor,
+    now: t,
+    ts,
     ticket: (id) => readTicket(db, id),
     state: () => readState(db),
+    meta: () => loadMeta(db),
   });
   if (!decision.ok) {
     throw new BoardError(decision.exitCode, decision.reason, decision.message);
@@ -316,7 +364,6 @@ function decide(board: Board, actor: string, operation: Operation, t: number): D
   const proposed: ProposedEvents = 'events' in decision ? decision.events : [decision.event];
   const [firstProposed, ...moreProposed] = proposed;
   const session = new FoldSession(db);
-  let ts = nextHlc(readLastPosition(db)?.ts ?? null, t, actor);
   const first = accept(session, build(firstProposed, actor, ts));
   const more: Accepted[] = [];
   for (const next of moreProposed) {

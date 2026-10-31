@@ -61,8 +61,17 @@ describe('resolveTicketId', () => {
   });
 
   it('reports an unknown ticket with exit 4', () => {
+    // 01NOPE00 has an O, so it is not id-shaped and is not repeated
+    // (board-cli "Ticket ids in refusals"); an id-shaped text is.
     const err = expectBoardError(() => resolveTicketId(state(A), '01NOPE00'), 4, 'unknown-ticket');
-    expect(err.message).toContain('01NOPE00');
+    expect(err.message).not.toContain('01NOPE00');
+    expect(err.message).toContain('is not a ticket id');
+    const shaped = expectBoardError(
+      () => resolveTicketId(state(A), '01J9K4ZZ'),
+      4,
+      'unknown-ticket',
+    );
+    expect(shaped.message).toBe('no ticket matches 01J9K4ZZ');
     expectBoardError(() => resolveTicketId(state(), A), 4, 'unknown-ticket');
   });
 });
@@ -101,8 +110,9 @@ describe('taskRefFromArgs', () => {
     expect(parseTaskRef(task)).toBeNull();
     const err = expectBoardError(() => taskRefFromArgs({ task }), 1, 'malformed-task-ref');
     expect(TASK_REF_FORM).toBe('<source>:<ref>#<item>');
-    expect(err.message).toContain(TASK_REF_FORM);
-    expect(err.message).toContain(task);
+    expect(err.message).toBe(
+      `malformed task reference: --task expects ${TASK_REF_FORM}, for example openspec:add-board-core#3`,
+    );
   });
 
   it.each(['0', '03', '-1', 'x', '3a', ''])('refuses the group %j', (group) => {

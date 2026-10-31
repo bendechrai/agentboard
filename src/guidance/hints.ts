@@ -26,6 +26,9 @@
  * is plain ASCII on one line.
  */
 
+import { ClaimRefusedError } from '../board/actions.js';
+import { isoTime } from '../board/leases.js';
+import { isIdShaped } from '../board/resolve.js';
 import { findCommand } from '../cli/registry.js';
 import type { CommandSpec } from '../cli/types.js';
 import { EXCLUDED_COMMANDS, toolName } from '../mcp/tools.js';
@@ -50,6 +53,8 @@ export interface HintContext {
   /**
    * The ticket id argument exactly as the caller gave it (a full id or a
    * prefix), when the command has one and it was parsed; else undefined.
+   * Callers fill it whatever its shape; `renderHint` writes it only when
+   * it is id-shaped (`isIdShaped`) and writes `<id>` otherwise.
    */
   readonly id?: string;
   /**
@@ -71,6 +76,22 @@ export interface HintContext {
   readonly closeDecision?:
     | { readonly flag: 'no-decision' }
     | { readonly flag: 'decision-recorded-in'; readonly path: string };
+  /**
+   * For `already-assigned` on a ticket held under a lease: the time, in
+   * milliseconds since the epoch, from which the ticket can be claimed
+   * (`expiresAt + LEASE_SKEW_MS`). `hintFor` fills it from a
+   * `ClaimRefusedError` (`src/board/actions.ts`) whose `lease` is not
+   * null; undefined otherwise.
+   */
+  readonly claimableAt?: number;
+  /**
+   * True when the command is `release` and `--force` (the `force`
+   * argument over MCP) was given, so the `not-assignee` hint of a forced
+   * release on an unassigned ticket says there is nothing to force.
+   * `cliHintContext` and `runTool` fill it as they fill `closeDecision`;
+   * undefined for every other command and when it is unknown.
+   */
+  readonly force?: boolean;
 }
 
 /**
@@ -143,11 +164,14 @@ export const HINT_REASONS: readonly string[] = [
   'port-in-use',
   'queued',
   'read-only',
+  'reconcile-ambiguous',
+  'reconcile-blocked',
   'remote-mismatch',
   'remote-unreachable',
   'schema-mismatch',
   'secret-like',
   'stale-grant',
+  'stale-import',
   'streaming-command',
   'sync-conflict',
   'sync-failed',
@@ -161,6 +185,8 @@ export const HINT_REASONS: readonly string[] = [
   'unsupported-source',
   'unsynced',
   'usage',
+  'wait-interrupted',
+  'wait-timeout',
 ];
 
 /**
@@ -222,7 +248,10 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'remote-unreachable': 3,
   'schema-mismatch': 5,
   'secret-like': 1,
+  'reconcile-ambiguous': 4,
+  'reconcile-blocked': 4,
   'stale-grant': 4,
+  'stale-import': 4,
   'streaming-command': 1,
   'sync-conflict': 3,
   'sync-failed': 3,
@@ -236,6 +265,8 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'unsupported-source': 1,
   unsynced: 4,
   usage: 1,
+  'wait-interrupted': 4,
+  'wait-timeout': 4,
 };
 
 /**
@@ -298,7 +329,10 @@ export function hintStep(
  * newline, no leading or trailing space), not starting with `hint:`, whose
  * suggested commands are written with `hintStep`. In it, `<id>` stands for
  * `context.id` and `<actor>` for `context.actor` whenever those are
- * unknown; a known id or actor always replaces its placeholder.
+ * unknown; a known actor always replaces its placeholder, and so does a
+ * known id when it is id-shaped (`isIdShaped`, `src/board/resolve.ts`). A
+ * `context.id` that is not id-shaped is never written: the hint writes
+ * `<id>` for it (board-cli "Ticket ids in refusals").
  *
  * Contract per reason (I is the id or `<id>`, A the actor or `<actor>`; a
  * step `X` below means `hintStep(context.surface, ...)` of it, so on MCP
@@ -442,12 +476,36 @@ export function hintStep(
  *   step `help move`.
  * - `already-assigned`: step `show` with I and step `inbox` with `as` A
  *   (board-agent-guidance scenario: the loser of a claim race is told to
- *   run `agentboard inbox --as <itself>`).
- * - `not-assignee`: step `show` with I.
+ *   run `agentboard inbox --as <itself>`), exactly
+ *   `another actor holds this ticket, so do not work on it: see who with <show>, or find your own work with <inbox>`;
+ *   when `context.claimableAt` is defined (board-cli: "Lease and queue
+ *   hints"), followed by
+ *   `; it can be claimed from <isoTime(claimableAt)>, or wait in its queue with <W>`,
+ *   where W, the wait step, is step `claim` with `id` I, `ttl`
+ *   `<duration>`, `wait`, `timeout` `<duration>`, `as` A on the CLI
+ *   (`'agentboard claim I --ttl <duration> --wait --timeout <duration> --as A'`)
+ *   and step `claim` with `id` I, `ttl` `<duration>`, `wait`, `as` A over
+ *   MCP (`board_claim {"id":"I","ttl":"<duration>","wait":true,"as":"A"}`:
+ *   `timeout` is CLI-only).
+ * - `not-assignee`: step `show` with I. When the command is `renew`,
+ *   exactly
+ *   `the lock was lost: you no longer hold this ticket, so stop the work it protects; see who holds it with <show>`.
+ *   When the command is `release` and `context.force` is true (a forced
+ *   release of an unassigned ticket), exactly
+ *   `the ticket is not held, so there is nothing to force; see its holder and queue with <show>`.
  * - `checklist-index`: step `show` with I.
  * - `holder-changed`, `invalid-queue`, `stale-grant`: step `show` with I
- *   (for the current holder, queue and lease).
- * - `queued`: step `show` with I (for the queue).
+ *   (for the current holder, queue and lease, which `show` prints).
+ * - `queued`: exactly
+ *   `other actors are waiting for this ticket and have priority; wait in its queue with <W>`,
+ *   W as for `already-assigned`.
+ * - `wait-timeout`: exactly
+ *   `the wait timed out and you left the queue; see what happened with <inbox>, then wait again or report ready`,
+ *   where `<inbox>` is step `inbox` with `as` A.
+ * - `wait-interrupted` (a waiting `claim --wait` stopped by SIGINT or
+ *   SIGTERM): exactly
+ *   `the wait was interrupted and you left the queue; to wait again run <W>`,
+ *   W as for `already-assigned`.
  * - `needs-scope-disposition` (board-agent-guidance: "Error hints",
  *   scenario "Missing disposition hint"; design.md section 9): both forms
  *   of the refused command, each a step, and the text "do not create an
@@ -474,9 +532,21 @@ export function hintStep(
  *   command without it, that is step `move` with I, `status` `merged`, A
  *   (for `move`, and unknown) or step `close` with I, D, A (for `close`),
  *   and step `show` with I (for the link).
+ * - `reconcile-blocked`: step `import-change` with `name` `<change>`,
+ *   `dry-run`, `as` A (to see the blocked lines), and step `import-change`
+ *   with `name` `<change>`, `force`, `as` A (to reconcile anyway, telling
+ *   the holder).
+ * - `reconcile-ambiguous`: edit a group title in the tasks file so each
+ *   ticket's group is clear (the words `tasks` and `title` appear), after
+ *   step `import-change` with `name` `<change>`, `dry-run`, `as` A shows
+ *   the candidates.
+ * - `stale-import`: step `import-change` with `name` `<change>`,
+ *   `dry-run`, `as` A.
  *
  * Exit 5: `integrity`: a human must inspect the file named in the
- * message; step `rebuild --check`. `busy`: retry the command. `no-cache`,
+ * message; step `rebuild --check`. `busy`: retry the command; from `claim`,
+ * where a wait whose leave stayed busy leaves the actor queued, also step
+ * `unqueue <id> --as <actor>`. `no-cache`,
  * `schema-mismatch`: step `rebuild`.
  *
  * Pure.
@@ -493,7 +563,7 @@ export function renderHint(reason: string | null, context: HintContext): string 
     hintStep(context.surface, name, args);
   return template({
     context,
-    id: known(context.id, '<id>'),
+    id: context.id !== undefined && isIdShaped(context.id) ? context.id : '<id>',
     actor: known(context.actor, '<actor>'),
     command,
     step,
@@ -506,10 +576,38 @@ export function renderHint(reason: string | null, context: HintContext): string 
 
 /**
  * The hint of a thrown value: `renderHint(error.reason, context)` for a
- * `BoardError`, null for anything else. Pure.
+ * `BoardError`, null for anything else. For a `ClaimRefusedError` whose
+ * `lease` is not null, the context's `claimableAt` is that lease's
+ * `claimableAt` (so the CLI's stderr hint, the `--json` error document
+ * and the MCP tool error all name it). Pure.
  */
 export function hintFor(error: unknown, context: HintContext): string | null {
-  return error instanceof BoardError ? renderHint(error.reason, context) : null;
+  if (!(error instanceof BoardError)) {
+    return null;
+  }
+  const claimableAt = error instanceof ClaimRefusedError ? error.lease?.claimableAt : undefined;
+  return renderHint(
+    error.reason,
+    claimableAt === undefined ? context : { ...context, claimableAt },
+  );
+}
+
+/**
+ * The wait step of the `already-assigned` and `queued` hints: `claim` with
+ * the id, `--ttl <duration>`, `--wait`, on the CLI `--timeout <duration>`
+ * (CLI-only, so not over MCP), and the actor.
+ */
+function waitStep(h: HintParts): string {
+  const args: (readonly [string, string | true])[] = [
+    ['id', h.id],
+    ['ttl', '<duration>'],
+    ['wait', true],
+  ];
+  if (h.context.surface === 'cli') {
+    args.push(['timeout', '<duration>']);
+  }
+  args.push(['as', h.actor]);
+  return h.step('claim', args);
 }
 
 /** A shell word: double-quoted when it contains a space. */
@@ -574,6 +672,15 @@ function tasksHint(what: string): HintTemplate {
       ['name', '<change>'],
       ['as', h.actor],
     ])} again`;
+}
+
+/** Step `import-change` with `name` `<change>`, `dry-run` and A. */
+function importDryRun(h: HintParts): string {
+  return h.step('import-change', [
+    ['name', '<change>'],
+    ['dry-run', true],
+    ['as', h.actor],
+  ]);
 }
 
 /** Rebuilding the cache from the event log. */
@@ -856,10 +963,23 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
   'duplicate-create': (h) => `that ticket already exists; find it with ${h.step('list')}`,
   'invalid-transition': (h) =>
     `check the current status with ${h.step('show', [['id', h.id]])} and the permitted moves with ${h.step('help', [['topic', 'move']])}`,
-  'already-assigned': (h) =>
-    `another actor holds this ticket, so do not work on it: see who with ${h.step('show', [['id', h.id]])}, or find your own work with ${h.step('inbox', [['as', h.actor]])}`,
-  'not-assignee': (h) =>
-    `only the assignee can do this; see who holds the ticket with ${h.step('show', [['id', h.id]])}`,
+  'already-assigned': (h) => {
+    const base = `another actor holds this ticket, so do not work on it: see who with ${h.step('show', [['id', h.id]])}, or find your own work with ${h.step('inbox', [['as', h.actor]])}`;
+    const { claimableAt } = h.context;
+    return claimableAt === undefined
+      ? base
+      : `${base}; it can be claimed from ${isoTime(claimableAt)}, or wait in its queue with ${waitStep(h)}`;
+  },
+  'not-assignee': (h) => {
+    const show = h.step('show', [['id', h.id]]);
+    if (h.command?.name === 'renew') {
+      return `the lock was lost: you no longer hold this ticket, so stop the work it protects; see who holds it with ${show}`;
+    }
+    if (h.command?.name === 'release' && h.context.force === true) {
+      return `the ticket is not held, so there is nothing to force; see its holder and queue with ${show}`;
+    }
+    return `only the assignee can do this; see who holds the ticket with ${show}`;
+  },
   'checklist-index': (h) =>
     `checklist lines are numbered from 0; see them with ${h.step('show', [['id', h.id]])}`,
   'holder-changed': (h) =>
@@ -868,14 +988,34 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     `that queue change does not apply to the ticket as it stands; see its holder and queue with ${h.step('show', [['id', h.id]])}`,
   'stale-grant': (h) =>
     `that grant is no longer the one due; see the ticket's holder, lease and queue with ${h.step('show', [['id', h.id]])}`,
+  'reconcile-blocked': (h) =>
+    `see the blocked lines with ${importDryRun(h)}, then revise the tasks file or reconcile anyway, telling the holder, with ${h.step(
+      'import-change',
+      [
+        ['name', '<change>'],
+        ['force', true],
+        ['as', h.actor],
+      ],
+    )}`,
+  'reconcile-ambiguous': (h) =>
+    `see the candidates and their scores with ${importDryRun(h)}, then edit a group title in the tasks file so each ticket's group is clear, and import again`,
+  'stale-import': (h) =>
+    `another import changed the ticket first; see what is left to change with ${importDryRun(h)}`,
   queued: (h) =>
-    `other actors are waiting for this ticket and have priority; see the queue with ${h.step('show', [['id', h.id]])}`,
+    `other actors are waiting for this ticket and have priority; wait in its queue with ${waitStep(h)}`,
+  'wait-interrupted': (h) =>
+    `the wait was interrupted and you left the queue; to wait again run ${waitStep(h)}`,
+  'wait-timeout': (h) =>
+    `the wait timed out and you left the queue; see what happened with ${h.step('inbox', [['as', h.actor]])}, then wait again or report ready`,
   'needs-scope-disposition': needsScopeDispositionHint,
   'already-linked': alreadyLinkedHint,
   // Exit 5.
   integrity: (h) =>
     `a human must inspect the file named in the message; compare the cache with the events using ${h.step('rebuild', [['check', true]])}`,
-  busy: () => 'another process held the board cache too long; run the command again',
+  busy: (h) =>
+    h.command?.name === 'claim'
+      ? `another process held the board cache too long; if you were waiting, you are still in the queue: leave it with ${h.step('unqueue', [['id', h.id], ['as', h.actor]])}, or run the command again`
+      : 'another process held the board cache too long; run the command again',
   'no-cache': rebuildHint,
   'schema-mismatch': rebuildHint,
 };

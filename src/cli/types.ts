@@ -42,6 +42,27 @@ export interface ArgSpec {
   readonly repeatable: boolean;
   /** One-line ASCII description. */
   readonly summary: string;
+  /**
+   * Flags only: true for a flag that exists on the command line only
+   * (board-cli: "Command surface": `claim --timeout`). It is parsed by
+   * `parseArgs` like any other flag and shown in help, but left out of the
+   * MCP tool's input schema (`toolInputSchema`), so a tool call that
+   * passes it is refused by `toolArguments` as an unknown argument (exit 1
+   * `usage`); and an `ExclusiveGroup` that names it is checked on the CLI
+   * only (over MCP the group does not apply, so `board_claim` takes `wait`
+   * without `timeout`). Absent means false.
+   */
+  readonly cliOnly?: boolean;
+  /**
+   * Positionals only: the values the argument may take, in order (`config
+   * set <key>`: `lease.grace` and `queue.window`). The synopsis and the
+   * argument line of help write the argument as `<a|b>` (`[<a|b>]` when
+   * optional) instead of `<name>`, and `parseArgs` refuses any other value
+   * with `BoardError(1, 'usage')` whose message names the argument and
+   * lists every choice but never the value given (`choicesMessage`).
+   * Absent means any value.
+   */
+  readonly choices?: readonly string[];
 }
 
 /**
@@ -317,4 +338,13 @@ export interface CommandSpec {
    * synchronous `runCli`, throws `BoardError(1, 'streaming-command')`.
    */
   stream?(ctx: RunContext, values: ArgValues, io: StreamIo): Promise<void>;
+  /**
+   * For a command that streams only with some arguments (`claim`, which
+   * blocks only with `--wait`): `runCliAsync` calls `stream` when this
+   * returns true for the parsed values, and otherwise behaves exactly as
+   * `runCli` (calling `run`, never asking for a stop signal). Absent, a
+   * command with `stream` always streams (`watch`, `serve`, `top`).
+   * Present only together with `stream`.
+   */
+  streams?(values: ArgValues): boolean;
 }

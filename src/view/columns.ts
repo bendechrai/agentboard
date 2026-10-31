@@ -54,7 +54,10 @@ export interface Card {
   unplanned: { reason: string } | null;
   /** A copy of the ticket's labels, in order. */
   labels: string[];
-  /** Checklist progress: lines done and the total number of lines. */
+  /**
+   * Checklist progress over the active lines (removed lines are in neither
+   * count): lines done and the number of active lines.
+   */
   checklist: { done: number; total: number };
   /** While blocked, the status it was blocked from (`Ticket.blockedFrom`); else null. */
   blockedFrom: Status | null;
@@ -136,8 +139,8 @@ export function ticketCard(ticket: Ticket, now: number): Card {
     unplanned: ticket.unplanned === null ? null : { reason: ticket.unplanned.reason },
     labels: [...ticket.labels],
     checklist: {
-      done: ticket.checklist.filter((item) => item.done).length,
-      total: ticket.checklist.length,
+      done: ticket.checklist.filter((item) => item.removed !== true && item.done).length,
+      total: ticket.checklist.filter((item) => item.removed !== true).length,
     },
     blockedFrom: ticket.blockedFrom,
     closed: ticket.closed,

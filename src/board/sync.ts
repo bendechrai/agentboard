@@ -22,7 +22,13 @@
 import type { Board } from '../store/board.js';
 import { catchUp } from '../store/cache.js';
 import { BoardError } from '../store/errors.js';
-import { GIT_IDENTITY, gitRunner, isGitFailure, type GitRunner } from './git.js';
+import {
+  GIT_IDENTITY,
+  gitRunner,
+  isGitFailure,
+  withoutUserinfo,
+  type GitRunner,
+} from './git.js';
 import { syncHostBoard } from './host-sync.js';
 import { detectBoardModel, type BoardModelInfo } from './model.js';
 import { ambiguousRemoteError, chooseRemote } from './remote.js';
@@ -372,17 +378,20 @@ export function syncBoard(board: Board, options?: SyncOptions): SyncResult {
   // A rebase replays the local commit: report the commit on the branch now.
   const onBranch = commit === null ? null : git.run('rev-parse', 'HEAD').trim();
 
+  // A remote named by URL (`agentboard.remote`, `branch.<b>.remote`) is
+  // shown without its user information; git was given the name as it is.
+  const shown = withoutUserinfo(remote);
   lines.push(
     pulled
-      ? `pulled ${branch} from ${remote}: ${plural(arrived.length, 'event')} arrived`
-      : `${remote} has no branch ${branch} yet; nothing to pull`,
+      ? `pulled ${branch} from ${shown}: ${plural(arrived.length, 'event')} arrived`
+      : `${shown} has no branch ${branch} yet; nothing to pull`,
   );
-  lines.push(`pushed ${branch} to ${remote}${upstreamSet ? ' and set it as the upstream' : ''}`);
+  lines.push(`pushed ${branch} to ${shown}${upstreamSet ? ' and set it as the upstream' : ''}`);
   lines[0] = committedLine(onBranch);
   return {
     ...base,
     commit: onBranch,
-    remote,
+    remote: shown,
     pulled,
     pushed: true,
     upstreamSet,
@@ -443,7 +452,7 @@ function hasUpstream(git: GitRunner, branch: string): boolean {
 function remoteHasBranch(git: GitRunner, remote: string, branch: string): boolean {
   const out = git.attempt('ls-remote', '--heads', remote, `refs/heads/${branch}`);
   if (isGitFailure(out)) {
-    throw syncFailed(`reaching ${asciiText(remote)}`, out);
+    throw syncFailed(`reaching ${remote}`, out, git);
   }
   return out.trim() !== '';
 }
@@ -459,12 +468,12 @@ function pull(git: GitRunner, dir: string, remote: string, branch: string): void
     throw new BoardError(
       3,
       'sync-conflict',
-      `pulling from ${asciiText(remote)} stopped on a conflict in the board repository at ${dir}: ` +
+      `pulling from ${asciiText(withoutUserinfo(remote))} stopped on a conflict in the board repository at ${dir}: ` +
         `${conflicted.map((p) => asciiText(p)).join(', ')}; resolve them, git add them and ` +
         'git rebase --continue (or git rebase --abort), then run agentboard sync again',
     );
   }
-  throw syncFailed(`pulling from ${asciiText(remote)}`, out);
+  throw syncFailed(`pulling from ${remote}`, out, git);
 }
 
 /**
@@ -487,5 +496,5 @@ function push(
   if (rejected && !last) {
     return false;
   }
-  throw syncFailed(`pushing to ${asciiText(remote)}`, out);
+  throw syncFailed(`pushing to ${remote}`, out, git);
 }

@@ -81,7 +81,8 @@ describe('a ticket from a source with no adapter', () => {
       1,
       'unsupported-source',
     );
-    expect(err.message).toContain('speckit');
+    expect(err.message).toContain('only openspec can be imported');
+    expect(err.message).not.toContain('speckit');
     expect(eventCount(board)).toBe(0);
   });
 });

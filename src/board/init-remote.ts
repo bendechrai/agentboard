@@ -33,10 +33,12 @@ import { openBoard } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
 import { boardExists, locateBoard, type LocateOptions } from '../store/locate.js';
 import {
-  firstErrorLine,
   gitRunner,
   gitVersion,
   isGitFailure,
+  rawErrorLine,
+  sanitizeRemoteLine,
+  withoutUserinfo,
   type GitFailure,
   type GitRunner,
 } from './git.js';
@@ -83,7 +85,10 @@ export interface InitRemoteResult extends InitResult {
    * (`git -C <dir> remote get-url origin` prints it): `originUrl(url,
    * base)`, so an absolute path for a local path given relative or
    * absolute, the `file://` URL as given, and any other URL as given. On
-   * `unchanged`, the URL the remote already had.
+   * `unchanged`, the URL the remote already had. Shown, like the URL in
+   * `message`, through `withoutUserinfo` (board-cli "Remote URLs are shown
+   * without credentials"): `http://agent:<secret>@host/x.git` is
+   * `http://host/x.git` here although git keeps it whole.
    */
   readonly remoteUrl: string;
   /**
@@ -148,6 +153,49 @@ export function originUrl(url: string, base: string): string {
 }
 
 /**
+ * The git line `line` as an `init --remote` refusal quotes it (board-cli
+ * "Board in a separate repository"; no-echo-refusals design.md "Audit"
+ * rows 42 to 44 and the sanitizer below the table): no form of the value
+ * given to `--remote` and no URL credential survives. `given` is the value
+ * as the caller gave it; `passed` is the URL git was given for it
+ * (`originUrl(given, base)`: the absolute path of a relative local path,
+ * else `given` itself), and defaults to `given`. Pure; never throws.
+ *
+ * In this order:
+ *
+ * 1. Every occurrence of each of these forms of the value, longest first,
+ *    is replaced by `<url>`: `given`; `passed`; and, when `given` has user
+ *    information, `given` without it (`<scheme>://` followed by what came
+ *    after the `@`), the form git prints in "unable to access" and
+ *    "Authentication failed" lines. An empty form is skipped. Whatever git
+ *    appends to a form stays (`'https://host/x.git/'` for the value
+ *    `https://agent:<token>@host/x.git` becomes `'<url>/'`). The match is
+ *    literal and case-sensitive.
+ * 2. The user information of `given`, as given and percent-decoded (when
+ *    decoding succeeds and gives another text), is replaced by
+ *    `<redacted>` wherever it still appears: git prints it without a
+ *    scheme in some lines (`unable to look up agent:<token>@host:1` for a
+ *    `git://` URL, and ssh echoes `agent:<token>@host`).
+ * 3. The user information of every URL left in the line,
+ *    `<scheme>://<userinfo>@`, is replaced by `<scheme>://<redacted>@`
+ *    (git prints a token given as the user name, decoded, in "could not
+ *    read Password for 'https://<token>@host'"; another URL, from a
+ *    rewrite or a redirect, may carry its own credentials).
+ *
+ * The user information of a URL is the text between `<scheme>://` and the
+ * last `@` before the first `/`, `?` or `#` after the scheme (a password
+ * may hold an unencoded `@`); `<scheme>` is a letter followed by letters,
+ * digits, `+`, `-` or `.`, in any case. In step 3 the user information is
+ * also bounded by white space and quotes. A value without `://` (a path,
+ * or the scp-like `user@host:path`) has no user information: its `user`
+ * is an ssh login name, not a credential, and is not redacted where it
+ * appears apart from the whole value.
+ */
+export function sanitizeGitLine(line: string, given: string, passed: string = given): string {
+  return sanitizeRemoteLine(line, [given, passed]);
+}
+
+/**
  * `agentboard init --remote <url>`: sets up a standalone board at the
  * directory discovery names (`locateBoard` with `options`, as `initBoard`),
  * shared through the repository at `url`. Needs no actor. Never creates a
@@ -169,8 +217,9 @@ export function originUrl(url: string, base: string): string {
  *    read it as an option: `--upload-pack=<command>` run against the
  *    host's own `origin`), or a `file://` URL whose host part is neither
  *    empty nor `localhost`: `BoardError(1, 'usage')` naming `--remote`
- *    and the value, before any git command runs with the value (the host
- *    repository's remote is never contacted; nothing is created). Every
+ *    and not the value (see "Refusal messages" below), before any git
+ *    command runs with the value (the host repository's remote is never
+ *    contacted; nothing is created). Every
  *    git command that is given the URL (`ls-remote`, `clone`) passes it
  *    after `--`. `git` cannot be run: `BoardError(1, 'git-missing')` as
  *    `initBoard`.
@@ -207,14 +256,15 @@ export function originUrl(url: string, base: string): string {
  *      null, and a message saying the board already has that remote and
  *      that nothing changed.
  *    - `standalone` whose chosen remote has another URL:
- *      `BoardError(1, 'remote-mismatch')` naming the remote, both URLs
- *      (the one it has and `originUrl(url, base)`) and
- *      `git -C <dir> remote set-url <name> <url>` (the text
- *      `remote set-url` appears); nothing changes. When the chosen remote
- *      is one `agentboard.remote` names and the repository does not have
+ *      `BoardError(1, 'remote-mismatch')` naming the remote, the URL it
+ *      has (configuration, shown through `withoutUserinfo`), "the URL
+ *      given" in place of the value and `git -C <dir> remote set-url
+ *      <name> <url>` with the literal `<url>` (the text `remote set-url`
+ *      appears); nothing changes. When the chosen remote is one
+ *      `agentboard.remote` names and the repository does not have
  *      (`chosen.url` null), the message names `agentboard.remote` and the
- *      missing name instead and does not suggest `remote set-url`, which
- *      would fail.
+ *      missing name instead (and `<url>` in its `remote add` step) and
+ *      does not suggest `remote set-url`, which would fail.
  *    - `broken-host-link` or `not-a-repository`: not this command's job;
  *      `BoardError(2, 'board-link-broken')` for a broken link (it is a
  *      host worktree; `agentboard init` repairs it) and
@@ -235,8 +285,9 @@ export function originUrl(url: string, base: string): string {
  *    written. Then `git ls-remote -- <originUrl>`:
  *    - it fails (a non-local URL that does not exist or cannot be read, a
  *      local path that is not a repository): `BoardError(3,
- *      'remote-unreachable')` naming the URL, quoting git's first error
- *      line (`firstErrorLine`), telling the user to create an empty
+ *      'remote-unreachable')` naming "the repository given with --remote",
+ *      quoting git's first error line (`firstErrorLine`) through
+ *      `sanitizeGitLine`, telling the user to create an empty
  *      repository at the URL (the word `create` appears), for example on
  *      their git host, and to check their access (the word `access`
  *      appears; GitHub answers "Repository not found" for both). Nothing
@@ -269,7 +320,8 @@ export function originUrl(url: string, base: string): string {
  *      checked out as the clone's branch (tracking `origin`) before the
  *      check; when that checkout fails (the branch's tree cannot be
  *      read), the temporary directory is removed and the refusal is
- *      `BoardError(1, 'not-a-board')` quoting git, never a raw error.
+ *      `BoardError(1, 'not-a-board')` quoting git (sanitised as the
+ *      `ls-remote` line is), never a raw error.
  *      With `events/` present, the temporary directory is renamed
  *      to `dir`, the host `.gitignore` entry is written as above, and the
  *      board is opened once so its events are folded into the cache
@@ -278,14 +330,55 @@ export function originUrl(url: string, base: string): string {
  *      files, `sync` null, and a message naming `dir`, the URL and the
  *      event count (`cloned` and the count appear). Without `events/`,
  *      the temporary directory is removed and `BoardError(1,
- *      'not-a-board')` names the URL and the branch, says the repository
+ *      'not-a-board')` names "the repository given with --remote" and the
+ *      branch (read from the remote), says the repository
  *      holds no board (no `events/` directory) and that `--remote` needs
  *      an empty repository or one that holds a board; nothing is left
  *      behind: no `dir`, no temporary directory, no host `.gitignore`
  *      entry. A failed `git clone` (a remote whose objects are missing,
  *      found only now because `ls-remote` reads refs alone) is removed
  *      the same way and reported as `BoardError(3, 'remote-unreachable')`
- *      quoting git's first error line.
+ *      quoting git's first error line through `sanitizeGitLine`.
+ *
+ * Refusal messages (board-cli "Board in a separate repository" and
+ * "Refusals never repeat the refused input"; no-echo-refusals design.md
+ * "Audit" rows 40 to 45): no refusal repeats the value given, in any form
+ * (as given, resolved to an absolute path, or without its credentials).
+ * Apart from the value, each message is today's text. Exactly, with
+ * `<line>` the sanitised git line, `<dir>` the board directory as
+ * `locateBoard` gives it, `<name>` and `<configured>` the chosen remote's
+ * name and URL, `<branch>` the branch read from the remote, and `<url>`
+ * the literal text `<url>`:
+ *
+ * - `agentboard init --remote needs the URL or local path of the
+ *   repository that holds the board (--remote <url>): the value is empty`
+ * - `... (--remote <url>): the value starts with -, which git would read
+ *   as an option`
+ * - `... (--remote <url>): the value is a file:// URL naming a host other
+ *   than localhost, so it is no path on this machine`
+ * - `the repository given with --remote cannot be read (<line>); create an
+ *   empty repository there (for example on your git host) and check your
+ *   access to it, then run agentboard init --remote again`
+ * - `the repository given with --remote could not be cloned (<line>);
+ *   create an empty repository there (for example on your git host) and
+ *   check your access to it, then run agentboard init --remote again`
+ * - `the repository given with --remote holds no board: its branch
+ *   <branch> cannot be checked out (<line>); --remote needs an empty
+ *   repository, or one that holds a board`
+ * - `the repository given with --remote holds no board: its branch
+ *   <branch> has no events/ directory; --remote needs an empty repository,
+ *   or one that holds a board` (`its default branch` for a detached HEAD)
+ * - `the board at <dir> already has the remote <name> at <configured>, not
+ *   the URL given; keep it, or change it with git -C <dir> remote set-url
+ *   <name> <url>; nothing changed`
+ * - `the board at <dir> is configured to sync with the remote <name> (git
+ *   config <key>), which the board repository does not have, so the URL
+ *   given was not added; unset it with git -C <dir> config --unset <key>,
+ *   or add that remote with git -C <dir> remote add <name> <url>; nothing
+ *   changed`, where `<key>` is the setting that chose the remote:
+ *   `agentboard.remote` (rule `agentboard.remote`) or `branch.<b>.remote`
+ *   with `<b>` the board's branch (rule `upstream`), and `<name>` is shown
+ *   through `withoutUserinfo` (review round 4)
  *
  * In every case `model` is `standalone` and `repair` null. The board the
  * command leaves is one `agentboard remote` reports as `standalone` with
@@ -324,12 +417,18 @@ export function initBoardWithRemote(url: string, options?: LocateOptions): InitR
     createBareRepository(path, env);
   }
   const git = gitRunner(base, { env });
+  // Git's line is sanitised raw (before `asciiText`) against the value
+  // given, the URL git was given for it, and the remote and proxy URLs of
+  // the directory the command runs in (a proxy credential is printed by
+  // git whichever repository it serves), then escaped.
+  const quote = (failure: GitFailure): string =>
+    asciiText(sanitizeRemoteLine(rawErrorLine(failure), [url, remoteUrl, ...git.remoteUrls()]));
   const refs = git.attempt('ls-remote', '--', remoteUrl);
   if (isGitFailure(refs)) {
     throw new BoardError(
       3,
       'remote-unreachable',
-      `the repository at ${asciiText(remoteUrl)} cannot be read (${firstErrorLine(refs)}); ` +
+      `the repository given with --remote cannot be read (${quote(refs)}); ` +
         'create an empty repository there (for example on your git host) and check your ' +
         'access to it, then run agentboard init --remote again',
     );
@@ -337,7 +436,7 @@ export function initBoardWithRemote(url: string, options?: LocateOptions): InitR
   const result =
     refs.trim() === ''
       ? createBoard(dir, remoteUrl, writeHostGitignore, env)
-      : cloneBoard(dir, remoteUrl, writeHostGitignore, env);
+      : cloneBoard(dir, remoteUrl, writeHostGitignore, env, quote);
   if (removed.length === 0) {
     return result;
   }
@@ -371,11 +470,11 @@ function checkUrl(url: string): void {
     throw usage('the value is empty');
   }
   if (url.startsWith('-')) {
-    throw usage(`${asciiText(url)} starts with -, which git would read as an option`);
+    throw usage('the value starts with -, which git would read as an option');
   }
   if (url.startsWith(FILE_SCHEME) && fileUrlPath(url) === null) {
     throw usage(
-      `${asciiText(url)} names a host other than localhost, so it is no path on this machine`,
+      'the value is a file:// URL naming a host other than localhost, so it is no path on this machine',
     );
   }
 }
@@ -485,33 +584,39 @@ function existingBoard(dir: string, remoteUrl: string, env: Env): InitRemoteResu
       created: false,
       joined: false,
       remote: chosen.name,
-      remoteUrl,
+      remoteUrl: withoutUserinfo(remoteUrl),
       sync: null,
       warnings: [],
       message:
         `board already exists at ${asciiText(dir)} (standalone model) with the remote ` +
-        `${asciiText(chosen.name)} at ${asciiText(remoteUrl)}; nothing changed`,
+        `${asciiText(chosen.name)} at ${asciiText(withoutUserinfo(remoteUrl))}; nothing changed`,
     };
   }
   if (chosen.url === null) {
-    // `agentboard.remote` names a remote the repository does not have:
-    // `remote set-url` would fail, so the configuration is what to fix.
+    // The setting names a remote the repository does not have (a remote
+    // named by URL, or a stale name): `remote set-url` would fail, so the
+    // setting that chose it is what to fix: `agentboard.remote`, or the
+    // upstream of the board's branch.
+    const key =
+      chosen.rule === 'upstream' && choice.branch !== null
+        ? `branch.${asciiText(choice.branch)}.remote`
+        : 'agentboard.remote';
     throw new BoardError(
       1,
       'remote-mismatch',
-      `the board at ${dir} is configured to sync with the remote ${asciiText(chosen.name)} ` +
-        `(git config agentboard.remote), which the board repository does not have, so ` +
-        `${asciiText(remoteUrl)} was not added; unset it with git -C ${dir} config --unset ` +
-        `agentboard.remote, or add that remote with git -C ${dir} remote add ` +
-        `${asciiText(chosen.name)} ${asciiText(remoteUrl)}; nothing changed`,
+      `the board at ${dir} is configured to sync with the remote ${asciiText(withoutUserinfo(chosen.name))} ` +
+        `(git config ${key}), which the board repository does not have, so ` +
+        `the URL given was not added; unset it with git -C ${dir} config --unset ` +
+        `${key}, or add that remote with git -C ${dir} remote add ` +
+        `${asciiText(withoutUserinfo(chosen.name))} <url>; nothing changed`,
     );
   }
   throw new BoardError(
     1,
     'remote-mismatch',
     `the board at ${dir} already has the remote ${asciiText(chosen.name)} at ` +
-      `${asciiText(chosen.url)}, not ${asciiText(remoteUrl)}; keep it, or change it with ` +
-      `git -C ${dir} remote set-url ${asciiText(chosen.name)} ${asciiText(remoteUrl)}; ` +
+      `${asciiText(withoutUserinfo(chosen.url))}, not the URL given; keep it, or change it with ` +
+      `git -C ${dir} remote set-url ${asciiText(chosen.name)} <url>; ` +
       'nothing changed',
   );
 }
@@ -537,12 +642,12 @@ function attachBoard(
     created: false,
     joined: false,
     remote: 'origin',
-    remoteUrl,
+    remoteUrl: withoutUserinfo(remoteUrl),
     sync,
     warnings: [...sync.warnings],
     message:
       `attached the board at ${asciiText(dir)} (standalone model) to the remote origin at ` +
-      `${asciiText(remoteUrl)}\n${sync.message}`,
+      `${asciiText(withoutUserinfo(remoteUrl))}\n${sync.message}`,
   };
 }
 
@@ -568,25 +673,27 @@ function createBoard(
     created: true,
     joined: false,
     remote: 'origin',
-    remoteUrl,
+    remoteUrl: withoutUserinfo(remoteUrl),
     sync,
     warnings: [...sync.warnings],
     message:
       `created the board at ${asciiText(dir)} (standalone model: a git repository of its own, ` +
-      `shared through the remote origin at ${asciiText(remoteUrl)})\n${sync.message}`,
+      `shared through the remote origin at ${asciiText(withoutUserinfo(remoteUrl))})\n${sync.message}`,
   };
 }
 
 /**
  * Step 3 of `initBoardWithRemote` for a remote with a branch: a clone into
  * a temporary sibling of `dir`, renamed to `dir` once its working tree
- * holds `events/`; a clone that fails or holds no board is removed.
+ * holds `events/`; a clone that fails or holds no board is removed. `quote`
+ * gives the sanitised first error line of a failed git command.
  */
 function cloneBoard(
   dir: string,
   remoteUrl: string,
   writeHostGitignore: boolean,
   env: Env,
+  quote: (failure: GitFailure) => string,
 ): InitRemoteResult {
   const parent = dirname(dir);
   mkdirSync(parent, { recursive: true });
@@ -600,7 +707,7 @@ function cloneBoard(
       throw new BoardError(
         3,
         'remote-unreachable',
-        `the repository at ${asciiText(remoteUrl)} could not be cloned (${firstErrorLine(cloned)}); ` +
+        `the repository given with --remote could not be cloned (${quote(cloned)}); ` +
           'create an empty repository there (for example on your git host) and check your ' +
           'access to it, then run agentboard init --remote again',
       );
@@ -610,9 +717,9 @@ function cloneBoard(
       throw new BoardError(
         1,
         'not-a-board',
-        `the repository at ${asciiText(remoteUrl)} holds no board: its branch ` +
+        `the repository given with --remote holds no board: its branch ` +
           `${asciiText(checkout.branch ?? '')} cannot be checked out ` +
-          `(${firstErrorLine(checkout.result)}); --remote needs an empty repository, or one ` +
+          `(${quote(checkout.result)}); --remote needs an empty repository, or one ` +
           'that holds a board',
       );
     }
@@ -621,7 +728,7 @@ function cloneBoard(
       throw new BoardError(
         1,
         'not-a-board',
-        `the repository at ${asciiText(remoteUrl)} holds no board: ` +
+        `the repository given with --remote holds no board: ` +
           `${branch === null ? 'its default branch' : `its branch ${asciiText(branch)}`} has no ` +
           'events/ directory; --remote needs an empty repository, or one that holds a board',
       );
@@ -641,11 +748,11 @@ function cloneBoard(
     created: true,
     joined: true,
     remote: 'origin',
-    remoteUrl,
+    remoteUrl: withoutUserinfo(remoteUrl),
     sync: null,
     warnings: [],
     message:
-      `cloned the board at ${asciiText(dir)} from ${asciiText(remoteUrl)} (standalone model: ` +
+      `cloned the board at ${asciiText(dir)} from ${asciiText(withoutUserinfo(remoteUrl))} (standalone model: ` +
       `a git repository of its own) with ${plural(events, 'event')}`,
   };
 }

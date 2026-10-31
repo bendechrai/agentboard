@@ -1,11 +1,19 @@
 /**
  * "Did you mean" suggestions (board-agent-guidance: "Unknown command
- * suggestions"), in process against the real
+ * suggestions", which since no-echo-refusals names neither the unknown
+ * command nor the unknown flag), in process against the real
  * registry and small fixed registries.
  */
 
 import { describe, expect, it } from 'vitest';
 
+import {
+  AWS_KEY_ID,
+  GITHUB_TOKEN,
+  HEX_40,
+  LONG_WORD,
+  expectNoLeak,
+} from '../../__tests__/harness/secret-fixtures.js';
 import { COMMANDS, GLOBAL_FLAGS, findCommand } from '../../cli/registry.js';
 import type { ArgSpec, CommandSpec } from '../../cli/types.js';
 import {
@@ -15,7 +23,6 @@ import {
   suggestCommands,
   suggestFlags,
   unknownCommandMessage,
-  unknownCommandToken,
   unknownFlagMessage,
 } from '../suggest.js';
 
@@ -168,66 +175,78 @@ describe('suggestFlags', () => {
   });
 });
 
-describe('unknownCommandToken', () => {
-  it('is the first argument', () => {
-    expect(unknownCommandToken(['clam', '01J9K3'], COMMANDS)).toBe('clam');
-  });
-
-  it('is the first two arguments after the first word of a multi-word command', () => {
-    expect(unknownCommandToken(['checklist', 'tik', '01J9K3'], COMMANDS)).toBe('checklist tik');
-    expect(unknownCommandToken(['checklist'], COMMANDS)).toBe('checklist');
-  });
-});
-
 describe('unknownCommandMessage', () => {
-  it('names the token, suggests and points to agentboard help', () => {
-    expect(unknownCommandMessage(['clam', '01J9K3', '--as', 'impl'], COMMANDS)).toBe(
-      "unknown command clam; did you mean claim? run 'agentboard help' to list the commands",
+  it('suggests and points to agentboard help without naming the token', () => {
+    const message = unknownCommandMessage(['clam', '01J9K3', '--as', 'impl'], COMMANDS);
+    expect(message).toBe(
+      "unknown command; did you mean claim? run 'agentboard help' to list the commands",
     );
+    expect(message).not.toContain('clam');
   });
 
   it('has no suggestion part when nothing is close', () => {
     expect(unknownCommandMessage(['frobnicate'], COMMANDS)).toBe(
-      "unknown command frobnicate; run 'agentboard help' to list the commands",
+      "unknown command; run 'agentboard help' to list the commands",
     );
   });
 
   it('joins two and three suggestions', () => {
     expect(unknownCommandMessage(['checklist'], COMMANDS)).toBe(
-      "unknown command checklist; did you mean checklist tick or checklist untick? run 'agentboard help' to list the commands",
+      "unknown command; did you mean checklist tick or checklist untick? run 'agentboard help' to list the commands",
+    );
+    expect(unknownCommandMessage(['checklist', 'tik', '01J9K3'], COMMANDS)).toBe(
+      "unknown command; did you mean checklist tick or checklist untick? run 'agentboard help' to list the commands",
     );
     const three = [fake('bbbx'), fake('bbbb'), fake('xbbb')];
     expect(unknownCommandMessage(['bbbb'], three)).toBe(
-      "unknown command bbbb; did you mean bbbb, bbbx or xbbb? run 'agentboard help' to list the commands",
+      "unknown command; did you mean bbbb, bbbx or xbbb? run 'agentboard help' to list the commands",
     );
   });
 
-  it('keeps the message ASCII for a non-ASCII token', () => {
-    expect(unknownCommandMessage([`cl${String.fromCharCode(0xe4)}im`], COMMANDS)).toMatch(
-      /^[\x20-\x7e]+$/,
-    );
+  it('names no argument, whatever is given', () => {
+    for (const argv of [
+      [`cl${String.fromCharCode(0xe4)}im`],
+      [GITHUB_TOKEN, '--as', 'impl'],
+      ['checklist', LONG_WORD],
+      [AWS_KEY_ID, HEX_40],
+    ]) {
+      const message = unknownCommandMessage(argv, COMMANDS);
+      expect(message).toMatch(/^unknown command; /);
+      expect(message).toMatch(/^[\x20-\x7e]+$/);
+      expectNoLeak(argv.join(' '), [message]);
+    }
   });
 });
 
 describe('unknownFlagMessage', () => {
-  it('names the flag and command, suggests and points to the command help', () => {
-    expect(unknownFlagMessage('notes', command('handoff'), flagsOf('handoff'))).toBe(
-      "unknown flag --notes for handoff; did you mean --note? run 'agentboard help handoff' to list its flags",
+  it('names the position and command, suggests and points to the command help', () => {
+    expect(unknownFlagMessage('notes', 3, command('handoff'), flagsOf('handoff'))).toBe(
+      "unknown flag at argument 3 for handoff; did you mean --note? run 'agentboard help handoff' to list its flags",
     );
-    expect(unknownFlagMessage('not', command('handoff'), flagsOf('handoff'))).toBe(
-      "unknown flag --not for handoff; did you mean --note or --to? run 'agentboard help handoff' to list its flags",
+    expect(unknownFlagMessage('not', 7, command('handoff'), flagsOf('handoff'))).toBe(
+      "unknown flag at argument 7 for handoff; did you mean --note or --to? run 'agentboard help handoff' to list its flags",
     );
   });
 
   it('has no suggestion part when nothing is close', () => {
-    expect(unknownFlagMessage('colour', command('list'), flagsOf('list'))).toBe(
-      "unknown flag --colour for list; run 'agentboard help list' to list its flags",
+    expect(unknownFlagMessage('colour', 2, command('list'), flagsOf('list'))).toBe(
+      "unknown flag at argument 2 for list; run 'agentboard help list' to list its flags",
     );
   });
 
   it('uses the full name of a two-word command', () => {
-    expect(unknownFlagMessage('jsno', command('checklist tick'), flagsOf('checklist tick'))).toBe(
-      "unknown flag --jsno for checklist tick; did you mean --json? run 'agentboard help checklist tick' to list its flags",
+    expect(
+      unknownFlagMessage('jsno', 5, command('checklist tick'), flagsOf('checklist tick')),
+    ).toBe(
+      "unknown flag at argument 5 for checklist tick; did you mean --json? run 'agentboard help checklist tick' to list its flags",
     );
+  });
+
+  it('never names the flag', () => {
+    for (const name of ['stauts', GITHUB_TOKEN, LONG_WORD, AWS_KEY_ID]) {
+      const message = unknownFlagMessage(name, 2, command('list'), flagsOf('list'));
+      expect(message).not.toContain(name);
+      expectNoLeak(name, [message]);
+    }
   });
 });

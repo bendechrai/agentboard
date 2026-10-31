@@ -1,0 +1,13 @@
+id: 01MB0000000000000000000002
+title: Lock in grace
+status: todo
+assignee: merger-1
+lease: live (grace), ttl 30m, expires 2026-10-26T12:01:30.000Z, claimable from 2026-10-26T12:02:30.000Z
+adhoc: merge lock
+labels: -
+description: -
+checklist:
+links:
+comments:
+closed: no
+events: 2

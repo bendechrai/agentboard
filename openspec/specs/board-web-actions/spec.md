@@ -159,3 +159,13 @@ page SHALL show no action control.
 #### Scenario: Missing disposition from the browser
 - **WHEN** a client posts `{"id": "<T1>", "status": "merged"}` to `/api/actions/move` for an undisposed ad hoc ticket in `review`
 - **THEN** the response is 409 with reason `needs-scope-disposition` and a hint for the server's actor, and no event is written
+
+### Requirement: No checklist control for a removed line
+The checklist control SHALL offer a checkbox only for the ticket's active
+lines; a line a reconcile marked removed SHALL be shown marked as removed
+with no checkbox, so the page never sends a `checklist-tick` or
+`checklist-untick` the fold would reject.
+
+#### Scenario: No checkbox for a removed line
+- **WHEN** the ticket detail of a ticket with lines `1.1 A`, `1.2 B` (removed) and `1.3 C` is open on a writable server
+- **THEN** it shows checkboxes with indices 0 and 2 only, and `1.2 B` marked as removed

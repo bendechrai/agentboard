@@ -14,7 +14,13 @@ repository root, then:
   a screenshot of the page.
 - `node og.mjs http://127.0.0.1:8765/ og.png <t>`: the share image, with the
   diorama frozen at loop time `t` (`docs/og.png` uses 4.7, mid claim race;
-  pass `light 1440 900 hero` for the plain hero, as in `docs/media/hero.jpg`).
+  pass `hero` as the mode for the plain hero). A `.jpg` output is written as
+  JPEG, and the last argument sets the device pixel ratio, so
+  `docs/media/hero.jpg` is
+  `node og.mjs http://127.0.0.1:8765/ ../docs/media/hero.jpg 4.7 light 1600 1000 hero 1`.
+  That one file serves twice: the site falls back to it when WebGL is
+  unavailable, and README.md shows it as the project screenshot. Recapture it
+  when the hero copy, the version pill or the diorama changes.
 - `node timeline.mjs http://127.0.0.1:8765/`: the diorama's story as the
   event tape lists it, and any script warnings (a card picked up before it
   has landed).

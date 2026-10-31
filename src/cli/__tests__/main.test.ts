@@ -44,6 +44,9 @@ describe('every command prints exactly one JSON document with --json', () => {
       show: () => run(['show', id(), '--json'], root),
       list: () => run(['list', '--json'], root),
       claim: () => run(['claim', id(), '--as', 'impl', '--json'], root),
+      renew: () => run(['renew', id(), '--ttl', '30m', '--as', 'impl', '--json'], root),
+      // impl is not queued: unqueue refuses with one error document.
+      unqueue: () => run(['unqueue', id(), '--as', 'impl', '--json'], root),
       release: () => run(['release', id(), '--as', 'impl', '--json'], root),
       move: () => run(['move', id(), 'tests', ...AS, '--json'], root),
       comment: () => run(['comment', id(), 'hello', ...AS, '--json'], root),
@@ -95,6 +98,8 @@ describe('every command prints exactly one JSON document with --json', () => {
       },
       // No ticket is merged with a PR link (the linked one was closed from blocked), so gh never runs.
       'close-merged': () => run(['close-merged', ...AS, '--json'], root),
+      'config set': () => run(['config', 'set', 'queue.window', '5m', ...AS, '--json'], root),
+      'config get': () => run(['config', 'get', '--json'], root),
       mcp: () => run(['mcp', '--json'], root),
       'agents install': () => run(['agents', 'install', '--target', 'agents-md', '--json'], root),
       'agents check': () => run(['agents', 'check', '--json'], root),
@@ -119,14 +124,24 @@ describe('every command prints exactly one JSON document with --json', () => {
     for (const [name, step] of Object.entries(steps(root, state))) {
       const out = step();
       expect(out.code, `${name}: ${out.stderr}`).toBe(
-        ['mcp', 'watch', 'serve', 'top'].includes(name) ? 1 : 0,
+        ['mcp', 'watch', 'serve', 'top'].includes(name) ? 1 : name === 'unqueue' ? 4 : 0,
       );
       docs[name] = oneJson(out);
     }
     expect(docs.init).toMatchObject({ created: true });
     expect(docs.show).toMatchObject({ ticket: { id: id() }, events: 1, unknown: [] });
     expect(Array.isArray(docs.list)).toBe(true);
-    for (const name of ['new', 'claim', 'release', 'move', 'comment', 'handoff', 'link', 'close']) {
+    for (const name of [
+      'new',
+      'claim',
+      'renew',
+      'release',
+      'move',
+      'comment',
+      'handoff',
+      'link',
+      'close',
+    ]) {
       const doc = docs[name] as { hash: unknown; ticket: { id: string } };
       expect(typeof doc.hash, name).toBe('string');
       expect(doc.ticket.id, name).toBe(id());
@@ -138,7 +153,8 @@ describe('every command prints exactly one JSON document with --json', () => {
     expect(docs['checklist untick']).toMatchObject({ ticket: { id: id() }, reminder: null });
     expect(docs.close).toMatchObject({ ticket: { closed: true } });
     expect(docs.inbox).toMatchObject({ actor: 'watcher', advanced: true });
-    expect((docs.inbox as { entries: unknown[] }).entries).toHaveLength(11);
+    expect(docs.unqueue).toMatchObject({ error: { exitCode: 4, reason: 'invalid-queue' } });
+    expect((docs.inbox as { entries: unknown[] }).entries).toHaveLength(12);
     expect(docs.watch).toMatchObject({ error: { exitCode: 1, reason: 'streaming-command' } });
     expect(docs.top).toMatchObject({ error: { exitCode: 1, reason: 'streaming-command' } });
     expect(docs.health).toMatchObject({
@@ -147,11 +163,18 @@ describe('every command prints exactly one JSON document with --json', () => {
       late: null,
       check: null,
     });
-    expect(docs.rebuild).toMatchObject({ folded: 11, rejected: 0 });
+    expect(docs.rebuild).toMatchObject({ folded: 12, rejected: 0 });
     expect(docs.remote).toMatchObject({ model: 'standalone', remote: null, remotes: [] });
     expect(docs.sync).toMatchObject({ remote: null, pushed: false, warnings: [] });
     expect(docs['import-change']).toMatchObject({ source: 'openspec', ref: 'c', events: 1 });
     expect(docs['close-merged']).toEqual({ closed: [], unmerged: [], skipped: [] });
+    expect(docs['config set']).toMatchObject({ key: 'queue.window', value: 300_000 });
+    expect(docs['config get']).toEqual({
+      settings: [
+        { key: 'lease.grace', value: 120_000, default: true },
+        { key: 'queue.window', value: 300_000, default: false },
+      ],
+    });
     // mcp serves over stdio from the executable only (src/cli.ts dispatches it).
     expect(docs.mcp).toMatchObject({ error: { exitCode: 1, reason: 'streaming-command' } });
     expect(docs['agents install']).toMatchObject({
@@ -166,7 +189,7 @@ describe('every command prints exactly one JSON document with --json', () => {
     expect((docs.help as { name: string }[]).map((d) => d.name)).toEqual(
       COMMANDS.map((c) => c.name),
     );
-    expect(count(boardDir)).toBe(12);
+    expect(count(boardDir)).toBe(14);
   });
 });
 
@@ -557,14 +580,15 @@ describe('writing commands through the CLI', () => {
     expect(out.stderr).toContain(CLOSE_RULE);
   });
 
-  it('scenario: close with a missing decision path exits 1 naming it; an existing one closes', () => {
+  it('scenario: close with a missing decision path exits 1 naming its flag; an existing one closes', () => {
     const { root, boardDir } = project();
     const id = newTicket(root);
     run(['move', id, 'blocked', ...AS], root);
     const before = count(boardDir);
     const out = run(['close', id, '--decision-recorded-in', 'docs/adr/0099.md', ...AS], root);
     expect(out.code).toBe(1);
-    expect(out.stderr).toContain('docs/adr/0099.md');
+    expect(out.stderr).toContain('--decision-recorded-in does not exist');
+    expect(out.stdout + out.stderr).not.toContain('0099');
     expect(count(boardDir)).toBe(before);
     mkdirSync(join(root, 'docs', 'adr'), { recursive: true });
     writeFileSync(join(root, 'docs', 'adr', '0099.md'), '# x\n');
@@ -682,7 +706,8 @@ describe('decision paths are recorded relative to the working tree root', () => 
     );
     expect(out.code).toBe(1);
     expect(errorOf(out).reason).toBe('path-outside-tree');
-    expect(out.stderr).toContain('../outside.md');
+    expect(out.stderr).toContain('the path given is outside the working tree');
+    expect(out.stdout + out.stderr).not.toContain('outside.md');
     expect(count(join(root, '.board'))).toBe(before);
   });
 

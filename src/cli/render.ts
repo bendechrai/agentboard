@@ -6,6 +6,9 @@
 import type { Ticket } from '../events/fold.js';
 import { formatTaskRef } from '../events/schema.js';
 import { asciiText } from '../board/text.js';
+import type { ConfigResult } from '../board/config.js';
+import { assigneeToken, formatDuration, isoTime } from '../board/leases.js';
+import type { ImportAction, ImportResult, ImportedTicket } from '../board/import.js';
 import type { InboxEntry } from '../board/inbox.js';
 import type { ShowResult } from '../board/tickets.js';
 import { CACHE_SCHEMA_VERSION } from '../store/cache.js';
@@ -19,65 +22,116 @@ export { asciiText };
 
 /**
  * The `list` line of a ticket, without a newline:
- * `<full 26-character id>  <status>  <assignee or ->  <markers><title>`,
- * fields separated by two spaces, where `<markers>` is `[unplanned] ` for
+ * `<full 26-character id>  <status>  <assignee>  <markers><title>`,
+ * fields separated by two spaces, where `<assignee>` is
+ * `assigneeToken(ticket, now)` (`src/board/leases.ts`: the actor or `-`,
+ * with the lease and queue suffixes, for example `merger-1*+2m^3`) when
+ * `now` is given, as `list` gives it (its clock reading, the same one its
+ * `--json` lease states are computed at), and the assignee or `-` alone
+ * when `now` is omitted (the result line of a writing command), and
+ * `<markers>` is `[unplanned] ` for
  * a ticket with an unplanned disposition (`unplanned` not null), else
  * `[adhoc] ` for a ticket with an ad hoc reason and no unplanned
- * disposition, then `[closed] ` for a closed ticket (in that order when
- * both apply; a ticket with a task reference shows neither of the first
- * two: board-openspec-integration "Ad hoc markers in list"), and assignee
- * and title pass through `asciiText`. Examples:
+ * disposition, then `[closed] ` for a closed ticket, then `[superseded] `
+ * for a superseded one (in that order when several apply; a ticket with a
+ * task reference shows neither of the first two: board-openspec-integration
+ * "Ad hoc markers in list"), and assignee and title pass through
+ * `asciiText`. Examples:
  * `01ARYZ6S41TSV4RRFFQ69G5FAV  todo  -  [adhoc] Fix thing`,
  * `01ARYZ6S41TSV4RRFFQ69G5FAV  merged  -  [unplanned] Fix thing`,
- * `01ARYZ6S41TSV4RRFFQ69G5FAV  blocked  -  [unplanned] [closed] Fix thing`.
+ * `01ARYZ6S41TSV4RRFFQ69G5FAV  blocked  -  [unplanned] [closed] Fix thing`,
+ * `01ARYZ6S41TSV4RRFFQ69G5FAV  merged  -  [closed] [superseded] Old group`.
  * The id is never shortened, so every id printed by `list` can be pasted
  * back into any command. Pure.
  */
-export function renderListLine(ticket: Ticket): string {
+export function renderListLine(ticket: Ticket, now?: number): string {
   return listLine({
     ...ticket,
     adhoc: ticket.adhoc !== null,
     unplanned: ticket.unplanned !== null,
+    superseded: typeof ticket.superseded === 'string',
+    ...(now === undefined ? {} : { column: assigneeToken(ticket, now) }),
   });
 }
 
-/** The fields of a `list` line. */
+/**
+ * The fields of a `list` line; `superseded` is absent where the source (a
+ * health card) does not carry it, and then no marker is printed.
+ */
 type ListFields = Pick<Card, 'id' | 'status' | 'assignee' | 'adhoc' | 'closed' | 'title'> & {
   /** The unplanned marker: true when the ticket has an unplanned disposition. */
   unplanned: boolean;
+  superseded?: boolean;
+  /** The assignee column already rendered (the token with its suffixes), when given. */
+  column?: string;
 };
 
 /** The `list` line of `fields` (see `renderListLine`). */
 function listLine(fields: ListFields): string {
   const scope = fields.unplanned ? '[unplanned] ' : fields.adhoc ? '[adhoc] ' : '';
-  const markers = scope + (fields.closed ? '[closed] ' : '');
+  const markers =
+    scope +
+    (fields.closed ? '[closed] ' : '') +
+    (fields.superseded === true ? '[superseded] ' : '');
   return [
     fields.id,
     fields.status,
-    fields.assignee === null ? '-' : asciiText(fields.assignee),
+    fields.column ?? (fields.assignee === null ? '-' : asciiText(fields.assignee)),
     `${markers}${asciiText(fields.title)}`,
   ].join('  ');
 }
 
 /**
  * The `show` record, one `<label>: <value>` per line, ending with a
- * newline, user text through `asciiText`:
+ * newline, user text (actors, reasons, titles) through `asciiText`, times
+ * as `isoTime` (`src/board/leases.ts`). A ticket without a lease, waiters,
+ * grant, takeover or forced release prints exactly what it printed before
+ * leases existed. Example of a held ticket with waiters:
+ *
+ * ```
+ * assignee: merger-1
+ * lease: live, ttl 30m, expires 2026-10-26T12:28:20.000Z, claimable from 2026-10-26T12:29:20.000Z
+ * next grant: merger-2 at 2026-10-26T12:29:20.001Z, accept by 2026-10-26T12:31:20.001Z
+ * queue:
+ *   1 merger-2 (joined 2026-10-26T11:58:30.000Z, ttl 30m)
+ * ```
+ *
+ * The record:
  *
  * ```
  * id: <full id>
  * title: <title>
  * status: <status>                  (blocked: `blocked (from <origin>)`)
  * assignee: <assignee or ->
+ * lease: <state>[ (grace)], ttl <ttl>, expires <iso>, claimable from <iso>
+ *                                   (only with a lease: its `state`, ` (grace)`
+ *                                    while not confirmed, `formatDuration(ttl)`,
+ *                                    `isoTime(expiresAt)`, `isoTime(claimableAt)`)
+ * granted: <to> at <iso>, accept by <iso>
+ *                                   (only with `show.grant`: `to`, `at`, `acceptBy`)
+ * next grant: <to> at <iso>, accept by <iso>
+ *                                   (only with `show.nextGrant`)
+ * queue:                            (only with waiters; then per waiter, in order,
+ *                                    `  <position> <actor> (joined <iso>, ttl <ttl>)`,
+ *                                    position from 1, `isoTime(joined.wall)`,
+ *                                    `formatDuration(ttl)`)
+ * takeover: <actor> at <iso> from <holder> (lease expired <iso>)
+ *                                   (only with `show.takeover`: `at`, then
+ *                                    `expiresAt` of the lease it replaced)
+ * forced release: <actor> at <iso> from <holder>: <reason>
+ *                                   (only with `show.forcedRelease`)
  * task: <source>:<ref>#<item>       (or `adhoc: <reason>`, or `task: -`)
  * unplanned: <reason> (by <actor>)  (only when the ticket has an unplanned
  *                                    disposition: its reason and actor,
  *                                    right after the task or adhoc line)
  * labels: <comma+space separated, or ->
  * description: <text or ->
- * checklist:                        (then per line `  [x] <index> <text>` or `  [ ] ...`)
+ * checklist:                        (then per line `  [x] <index> <text>` or `  [ ] ...`;
+ *                                    a removed line ends with ` (removed)`)
  * links:                            (then per link `  pr <n or url>` or `  decision <path>`)
  * comments:                         (then per comment, in order, `  <actor>: <text>`)
  * closed: no                        (or `yes (decision: <path>)` or `yes (no decision)`)
+ * superseded: <reason>              (only when the ticket is superseded)
  * events: <n>
  * unknown: <kind> <hash>            (one line per unknown-kind event, when any)
  * ```
@@ -93,6 +147,42 @@ export function renderShow(show: ShowResult): string {
     `status: ${t.status}${t.blockedFrom === null ? '' : ` (from ${t.blockedFrom})`}`,
     `assignee: ${orDash(t.assignee)}`,
   ];
+  if (t.lease !== null) {
+    const { lease } = t;
+    lines.push(
+      `lease: ${lease.state}${lease.confirmed ? '' : ' (grace)'}, ttl ${formatDuration(lease.ttl)}, ` +
+        `expires ${isoTime(lease.expiresAt)}, claimable from ${isoTime(lease.claimableAt)}`,
+    );
+  }
+  const grantLine = (label: string, grant: { to: string; at: number; acceptBy: number }): string =>
+    `${label}: ${asciiText(grant.to)} at ${isoTime(grant.at)}, accept by ${isoTime(grant.acceptBy)}`;
+  if (show.grant !== undefined) {
+    lines.push(grantLine('granted', show.grant));
+  }
+  if (show.nextGrant !== undefined) {
+    lines.push(grantLine('next grant', show.nextGrant));
+  }
+  if (t.queue.length > 0) {
+    lines.push(
+      'queue:',
+      ...t.queue.map(
+        (w, i) =>
+          `  ${String(i + 1)} ${asciiText(w.actor)} (joined ${isoTime(w.joined.wall)}, ttl ${formatDuration(w.ttl)})`,
+      ),
+    );
+  }
+  if (show.takeover !== undefined) {
+    const { takeover } = show;
+    lines.push(
+      `takeover: ${asciiText(takeover.actor)} at ${isoTime(takeover.at)} from ${asciiText(takeover.holder)} (lease expired ${isoTime(takeover.expiresAt)})`,
+    );
+  }
+  if (show.forcedRelease !== undefined) {
+    const { forcedRelease } = show;
+    lines.push(
+      `forced release: ${asciiText(forcedRelease.actor)} at ${isoTime(forcedRelease.at)} from ${asciiText(forcedRelease.holder)}: ${asciiText(forcedRelease.reason)}`,
+    );
+  }
   if (t.task !== null) {
     lines.push(`task: ${asciiText(formatTaskRef(t.task))}`);
   } else if (t.adhoc !== null) {
@@ -108,7 +198,9 @@ export function renderShow(show: ShowResult): string {
     `description: ${orDash(t.description)}`,
     'checklist:',
     ...t.checklist.map(
-      (item, i) => `  [${item.done ? 'x' : ' '}] ${String(i)} ${asciiText(item.text)}`,
+      (item, i) =>
+        `  [${item.done ? 'x' : ' '}] ${String(i)} ${asciiText(item.text)}` +
+        (item.removed === true ? ' (removed)' : ''),
     ),
     'links:',
     ...t.links.map((l) =>
@@ -117,10 +209,136 @@ export function renderShow(show: ShowResult): string {
     'comments:',
     ...t.comments.map((c) => `  ${asciiText(c.actor)}: ${asciiText(c.text)}`),
     `closed: ${closedText(t)}`,
+    ...(t.superseded === null ? [] : [`superseded: ${asciiText(t.superseded)}`]),
     `events: ${String(show.events)}`,
     ...show.unknown.map((u) => `unknown: ${asciiText(u.kind)} ${u.hash}`),
   );
   return `${lines.join('\n')}\n`;
+}
+
+/**
+ * Human output of `import-change` (with or without `--dry-run`), ending
+ * with a newline. User text (titles, line texts, actors, reasons) passes
+ * through `asciiText`. Pure.
+ *
+ * For each entry of `result.tickets`, in order, a head line:
+ * - `<action> <renderListLine(ticket)>` when the entry has a ticket;
+ * - `created group <item>: <title>` for a `created` entry of a dry run.
+ * Then, each starting with two spaces and only when it applies, in this
+ * order:
+ * - dry run only, when `pairing` is not null:
+ *   `  paired by <pass> (score <score with two decimals>)`;
+ * - `renumber`: `  renumbered from group <from> to <to>`;
+ * - `supersede`: `  superseded: <reason>`;
+ * - when `diff` is not null: `  title: <new title>` (when its `title` is
+ *   not null); per `updated` line `  updated [x] <index> <text>` (or
+ *   `[ ]`, the line's new done flag, and its new text); per removed index
+ *   `  removed [x] <index> <text>` (or `[ ]`, the line's current done flag
+ *   and text on the ticket); per added line `  added [x] <text>` (or
+ *   `[ ]`); then, when the entry's ticket is closed,
+ *   `  not reconciled: closed`;
+ * - per `blocked` line `  blocked <index> <text> (done)` or
+ *   `  blocked <index> <text> (held by <assignee> in <status>)`;
+ * - when `forced`: `  forced`.
+ * Then, in a dry run with candidates, one line per `ambiguous` candidate:
+ * `ambiguous <ticket id> group <item> (score <two decimals>)`, with
+ * ` same title` before the closing parenthesis when `sameTitle`
+ * (`... (score 0.00 same title)`).
+ * Then the summary line, where the blocked and superseded counts appear
+ * only when not zero:
+ * - `imported <source>:<ref>: <c> created, <u> updated, <n> unchanged[, <b> blocked][, <s> superseded], <e> events`;
+ * - dry run: `dry run <source>:<ref>: <c> created, <u> updated, <n> unchanged[, <b> blocked][, <s> superseded][, ambiguous], nothing written`,
+ *   with `, ambiguous` when `ambiguous` is not empty.
+ * Example (a dry run renumbering one ticket and creating one):
+ *
+ * ```
+ * created group 5: Leases
+ * updated 01ARYZ6S41TSV4RRFFQ69G5FAV  todo  -  Docs
+ *   paired by title (score 1.00)
+ *   renumbered from group 5 to 6
+ * dry run openspec:add-x: 1 created, 1 updated, 0 unchanged, nothing written
+ * ```
+ */
+export function renderImport(result: ImportResult): string {
+  const lines: string[] = [];
+  for (const entry of result.tickets) {
+    lines.push(...importEntryLines(entry, result.dryRun));
+  }
+  if (result.dryRun) {
+    for (const c of result.ambiguous) {
+      lines.push(
+        `ambiguous ${c.ticket} group ${asciiText(c.item)} ` +
+          `(score ${c.score.toFixed(2)}${c.sameTitle ? ' same title' : ''})`,
+      );
+    }
+  }
+  const count = (action: ImportAction): number =>
+    result.tickets.filter((t) => t.action === action).length;
+  const optional = (action: ImportAction): string =>
+    count(action) === 0 ? '' : `, ${String(count(action))} ${action}`;
+  const counts =
+    `${String(count('created'))} created, ${String(count('updated'))} updated, ` +
+    `${String(count('unchanged'))} unchanged${optional('blocked')}${optional('superseded')}`;
+  const target = `${asciiText(result.source)}:${asciiText(result.ref)}`;
+  lines.push(
+    result.dryRun
+      ? `dry run ${target}: ${counts}${result.ambiguous.length > 0 ? ', ambiguous' : ''}, nothing written`
+      : `imported ${target}: ${counts}, ${String(result.events)} events`,
+  );
+  return `${lines.join('\n')}\n`;
+}
+
+/** The lines of one `import-change` entry (see `renderImport`). */
+function importEntryLines(entry: ImportedTicket, dryRun: boolean): string[] {
+  const { ticket, diff } = entry;
+  const box = (done: boolean): string => (done ? '[x]' : '[ ]');
+  const lines = [
+    ticket === null
+      ? `${entry.action} group ${asciiText(entry.item ?? '-')}: ${asciiText(entry.title)}`
+      : `${entry.action} ${renderListLine(ticket)}`,
+  ];
+  if (dryRun && entry.pairing !== null) {
+    lines.push(`  paired by ${entry.pairing.pass} (score ${entry.pairing.score.toFixed(2)})`);
+  }
+  if (entry.renumber !== null) {
+    lines.push(
+      `  renumbered from group ${asciiText(entry.renumber.from)} to ${asciiText(entry.renumber.to)}`,
+    );
+  }
+  if (entry.supersede !== null) {
+    lines.push(`  superseded: ${asciiText(entry.supersede)}`);
+  }
+  if (diff !== null) {
+    if (diff.title !== null) {
+      lines.push(`  title: ${asciiText(diff.title)}`);
+    }
+    for (const line of diff.updated) {
+      lines.push(`  updated ${box(line.done)} ${String(line.index)} ${asciiText(line.text)}`);
+    }
+    for (const index of diff.removed) {
+      const line = ticket?.checklist[index];
+      lines.push(
+        `  removed ${box(line?.done ?? false)} ${String(index)} ${asciiText(line?.text ?? '')}`,
+      );
+    }
+    for (const line of diff.added) {
+      lines.push(`  added ${box(line.done)} ${asciiText(line.text)}`);
+    }
+    if (ticket?.closed === true) {
+      lines.push('  not reconciled: closed');
+    }
+  }
+  for (const line of entry.blocked) {
+    const why =
+      line.reason === 'done'
+        ? 'done'
+        : `held by ${ticket?.assignee === null || ticket === null ? '-' : asciiText(ticket.assignee)} in ${ticket?.status ?? '-'}`;
+    lines.push(`  blocked ${String(line.index)} ${asciiText(line.text)} (${why})`);
+  }
+  if (entry.forced) {
+    lines.push('  forced');
+  }
+  return lines;
 }
 
 function closedText(t: Ticket): string {
@@ -139,10 +357,26 @@ function closedText(t: Ticket): string {
  * `note <note>`, each only when the entry's field is not null, in that
  * order; `from`, `to` and `note` pass through `asciiText`. Example:
  * `01ARYZ6S41TSV4RRFFQ69G5FAV  ticket.handoff  impl  to reviewer  status review  note done`.
+ *
+ * `reader` is the actor reading the inbox (`inbox` and `watch` pass their
+ * actor). The line begins with `GRANTED: ` when the entry is a
+ * `ticket.grant` whose `to` equals `reader`, and with `LOST: ` when its
+ * `affects` equals `reader` (board-cli: "Lease and queue events in the
+ * inbox"); with `reader` omitted there is no prefix. Examples:
+ * `GRANTED: 01ARYZ6S41TSV4RRFFQ69G5FAV  ticket.grant  agentboard  to merger-2`,
+ * `LOST: 01ARYZ6S41TSV4RRFFQ69G5FAV  ticket.release.force  orchestrator  note stalled`.
  * Pure.
  */
-export function renderInboxLine(entry: InboxEntry): string {
-  const fields = [entry.ticket ?? '-', entry.kind, asciiText(entry.from)];
+export function renderInboxLine(entry: InboxEntry, reader?: string): string {
+  const prefix =
+    reader === undefined
+      ? ''
+      : entry.kind === 'ticket.grant' && entry.to === reader
+        ? 'GRANTED: '
+        : entry.affects === reader
+          ? 'LOST: '
+          : '';
+  const fields = [`${prefix}${entry.ticket ?? '-'}`, entry.kind, asciiText(entry.from)];
   if (entry.to !== null) {
     fields.push(`to ${asciiText(entry.to)}`);
   }
@@ -153,6 +387,23 @@ export function renderInboxLine(entry: InboxEntry): string {
     fields.push(`note ${asciiText(entry.note)}`);
   }
   return fields.join('  ');
+}
+
+/**
+ * Human output of `config get`, ending with a newline: for `config get
+ * <key>` (`keyed` true) the one line `<formatDuration(value)>`, followed by
+ * ` (default)` when the default is in effect (`5m`, `2m (default)`); for
+ * `config get` (`keyed` false) one line per setting,
+ * `<key> <formatDuration(value)>` with the same suffix, in the order of
+ * `result.settings` (`lease.grace 2m (default)`, `queue.window 5m`). Pure.
+ */
+export function renderConfig(result: ConfigResult, keyed: boolean): string {
+  return result.settings
+    .map((setting) => {
+      const value = `${formatDuration(setting.value)}${setting.default ? ' (default)' : ''}`;
+      return `${keyed ? '' : `${setting.key} `}${value}\n`;
+    })
+    .join('');
 }
 
 /**

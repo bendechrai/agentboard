@@ -1,0 +1,13 @@
+id: 01MB0000000000000000000005
+title: Claimable lock
+status: todo
+assignee: impl-3
+lease: claimable, ttl 10m, expires 2026-10-26T11:55:00.000Z, claimable from 2026-10-26T11:56:00.000Z
+adhoc: merge lock
+labels: -
+description: -
+checklist:
+links:
+comments:
+closed: no
+events: 3

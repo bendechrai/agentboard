@@ -1,0 +1,1 @@
+{"actor":"impl-4","body":{"lease":{"expiresAt":1793015070000,"grace":120000,"ttl":1800000}},"kind":"ticket.claim","ticket":"01MB0000000000000000000008","ts":{"actor":"impl-4","counter":0,"wall":1793014950000},"v":1}

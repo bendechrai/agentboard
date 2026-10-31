@@ -1,0 +1,471 @@
+# Design
+
+## Context
+
+ADR 0001 makes an append-only, content-addressed event log the source of
+truth, folded in a total order of (`ts.wall`, `ts.counter`, `ts.actor`,
+hash). ADR 0002 runs every writing command in one `BEGIN IMMEDIATE`
+transaction: catch up, validate, build the hybrid timestamp, write the
+event file, apply, commit. That is what makes `claim` atomic on one
+machine, and the fold's "earlier claim wins, later one is rejected
+`already-assigned`" rule is what makes it converge across machines that
+sync the board over git.
+
+A claim today never ends except by `release` (holder only), `handoff` or
+`assign`. vaultfold uses a standing ticket as a merge lock and hit four
+failures: a crashed holder stalls every lane; recovery requires
+impersonating the holder; a background polling loop claimed the lock for
+an idle agent and held it for 41 minutes; and 60-second pollers lost
+races to luckier claimers, so waiting was unfair. What worked in the end
+was the orchestrator running the queue while workers reported ready and
+stopped.
+
+This change adds grace leases, a fair waiting queue, a forced release and
+mutex guidance, keeping the fold a pure function of the event set.
+
+## Goals / Non-Goals
+
+**Goals:**
+- A lock is held only by an actor that shows it is acting (liveness),
+  not by any process that happened to run `claim`.
+- Waiters are served in the order they joined, one at a time, with
+  exactly one holder at any point of the fold, on one machine and after
+  sync across machines.
+- The fold never reads the local clock. Clock-driven transitions (a
+  lease lapsing, a grant passing on) are decided from timestamps written
+  in events, and the events that record them are derived so that every
+  writer produces the same bytes.
+- Clock skew within a stated tolerance never shortens a lease or a
+  grantee's acceptance window.
+- Breaking someone else's lock needs no impersonation and is recorded
+  with who and why.
+- Plain claims (no `--ttl`) are byte-for-byte unchanged.
+
+**Non-Goals:**
+- A daemon, or any background writer.
+- Leases or the queue constraining anything but `claim`.
+- Authenticating actors; a self-declared "foreground" flag.
+- Web, TUI and `health` views of leases and queues.
+
+## Decisions
+
+### Leases live on the claim, and start as a grace lease
+`ticket.claim` gains an optional body field `lease`:
+`{ttl, grace, expiresAt}` in milliseconds, with `expiresAt` equal to
+`ts.wall + min(ttl, grace)`. `ttl` is what the claimer asked for; `grace`
+is the board's `lease.grace` setting (default 2 minutes) when the claim
+was written, recorded so the fold never depends on when a setting event
+arrived. The folded lease is `{ttl, expiresAt, event, confirmed}` where
+`event` is the hash of the event that set it and `confirmed` is false
+until the holder's first `renew`.
+
+`ticket.renew` has body `{ttl, expiresAt}` with `expiresAt = ts.wall +
+ttl`. The fold applies it only when its actor is the assignee (otherwise
+`not-assignee`); it sets (not extends) the lease and marks it confirmed.
+The CLI fills `ttl` from the lease's requested ttl when `--ttl` is not
+given, so the first action of real work is simply `renew <id>`. The
+command checks the assignee before anything else about the ticket: a
+non-assignee gets `not-assignee` with or without `--ttl` and with or
+without a lease, because a former holder whose lock was force-released
+must learn that it lost it; only the assignee of a ticket with no lease
+and no `--ttl` gets `usage`. A renew
+after expiry is still accepted when nothing has taken over before it in
+fold order.
+
+An event where `expiresAt` does not match, or where `ttl` is outside 30
+seconds to 7 days or `grace` outside 30 seconds to 10 minutes, is
+malformed. `expiresAt` is redundant but written so a human reading the
+event sees it and so `supersedes` references can name it.
+
+Alternative considered: a new kind for leased claims, so older versions
+see an unknown kind. Rejected: an older reader would fold the ticket as
+unassigned and could let a second actor claim it, a silent divergence; a
+malformed claim is at least reported. The envelope `v` stays 1 because
+plain claims are unchanged.
+
+### Why liveness, and why no declared "foreground" flag
+The 41-minute hold came from a background loop claiming on behalf of an
+idle agent. A parameter such as `--intent act-now` or `--foreground`
+would not have prevented it: actors and flags are self-asserted, the
+loop would pass the same flag the agent would, and the board cannot
+observe which process is in the foreground. Anything the board cannot
+check is documentation, not enforcement.
+
+Liveness can be checked: an unconfirmed claim protects the ticket only
+for the grace period, and only a `renew` from the holder turns it into
+the requested lease. The pattern "claim, then renew as the first action
+of real work" means a loop that only claims loses the lock within two
+minutes, and a crashed or idle holder loses it within its ttl. A loop
+written to renew as well can defeat this, which no mechanism can prevent
+without authentication; the guidance forbids claiming from a background
+process, and the queue removes the reason to poll at all.
+
+Decision on `--intent act-now`: not added. It would be a second,
+unenforced way to say what the grace lease already enforces, and agents
+would learn to pass it by habit, making it noise in every claim.
+
+### Takeover rule, decided from event timestamps
+A claim by actor `A` on a ticket held by `H` (with `H` not `A`) and an
+empty queue is accepted only when its body carries
+`supersedes: {holder, expiresAt, event}` and, at that point in fold
+order: the assignee is `supersedes.holder`; the ticket's lease has that
+`expiresAt` and `event`; and the claim's own `ts.wall` is at least
+`expiresAt + LEASE_SKEW_MS` (60000). Otherwise it is rejected
+`already-assigned` (or `queued` when there are waiters, see below). The
+claim's wall is the claimer's hybrid timestamp, written once and
+identical on every replica, so no replica reads its clock during the
+fold. `supersedes` pins the takeover to the exact lease generation the
+claimer saw: a renew written before the expiry sorts before any valid
+takeover (at least 60 seconds after it) and changes the lease, so a
+holder who renews in time always keeps the lock, whatever order the
+events arrive in. Two racing takeovers name the same lease; the earlier
+in fold order applies and the later no longer matches, which is the
+existing earlier-claim-wins rule.
+
+The command requires `--ttl` on a takeover (exit 1 `usage` without it).
+The fold accepts a takeover without its own lease, but a hold taken over
+without one never lapses, so a recovering actor that crashed in turn
+would leave exactly the stuck lock leases exist to remove.
+
+### Command-time validation matches the fold
+For `claim`, `renew`, `release --force` and the queue commands the hybrid
+timestamp is built before validation (both under the same write lock, so
+nothing observable changes), and validation calls the fold's own rules
+with that timestamp. A takeover additionally requires the local clock to
+read at least `expiresAt + LEASE_SKEW_MS`, so the writer is never looser
+than the fold. The command fills `supersedes` itself.
+
+### The waiting queue
+`claim --wait` on a ticket that is held (or granted, or free with waiters)
+writes `ticket.queue.join` with body `{ttl}`, the lease the waiter will ask
+for. The queue is the set of applied joins not yet granted or left, ordered
+by fold order of the join event, that is by (hybrid timestamp, then hash).
+`ticket.queue.leave` removes the actor. A held ticket includes one whose
+lease has lapsed and is claimable: `--wait` never takes over, it joins, and
+the lapse grant follows from the queue at once (its slot `max(F, J) + 1` is
+the join's wall plus 1, since `F` lies before the join). Taking over stays
+the plain `claim --ttl`; keeping the two apart means a waiter always
+reaches the ticket through the queue, the only path that serves waiters in
+order. A join by the assignee or by an actor already queued, a leave by an
+actor not queued, and a join on a free ticket with an empty queue (claim it
+instead) are rejected `invalid-queue`.
+
+While the queue is not empty, a plain claim or a takeover by anyone on
+that ticket is rejected `queued`: waiters have priority, and the only way
+the ticket passes to a new holder is a grant (or a hand-off by the
+holder, which the queue does not constrain). A hand-off or assign to a
+queued actor removes that actor from the queue in the same step, so the
+assignee is never queued and a later grant never goes to the holder.
+
+### Grants: derived, backdated, identical from every writer
+A grant is due when the queue is not empty and the ticket has become
+available at time `F`:
+
+- released or force-released: `F` is that event's wall;
+- held under a lease that lapsed (a claim not confirmed within its
+  grace, a confirmed lease not renewed, or a grant not accepted):
+  `F = expiresAt + LEASE_SKEW_MS`.
+
+Its slot time is `S = max(F, J) + 1`, where `J` is the wall of the head
+waiter's join. The grant is the event
+`{kind: ticket.grant, actor: "agentboard", ts: {wall: S, counter: 0,
+actor: "agentboard"}, body: {to, ttl, window, after}}`, where `to` and
+`ttl` come from the head waiter's join, `window` is the board's
+`queue.window` (default 2 minutes) in effect at that fold position, and
+`after` names what made the ticket available (`{released: <hash>}` or
+`{lease: {holder, expiresAt, event}}`). Applied, it assigns `to`, removes
+it from the queue, and gives it an unconfirmed lease of
+`{ttl, expiresAt: S + window, event: <grant hash>}`. The grantee accepts
+by renewing, exactly like confirming a grace lease. If it does not, that
+lease lapses and the next grant is due `window + 60 s` after `S`: the
+reservation passes to the next waiter.
+
+Every field of a grant is a function of the folded state; the clock only
+decides whether it is due yet (the writer's clock reads at least `S`).
+So:
+
+- any command that catches up (every command except `rebuild` and
+  `rebuild --check`, including `list`, `show`, `inbox`, `watch` and a
+  waiting `claim --wait`) writes the grants that are due, in the same
+  transaction as its catch-up; a grant so written is a derived event
+  independent of the command, never deleted, and a command refused after
+  its catch-up commits that catch-up (grant included) without writing its
+  own event;
+- deriving a grant needs the whole log (each grant at its own fold
+  position), so catch-up does not walk it on every command: the cache
+  keeps a grant watermark, the slot time of the first grant that would be
+  due and is not folded, computed by the fold like any other derived row,
+  and catch-up reads event files only for new files, stale temporaries,
+  or a clock that has reached the watermark; a warm read-only command
+  with nothing due therefore opens no event file;
+- two writers on one machine are serialised by the write lock, and the
+  second finds the file already present (writing identical bytes is a
+  no-op); two machines write identical files, so `sync` merges them as
+  one;
+- the fold accepts a `ticket.grant` only when it equals, field by field,
+  the grant `dueGrant` derives at that position, and rejects it
+  `stale-grant` otherwise (for example when a renew or a leave from
+  another machine, with an earlier wall, arrives after the grant was
+  written); the comparison is structural because the fold stays
+  browser-safe and does not import the canonical encoder;
+- `agentboard` is a reserved actor: commands refuse `--as agentboard`
+  and the fold treats any other kind written by it, or a grant written
+  by anyone else, as malformed.
+
+A grant's wall is in the past when it is written, which ADR 0002 does
+not otherwise allow for a command's own event. It is folded exactly like
+an event that arrives late through `sync`: later events are refolded and
+inbox cursors move back as board-concurrency already requires. There is
+at most one assignee at every fold position, so no double grant can
+exist on any replica.
+
+Alternatives considered: a reservation that is only derived state (no
+event), with the waiter claiming inside its window. Rejected: a waiter
+over MCP cannot block, so it needs something to arrive in its inbox, and
+a passed reservation would be invisible in history. Grants written by the
+releasing command only: rejected, because lapses have no writer, which
+is the case that matters most.
+
+### Waiting on the CLI, never over MCP
+`claim <id> --ttl <d> --wait --timeout <d>` claims at once when the
+ticket is free with an empty queue. Otherwise it joins (unless already
+queued) and blocks on the watch machinery, waking on new events and at
+the next due grant time so that it writes due grants itself. It exits 0
+when a grant to it is applied (printing that it must renew to accept, and
+by when), or, on timeout, writes `ticket.queue.leave` and exits 4
+`wait-timeout`. SIGINT and SIGTERM also leave the queue, and exit 4
+`wait-interrupted` rather than the 0 of `watch`: for `claim`, exit 0
+means "you hold the ticket", and a script or supervisor that chains the
+critical step on it must not run that step after an interrupt. A waiter
+killed with SIGKILL stays queued; its grant then lapses after one window
+and passes on, which is the liveness rule doing its job. `--timeout` is
+required with `--wait` on the CLI (1 second to 1 day) so an agent's
+command always returns.
+
+The wait wakes only on a directory notification, the watch poll, the
+cache's grant watermark (clamped to the deadline, so a far-off watermark
+never overflows a timer), the deadline and a signal, and catches up at
+each wake, so its catch-ups are bounded by those wakes. After each
+catch-up it ends on the first that applies: a grant to it (exit 0, naming
+`renew` and the acceptance deadline); being the assignee by a hand-off
+(exit 0, as a retried claim); the deadline or a signal (leave if still
+queued, exit 4); a free ticket with an empty queue, which is what a join
+rejected after a late-synced release leaves (claim instead); otherwise
+no longer queued (exit 4 `invalid-queue`). Checking the grant before the
+deadline makes a grant due exactly at the deadline win. The deadline and
+the signal end the wait through one more transaction that decides after
+its own catch-up, not on the wake's reading: between the two, the slot
+time of a grant to the waiter can pass, or a release or hand-off can be
+written, and a leave refused because the actor already holds the ticket
+would otherwise report "you left the queue" from a process that holds a
+lock nobody will renew. At the deadline the waiter then ends as granted
+or handed (exit 0); on a signal it releases what it was given, so the
+next waiter is served, and says so in its exit 4. The deadline is
+measured on a monotonic clock (`performance.now`), never the wall
+clock: an NTP step back would otherwise fire the deadline timer while
+the wall clock still reads before the deadline, and a step forward would
+end the wait early; the wall clock stays the clock of catch-ups and
+events, where grant slot times are walls. A busy ending transaction is
+retried once, as the busy policy retries a command, and then exits 5
+naming `unqueue`, since the actor is still queued. With `--json`
+the waiting claim prints the queued document and then the final one, one
+per line, like `watch --json`. The library entry point is `waitForGrant`
+(`src/board/wait.ts`), with the clock, timers and directory watcher
+injectable so the loop is tested on a fake clock.
+
+MCP tool calls have client timeouts, so `board_claim` with `wait` never
+blocks: it returns `{queued: true, position, holder}` (or the ordinary
+claim result with `queued: false` when it claimed at once), and
+`timeout` is not part of the tool schema. The grant arrives through
+`board_inbox` as a `ticket.grant` entry with `to` set to the grantee.
+
+### Forced release is a distinct kind, not restricted
+`ticket.release.force` has body `{holder, reason}` and applies only when
+the assignee at that position is `holder` (else `holder-changed`), so a
+forced release that races a takeover or grant never breaks the new
+holder's lock. It clears assignee and lease, leaves status unchanged,
+and, with waiters, makes a grant due. `release --force` needs a
+non-empty `--reason` (refused by the secret patterns like a comment) and
+is a usage error for the holder itself.
+
+Decision: any actor may force a release; no allowlist. Actors are
+self-asserted, so an allowlist of orchestrator actors would be bypassed
+by `--as orchestrator`, the impersonation this change removes. The value
+is the audit trail: a distinct event naming actor, previous holder and
+reason, shown by `show` and delivered to the previous holder's inbox.
+The guidance reserves it for the orchestrator or a human, after checking
+the holder is gone. A later change can add an advisory allowlist if
+confused agents misuse it.
+
+### Board settings
+`lease.grace` and `queue.window` are `board.meta` values in
+milliseconds, written by a new `config set <key> <value>` (duration
+form, 30 seconds to 10 minutes) and read by `config get`. The claim
+records its grace in its own body; a grant reads `queue.window` as folded
+at its position, which every writer computes identically. `config` is a
+setup command and not an MCP tool. A cache fold session loads the
+`board.*` settings from the cache rows when it starts, and a refold clears
+them, so a grant folded incrementally or in a refold always sees the
+setting in effect at its position.
+
+### Clock skew tolerance
+`LEASE_SKEW_MS` is a constant of 60 seconds in the fold rules. On one
+machine every wall comes from one monotonic hybrid clock, so leases,
+takeovers and grants happen exactly at the stated times, never earlier,
+and validation and write are one transaction. Across machines, if clocks
+differ by at most 60 seconds, a takeover or a grant after a lapse is
+never written before the lease really lapsed, and each grantee gets at
+least its window of real time before the grant passes on. A larger skew
+can shorten either by the excess; `show` displays the walls involved.
+Mutual exclusion across machines is only as strong as `sync`: a renew
+written in time but synced late still wins, retroactively rejecting a
+takeover or grant another machine had applied. The guidance tells
+multi-machine users to sync before claiming and before the critical
+step.
+
+### Display is the only other place the clock is read
+`list` and `show` compute the lease state from the local clock: `live`,
+`expired` (past `expiresAt`, not yet past the tolerance) and
+`claimable`, plus `grace` when unconfirmed. `show` lists the queue in
+order and a pending grant (to whom, accept by when). None of this is
+stored in the cache or used by the fold.
+
+### Inbox fields
+Inbox entries gain `affects`: the previous holder for a forced release,
+a takeover and a grant after a lapse. A grant's `to` is its grantee. The
+human inbox output prefixes an entry with `GRANTED: ` when its `to` is
+the reader and the kind is `ticket.grant`, and with `LOST: ` when its
+`affects` is the reader.
+
+### Re-import reconciles
+Observed in vaultfold: a revised `tasks.md` re-imported onto existing
+tickets kept old titles and appended new lines next to stale ones. The
+board is not the record of scope, so its tickets must follow the tasks
+file, but reconciling must stay event-sourced and must not destroy
+in-flight information.
+
+- One `ticket.reconcile` event per ticket carries the whole diff (title,
+  `updated`, `removed`, `added`, `forced`, and the tasks file's SHA-256),
+  so history shows one readable "reconciled" step, and the fold applies
+  it mechanically. The fold validates only indices; the policy (what is
+  blocked) is a command-time rule, like the lease checks of the CLI.
+- Removed lines are flagged, not deleted, and keep their index, so every
+  earlier and later `ticket.checklist` event keeps its meaning, and a
+  tick of a removed line (for example from another machine) is rejected
+  deterministically. For the same reason a reordered tasks file does not
+  reorder the checklist: active lines keep their order and added lines
+  are appended.
+- Matching by task number first follows how tasks are edited in
+  practice (reworded in place); matching the remaining lines by text
+  without the number catches renumbering after a regroup. Unchanged text
+  keeps the ticket's done flag, the board's in-flight progress; changed
+  text takes the tasks file's checkbox, because it is a different task.
+  A line whose text differs only in its task number is the same task
+  moved: it keeps the ticket's done flag and never blocks, so inserting a
+  group before a held ticket (which renumbers its lines) reconciles it
+  without `--force`. Repeated numbers or texts match the k-th to the k-th,
+  and the text pass compares exactly, so a case change is a rewording.
+- Decision: refuse per ticket, not warn. A ticked line being removed or
+  reworded, or lines rewritten under an agent that holds the ticket in
+  `tests`, `implementing` or `review`, is lost progress or a moving
+  target for that agent; a warning scrolls past in an orchestrator's
+  log. Refusing only the affected tickets keeps the rest of the import
+  useful, exit 4 makes the orchestrator notice, `--dry-run` shows the
+  diff first, and `--force` records `forced` and tells the holder through
+  `affects`. Title changes and additions are never blocked because they
+  lose nothing.
+- Groups that disappear mark their ticket superseded with a
+  `ticket.supersede` event and nothing else: the record stays intact,
+  and closing it is a human decision (close needs a decision disposition
+  anyway).
+- A removed line is inactive everywhere, not only in the fold: counts and
+  progress (cards, `top`, the web app) leave it out, `show`, `top` and the
+  web detail show it marked as removed with nothing to tick, and the tick
+  reminder maps an index to the tasks file by counting only lines that
+  are not removed.
+- Writing: the pairing is computed once on the caught-up cache, then each
+  event is written in its own command transaction, as the import already
+  did before this change (one event per ticket per transaction): the
+  renumbers by ascending old number, then each group in file order (a
+  create, or a reconcile recomputed on the caught-up ticket), then the
+  supersedes. Each transaction re-checks its event, and an event a
+  concurrent import has already made stale (a renumber whose `from` no
+  longer matches, a supersede of a superseded ticket, an empty
+  recomputed reconcile, a create whose group already has a ticket with
+  its number and title) is refused `stale-import` inside the transaction,
+  so the catch-up it did is committed and nothing is reported written.
+  Two concurrent imports of one revision therefore write the events of
+  one.
+- A refusal (`reconcile-blocked`, `reconcile-ambiguous`) carries the
+  import's result in the `--json` error document and the MCP error, so an
+  orchestrator learns what was written and what is blocked without
+  running `--dry-run` again.
+- `ticket.checklist.add` stays defined so existing boards fold as
+  before; new imports write `ticket.reconcile` instead.
+
+### Pairing tickets to groups by identity
+Observed in vaultfold: a revision inserted a group, so groups 5 to 7
+became 6 to 8. Pairing by number made every later ticket stand for the
+wrong group, and line-level reconciliation would have rewritten each one
+into its neighbour's content, moving claims, comments and ticks onto work
+they never belonged to. A group number is a position; a group's identity
+is its title and its tasks.
+
+- Three passes over what is still unpaired: equal normalised title
+  (unique on both sides); then content, Jaccard similarity of normalised
+  task-line sets at least 0.5, mutual best, with every other candidate at
+  least 0.2 lower; then number, only when neither side has another
+  candidate scoring 0.2 or more. Titles go first because a regroup that
+  rewords tasks usually keeps headings; content catches renames; number
+  is the last resort for a group rewritten in place.
+- Ambiguity refuses the whole import, writing nothing. Pairing is global:
+  one wrong pair displaces others, so a partial import could still move
+  work. The dry-run report shows candidates and scores, and the fix is a
+  human edit (a title, or splitting the change differently), not a
+  guess. Thresholds are constants, stated in the spec so tests can pin
+  them.
+- Renumbering is its own event (`ticket.renumber {from, to}`), so history
+  says plainly "renumbered from 5 to 6"; it moves only the task item and
+  the `group:<n>` label. Items need not be unique in the fold, so swaps
+  need no temporary number, and the fold rejects a stale renumber whose
+  `from` no longer matches (`stale-import`), keeping concurrent imports
+  deterministic.
+- The pairing is a command-time computation, recorded entirely in the
+  events it writes; the fold never recomputes it, so tuning the
+  heuristic later cannot change the fold of existing boards.
+
+## Interfaces (sketch)
+
+- Constants: `LEASE_SKEW_MS = 60_000`, `TTL_MIN_MS`, `TTL_MAX_MS`,
+  `GRACE_DEFAULT_MS = 120_000`, `WINDOW_DEFAULT_MS = 120_000`,
+  `SYSTEM_ACTOR = 'agentboard'`.
+- `Lease = {ttl; expiresAt; event; confirmed}`; `Ticket` gains
+  `lease: Lease | null` and `queue: Waiter[]` (`{actor, ttl, joined}`).
+- `dueGrant(ticket, meta): GrantEvent | null` (pure; used by the fold to
+  validate and by catch-up to write).
+- `parseDuration`-style parsers for ttl, grace/window and timeout.
+- `claimTicket(board, actor, {id, ttl?, wait?})`, `waitForGrant(...)`,
+  `renewTicket`, `unqueueTicket`, `releaseTicket(board, actor, {id,
+  force?, reason?})`, `setConfig`, `getConfig`.
+- `InboxEntry.affects: string | null`.
+
+The test author's stubs are authoritative (CONTRIBUTING.md).
+
+## Risks / Trade-offs
+
+- [Backdated grant events] break the "own event sorts last" property of
+  ADR 0002 for one kind. Mitigation: they reuse the late-arrival path
+  already required for sync; property tests cover refolds.
+- [Read commands now write] `list`, `show` and `inbox` may write a due
+  grant. Mitigation: only under the existing catch-up write lock and only
+  when one is due; otherwise reads stay lock-free.
+- [Nobody runs a command] a due grant is written late when no command
+  runs; the grant still carries its slot time, and the grantee's window
+  starts at `S`, so a grant materialised late may already be lapsed.
+  Mitigation: waiters on the CLI wake at due times; over MCP the
+  orchestrator runs the queue.
+- [Mixed versions] older versions reject lease claims and ignore the new
+  kinds. Mitigation: upgrade requirement documented.
+- [Skew beyond 60 s] shortens leases or windows across machines.
+  Mitigation: stated bound; single machine exact.
+- [Cache schema bump] redelivers inbox entries once.

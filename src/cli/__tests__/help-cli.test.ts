@@ -117,18 +117,16 @@ describe('parseArgs: help requests are the help command', () => {
 });
 
 describe('parseArgs: unknown commands and flags', () => {
-  it('scenario: clam names clam, suggests claim and points to agentboard help', () => {
+  it('scenario: clam suggests claim and points to agentboard help, never naming clam', () => {
     const err = expectBoardError(() => parseArgs(['clam', '01J9K3', '--as', 'impl']), 1, 'usage');
     expect(err.message).toBe(
-      "unknown command clam; did you mean claim? run 'agentboard help' to list the commands",
+      "unknown command; did you mean claim? run 'agentboard help' to list the commands",
     );
   });
 
   it('suggests nothing for a token with no close match but points to agentboard help', () => {
     const err = expectBoardError(() => parseArgs(['frobnicate', 'x']), 1, 'usage');
-    expect(err.message).toBe(
-      "unknown command frobnicate; run 'agentboard help' to list the commands",
-    );
+    expect(err.message).toBe("unknown command; run 'agentboard help' to list the commands");
   });
 
   it('suggests the right flag for a misspelled one', () => {
@@ -138,7 +136,7 @@ describe('parseArgs: unknown commands and flags', () => {
       'usage',
     );
     expect(err.message).toBe(
-      "unknown flag --notes for handoff; did you mean --note? run 'agentboard help handoff' to list its flags",
+      "unknown flag at argument 3 for handoff; did you mean --note? run 'agentboard help handoff' to list its flags",
     );
   });
 
@@ -150,7 +148,7 @@ describe('parseArgs: unknown commands and flags', () => {
   it('suggests nothing for a flag with no close match', () => {
     const err = expectBoardError(() => parseArgs(['list', '--colour', 'red']), 1, 'usage');
     expect(err.message).toBe(
-      "unknown flag --colour for list; run 'agentboard help list' to list its flags",
+      "unknown flag at argument 2 for list; run 'agentboard help list' to list its flags",
     );
   });
 });
@@ -205,7 +203,7 @@ describe('--help, -h and help in process', () => {
     expect(out.stderr.split('\n')).toHaveLength(3);
     const [message, hint, end] = out.stderr.split('\n');
     expect(message).toBe(
-      "agentboard: claim has no help subtopic extra; run 'agentboard help claim'",
+      "agentboard: claim has no help subtopic of that name; run 'agentboard help claim'",
     );
     expect(hint).toMatch(/^hint: \S/);
     expect(end).toBe('');
@@ -251,7 +249,9 @@ describe('the built CLI', { timeout: 30_000 }, () => {
     const out = spawnCli(['claim', '--help'], dir, cliEnv({ AGENTBOARD_ACTOR: undefined }));
     expect(out.code).toBe(0);
     expect(out.stderr).toBe('');
-    expect(out.stdout).toMatch(/^Usage: agentboard claim <id> --as <actor>/);
+    expect(out.stdout).toMatch(
+      /^Usage: agentboard claim <id> \[--ttl <ttl>\] \[--wait --timeout <timeout>\] --as <actor>/,
+    );
     expect(out.stdout).toMatch(/^ {2}--as <actor> /m);
     expect(out.stdout).toMatch(/^Exit codes:$/m);
     expect(out.stdout).toMatch(/^ {2}4 already-assigned {2,}\S/m);
@@ -269,7 +269,11 @@ describe('the built CLI', { timeout: 30_000 }, () => {
       expect(out.stderr).toBe('');
       const usage = out.stdout.split('\n')[0] ?? '';
       expect(usage.startsWith(`Usage: agentboard ${name} <id>`)).toBe(true);
-      for (const flag of ['--task <task>', '--change <change> --group <group>', '--unplanned <unplanned>']) {
+      for (const flag of [
+        '--task <task>',
+        '--change <change> --group <group>',
+        '--unplanned <unplanned>',
+      ]) {
         expect(usage, flag).toContain(flag);
       }
       expect(out.stdout).toMatch(/^ {2}4 needs-scope-disposition {2,}\S/m);
@@ -303,11 +307,11 @@ describe('the built CLI', { timeout: 30_000 }, () => {
     }
   });
 
-  it('scenario: clam exits 1, names clam and suggests claim', () => {
+  it('scenario: clam exits 1, suggests claim and never names clam', () => {
     const out = spawnCli(['clam', '01J9K3', '--as', 'impl'], empty(), cliEnv());
     expect(out.code).toBe(1);
     expect(out.stdout).toBe('');
-    expect(out.stderr).toContain('clam');
+    expect(out.stderr).not.toContain('clam');
     expect(out.stderr).toContain('did you mean claim?');
     expect(out.stderr).toContain('agentboard help');
   });
@@ -320,7 +324,8 @@ describe('the built CLI', { timeout: 30_000 }, () => {
     );
     expect(out.code).toBe(1);
     expect(out.stdout).toBe('');
-    expect(out.stderr).toContain('--notes');
+    expect(out.stderr).not.toContain('--notes');
+    expect(out.stderr).toContain('unknown flag at argument 7 for handoff');
     expect(out.stderr).toContain('did you mean --note?');
     expect(out.stderr).toContain('agentboard help handoff');
   });
@@ -329,7 +334,7 @@ describe('the built CLI', { timeout: 30_000 }, () => {
     const out = spawnCli(['frobnicate'], empty(), cliEnv());
     expect(out.code).toBe(1);
     expect(out.stdout).toBe('');
-    expect(out.stderr).toContain('frobnicate');
+    expect(out.stderr).not.toContain('frobnicate');
     expect(out.stderr).not.toContain('did you mean');
     expect(out.stderr).toContain("'agentboard help'");
   });

@@ -1,0 +1,14 @@
+id: 01MB0000000000000000000008
+title: Taken over lock
+status: todo
+assignee: impl-5
+lease: live, ttl 1h, expires 2026-10-26T12:49:10.000Z, claimable from 2026-10-26T12:50:10.000Z
+takeover: impl-5 at 2026-10-26T11:48:20.000Z from impl-4 (lease expired 2026-10-26T11:44:30.000Z)
+adhoc: merge lock
+labels: -
+description: -
+checklist:
+links:
+comments:
+closed: no
+events: 4

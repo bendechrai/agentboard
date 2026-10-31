@@ -46,7 +46,6 @@
  * `src/board/openspec.ts` may name it (src/board/__tests__/sources.test.ts).
  */
 
-import { asciiText } from '../board/text.js';
 import type { CommandOutput } from '../cli/types.js';
 import { BoardError } from '../store/errors.js';
 
@@ -126,7 +125,29 @@ export const GUIDE_MAX_LINES = 180;
  *    `--change` and `--group`, `new` with `--adhoc`, `move <id> merged`
  *    with `--unplanned`, `link` with `--task` (a ticket linked earlier
  *    needs nothing more at merge), `import-change` and `claim`.
- * 8. `Using the MCP tools`: when the board's MCP server is connected, use
+ * 8. `Mutex tickets` (board-agent-guidance: "Mutex ticket recipe"): one
+ *    standing ad hoc ticket per lock, never closed while the lock is in
+ *    use; acquire with a `claim` command line with `--ttl`, then `renew` as
+ *    the first action of real work (an unconfirmed claim lapses after the
+ *    grace period), a ttl longer than the critical section, renewing at
+ *    about half the ttl and before the critical step, stopping when `renew`
+ *    fails with `not-assignee`; `release` when done, including on failure;
+ *    the worker rules (never wait on a mutex in a loop, never claim from a
+ *    background process; wait in the foreground, CLI only, with a `claim`
+ *    command line with `--ttl`, `--wait` and `--timeout`, and renew on
+ *    return, or report ready and stop; over MCP `board_claim` with `wait`
+ *    only joins the queue and the grant arrives in `board_inbox`); the
+ *    orchestrator rules (the queue runner of a merge-style mutex,
+ *    dispatching one holder at a time and the next only when the ticket is
+ *    released or the holder's lease lapses; `queue.window` and
+ *    `lease.grace` with a `config set` command line; a stale hold waits for
+ *    the lease to lapse or gets a `release` command line with `--force` and
+ *    `--reason` after checking the holder is gone, never by impersonating
+ *    the holder with `--as`); across machines the lock is only as strong as
+ *    `sync` (sync before claiming and before the critical step), within one
+ *    machine it is exact. The phrases the spec delta lists appear with line
+ *    breaks read as spaces, ignoring case.
+ * 9. `Using the MCP tools`: when the board's MCP server is connected, use
  *    its tools instead of the shell: one tool per command named `board_`
  *    plus the command with spaces and hyphens as underscores (for example
  *    `board_claim`, `board_checklist_tick`), the same arguments without
@@ -134,19 +155,21 @@ export const GUIDE_MAX_LINES = 180;
  *    line), defaulting to the server's actor (a command line
  *    `agentboard mcp --as <actor>`), then its `AGENTBOARD_ACTOR`; errors
  *    carry `exitCode`, `reason`, `message` and `hint`; `init`, `watch`,
- *    `serve`, `top`, `rebuild`, `sync`, `remote`, `mcp`, `version`, `help`,
- *    `agents install` and `agents check` are not tools. It names
+ *    `serve`, `top`, `rebuild`, `sync`, `remote`, `config set`, `config get`,
+ *    `mcp`, `version`, `help`, `agents install` and `agents check` are not
+ *    tools. It names
  *    at least `board_claim`, `board_inbox`, `board_handoff` and
  *    `board_checklist_tick`.
- * 9. `Exit codes and hints`: one line per exit code 0 to 5, each written
+ * 10. `Exit codes and hints`: one line per exit code 0 to 5, each written
  *    `  <code>  <meaning>` (two spaces, the digit, at least two spaces),
  *    agreeing with board-cli "Exit codes" and README.md: 0 success; 1 usage
  *    error, missing actor or refused text or close disposition; 2 board not
  *    found; 3 sync problem that needs a human; 4 rejected by board state,
  *    listing every exit 4 reason the registry declares
- *    (`invalid-transition`, `already-assigned`, `not-assignee`,
- *    `unknown-ticket`, `needs-scope-disposition`, `already-linked`,
- *    `checklist-index`, `unsynced`); 5 integrity
+ *    (`invalid-transition`, `already-assigned`, `queued`, `wait-timeout`,
+ *    `not-assignee`, `invalid-queue`, `unknown-ticket`,
+ *    `needs-scope-disposition`, `already-linked`, `checklist-index`,
+ *    `reconcile-blocked`, `reconcile-ambiguous`, `unsynced`); 5 integrity
  *    problem or cache busy. Then: every refusal prints a `hint: ` line on
  *    stderr (the `hint` field over MCP) naming what to run next, and a
  *    command line `agentboard help <command>` shows any command's
@@ -160,6 +183,7 @@ export const GUIDE_SECTIONS: readonly string[] = [
   'Handing off and blocking',
   'Decisions and closing',
   'Tickets and planning tasks',
+  'Mutex tickets',
   'Using the MCP tools',
   'Exit codes and hints',
 ];
@@ -210,6 +234,9 @@ export function renderGuide(version: string): string {
  *   saying to give the scope disposition of an ad hoc ticket when merging
  *   or closing it (the words `ad hoc`, `--task` and `--unplanned` appear;
  *   board-agent-guidance "Agent guide").
+ * - `orchestrator` also has a queue-runner step for mutex tickets (the
+ *   words `mutex`, `queue runner` and `one holder at a time` appear in it,
+ *   read with line breaks as spaces).
  * - `test-author`: claim, move to `tests`, write failing tests and stubs,
  *   hand off to the implementer with `--status implementing`.
  * - `implementer`: claim (or accept the handoff), make the tests pass
@@ -220,6 +247,12 @@ export function renderGuide(version: string): string {
  * - `reviewer`: claim, review against the spec, send back with
  *   `--status implementing` (or `tests`) and a note, or approve and link
  *   the pull request (`agentboard link <id> --pr <pr> --as <actor>`).
+ * - `test-author`, `implementer` and `reviewer` each have a worker step for
+ *   mutex tickets (the words `mutex`, `in a loop`, `background process`
+ *   and `report ready` appear in it, read with line breaks as spaces).
+ *
+ * The orchestrator output (guide plus checklist) is the longest and stays
+ * within `GUIDE_MAX_LINES`.
  *
  * Plain ASCII, no trailing spaces, ends with one newline. Pure.
  */
@@ -234,9 +267,9 @@ export function renderRoleChecklist(role: Role): string {
  * - a role in `ROLES`: text `renderGuide(version) + renderRoleChecklist(role)`
  *   (the guide unchanged, then the checklist), json with that `role`.
  * - any other role (including an empty string): throws
- *   `BoardError(1, 'usage')` whose message names the role given (through
- *   `asciiText`) and lists the four valid roles, for example
- *   `unknown role tester; the roles are orchestrator, test-author, implementer, reviewer`.
+ *   `BoardError(1, 'usage')`, exactly
+ *   `unknown role given with --role; the roles are orchestrator, test-author, implementer, reviewer`,
+ *   which does not repeat the role given.
  *
  * Needs no board and no actor. Pure.
  */
@@ -250,7 +283,7 @@ export function agentsHelpOutput(version: string, role: string | undefined): Com
     throw new BoardError(
       1,
       'usage',
-      `unknown role ${asciiText(role)}; the roles are ${ROLES.join(', ')}`,
+      `unknown role given with --role; the roles are ${ROLES.join(', ')}`,
     );
   }
   const out = renderGuide(version) + renderRoleChecklist(role);
@@ -326,6 +359,11 @@ export const GUIDE_SUMMARY_MAX_CHARS = 2000;
  *   text that looks like one is refused.
  * - Errors: a failed call returns `exitCode`, `reason`, `message` and
  *   `hint`, and the hint names what to do next.
+ * - Mutex tickets, in one or two sentences: never wait on a mutex in a
+ *   loop or claim one from a background process; `board_claim` with `wait`
+ *   only joins the queue and the grant arrives in `board_inbox` (the
+ *   phrases `never wait on a mutex`, `in a loop`, `background process` and
+ *   `only joins the queue` appear, read with line breaks as spaces).
  * - Role checklists: the text `agentboard://guide/<role>` names the
  *   checklist resources, with the four roles.
  * - It never names the task-link refusal ADR 0013 removed and never says
@@ -352,18 +390,16 @@ function text(lines: readonly string[]): string {
  */
 const GUIDE_BODY: readonly string[] = [
   '',
-  'Read this before your first board command. In the commands below, <id>,',
-  '<actor>, <path> and the like stand for your own values. A ticket id may be',
-  'shortened to any unique prefix of at least 6 characters. Every command',
-  'accepts --json and then prints one JSON document on stdout. For the',
-  'checklist of your role, add --role with orchestrator, test-author,',
-  'implementer or reviewer.',
+  'Read this before your first board command. Below, <id>, <actor>, <path>',
+  'and the like stand for your own values. A ticket id may be shortened to',
+  'any unique prefix of at least 6 characters. Every command accepts --json',
+  'and then prints one JSON document on stdout. For the checklist of your',
+  'role, add --role with orchestrator, test-author, implementer or reviewer.',
   '',
   'What the board is and is not',
-  'A local, offline ticket board shared by the agents (and humans) working on',
-  'one project, in every worktree of it. Each change is written as its own',
-  'append-only event file under .board/, and that event log is the source of',
-  'truth, so agents writing at the same time never overwrite each other. It is:',
+  'A local, offline ticket board shared by the agents (and humans) of one',
+  'project, in every worktree. Each change is its own append-only event file',
+  'under .board/, the source of truth, so concurrent writers never clash. It is:',
   '- not a secret store: text that looks like a secret is refused (exit 1),',
   '  and events are synced and kept forever; pass --allow-secret-like only for',
   '  a false positive;',
@@ -375,10 +411,9 @@ const GUIDE_BODY: readonly string[] = [
   '',
   'The actor rule',
   'Every command that writes, and inbox and watch (which keep a cursor per',
-  'actor), needs an actor: --as <actor>, or else the AGENTBOARD_ACTOR',
-  'environment variable. With neither, the command exits 1. The actor is',
-  'never inferred from the OS user. Every command accepts --as, so pass it',
-  'on every call. Use one stable name per role instance, such as impl-1.',
+  'actor), needs an actor: --as <actor> or the AGENTBOARD_ACTOR environment',
+  'variable; with neither it exits 1. It is never inferred from the OS user.',
+  'Pass --as on every call, with one stable name per role, such as impl-1.',
   '',
   'Finding work',
   'Ask the board every time; never rely on a remembered picture of it.',
@@ -388,18 +423,16 @@ const GUIDE_BODY: readonly string[] = [
   '  agentboard list --change <change>',
   '  agentboard show <id>',
   'inbox prints every event since your last inbox (your own included) and',
-  'acknowledges them, so the next call prints only newer ones: run it before',
-  'starting or dispatching work. --peek lists without acknowledging. list',
-  'prints open tickets, one per line; show prints one ticket in full, with',
-  'its checklist, links and comments.',
+  'acknowledges them, so the next call prints only newer ones; --peek lists',
+  'without acknowledging. list prints open tickets; show prints one in full.',
   '',
   'Claiming before you start',
   'Claim a ticket before doing any work on it:',
   '  agentboard claim <id> --as <actor>',
   'Exit 4 with already-assigned means another actor holds it: do not work on',
-  'it. Claiming a ticket you already hold succeeds and writes nothing, so a',
-  'retried claim is safe, and when agents race for a ticket exactly one wins.',
-  'To give a ticket up, release it:',
+  'it. Claiming a ticket you already hold writes nothing, so a retried claim',
+  'is safe, and when agents race for a ticket exactly one wins. To give a',
+  'ticket up, release it:',
   '  agentboard release <id> --as <actor>',
   '',
   'Handing off and blocking',
@@ -415,8 +448,8 @@ const GUIDE_BODY: readonly string[] = [
   '(the work has landed; terminal) and blocked. Permitted moves: todo to',
   'tests, tests to implementing, implementing to review, review back to',
   'implementing or tests or on to merged, and any status but merged to',
-  'blocked. Any other move exits 4 with invalid-transition. Comment text that',
-  'starts with -- goes after a lone --.',
+  'blocked; any other exits 4 with invalid-transition. Comment text starting',
+  'with -- goes after a lone --.',
   '',
   'Decisions and closing',
   'When a discussion settles something, record it in a comment that begins',
@@ -427,10 +460,9 @@ const GUIDE_BODY: readonly string[] = [
   'exactly one disposition, the file that records the decision or none:',
   '  agentboard close <id> --decision-recorded-in <path> --as <actor>',
   '  agentboard close <id> --no-decision --as <actor>',
-  'The path must name an existing file inside the working tree.',
-  '--no-decision is refused (exit 1) while the ticket has a DECISION: comment',
-  'that its author has not retracted with a later comment beginning',
-  'RETRACTED:.',
+  'The path must name an existing file inside the working tree. --no-decision',
+  'is refused (exit 1) while the ticket has a DECISION: comment that its',
+  'author has not retracted with a later comment beginning RETRACTED:.',
   '',
   'Tickets and planning tasks',
   'Every ticket names the planned task it delivers as --task',
@@ -448,18 +480,44 @@ const GUIDE_BODY: readonly string[] = [
   'A ticket linked earlier needs nothing more at merge or close:',
   '  agentboard link <id> --task <source>:<ref>#<item> --as <actor>',
   'The OpenSpec flow: after a change is proposed, import it, which creates one',
-  'ticket per task group; run it again whenever its tasks.md gains lines (no',
-  'duplicates are created):',
+  'ticket per task group; rerun it whenever its tasks.md gains lines:',
   '  agentboard import-change <change> --as <actor>',
   "Claim the group's ticket before applying the change:",
   '  agentboard claim <id> --as <actor>',
-  'Tick the task lines in tasks.md in the implementing pull request;',
-  'checklist tick on the board only marks the ticket and reminds you to. Link',
-  'the pull request to the ticket (link <id> --pr <pr>). Once it has merged',
-  'and the ticket has moved to merged, close-merged closes it, with its',
-  'decision link (link <id> --decision <path>) as the disposition if it has',
-  'one; it asks GitHub through gh:',
+  'Tick the task lines in tasks.md in the implementing pull request; checklist',
+  'tick on the board only marks the ticket. Link the pull request to the',
+  'ticket (link <id> --pr <pr>). Once it has merged and the ticket has moved',
+  'to merged, close-merged (which asks GitHub through gh) closes it, with its',
+  'decision link (link <id> --decision <path>) as the disposition if any:',
   '  agentboard close-merged --as <actor>',
+  '',
+  'Mutex tickets',
+  'A lock (a merge lock, say) is one standing ad hoc ticket, never closed',
+  'while in use. Claim it with a lease and renew as the first action of real',
+  'work; an unconfirmed claim lapses after the grace period (lease.grace):',
+  '  agentboard claim <id> --ttl 30m --as <actor>',
+  '  agentboard renew <id> --as <actor>',
+  'Use a ttl longer than the critical section, renew at about half the ttl',
+  'and before the critical step, and stop when renew exits 4 with',
+  'not-assignee: the lock was lost. Release when done, including on failure:',
+  '  agentboard release <id> --as <actor>',
+  'Workers: never wait on a mutex in a loop, and never claim one from a',
+  'background process. Wait in the foreground (CLI only) and renew on return,',
+  'or report ready (a comment or hand-off to the orchestrator) and stop:',
+  '  agentboard claim <id> --ttl 30m --wait --timeout 10m --as <actor>',
+  'Exit 4 with wait-timeout or wait-interrupted means you do not hold the',
+  'ticket: do not run the critical step; retry the wait or report. Over MCP,',
+  'board_claim with wait only joins the queue; the grant arrives in board_inbox',
+  'and the grantee must board_renew within the accept window or the grant',
+  'passes on. Orchestrator: where agents cannot block, be the single queue',
+  'runner, dispatching one holder at a time and the next only once the ticket',
+  "is released or its holder's lease lapses. When the 2m defaults do not fit:",
+  '  agentboard config set queue.window 5m --as <actor>',
+  'A stale hold: wait for the lease to lapse, or break it after checking the',
+  'holder is gone, never by impersonating the holder with --as:',
+  '  agentboard release <id> --force --reason "<why>" --as <actor>',
+  'Across machines the lock is only as strong as sync (sync before claiming',
+  'and before the critical step); within one machine it is exact.',
   '',
   'Using the MCP tools',
   "When the board's MCP server is connected, use its tools instead of the",
@@ -471,15 +529,15 @@ const GUIDE_BODY: readonly string[] = [
   '  agentboard mcp --as <actor>',
   "and then the server's AGENTBOARD_ACTOR. A failed call returns exitCode,",
   'reason, message and hint. init, watch, serve, top, rebuild, sync, remote,',
-  'mcp, version, help, agents install and agents check are not tools; run',
-  'those in a shell.',
+  'config set, config get, mcp, version, help, agents install and',
+  'agents check are not tools; run those in a shell.',
   '',
   'Exit codes and hints',
   '  0  success',
   '  1  usage error, missing actor, refused text or close disposition, or rebuild --check found a difference',
   '  2  board not found or unreadable',
   '  3  sync problem that needs a human',
-  '  4  rejected by board state: invalid-transition, already-assigned, not-assignee, unknown-ticket, duplicate-create, needs-scope-disposition, already-linked, checklist-index, unsynced (init --into-host on a board with events not committed or not pushed)',
+  '  4  rejected by board state: invalid-transition, already-assigned, queued, wait-timeout, wait-interrupted, not-assignee, invalid-queue, unknown-ticket, duplicate-create, needs-scope-disposition, already-linked, checklist-index, reconcile-blocked, reconcile-ambiguous, unsynced (init --into-host on a board with events not committed or not pushed)',
   '  5  event log or cache integrity problem, or the cache is busy',
   'Every refusal also prints a line starting with hint: on stderr (the hint',
   'field over MCP) naming what to run next. For the arguments of a command:',
@@ -516,6 +574,10 @@ const SUMMARY_BODY: readonly string[] = [
   '  secret is refused.',
   '- Errors: a failed call returns exitCode, reason, message and hint; the',
   '  hint names what to do next.',
+  '- Mutex tickets: never wait on a mutex in a loop or claim one from a',
+  '  background process; board_claim with wait only joins the queue, and the',
+  '  grant arrives in board_inbox; the grantee must board_renew within the',
+  '  accept window or the grant passes on.',
   '',
   `Each role's checklist is the resource ${GUIDE_RESOURCE_URI}/<role>, for`,
   'orchestrator, test-author, implementer or reviewer. Read the full guide',
@@ -529,9 +591,8 @@ const CHECKLISTS: Readonly<Record<Role, readonly string[]>> = {
     '  agentboard inbox --as <actor>',
     '2. When a change is proposed, or its tasks.md gains lines, import it:',
     '  agentboard import-change <change> --as <actor>',
-    '3. Dispatch one agent per ticket and role (test author, implementer,',
-    '   reviewer), each with its own actor name; give it the ticket id and',
-    '   have it read the guide for its role:',
+    '3. Dispatch one agent per ticket and role, each with its own actor name;',
+    '   give it the ticket id and have it read the guide for its role:',
     '  agentboard help agents --role <role>',
     '4. Check state on the board, never from memory:',
     '  agentboard list --change <change>',
@@ -540,7 +601,7 @@ const CHECKLISTS: Readonly<Record<Role, readonly string[]>> = {
     '   for stale claims, long-blocked tickets and unpromoted decisions:',
     '  agentboard health',
     '6. After a pull request merges, move its ticket to merged. Promote every',
-    '   DECISION: comment to a spec delta or ADR first, then close the ticket,',
+    '   DECISION: comment to a spec delta or ADR first, then close the ticket',
     '   with close-merged (for tickets with a pr link) or by hand.',
     '   An ad hoc ticket takes --task <source>:<ref>#<item> or --unplanned',
     '   "<reason>" on that move or close; never invent a reference for it:',
@@ -548,6 +609,8 @@ const CHECKLISTS: Readonly<Record<Role, readonly string[]>> = {
     '  agentboard move <id> merged --unplanned "<reason>" --as <actor>',
     '  agentboard close-merged --as <actor>',
     '  agentboard close <id> --decision-recorded-in <path> --as <actor>',
+    '7. For a mutex ticket, be its queue runner: dispatch one holder at a time,',
+    "   and the next only once it is released or its holder's lease lapses.",
   ],
   'test-author': [
     '1. Claim the ticket and move it to tests:',
@@ -555,7 +618,9 @@ const CHECKLISTS: Readonly<Record<Role, readonly string[]>> = {
     '  agentboard move <id> tests --as <actor>',
     '2. Write failing tests from the spec, plus stubs for the API they use.',
     '   Do not implement the behavior.',
-    '3. Hand off to the implementer, saying where the tests are:',
+    '3. Never wait on a mutex ticket in a loop or claim one from a background',
+    '   process: wait in the foreground, or report ready and stop.',
+    '4. Hand off to the implementer, saying where the tests are:',
     '  agentboard handoff <id> --to <implementer> --status implementing --note "<tests and stubs>" --as <actor>',
   ],
   implementer: [
@@ -568,17 +633,21 @@ const CHECKLISTS: Readonly<Record<Role, readonly string[]>> = {
     '4. When stuck, block the ticket with a comment saying why:',
     '  agentboard move <id> blocked --as <actor>',
     '  agentboard comment <id> "<why>" --as <actor>',
-    '5. When done, hand off to the reviewer:',
+    '5. Never wait on a mutex ticket in a loop or claim one from a background',
+    '   process: wait in the foreground, or report ready and stop.',
+    '6. When done, hand off to the reviewer:',
     '  agentboard handoff <id> --to <reviewer> --status review --note "<what changed>" --as <actor>',
   ],
   reviewer: [
     '1. Claim the ticket:',
     '  agentboard claim <id> --as <actor>',
     '2. Review the work against the spec and its scenarios.',
-    '3. To send it back, hand off with a note (use --status tests when the',
+    '3. Never wait on a mutex ticket in a loop or claim one from a background',
+    '   process: wait in the foreground, or report ready and stop.',
+    '4. To send it back, hand off with a note (use --status tests when the',
     '   tests need changing):',
     '  agentboard handoff <id> --to <implementer> --status implementing --note "<findings>" --as <actor>',
-    '4. To approve, link the pull request:',
+    '5. To approve, link the pull request:',
     '  agentboard link <id> --pr <pr> --as <actor>',
   ],
 };

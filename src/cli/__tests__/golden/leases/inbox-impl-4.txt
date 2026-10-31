@@ -1,0 +1,29 @@
+01MB0000000000000000000001  ticket.create  orchestrator
+01MB0000000000000000000002  ticket.create  orchestrator
+01MB0000000000000000000003  ticket.create  orchestrator
+01MB0000000000000000000004  ticket.create  orchestrator
+01MB0000000000000000000005  ticket.create  orchestrator
+01MB0000000000000000000006  ticket.create  orchestrator
+01MB0000000000000000000007  ticket.create  orchestrator
+01MB0000000000000000000008  ticket.create  orchestrator
+01MB0000000000000000000009  ticket.create  orchestrator
+01MB0000000000000000000009  ticket.claim  merger-7
+01MB0000000000000000000009  ticket.release.force  orchestrator  note merger-7 crashed
+01MB0000000000000000000008  ticket.claim  impl-4
+01MB0000000000000000000005  ticket.claim  impl-3
+01MB0000000000000000000005  ticket.renew  impl-3
+LOST: 01MB0000000000000000000008  ticket.claim  impl-5
+01MB0000000000000000000008  ticket.renew  impl-5
+01MB0000000000000000000003  ticket.claim  impl-1
+01MB0000000000000000000007  ticket.claim  merger-5
+01MB0000000000000000000007  ticket.queue.join  merger-6
+01MB0000000000000000000003  ticket.renew  impl-1
+01MB0000000000000000000006  ticket.claim  merger-1
+01MB0000000000000000000004  ticket.claim  impl-2
+01MB0000000000000000000006  ticket.renew  merger-1
+01MB0000000000000000000006  ticket.queue.join  merger-2
+01MB0000000000000000000006  ticket.queue.join  merger-3
+01MB0000000000000000000006  ticket.queue.join  merger-4
+01MB0000000000000000000007  ticket.release  merger-5
+01MB0000000000000000000007  ticket.grant  agentboard  to merger-6
+01MB0000000000000000000002  ticket.claim  merger-1

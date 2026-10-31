@@ -33,6 +33,8 @@ describe('the command registry', () => {
       'show',
       'list',
       'claim',
+      'renew',
+      'unqueue',
       'release',
       'move',
       'comment',
@@ -51,6 +53,8 @@ describe('the command registry', () => {
       'remote',
       'import-change',
       'close-merged',
+      'config set',
+      'config get',
       'mcp',
       'agents install',
       'agents check',
@@ -59,16 +63,19 @@ describe('the command registry', () => {
     ]);
   });
 
-  it('marks exactly inbox and watch as tracking a cursor, and watch, serve and top as streaming', () => {
+  it('marks exactly inbox and watch as tracking a cursor, and claim (with --wait only), watch, serve and top as streaming', () => {
     expect(COMMANDS.filter((c) => c.tracksCursor === true).map((c) => c.name)).toEqual([
       'inbox',
       'watch',
     ]);
     expect(COMMANDS.filter((c) => c.stream !== undefined).map((c) => c.name)).toEqual([
+      'claim',
       'watch',
       'serve',
       'top',
     ]);
+    // Only claim streams conditionally.
+    expect(COMMANDS.filter((c) => c.streams !== undefined).map((c) => c.name)).toEqual(['claim']);
     // top is the one command given a terminal.
     expect(COMMANDS.filter((c) => c.terminal === true).map((c) => c.name)).toEqual(['top']);
     expect(command('inbox').operation).toBe('readInbox');
@@ -79,6 +86,8 @@ describe('the command registry', () => {
     expect(COMMANDS.filter((c) => c.writes).map((c) => c.name)).toEqual([
       'new',
       'claim',
+      'renew',
+      'unqueue',
       'release',
       'move',
       'comment',
@@ -89,6 +98,7 @@ describe('the command registry', () => {
       'close',
       'import-change',
       'close-merged',
+      'config set',
     ]);
   });
 
@@ -103,10 +113,12 @@ describe('the command registry', () => {
     expect(ACTOR_FLAG).toMatchObject({ name: 'as', type: 'string', required: false });
   });
 
-  it('gives --allow-secret-like to new, move, comment, handoff and close only', () => {
-    // move and close take it for their --unplanned reason (add-adhoc-ticket-lifecycle).
+  it('gives --allow-secret-like to new, release, move, comment, handoff and close only', () => {
+    // move and close take it for their --unplanned reason (add-adhoc-ticket-lifecycle),
+    // release for its --force --reason (add-claim-leases).
     expect(COMMANDS.filter((c) => c.flags.includes(ALLOW_SECRET_FLAG)).map((c) => c.name)).toEqual([
       'new',
+      'release',
       'move',
       'comment',
       'handoff',
@@ -239,7 +251,10 @@ describe('the command registry', () => {
     });
     expect(shape('import-change')).toEqual({
       positionals: [['name', 'string', true]],
-      flags: [],
+      flags: [
+        ['dry-run', 'boolean', false, false],
+        ['force', 'boolean', false, false],
+      ],
       exclusive: [],
     });
     expect(shape('close-merged')).toEqual({ positionals: [], flags: [], exclusive: [] });
@@ -304,15 +319,19 @@ describe('parseArgs: command selection', () => {
     expect(parsed.json).toBe(false);
   });
 
-  // An unknown command names the token, suggests close commands and points
-  // to `agentboard help` (which lists them all) instead of listing every
-  // command; an empty argv is the overview (help-cli.test.ts).
+  // An unknown command suggests close commands and points to `agentboard
+  // help` (which lists them all) instead of listing every command, and never
+  // names the token (no-echo-refusals); an empty argv is the overview
+  // (help-cli.test.ts).
   it.each([[['nope']], [['checklist']], [['checklist', 'toggle', 'x', '1']], [['--json']]])(
     'refuses %j with a usage error pointing to agentboard help',
     (argv) => {
       const err = expectBoardError(() => parseArgs(argv), 1, 'usage');
-      expect(err.message).toMatch(/^unknown command /);
+      expect(err.message).toMatch(/^unknown command; /);
       expect(err.message).toContain("run 'agentboard help' to list the commands");
+      for (const word of argv.filter((a) => a !== 'checklist')) {
+        expect(err.message).not.toContain(word);
+      }
     },
   );
 
@@ -397,11 +416,15 @@ describe('parseArgs: flags and positionals', () => {
   });
 
   it.each([
-    ['an unknown flag', ['list', '--colour', 'red'], '--colour'],
+    ['an unknown flag', ['list', '--colour', 'red'], 'unknown flag at argument 2 for list'],
     ['a value on a boolean flag', ['list', '--closed=yes'], '--closed'],
     ['a missing flag value', ['list', '--status'], '--status'],
     ['a repeated single flag', ['list', '--status', 'todo', '--status', 'tests'], '--status'],
-    ['too many positionals', ['comment', 'T1ABCD', 'hello', 'world'], 'world'],
+    [
+      'too many positionals',
+      ['comment', 'T1ABCD', 'hello', 'world'],
+      'unexpected argument at position 4 for comment',
+    ],
     ['a missing positional', ['comment', 'T1ABCD'], 'text'],
     ['a missing required flag', ['handoff', 'T1ABCD', '--to', 'r', '--status', 'review'], '--note'],
     ['a non-integer index', ['checklist', 'tick', 'T1ABCD', 'two'], 'index'],

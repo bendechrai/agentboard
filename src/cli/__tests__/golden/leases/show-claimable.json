@@ -1,0 +1,47 @@
+{
+  "ticket": {
+    "id": "01MB0000000000000000000005",
+    "title": "Claimable lock",
+    "description": null,
+    "status": "todo",
+    "blockedFrom": null,
+    "assignee": "impl-3",
+    "labels": [],
+    "task": null,
+    "adhoc": "merge lock",
+    "unplanned": null,
+    "checklist": [],
+    "comments": [],
+    "links": [],
+    "closed": false,
+    "superseded": null,
+    "disposition": null,
+    "lease": {
+      "ttl": 600000,
+      "expiresAt": 1793015700000,
+      "event": "4578f2cdcca6c8e725200d310954399209ce22453290aa2a877aaf2d379ffebb",
+      "confirmed": true,
+      "state": "claimable",
+      "claimableAt": 1793015760000
+    },
+    "queue": [],
+    "available": {
+      "at": 1793015760000,
+      "event": "4578f2cdcca6c8e725200d310954399209ce22453290aa2a877aaf2d379ffebb"
+    },
+    "createdBy": "orchestrator",
+    "createdAt": {
+      "wall": 1793012404000,
+      "counter": 0,
+      "actor": "orchestrator"
+    },
+    "version": 3,
+    "updatedAt": {
+      "wall": 1793015100000,
+      "counter": 0,
+      "actor": "impl-3"
+    }
+  },
+  "events": 3,
+  "unknown": []
+}

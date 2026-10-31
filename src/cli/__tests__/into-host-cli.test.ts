@@ -20,8 +20,10 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -59,12 +61,13 @@ import {
   hostBoard,
   refCommit,
   withGitShim,
+  withGitShimBefore,
   withKillingGitShim,
   withRecordingGitShim,
   worktreeEntry,
   type KillWhen,
 } from '../../board/__tests__/sharing-helpers.js';
-import { bareRemote, revParse, syncEnv, type Env } from '../../board/__tests__/sync-helpers.js';
+import { bareRemote, rebaseInProgress, revParse, syncEnv, type Env } from '../../board/__tests__/sync-helpers.js';
 import {
   MIGRATING_DIR,
   MIGRATING_FETCH_REF,
@@ -1088,4 +1091,123 @@ describe('rollback of a move (design.md "Migration Plan") ends with a working st
     expect(worktreeEntry(root, dir)).toBeNull();
     expect(git(root, 'status', '--porcelain')).toBe('');
   });
+});
+
+/**
+ * guard-stale-temporary task 1.3 (design.md "Reporting"): a temporary
+ * worktree that is not this board's is named the same way whether the
+ * board was replaced or its history rewritten. Without rebase or
+ * cherry-pick state it is removed and the move's output says so; with
+ * such state it is the `sync-in-progress` refusal, whose reason and hint
+ * are those of the refusal for a temporary of this board. Inode reuse is
+ * simulated by rewriting the temporary's `agentboard-source` to the
+ * replacement's identity, never left to the file system.
+ */
+describe('guard-stale-temporary: a temporary of another board is named as design.md "Reporting" says', () => {
+  /** The record `name` in the git directory of the temporary worktree at `temporary`. */
+  function recordPath(temporary: string, name: string): string {
+    return join(git(temporary, 'rev-parse', '--absolute-git-dir').trim(), name);
+  }
+
+  /** Makes the temporary record the identity (`<realpath>:<dev>:<ino>` of the git directory) of the board at `dir` now. */
+  function simulateInodeReuse(temporary: string, dir: string): void {
+    const path = realpathSync(git(dir, 'rev-parse', '--absolute-git-dir').trim());
+    const stats = statSync(path);
+    writeFileSync(recordPath(temporary, 'agentboard-source'), `${path}:${String(stats.dev)}:${String(stats.ino)}`);
+  }
+
+  /** Replaces the board at `<root>/.board` by an unrelated standalone board with its own history and remote. */
+  function replaceBoard(root: string, dir: string, env: Env): void {
+    rmSync(dir, { recursive: true, force: true });
+    syncedStandalone(root, env, 2, bareRemote(), 'other');
+  }
+
+  it('sync-in-progress for a stopped temporary of a replaced board whose git directory reuses the inode: the parenthesis in the text and in the --json error message, the reason and the hint those of the existing refusal', () => {
+    const env = syncEnv();
+    const { bRoot, bDir } = conflictingClones(env);
+    const first = intoHost(bRoot, env);
+    expect(first.code).toBe(3);
+    expect(errorOf(first).reason).toBe('sync-conflict');
+    const [temporary] = registeredMigrating(bRoot);
+    // The existing refusal, for the stopped temporary of this board.
+    const ownText = intoHost(bRoot, env, false);
+    expect(ownText.code).toBe(3);
+    const ownHint = hintOf(ownText);
+    const own = errorOf(intoHost(bRoot, env));
+    expect(own).toMatchObject({ exitCode: 3, reason: 'sync-in-progress' });
+    expect(own.message).not.toContain('another board');
+    expect(own.message).toContain(`${String(temporary)}; resolve the conflict`);
+    replaceBoard(bRoot, bDir, env);
+    simulateInodeReuse(String(temporary), bDir);
+    const parenthesis =
+      ` (that worktree was left by a move of another board, not the one at ${bDir} now or one ` +
+      'whose history no longer holds where that move began, so finishing it moves nothing of this board)';
+    const expected = own.message.replace(
+      `${String(temporary)}; resolve the conflict`,
+      `${String(temporary)}${parenthesis}; resolve the conflict`,
+    );
+
+    const text = intoHost(bRoot, env, false);
+
+    expect(text.code).toBe(3);
+    expect(text.stdout).toBe('');
+    expect(text.stderr).toContain(`agentboard: ${expected}\n`);
+    expect(hintOf(text)).toBe(ownHint);
+
+    const json = intoHost(bRoot, env);
+
+    expect(json.code).toBe(3);
+    const error = errorOf(json);
+    expect(error).toEqual({ exitCode: 3, reason: 'sync-in-progress', message: expected, hint: own.hint });
+    expect(rebaseInProgress(String(temporary))).toBe(true);
+    expect(registeredMigrating(bRoot)).toEqual([temporary]);
+    expect(detectBoardModel(bDir, { env }).model).toBe('standalone');
+    expect(refCommit(bRoot)).toBeNull();
+  });
+
+  it.each([
+    ['the text output', false],
+    ['the --json document message', true],
+  ])(
+    'a removed temporary of a replaced board whose git directory reuses the inode is named in %s as left by a move of another board',
+    (_label, json) => {
+      const env = syncEnv();
+      const { root, dir } = standaloneProject(env, 3);
+      const other = hostBoard(env);
+      commitHostEvent(other.dir, ev(P.create(T2, 'From the host ref'), 'x', 2000), env);
+      git(root, 'fetch', '-q', other.root, `${BOARD_REF}:${BOARD_REF}`);
+      const c1 = String(refCommit(root));
+      commitHostEvent(other.dir, ev(P.comment(T2, 'second'), 'x', 2100), env);
+      git(root, 'fetch', '-q', other.root, `${BOARD_REF}:refs/test/c2`);
+      const c2 = git(root, 'rev-parse', 'refs/test/c2').trim();
+      // The first move integrates c1 and loses the compare-and-swap to c2:
+      // a temporary of this board that integrated something, kept.
+      const racing = withGitShimBefore(
+        env,
+        ['update-ref', BOARD_REF],
+        `"$GIT" -C '${root}' update-ref ${BOARD_REF} ${c2} ${c1}`,
+      );
+      const lost = intoHost(root, racing);
+      expect(lost.code, lost.stderr).toBe(3);
+      expect(errorOf(lost).reason).toBe('sync-failed');
+      const [temporary] = registeredMigrating(root);
+      expect(registeredMigrating(root)).toHaveLength(1);
+      replaceBoard(root, dir, env);
+      simulateInodeReuse(String(temporary), dir);
+
+      const out = intoHost(root, env, json);
+
+      expect(out.code, out.stderr).toBe(0);
+      const message = json ? String((oneJson(out) as Record<string, unknown>).message) : out.stdout;
+      expect(message).toContain(
+        `removed ${String(temporary)}, left by a move of another board (not the one at ${dir}, or one ` +
+          'whose history no longer holds where that move began), so nothing of it was adopted\n',
+      );
+      expect(message).not.toContain('left by an interrupted move');
+      if (json) {
+        expect(oneJson(out)).toMatchObject({ action: 'moved', events: 4 });
+      }
+      expectMoved(root, env);
+    },
+  );
 });

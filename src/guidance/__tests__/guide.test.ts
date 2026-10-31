@@ -199,6 +199,7 @@ describe('the format', () => {
       'Handing off and blocking',
       'Decisions and closing',
       'Tickets and planning tasks',
+      'Mutex tickets',
       'Using the MCP tools',
       'Exit codes and hints',
     ]);
@@ -596,9 +597,9 @@ describe('agentsHelpOutput and isRole', () => {
         expect(err.message, valid).toContain(valid);
       }
     }
-    expect(
-      expectBoardError(() => agentsHelpOutput(VERSION, 'tester'), 1, 'usage').message,
-    ).toContain('tester');
+    expect(expectBoardError(() => agentsHelpOutput(VERSION, 'tester'), 1, 'usage').message).toBe(
+      'unknown role given with --role; the roles are orchestrator, test-author, implementer, reviewer',
+    );
   });
 });
 
@@ -677,7 +678,7 @@ describe('help agents through the CLI', () => {
     expect(out.stdout).toBe('');
     const first = out.stderr.split('\n')[0] ?? '';
     expect(first).toMatch(/^agentboard: /);
-    expect(first).toContain('tester');
+    expect(out.stdout + out.stderr).not.toContain('tester');
     for (const role of ROLES) {
       expect(first, role).toContain(role);
     }

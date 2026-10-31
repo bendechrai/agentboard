@@ -28,6 +28,7 @@ import {
   isGitFailure,
   meetsGitFloor,
   type GitRunner,
+  withoutUserinfo,
 } from './git.js';
 import { BOARD_REF, type BoardModelInfo } from './model.js';
 import { ambiguousRemoteError, boardRemote } from './remote.js';
@@ -40,6 +41,7 @@ import {
   hostTrackedPaths,
   hostWarning,
   plural,
+  remoteMessage,
   stageAndCommit,
   syncFailed,
   unmergedPaths,
@@ -294,7 +296,7 @@ export function syncHostBoard(
       if (remoteHasRef(git, remote, target)) {
         fetchRef(git, remote, target);
         if (!isAncestor(git, 'FETCH_HEAD', 'HEAD')) {
-          rebaseOnto(git, dir, 'FETCH_HEAD', `what ${asciiText(remote)} holds`);
+          rebaseOnto(git, dir, 'FETCH_HEAD', `what ${asciiText(withoutUserinfo(remote))} holds`);
         }
         refCommit = integrateLocalRef(git, dir);
         pulled = true;
@@ -323,11 +325,14 @@ export function syncHostBoard(
   if (remote === null) {
     lines.push(`no remote configured; the board at ${dir} was not fetched or pushed`);
   } else {
+    // A remote named by URL is shown without its user information; git
+    // was given the name as it is.
+    const shown = withoutUserinfo(remote);
     lines.push(
       pulled
-        ? `fetched ${BOARD_REF} from ${remote}: ${plural(arrived.length, 'event')} arrived`
-        : `${remote} has no ${BOARD_REF} yet; nothing to fetch`,
-      `pushed ${BOARD_REF} to ${remote}`,
+        ? `fetched ${BOARD_REF} from ${shown}: ${plural(arrived.length, 'event')} arrived`
+        : `${shown} has no ${BOARD_REF} yet; nothing to fetch`,
+      `pushed ${BOARD_REF} to ${shown}`,
     );
   }
   return {
@@ -337,7 +342,7 @@ export function syncHostBoard(
     refCommit,
     commit: onHead,
     committedEvents,
-    remote,
+    remote: remote === null ? null : withoutUserinfo(remote),
     branch: null,
     pulled,
     pushed: remote !== null,
@@ -485,7 +490,7 @@ function rebaseOnto(git: GitRunner, dir: string, onto: string, what: string): vo
         `git rebase --continue (or git rebase --abort) in ${dir}, then run agentboard sync again`,
     );
   }
-  throw syncFailed(`rebasing onto ${what}`, out);
+  throw syncFailed(`rebasing onto ${what}`, out, git);
 }
 
 /**
@@ -537,7 +542,7 @@ function isRelativePathUrl(url: string): boolean {
 function remoteHasRef(git: GitRunner, remote: string, target: string): boolean {
   const out = git.attempt('ls-remote', target, BOARD_REF);
   if (isGitFailure(out)) {
-    throw syncFailed(`reaching ${asciiText(remote)}`, out);
+    throw syncFailed(`reaching ${remote}`, out, git);
   }
   return out.trim() !== '';
 }
@@ -546,7 +551,7 @@ function remoteHasRef(git: GitRunner, remote: string, target: string): boolean {
 function fetchRef(git: GitRunner, remote: string, target: string): void {
   const out = git.attempt('fetch', '--no-tags', target, BOARD_REF);
   if (isGitFailure(out)) {
-    throw syncFailed(`fetching ${BOARD_REF} from ${asciiText(remote)}`, out);
+    throw syncFailed(`fetching ${BOARD_REF} from ${remote}`, out, git);
   }
 }
 
@@ -585,7 +590,7 @@ function push(git: GitRunner, remote: string, target: string, last: boolean): bo
     .split('\n')
     .map((line) => PUSH_REFUSAL.exec(line)?.[1]?.trim() ?? null)
     .filter((reason): reason is string => reason !== null);
-  const what = `pushing ${BOARD_REF} to ${asciiText(remote)}`;
+  const what = `pushing ${BOARD_REF} to ${remote}`;
   const moved = (reason: string): boolean =>
     reason.startsWith('[rejected]') ||
     (reason.startsWith('[remote rejected]') && LOST_RACE.test(reason));
@@ -593,24 +598,30 @@ function push(git: GitRunner, remote: string, target: string, last: boolean): bo
     if (!last) {
       return false;
     }
-    throw syncFailed(what, out);
+    throw syncFailed(what, out, git);
   }
   const refused = reasons.find((reason) => reason.startsWith('[remote rejected]'));
   if (refused !== undefined) {
+    // The remote's own lines may quote a URL with credentials (a hook
+    // echoing the push URL): the whole message is sanitised like git's own
+    // lines, raw first and escaped afterwards (`remoteMessage`).
     const said = out.stderr
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line.startsWith('remote:'))
-      .map((line) => asciiText(line.slice('remote:'.length).trim()))
+      .map((line) => line.slice('remote:'.length).trim())
       .filter((line) => line !== '');
     throw new BoardError(
       3,
       'sync-failed',
-      `${what} failed: the remote refused it (${asciiText(refused)})` +
-        `${said.length > 0 ? `: ${said.join('; ')}` : ''}; fix what the remote names ` +
-        `(a hook, or a host that does not accept refs/agentboard/*; see agentboard init --remote), ` +
-        'then run agentboard sync again',
+      remoteMessage(
+        `${what} failed: the remote refused it (${refused})` +
+          `${said.length > 0 ? `: ${said.join('; ')}` : ''}; fix what the remote names ` +
+          `(a hook, or a host that does not accept refs/agentboard/*; see agentboard init --remote), ` +
+          'then run agentboard sync again',
+        git,
+      ),
     );
   }
-  throw syncFailed(what, out);
+  throw syncFailed(what, out, git);
 }

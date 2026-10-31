@@ -109,7 +109,9 @@ function stripUndefined(event: ProposedEvent): ProposedEvent {
 }
 
 /** The common shape of a fixture ticket, as `show --json` and `list --json` print it. */
-export function ticketDoc(fields: Partial<Ticket> & Pick<Ticket, 'id' | 'title'>): Ticket {
+export function ticketDoc(
+  fields: Partial<Omit<Ticket, 'lease'>> & Pick<Ticket, 'id' | 'title'>,
+): Ticket & { lease: null } {
   return {
     description: null,
     status: 'todo',
@@ -126,6 +128,7 @@ export function ticketDoc(fields: Partial<Ticket> & Pick<Ticket, 'id' | 'title'>
     comments: [],
     links: [],
     closed: false,
+    superseded: null,
     disposition: null,
     createdBy: 'orch',
     createdAt: at(0, 'orch'),

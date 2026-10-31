@@ -13,7 +13,9 @@ tested and documented in README.md.
 - **Board core** (`board-events`, `board-cache`, `board-concurrency`,
   `board-cli`): the append-only event log with a disposable SQLite cache,
   every CLI command, `rebuild`, `sync` over git, inbox cursors with
-  `inbox` and `watch`, and the concurrency and crash property tests.
+  `inbox` and `watch` (kept across a cache schema upgrade, so an upgrade
+  does not replay the whole board to every actor), and the concurrency
+  and crash property tests.
   ADRs 0001 to 0005.
 - **OpenSpec integration** (`board-openspec-integration`):
   `import-change`, source-neutral task links and `close-merged`.
@@ -61,6 +63,42 @@ tested and documented in README.md.
   walkthrough `src/__tests__/walkthroughs/adhoc-lifecycle.sh` runs the
   README example end to end. ADR 0013 (amends ADR 0004). Archived as
   `openspec/changes/archive/2026-10-17-add-adhoc-ticket-lifecycle`.
+- **Markdown descriptions** (`board-web`): the ticket detail view of the
+  web app renders a ticket's description as Markdown (CommonMark plus GFM
+  tables, task lists, strikethrough and autolink literals), parsed to a
+  syntax tree and rendered into elements from an allow-list, never as an
+  HTML string, with a guard test over the client source; links only for
+  absolute `http:`, `https:` and `mailto:` URLs, opened in a new tab with
+  no opener and no referrer; images never loaded, shown as links labelled
+  with the alt text; nesting deeper than 32 levels and descriptions
+  longer than 16384 characters fall back to text. ADR 0015 (amends ADR
+  0006). Archived as
+  `openspec/changes/archive/2026-10-26-add-description-markdown`.
+- **Claim leases and the waiting queue** (`board-events`, `board-cache`,
+  `board-cli`, `board-concurrency`, `board-agent-guidance`,
+  `board-view-model`, `board-openspec-integration`, `board-web`,
+  `board-web-actions`):
+  `claim --ttl` writes a grace lease (`lease.grace`, default 2 minutes)
+  that only the holder's `renew` confirms; a lease lapsed by more than the
+  fixed 60 second skew tolerance can be taken over with `claim --ttl`;
+  `claim --wait` joins a fair queue, blocking on the CLI until granted
+  (`--timeout`, exit 4 `wait-timeout` or `wait-interrupted`) and
+  non-blocking over MCP (`board_claim` with `wait`, the grant arriving in
+  `board_inbox`), with `unqueue` to leave; grants are derived, backdated
+  `ticket.grant` events by the reserved actor `agentboard`, written by
+  whichever command catches up once they are due and accepted by `renew`
+  within `queue.window`; `release --force --reason` breaks another
+  actor's hold as `ticket.release.force` and tells the previous holder
+  (`LOST: ` in its inbox); `config set|get lease.grace|queue.window`;
+  lease and queue display in `list`, `show` and the inbox; feed summaries;
+  the mutex ticket recipe in the guide, the role checklists, the
+  installed guidance and the MCP instructions (`GUIDANCE_VERSION` 3); and
+  re-import reconciliation in `import-change` (pairing tickets to groups
+  by identity, `ticket.renumber`, `ticket.reconcile`, `ticket.supersede`,
+  `--dry-run`, `--force`). Cache schema version 5. README "Leases, the
+  waiting queue and mutex tickets". ADR 0014. Delivered in PRs #69, #70,
+  #72, #98, #101, #102, #105 and #107; archived as
+  `openspec/changes/archive/2026-10-27-add-claim-leases`.
 
 Released as `@bendechrai/agentboard` 0.2.0 on npm (tag `v0.2.0`), with the
 landing site in `docs/` served at https://bendechrai.github.io/agentboard/.
@@ -69,29 +107,82 @@ CONTRIBUTING.md, "Releasing").
 
 This repository coordinates its own agents with agentboard: `agentboard
 agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
-`agentboard:` guidance in `openspec/config.yaml`.
+`agentboard:` guidance in `openspec/config.yaml`, at guidance version 3
+(`agentboard agents check` reports both current). Machines that share
+this repository's board should run a build with leases before anyone uses
+them on it (see "Known gaps").
+- **Guard on leftover temporaries** (`board-concurrency`): `init
+  --into-host` adopts a temporary worktree left by an interrupted move
+  only when it comes from the board's own history: the git directory it
+  recorded is the one at `.board` now, and its recorded starting HEAD and
+  integrated tip (three atomic records in the temporary's git directory)
+  are both in that board's history, so a replacement board that reuses
+  the old git directory's inode, or a board whose history was rewritten,
+  is another board and its events never reach `refs/agentboard/board`.
+  Temporaries of 0.2.0 and older stay resumable. The removal line and the
+  `sync-in-progress` text name such a temporary. Delivered in PR #104
+  (ticket 01M5XPHX2V5DHQY0RB6M5JWRD6) and documented in README "Moving a
+  board into the host repository" (PR #111); the change is archived as
+  `openspec/changes/archive/2026-10-27-guard-stale-temporary`.
+- **Inbox positions survive a cache schema upgrade** (`board-cache`):
+  when the cache was written by an earlier schema version, the recreate
+  carries each actor's cursor and seen set and the old cache's applied
+  events inside the same transaction, so the first `inbox` after an
+  upgrade returns only events after the actor's position plus any whose
+  outcome the new version changed (0.2.0 recorded reconcile, renumber and
+  supersede as unknown kinds). Old long-running `watch`, `serve`, `top` or
+  `mcp` processes must be stopped before upgrading. Delivered in PR #108
+  (ticket 01M5Y0T56JQ1HS04A3N042Y2Z4); archived as
+  `openspec/changes/archive/2026-10-30-keep-cursors-on-upgrade`.
+- **Refusals never repeat the refused input** (`board-cli`,
+  `board-agent-guidance`): no refusal, hint, `--json` error, MCP tool
+  error, web action error or stderr line repeats the value, flag name,
+  command word or argument name it refuses; it names the argument and the
+  expected form or the valid choices. The one exception is text of the
+  ticket id shape starting with `0`. `init --remote`, `sync`, `remote` and
+  the `init` paths never show a remote URL's credentials: quoted git lines
+  are sanitised against every configured remote, remote named by URL and
+  proxy, and success output shows URLs without user information. A source
+  scan fails if a refusal starts echoing input again. Delivered in PRs
+  #117 and #113 (ticket 01M5X7EGBFRQA4BH7R0A35ZW50); archived as
+  `openspec/changes/archive/2026-10-31-no-echo-refusals`.
 
 ## What is next
 
-1. `add-description-markdown` (proposed, in `openspec/changes/`): render a
-   ticket's description as Markdown in the web app, into elements only,
-   never HTML.
-2. `add-claim-leases` (proposed, in `openspec/changes/`): grace leases
-   confirmed by `renew` (`claim --ttl`), takeover of a lapsed lease, a
-   fair waiting queue (`claim --wait`), an audited `release --force
-   --reason`, board settings (`config`), mutex ticket guidance, and
-   reconciling tickets when `import-change` is re-run. Groups 1 to 5 are
-   concurrency-critical, so they get a second reviewer (see
-   CONTRIBUTING.md, "Three roles per task group").
+Release 0.3.0: `staging` holds everything above and the version is
+0.3.0 (#120); promote `staging` to `main` (#119), tag `v0.3.0` and
+approve the staged npm release (CONTRIBUTING.md, "Releasing").
 
 ## Known gaps
 
-- `add-claim-leases` was re-synced with the main specs when the ad hoc
-  ticket lifecycle was archived (its tasks.md says which requirements):
-  its guidance group takes `GUIDANCE_VERSION` 3 and its ADR is 0014. Its
-  "Agent guide" keeps the 180-line limit the lifecycle set, which the
-  mutex recipe must now fit beside the ad hoc text (the orchestrator
-  output is 159 lines today).
+- Release gate for `add-claim-leases`: every machine that writes to a
+  shared board must be upgraded before any actor uses `--ttl`, `--wait`,
+  `release --force` or `config set` (README, "Upgrading a board shared
+  between machines"); the release notes for the version that ships it
+  must say so.
+- The `agentboard` on PATH on the maintainer's machine is the published
+  0.2.0 (guidance version 2) until 0.3.0 is installed. Run from this
+  repository it reports the version 3 guidance as `stale` and suggests
+  `agents install`, which would downgrade it, so check and install
+  guidance with a build of `staging` (`node dist/cli.js agents check`)
+  until then. Agents on this repository's board that call it are writers
+  that do not understand leases, the mixed-version case README
+  "Upgrading a board shared between machines" describes.
+- The guide is at its limit: the orchestrator output of `help agents
+  --role orchestrator` is exactly 180 lines, the limit the ad hoc
+  lifecycle and `add-claim-leases` share, so the next change that adds
+  guidance (`GUIDANCE_VERSION` 4) has to make room or raise the limit
+  through its own spec delta.
+- The actor (`--as`, `AGENTBOARD_ACTOR`) is repeated in messages and
+  hints and never checked against the secret patterns: ticket
+  01M5Y9MQB9E3969DZ29VX5MZD0.
+- An MCP `resources/read` of an unknown URI repeats the URI in the SDK's
+  own error text: ticket 01M5YD930V39N0203HTTMQHYMW.
+- `init --into-host` killed after its step 4 (the local
+  `refs/agentboard/board` updated) leaves the first board's events in
+  that ref if `.board` is then replaced by a different board before the
+  move is re-run; whether the re-run must detect and refuse this is open:
+  ticket 01M5XYG0VT09DBAW7PZJK1CZ5Y.
 - The draft branch `openspec/add-harness-integration` (not merged)
   predates both archives: before it is proposed it re-syncs board-cli
   "Command surface", "Exit codes" and "MCP server" and board-agent-guidance
@@ -99,11 +190,4 @@ agents install` wrote `.claude/skills/agentboard/SKILL.md` and the
   2) and "Checking installed guidance" with the main specs, keeping
   `remote`, `init --remote | --into-host` and the scope disposition
   flags, and takes the next free `GUIDANCE_VERSION` and ADR number after
-  `add-claim-leases`.
-- `src/board/__tests__/into-host.test.ts` ("Migration refused with
-  unpushed commits") flaked once on the Node 26 CI job of PR #83: the
-  `.board` snapshot held 42 entries against 41 expected, most likely a
-  transient file (lock, journal or temp) caught by the snapshot helper;
-  it passed on rerun and on the other Node lines. Ticket
-  01M54J9C8VWG6V6E751JHHVW66 on this repository's board tracks making
-  the helper ignore transients or settling before the snapshot.
+  `add-claim-leases` (version 4, and ADR 0016 since 0015 is taken).

@@ -64,7 +64,8 @@ function lines(text: string): string[] {
 /** The form of an argument in help: `<id>`, `--closed`, `--to <to>`, `--as <actor>`. */
 function form(arg: ArgSpec, positional: boolean): string {
   if (positional) {
-    return `<${arg.name}>`;
+    // A positional with choices is written with them (config set <lease.grace|queue.window>).
+    return `<${arg.choices === undefined ? arg.name : arg.choices.join('|')}>`;
   }
   if (arg.type === 'boolean') {
     return `--${arg.name}`;
@@ -125,6 +126,8 @@ describe('the help data of record in the registry', () => {
         'show',
         'list',
         'claim',
+        'renew',
+        'unqueue',
         'release',
         'move',
         'comment',
@@ -137,7 +140,17 @@ describe('the help data of record in the registry', () => {
       awareness: ['inbox', 'watch', 'serve', 'top', 'health'],
       planning: ['import-change', 'close-merged'],
       maintenance: ['rebuild', 'sync'],
-      setup: ['init', 'remote', 'mcp', 'agents install', 'agents check', 'version', 'help'],
+      setup: [
+        'init',
+        'remote',
+        'config set',
+        'config get',
+        'mcp',
+        'agents install',
+        'agents check',
+        'version',
+        'help',
+      ],
     });
     expect(COMMAND_GROUPS).toEqual(['lifecycle', 'awareness', 'planning', 'maintenance', 'setup']);
     expect(GROUP_TITLES).toEqual({
@@ -390,7 +403,21 @@ describe('synopsis', () => {
       'move',
       'agentboard move <id> [<status>] [--allow-secret-like] [--task <task> | --change <change> --group <group> | --unplanned <unplanned>] --as <actor> [--json]',
     ],
-    ['claim', 'agentboard claim <id> --as <actor> [--json]'],
+    [
+      'claim',
+      'agentboard claim <id> [--ttl <ttl>] [--wait --timeout <timeout>] --as <actor> [--json]',
+    ],
+    ['renew', 'agentboard renew <id> [--ttl <ttl>] --as <actor> [--json]'],
+    ['unqueue', 'agentboard unqueue <id> --as <actor> [--json]'],
+    [
+      'release',
+      'agentboard release <id> [--allow-secret-like] [--force --reason <reason>] --as <actor> [--json]',
+    ],
+    [
+      'config set',
+      'agentboard config set <lease.grace|queue.window> <value> --as <actor> [--json]',
+    ],
+    ['config get', 'agentboard config get [<lease.grace|queue.window>] [--json]'],
     ['checklist tick', 'agentboard checklist tick <id> <index> --as <actor> [--json]'],
     ['inbox', 'agentboard inbox [--since <since>] [--peek] --as <actor> [--json]'],
     ['show', 'agentboard show <id> [--raw] [--json]'],
@@ -410,7 +437,9 @@ describe('synopsis', () => {
     expect(text.startsWith(`agentboard ${name}`)).toBe(true);
     expect(text.endsWith(' [--json]')).toBe(true);
     for (const p of c.positionals) {
-      expect(text).toContain(p.required ? ` <${p.name}>` : ` [<${p.name}>]`);
+      // A positional with choices is written with them (config set <lease.grace|queue.window>).
+      const form = p.choices === undefined ? p.name : p.choices.join('|');
+      expect(text).toContain(p.required ? ` <${form}>` : ` [<${form}>]`);
     }
     for (const f of c.flags.filter((x) => x.required)) {
       expect(text).toContain(`--${f.name} <${f.name}>`);
@@ -537,7 +566,11 @@ describe('renderCommandHelp', () => {
       const c = command(name);
       const text = help(c);
       const usage = text.split('\n')[0] ?? '';
-      for (const flag of ['--task <task>', '--change <change> --group <group>', '--unplanned <unplanned>']) {
+      for (const flag of [
+        '--task <task>',
+        '--change <change> --group <group>',
+        '--unplanned <unplanned>',
+      ]) {
         expect(usage, flag).toContain(flag);
       }
       expect(text).toMatch(/^ {2}4 needs-scope-disposition {2,}\S/m);
@@ -574,7 +607,9 @@ describe('renderCommandHelp', () => {
     const adhoc = c.flags.find((f) => f.name === 'adhoc');
     expect(adhoc).toBeDefined();
     // The --adhoc flag: the ticket is worked like any other.
-    expect(adhoc?.summary ?? '').toMatch(/\b(?:worked|work)\b[^.]*\b(?:normally|like any other)\b/i);
+    expect(adhoc?.summary ?? '').toMatch(
+      /\b(?:worked|work)\b[^.]*\b(?:normally|like any other)\b/i,
+    );
     // The description: the disposition is given when it is merged or closed.
     expect(c.description).toMatch(/ad hoc/i);
     expect(c.description).toContain('--unplanned');
@@ -639,7 +674,7 @@ describe('renderCommandHelp', () => {
 
   it("scenario: claim's help has --as, exit 4 already-assigned and an example", () => {
     const text = help(command('claim'));
-    expect(text).toMatch(/^Usage: agentboard claim <id> --as <actor>/);
+    expect(text).toMatch(/^Usage: agentboard claim <id> .*--as <actor>/);
     expect(text).toMatch(/^ {2}--as <actor> /m);
     expect(text).toMatch(/^ {2}4 already-assigned {2,}\S/m);
     expect(text).toMatch(/^ {2}agentboard claim \S+ --as \S+$/m);
@@ -815,7 +850,7 @@ describe('helpOutput', () => {
 
   it('refuses an unknown topic with a suggestion and a pointer to agentboard help', () => {
     const err = expectBoardError(() => helpOutput(HELP_SOURCE, ['clam']), 1, 'usage');
-    expect(err.message).toContain('clam');
+    expect(err.message).not.toContain('clam');
     expect(err.message).toContain('did you mean claim?');
     expect(err.message).toContain("'agentboard help'");
   });
@@ -826,21 +861,32 @@ describe('helpOutput', () => {
     expect(err.message).toContain("'agentboard help'");
   });
 
-  it('refuses a group word alone, suggesting its commands', () => {
-    const err = expectBoardError(() => helpOutput(HELP_SOURCE, ['checklist']), 1, 'usage');
-    expect(err.message).toContain('checklist tick or checklist untick');
+  it('prints the help of every command of a group word, in registry order (help config)', () => {
+    // add-claim-leases: board-cli scenario "Renew, unqueue and config have help".
+    const checklist = helpOutput(HELP_SOURCE, ['checklist']);
+    expect(checklist.text).toBe(
+      `${help(command('checklist tick'))}\n${help(command('checklist untick'))}`,
+    );
+    expect(checklist.json).toEqual([
+      commandHelpDocument(HELP_SOURCE, command('checklist tick')),
+      commandHelpDocument(HELP_SOURCE, command('checklist untick')),
+    ]);
+    const config = helpOutput(HELP_SOURCE, ['config']);
+    expect(config.text).toBe(`${help(command('config set'))}\n${help(command('config get'))}`);
   });
 
   it('refuses a subtopic after a one-word command, pointing to its help', () => {
     const err = expectBoardError(() => helpOutput(HELP_SOURCE, ['claim', 'extra']), 1, 'usage');
-    expect(err.message).toBe("claim has no help subtopic extra; run 'agentboard help claim'");
+    expect(err.message).toBe(
+      "claim has no help subtopic of that name; run 'agentboard help claim'",
+    );
     const odd = expectBoardError(
       () => helpOutput(HELP_SOURCE, ['version', `x${String.fromCharCode(0xe4)}`]),
       1,
       'usage',
     );
-    expect(odd.message).toMatch(
-      /^version has no help subtopic \S+; run 'agentboard help version'$/,
+    expect(odd.message).toBe(
+      "version has no help subtopic of that name; run 'agentboard help version'",
     );
     expect(odd.message).toMatch(/^[\x20-\x7e]+$/);
   });
@@ -848,7 +894,7 @@ describe('helpOutput', () => {
   it('keeps the suggestion message for an unknown two-word topic', () => {
     const err = expectBoardError(() => helpOutput(HELP_SOURCE, ['checklist', 'tik']), 1, 'usage');
     expect(err.message).toBe(
-      "unknown command checklist tik; did you mean checklist tick or checklist untick? run 'agentboard help' to list the commands",
+      "unknown command; did you mean checklist tick or checklist untick? run 'agentboard help' to list the commands",
     );
   });
 

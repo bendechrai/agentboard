@@ -200,7 +200,7 @@ describe('selection', () => {
       1,
       'usage',
     );
-    expect(err.message).toContain('cursor');
+    expect(err.message).not.toContain('cursor');
     for (const target of GUIDANCE_TARGETS) {
       expect(err.message).toContain(target);
     }
@@ -349,8 +349,11 @@ describe('installed guidance covers ad hoc tickets (add-adhoc-ticket-lifecycle t
     const result = install(root, { targets: ['claude', 'agents-md'] });
     expect(result.refused).toBe(0);
     expect(result.version).toBe(V);
-    // One higher than before this change, which shipped version 1.
-    expect(V).toBe(2);
+    // The ad hoc rule ships from guidance version 2 on (the change that
+    // added it raised the version from 1 to 2; add-claim-leases raised it
+    // again to 3), so the running version is at least 2 and an
+    // installation from version 1, before the rule, is stale.
+    expect(V).toBeGreaterThanOrEqual(2);
     const skill = readRel(root, SKILL);
     const agents = readRel(root, AGENTS);
     for (const [name, text] of [
@@ -370,6 +373,14 @@ describe('installed guidance covers ad hoc tickets (add-adhoc-ticket-lifecycle t
     expect(checkGuidance({ cwd: root, env: ENV }).map((e) => [e.target, e.state])).toEqual([
       ['claude', 'current'],
       ['agents-md', 'current'],
+    ]);
+    const old = plainProject();
+    install(old, { targets: ['claude', 'agents-md'], version: 1 });
+    expect(
+      checkGuidance({ cwd: old, env: ENV }).map((e) => [e.target, e.state, e.installedVersion]),
+    ).toEqual([
+      ['claude', 'stale', 1],
+      ['agents-md', 'stale', 1],
     ]);
   });
 

@@ -1,0 +1,1 @@
+{"actor":"merger-1","body":{"lease":{"expiresAt":1793016090000,"grace":120000,"ttl":1800000}},"kind":"ticket.claim","ticket":"01MB0000000000000000000002","ts":{"actor":"merger-1","counter":0,"wall":1793015970000},"v":1}

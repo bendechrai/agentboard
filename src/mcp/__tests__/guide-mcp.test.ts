@@ -134,6 +134,18 @@ function expectInstructions(instructions: string | undefined): void {
   ]) {
     expect(text, fragment).toContain(fragment);
   }
+  // The mutex worker rule (add-claim-leases task 6.1; board-agent-guidance
+  // "Mutex ticket recipe", scenario "MCP instructions carry the worker
+  // rule"), read with line breaks as spaces.
+  const flat = text.replace(/\s+/g, ' ').toLowerCase();
+  for (const fragment of [
+    'never wait on a mutex',
+    'in a loop',
+    'background process',
+    'only joins the queue',
+  ]) {
+    expect(flat, fragment).toContain(fragment);
+  }
   for (const line of commandLines(text)) {
     expect(() => parseLine(line), line).not.toThrow();
   }

@@ -426,7 +426,7 @@ describe('a remote that holds a branch without events/ is not a board', () => {
     return remote;
   }
 
-  it('exits 1 not-a-board naming the URL and leaves no .board, no temporary directory and no host .gitignore entry', () => {
+  it('exits 1 not-a-board naming the repository given (not its URL) and leaves no .board, no temporary directory and no host .gitignore entry', () => {
     const env = syncEnv();
     const remote = notABoardRemote();
     const root = gitRepo(join(tempDir(), 'proj'));
@@ -438,7 +438,9 @@ describe('a remote that holds a branch without events/ is not a board', () => {
       'not-a-board',
     );
 
-    expect(err.message).toContain(remote);
+    // no-echo-refusals: the repository is named as given with --remote, not by its URL.
+    expect(err.message).toContain('the repository given with --remote');
+    expect(err.message).not.toContain(remote);
     expect(err.message).toMatch(/events/);
     expect(existsSync(join(root, '.board'))).toBe(false);
     expect(readdirSync(root).sort()).toEqual(before);
@@ -462,7 +464,8 @@ describe('scenario: Init with a non-local URL that does not exist', () => {
       'remote-unreachable',
     );
 
-    expect(err.message).toContain(url);
+    expect(err.message).toContain('the repository given with --remote');
+    expect(err.message).not.toContain(url);
     expect(err.message).toMatch(/create/);
     expect(err.message).toMatch(/access/);
     // The remote was asked (ls-remote through the shim), and it is the
@@ -487,8 +490,8 @@ describe('scenario: Init with a non-local URL that does not exist', () => {
       'remote-unreachable',
     );
 
-    expect(err.message).toContain(notRepo);
-    expect(err.message).toMatch(/fatal: /);
+    expect(err.message).not.toContain(notRepo);
+    expect(err.message).toContain("fatal: '<url>' does not appear to be a git repository");
     expect(existsSync(join(root, '.board'))).toBe(false);
     expect(readdirSync(root)).toEqual([]);
     // The directory was not turned into a repository.
@@ -606,7 +609,7 @@ describe('an existing standalone board that already has a remote', () => {
     expect(revParse(bare, 'main')).toBe(remoteTip);
   });
 
-  it('with another URL exits 1 remote-mismatch naming both URLs and remote set-url, changing nothing', () => {
+  it('with another URL exits 1 remote-mismatch naming the remote\'s URL, not the one given, and remote set-url, changing nothing', () => {
     const env = syncEnv();
     const root = plainProject();
     const dir = standaloneBoard(root);
@@ -622,8 +625,9 @@ describe('an existing standalone board that already has a remote', () => {
     );
 
     expect(err.message).toContain(existing);
-    expect(err.message).toContain(other);
-    expect(err.message).toContain('remote set-url');
+    expect(err.message).not.toContain(other);
+    expect(err.message).toContain('the URL given');
+    expect(err.message).toContain('remote set-url origin <url>');
     expect(originOf(dir)).toBe(existing);
     expect(snapshotDir(dir)).toEqual(before);
     expect(branchesOf(existing)).toEqual([]);
@@ -872,7 +876,11 @@ describe('scenario: Remote URL that is an option (review R1)', () => {
       const err = expectBoardError(() => initBoardWithRemote(url, { cwd: root, env }), 1, 'usage');
 
       expect(err.message).toContain('--remote');
-      expect(err.message).toContain(url);
+      // no-echo-refusals: the value is described, not repeated.
+      expect(err.message).toMatch(/: the value starts with -, which git would read as an option$/);
+      if (url.length > 2) {
+        expect(err.message).not.toContain(url);
+      }
       // No git command received the value, so no command could run it or
       // reach the host's origin; the shims prove both. (A one or two
       // character value is matched as a whole word: `-` is in every `-c`.)
@@ -1115,7 +1123,8 @@ describe('file:// URLs with a host part (review S1)', () => {
 
       const err = expectBoardError(() => initBoardWithRemote(url, { cwd: root, env }), 1, 'usage');
 
-      expect(err.message).toContain(url);
+      expect(err.message).not.toContain(url);
+      expect(err.message).toMatch(/the value is a file:\/\/ URL naming a host other than localhost/);
       expect(readdirSync(root)).toEqual([]);
     },
   );
@@ -1193,7 +1202,9 @@ describe('clone failures after ls-remote succeeded (review S3)', () => {
       'remote-unreachable',
     );
 
-    expect(err.message).toContain(url);
+    expect(err.message).toContain('the repository given with --remote could not be cloned');
+    expect(err.message).not.toContain(url);
+    expect(err.message).not.toContain(bare);
     expect(err.message).toMatch(/fatal: |error: /);
     expect(existsSync(join(root, '.board'))).toBe(false);
     expect(readdirSync(root).sort()).toEqual(['.git']);
@@ -1215,7 +1226,8 @@ describe('clone failures after ls-remote succeeded (review S3)', () => {
       'not-a-board',
     );
 
-    expect(err.message).toContain(bare);
+    expect(err.message).toContain('the repository given with --remote');
+    expect(err.message).not.toContain(bare);
     expect(err.message).toMatch(/master/);
     expect(existsSync(join(root, '.board'))).toBe(false);
     expect(readdirSync(root).sort()).toEqual(['.git']);

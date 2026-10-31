@@ -1,14 +1,28 @@
 // @vitest-environment happy-dom
 /**
- * Board text is never markup (board-web: "Board text is never markup", scenario
- * "Title with markup"): a title, comment, note, label and actor holding HTML
- * are shown literally in every view, and no element is created from them.
+ * Board text is never markup (board-web: "Board text is never markup",
+ * scenarios "Title with markup", "Description with raw HTML" and
+ * "Description with a script block"): a title, comment, note, label and
+ * actor holding HTML are shown literally in every view, a description's raw
+ * HTML is shown literally inside its rendered Markdown, and no element is
+ * created from any of them.
  */
 
 import { cleanup, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { E, FakeApi, FakeClock, T1, TASK, model, renderApp, setHash } from './client-helpers.js';
+import {
+  E,
+  FakeApi,
+  FakeClock,
+  T1,
+  T2,
+  T3,
+  TASK,
+  model,
+  renderApp,
+  setHash,
+} from './client-helpers.js';
 
 const TITLE = '<img src=x onerror=alert(1)>';
 const COMMENT = '<script>alert(2)</script><b>bold</b>';
@@ -92,6 +106,49 @@ describe('board text is rendered as text', () => {
       ACTOR,
     );
     expect(document.body.textContent).toContain(TITLE);
+    expectNoInjectedElements();
+  });
+});
+
+describe('description markup is rendered as text', () => {
+  const RAW = 'Before <img src=x onerror=alert(1)> after';
+  const SCRIPT = '<script>alert(1)</script>';
+
+  function described(): ReturnType<typeof E.create>[] {
+    return [
+      E.create(T2, { title: 'Raw HTML', description: RAW }, { actor: 'orch', wall: WALL }),
+      E.create(T3, { title: 'Script', description: SCRIPT }, { actor: 'orch', wall: WALL + 1 }),
+    ];
+  }
+
+  async function openDescribed(id: string): Promise<Element> {
+    setHash(`#/ticket/${id}`);
+    renderApp(new FakeApi(model(described())), new FakeClock(WALL + 60_000));
+    await waitFor(() => {
+      expect(document.querySelector('article.ticket section.description')).not.toBeNull();
+    });
+    const section = document.querySelector('article.ticket section.description');
+    if (section === null) {
+      throw new Error('no description section');
+    }
+    return section;
+  }
+
+  it('shows raw HTML in a description literally between its words (scenario "Description with raw HTML")', async () => {
+    const section = await openDescribed(T2);
+    const paragraphs = [...section.querySelectorAll('p')].map((p) => p.textContent);
+    expect(paragraphs).toEqual([RAW]);
+    expect(document.querySelector('img')).toBeNull();
+    expectNoInjectedElements();
+  });
+
+  it('shows a script block in a description literally (scenario "Description with a script block")', async () => {
+    const before = document.querySelectorAll('script').length;
+    const section = await openDescribed(T3);
+    expect(section.textContent).toContain(SCRIPT);
+    expect([...section.querySelectorAll('p')].map((p) => p.textContent)).toEqual([SCRIPT]);
+    expect(document.querySelectorAll('script')).toHaveLength(before);
+    expect(section.querySelector('script')).toBeNull();
     expectNoInjectedElements();
   });
 });
