@@ -354,6 +354,7 @@ describe('the remote registry entry', () => {
     expect(spec?.exitCodes.map((e) => [e.code, e.reason ?? null])).toEqual([
       [0, null],
       [1, 'usage'],
+      [1, 'invalid-actor'],
       [2, 'board-not-found'],
     ]);
   });

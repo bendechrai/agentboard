@@ -221,6 +221,8 @@ describe('the help data of record in the registry', () => {
     expect(command('mcp').exitCodes.map((e) => [e.code, e.reason ?? null])).toEqual([
       [0, null],
       [1, 'usage'],
+      // Every command checks a given --as (actor-secret-check).
+      [1, 'invalid-actor'],
       [2, 'board-not-found'],
     ]);
   });
@@ -298,8 +300,18 @@ describe('the help data of record in the registry', () => {
     has('inbox', 1, 'unknown-cursor');
     has('close-merged', 1, 'gh-missing');
     has('import-change', 1, 'tasks-not-found');
-    expect(command('help').exitCodes.map((e) => e.code)).toEqual([0, 1]);
-    expect(command('version').exitCodes.map((e) => e.code)).toEqual([0, 1]);
+    // Every command checks a given --as, so help and version list
+    // invalid-actor too (actor-secret-check).
+    for (const name of ['help', 'version']) {
+      expect(
+        command(name).exitCodes.map((e) => [e.code, e.reason ?? null]),
+        name,
+      ).toEqual([
+        [0, null],
+        [1, 'usage'],
+        [1, 'invalid-actor'],
+      ]);
+    }
   });
 });
 
