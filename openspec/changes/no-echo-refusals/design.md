@@ -506,6 +506,33 @@ covered where git prints it whole; only a short piece printed alone (a
 A test pins the host encoding per UTF-8 byte: `http://a@<token>\u00e9@proxy`
 is printed by git 2.53 as `<token>%C3%A9%40proxy`.
 
+## Review round 4
+
+Both reviewers approved with nits at ab8eaae; the orchestrator's final
+DECISION took these into the group:
+
+- Tests pin the `--json` `remote` of `init --into-host`'s `moved` and
+  `resumed` results with a host `agentboard.remote` that is a URL.
+- The split-piece rule is pinned at its edges: pieces of 6, 10 and 19
+  characters are used; `------`, `-.-.-.` and `:::::::` (no letter or
+  digit) are skipped; scheme names of 6 or more characters (`socks5h`,
+  `SOCKS5H`, `socks4a`, `socks5`, `git+ssh`, `ssh+git`) are skipped, and
+  so is a scheme name followed by `:` (`https:`, `socks5h:`), which would
+  otherwise turn another URL's `https://` into `<redacted>//`. A configured
+  `https://a@https:@host` with another credentialed URL in the line is the
+  case only the catch-all-first order passes. The length check counts the
+  raw piece's characters, so `\u00e99q7x` (5) is skipped although git
+  prints it as the 10 characters `%C3%A99q7x`: inside the accepted
+  residual. A percent-decoded piece that is short, and an ordinary word of
+  6 or more characters used as a piece, stay accepted (nothing leaks).
+- The `init --remote` mismatch message names the setting that chose the
+  remote: `branch.<b>.remote` when the upstream chose it, else
+  `agentboard.remote`.
+- The source scan's dead `PENDING_GROUP_2` constant and filter are gone;
+  the branch name `cloneBoard` names is server-supplied (read from the
+  remote), and `rebaseOnto`'s `what` names the remote only through
+  `withoutUserinfo`.
+
 ## Out of scope
 
 - The actor. `--as`, `AGENTBOARD_ACTOR` and the `as` tool argument are

@@ -169,7 +169,8 @@ The generic `<scheme>://<userinfo>@` redaction SHALL run before these
 pieces are redacted, and a piece SHALL NOT be used when it is shorter
 than 6 characters, holds no letter or digit, or is a URL scheme name
 (`http`, `https`, `ftp`, `ftps`, `git`, `ssh`, `file`, `git+ssh`,
-`ssh+git`, `socks4`, `socks4a`, `socks5`, `socks5h`, in any case), so no
+`ssh+git`, `socks4`, `socks4a`, `socks5`, `socks5h`, in any case), alone
+or followed by `:`, so no
 piece can remove a `scheme://` marker the generic step needs or mangle an
 ordinary word. (The user information as a whole is still redacted at any
 length.) The whole message that quotes the line SHALL be
@@ -225,6 +226,10 @@ from the path in a form no URL rule recognises; that is a known limit.
 #### Scenario: Split pieces neither unmask nor mangle
 - **WHEN** a configured URL is `https://a@http@<host>/x.git` (or `https://a@:@...`, or holds one-letter pieces) and a git line quotes another URL with a token as its user name, or names `refs/agentboard/board` or a host
 - **THEN** the other URL is written `http://<redacted>@...`, and the board ref and the host are printed unchanged
+
+#### Scenario: Remote mismatch names the setting that chose the remote
+- **WHEN** a standalone board's `branch.main.remote` (with `branch.main.merge`) is a URL with credentials, no such remote exists, and `agentboard init --remote <another url>` runs
+- **THEN** it exits 1 with reason `remote-mismatch`, the message says `(git config branch.main.remote)` and `git -C <dir> config --unset branch.main.remote`, names the URL without its credentials, and the secret appears in no output
 
 #### Scenario: Multi-byte character in a proxy's user information
 - **WHEN** `http_proxy` is `http://a@<token>\u00e9@<proxy>` and git 2.53 prints the host `<token, encoded>%C3%A9%40<proxy>`
@@ -364,8 +369,11 @@ comparison SHALL use the raw `remote.<name>.url` as well as the URL
 `git remote get-url` prints, so a URL rewritten by `url.<base>.insteadOf`
 is not reported as `remote-mismatch`; a matching URL SHALL run no `sync`.
 The `remote-mismatch` message SHALL name `git -C .board remote set-url`
-only when the remote exists; when `agentboard.remote` names a remote the
-board repository does not have, it SHALL name `agentboard.remote` instead.
+only when the remote exists; when the chosen remote is one the board
+repository does not have, it SHALL name the setting that chose it instead
+(`agentboard.remote`, or `branch.<b>.remote` when the upstream of the
+board's branch `<b>` chose it), both in the sentence and in the suggested
+`git config --unset` step.
 
 No refusal of `init --remote` (`usage`, `remote-unreachable`,
 `not-a-board`, `remote-mismatch`) SHALL repeat the value given to

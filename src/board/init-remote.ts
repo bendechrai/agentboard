@@ -372,10 +372,13 @@ export function sanitizeGitLine(line: string, given: string, passed: string = gi
  *   the URL given; keep it, or change it with git -C <dir> remote set-url
  *   <name> <url>; nothing changed`
  * - `the board at <dir> is configured to sync with the remote <name> (git
- *   config agentboard.remote), which the board repository does not have,
- *   so the URL given was not added; unset it with git -C <dir> config
- *   --unset agentboard.remote, or add that remote with git -C <dir> remote
- *   add <name> <url>; nothing changed`
+ *   config <key>), which the board repository does not have, so the URL
+ *   given was not added; unset it with git -C <dir> config --unset <key>,
+ *   or add that remote with git -C <dir> remote add <name> <url>; nothing
+ *   changed`, where `<key>` is the setting that chose the remote:
+ *   `agentboard.remote` (rule `agentboard.remote`) or `branch.<b>.remote`
+ *   with `<b>` the board's branch (rule `upstream`), and `<name>` is shown
+ *   through `withoutUserinfo` (review round 4)
  *
  * In every case `model` is `standalone` and `repair` null. The board the
  * command leaves is one `agentboard remote` reports as `standalone` with
