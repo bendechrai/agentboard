@@ -63,10 +63,11 @@ or an extra positional, its position among the arguments after the
 program name (1-based), and the expected form or the valid choices.
 
 The one exception is a ticket id. A ticket id argument (a positional
-`<id>` or the tool argument `id`) whose text is 1 to 26 characters of
-Crockford base32, compared case-insensitively (`^[0-9A-HJKMNP-TV-Z]{1,26}$`
-after upper-casing: digits and the letters other than I, L, O and U), MAY
-be repeated in a refusal. An id of any other shape is not repeated
+`<id>` or the tool argument `id`) whose text could be a ULID or a prefix
+of one, 1 to 26 characters of Crockford base32 whose first character is
+0 to 7 (`^[0-7][0-9A-HJKMNP-TV-Z]{0,25}$`, ASCII letters compared without
+regard to case and no Unicode upper-casing: digits and the letters other
+than I, L, O and U), MAY be repeated in a refusal. An id of any other shape is not repeated
 anywhere, including the hints, which write the placeholder `<id>` for it
 as they do for an unknown id today.
 
@@ -86,10 +87,32 @@ GitHub (`ghp_`, `github_pat_`), Stripe (`sk_live_`) and Slack (`xoxb-`)
 tokens contain `_` or `-`; AWS key ids (`AKIA...`) contain `I`; base64
 and JWTs contain `+`, `/`, `.`, `=` or letters outside the alphabet in
 almost every value of useful length; hex secrets (MD5 32, SHA-1 40,
-SHA-256 64 characters) are longer than 26. What remains is a short
-secret that happens to use only those 32 characters (a lowercase hex
-string of at most 26 characters, or a short password without I, L, O
-or U). That residual risk is accepted for ids because of their value and
+SHA-256 64 characters) are longer than 26.
+
+Base32 secrets are the class the alphabet alone does not exclude (review
+round 1, finding F2): a TOTP seed (RFC 4648 base32, A to Z and 2 to 7,
+often 16 characters) is all Crockford base32 whenever it has no I, L, O
+or U, about 12 percent of 16-character seeds; a 128-bit secret in
+unpadded base32 is exactly 26 characters, about 3 percent of them
+id-shaped by the alphabet; and a token encoded in Crockford base32
+itself (ULID-like session ids and API keys) always is. So the shape also
+requires the first character to be 0 to 7, which every ULID has (its
+first character carries the top 3 bits of the 48-bit time, and every id
+created today starts with `01`) and which only about a quarter of random
+base32 or hex text has. The check is an ASCII-only, case-insensitive test
+of the pattern, with no Unicode upper-casing, so a character such as
+U+017F (upper-cases to `S`) or U+FB06 (to `ST`) never makes text
+id-shaped (finding F3).
+
+What remains is a secret that happens to start with 0 to 7 and use only
+those 32 characters: a short lowercase hex string (at most 26
+characters), a short password without I, L, O or U, about a quarter of
+16-character TOTP seeds without those letters, and a Crockford base32
+token of at most 26 characters that starts with 0 to 7 (a ULID-shaped
+token is indistinguishable from an id). Requiring `01`, which would cut
+the random case to about 1 in 1000, was not chosen because ids created
+after 2039 start with `02`, and the board's own ids must keep being
+named. That residual risk is accepted for ids because of their value and
 because an id that is not on the board is rarely a secret in practice.
 
 ### Why no exception for words
@@ -295,6 +318,18 @@ ticket 01M5YAB4P61Q911JF44AEKVQ30):
   every command, every fixture as the id). `src/board/init-remote.ts` is
   left out of the scan on the group 1 branch because group 2 rewrites its
   refusals; whichever group merges second adds it.
+- Review round 1 (orchestrator DECISION on the ticket): when argument
+  parsing fails, the actor a hint or message names comes from the parsed
+  values or `AGENTBOARD_ACTOR`, never from scanning the raw arguments for
+  `--as` (finding F1: in `close --unplanned --as <token>` the flag takes
+  `--as` as its value and the token is the `<id>`, which the hint used to
+  repeat as the actor); the id shape requires a first character of 0 to 7
+  and is tested without Unicode upper-casing (F2, F3; "Why the id
+  exception"); and configuration a refusal repeats, the `AGENTBOARD_DIR`
+  directory in `board-not-found` included, is escaped with `asciiText`
+  like other repeated text, so an ESC sequence in the variable never
+  reaches a terminal raw. The value itself stays out of scope ("Out of
+  scope": configuration).
 - Two echoes found by the scan or the review are out of scope here: the
   `port-in-use` refusal names the `--port` number, which passed the
   integer and range checks and cannot hold a token, and is allowed; and an
