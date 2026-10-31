@@ -304,11 +304,11 @@ function splitUserinfo(url: string): { scheme: string; userinfo: string; rest: s
 
 /**
  * The pieces of the user information of `url` that a client may print on
- * their own, which `splitUserinfo` does not give: with more than one raw
- * `@` before the first `/`, the text between the first and the last `@`
- * (as given and as git encodes a host: every byte other than an ASCII
- * letter, digit, `-` or `.` as upper-case `%XX`); with a raw `#` or `?`
- * before the last `@`, the text before it. Empty for any other URL.
+ * their own, which `splitUserinfo` does not give, raw: with more than one
+ * raw `@` before the first `/`, the text between the first and the last
+ * `@` (the caller also redacts it as git encodes a host, `hostEncoded`,
+ * once the raw piece passes `usablePiece`); with a raw `#` or `?` before
+ * the last `@`, the text before it. Empty for any other URL.
  */
 function splitPieces(url: string): string[] {
   const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(url);
@@ -326,8 +326,7 @@ function splitPieces(url: string): string[] {
   const pieces: string[] = [];
   const first = userinfo.indexOf('@');
   if (first !== -1) {
-    const between = userinfo.slice(first + 1);
-    pieces.push(between, hostEncoded(between));
+    pieces.push(userinfo.slice(first + 1));
   }
   const mark = userinfo.search(/[#?]/);
   if (mark !== -1) {
@@ -413,6 +412,7 @@ export function sanitizeRemoteLine(line: string, urls: readonly string[]): strin
     for (const piece of splitPieces(url)) {
       if (usablePiece(piece)) {
         redact(piece);
+        redact(hostEncoded(piece));
       }
     }
   }
@@ -451,12 +451,18 @@ const SCHEME_NAMES: readonly string[] = [
   'socks5h',
 ];
 
-/** Whether a split piece is long enough, holds a letter or digit, and is no scheme name. */
+/**
+ * Whether a raw split piece is long enough, holds a letter or digit, and
+ * is no scheme name, alone or followed by `:` (`https:` would turn another
+ * URL's `https://` into `<redacted>//`). The rule reads the raw piece, so
+ * its host-encoded form (`git%2Bssh`, `%3A%3A%3A%3A%3A%3A`) is never
+ * redacted either: percent-decoding it would give the skipped piece back.
+ */
 function usablePiece(piece: string): boolean {
   return (
     piece.length >= MIN_PIECE_LENGTH &&
     /[A-Za-z0-9]/.test(piece) &&
-    !SCHEME_NAMES.includes(piece.toLowerCase())
+    !SCHEME_NAMES.includes(piece.toLowerCase().replace(/:$/, ''))
   );
 }
 

@@ -593,15 +593,21 @@ function existingBoard(dir: string, remoteUrl: string, env: Env): InitRemoteResu
     };
   }
   if (chosen.url === null) {
-    // `agentboard.remote` names a remote the repository does not have:
-    // `remote set-url` would fail, so the configuration is what to fix.
+    // The setting names a remote the repository does not have (a remote
+    // named by URL, or a stale name): `remote set-url` would fail, so the
+    // setting that chose it is what to fix: `agentboard.remote`, or the
+    // upstream of the board's branch.
+    const key =
+      chosen.rule === 'upstream' && choice.branch !== null
+        ? `branch.${asciiText(choice.branch)}.remote`
+        : 'agentboard.remote';
     throw new BoardError(
       1,
       'remote-mismatch',
       `the board at ${dir} is configured to sync with the remote ${asciiText(withoutUserinfo(chosen.name))} ` +
-        `(git config agentboard.remote), which the board repository does not have, so ` +
+        `(git config ${key}), which the board repository does not have, so ` +
         `the URL given was not added; unset it with git -C ${dir} config --unset ` +
-        `agentboard.remote, or add that remote with git -C ${dir} remote add ` +
+        `${key}, or add that remote with git -C ${dir} remote add ` +
         `${asciiText(withoutUserinfo(chosen.name))} <url>; nothing changed`,
     );
   }

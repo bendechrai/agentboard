@@ -191,6 +191,11 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
       why: 'server-supplied: a branch name read from the remote (not the value given; accepted as board data)',
     },
     { fn: 'existingBoard', value: 'BOARD_REF', why: REGISTRY },
+    {
+      fn: 'existingBoard',
+      value: 'key',
+      why: 'configuration: the key that chose the remote, agentboard.remote or branch.<b>.remote with the board branch, escaped',
+    },
     { fn: 'existingBoard', value: 'dir', why: CONFIG },
     { fn: 'existingBoard', value: 'asciiText(chosen.name)', why: 'configuration: the name of an existing remote (git refuses a URL as a remote name)' },
     { fn: 'existingBoard', value: 'asciiText(withoutUserinfo(chosen.name))', why: REMOTE_SHOWN },
