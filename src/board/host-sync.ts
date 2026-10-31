@@ -28,6 +28,7 @@ import {
   isGitFailure,
   meetsGitFloor,
   type GitRunner,
+  withoutUserinfo,
 } from './git.js';
 import { BOARD_REF, type BoardModelInfo } from './model.js';
 import { ambiguousRemoteError, boardRemote } from './remote.js';
@@ -324,11 +325,14 @@ export function syncHostBoard(
   if (remote === null) {
     lines.push(`no remote configured; the board at ${dir} was not fetched or pushed`);
   } else {
+    // A remote named by URL is shown without its user information; git
+    // was given the name as it is.
+    const shown = withoutUserinfo(remote);
     lines.push(
       pulled
-        ? `fetched ${BOARD_REF} from ${remote}: ${plural(arrived.length, 'event')} arrived`
-        : `${remote} has no ${BOARD_REF} yet; nothing to fetch`,
-      `pushed ${BOARD_REF} to ${remote}`,
+        ? `fetched ${BOARD_REF} from ${shown}: ${plural(arrived.length, 'event')} arrived`
+        : `${shown} has no ${BOARD_REF} yet; nothing to fetch`,
+      `pushed ${BOARD_REF} to ${shown}`,
     );
   }
   return {
@@ -338,7 +342,7 @@ export function syncHostBoard(
     refCommit,
     commit: onHead,
     committedEvents,
-    remote,
+    remote: remote === null ? null : withoutUserinfo(remote),
     branch: null,
     pulled,
     pushed: remote !== null,

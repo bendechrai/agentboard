@@ -323,7 +323,7 @@ export function remoteReport(dir: string, options?: RemoteReportOptions): Remote
         ? 'the repository has no remote'
         : `the remotes are ${remoteNames(choice.remotes)}`;
     problems.push(
-      `${REMOTE_CONFIG_KEY} names ${asciiText(choice.chosen.name)}, which is not a remote of the repository ` +
+      `${REMOTE_CONFIG_KEY} names ${asciiText(withoutUserinfo(choice.chosen.name))}, which is not a remote of the repository ` +
         `(${existing}); set it to one of them with ${SET_REMOTE}`,
     );
   }
@@ -352,6 +352,9 @@ export function remoteReport(dir: string, options?: RemoteReportOptions): Remote
         ? null
         : {
             ...choice.chosen,
+            // The name too: `agentboard.remote` or the upstream may name
+            // the remote by URL.
+            name: withoutUserinfo(choice.chosen.name),
             url: choice.chosen.url === null ? null : withoutUserinfo(choice.chosen.url),
           },
     remotes: choice.remotes.map((remote) => ({ ...remote, url: withoutUserinfo(remote.url) })),

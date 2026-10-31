@@ -22,7 +22,13 @@
 import type { Board } from '../store/board.js';
 import { catchUp } from '../store/cache.js';
 import { BoardError } from '../store/errors.js';
-import { GIT_IDENTITY, gitRunner, isGitFailure, type GitRunner } from './git.js';
+import {
+  GIT_IDENTITY,
+  gitRunner,
+  isGitFailure,
+  withoutUserinfo,
+  type GitRunner,
+} from './git.js';
 import { syncHostBoard } from './host-sync.js';
 import { detectBoardModel, type BoardModelInfo } from './model.js';
 import { ambiguousRemoteError, chooseRemote } from './remote.js';
@@ -372,17 +378,20 @@ export function syncBoard(board: Board, options?: SyncOptions): SyncResult {
   // A rebase replays the local commit: report the commit on the branch now.
   const onBranch = commit === null ? null : git.run('rev-parse', 'HEAD').trim();
 
+  // A remote named by URL (`agentboard.remote`, `branch.<b>.remote`) is
+  // shown without its user information; git was given the name as it is.
+  const shown = withoutUserinfo(remote);
   lines.push(
     pulled
-      ? `pulled ${branch} from ${remote}: ${plural(arrived.length, 'event')} arrived`
-      : `${remote} has no branch ${branch} yet; nothing to pull`,
+      ? `pulled ${branch} from ${shown}: ${plural(arrived.length, 'event')} arrived`
+      : `${shown} has no branch ${branch} yet; nothing to pull`,
   );
-  lines.push(`pushed ${branch} to ${remote}${upstreamSet ? ' and set it as the upstream' : ''}`);
+  lines.push(`pushed ${branch} to ${shown}${upstreamSet ? ' and set it as the upstream' : ''}`);
   lines[0] = committedLine(onBranch);
   return {
     ...base,
     commit: onBranch,
-    remote,
+    remote: shown,
     pulled,
     pushed: true,
     upstreamSet,

@@ -10,6 +10,7 @@
  * Nothing here reads or writes event files or the cache.
  */
 
+import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -301,6 +302,51 @@ function splitUserinfo(url: string): { scheme: string; userinfo: string; rest: s
   return { scheme: scheme[0], userinfo: authority.slice(0, at), rest: after.slice(at + 1) };
 }
 
+/**
+ * The pieces of the user information of `url` that a client may print on
+ * their own, which `splitUserinfo` does not give: with more than one raw
+ * `@` before the first `/`, the text between the first and the last `@`
+ * (as given and as git encodes a host: every byte other than an ASCII
+ * letter, digit, `-` or `.` as upper-case `%XX`); with a raw `#` or `?`
+ * before the last `@`, the text before it. Empty for any other URL.
+ */
+function splitPieces(url: string): string[] {
+  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(url);
+  if (scheme === null) {
+    return [];
+  }
+  const after = url.slice(scheme[0].length);
+  const slash = after.indexOf('/');
+  const authority = slash === -1 ? after : after.slice(0, slash);
+  const last = authority.lastIndexOf('@');
+  if (last === -1) {
+    return [];
+  }
+  const userinfo = authority.slice(0, last);
+  const pieces: string[] = [];
+  const first = userinfo.indexOf('@');
+  if (first !== -1) {
+    const between = userinfo.slice(first + 1);
+    pieces.push(between, hostEncoded(between));
+  }
+  const mark = userinfo.search(/[#?]/);
+  if (mark !== -1) {
+    pieces.push(userinfo.slice(0, mark));
+  }
+  return pieces;
+}
+
+/** `text` as git writes a host it re-encodes: every UTF-8 byte other than an ASCII letter, digit, `-` or `.` as upper-case `%XX`. */
+function hostEncoded(text: string): string {
+  return [...Buffer.from(text, 'utf8')]
+    .map((byte) =>
+      /[A-Za-z0-9.-]/.test(String.fromCharCode(byte))
+        ? String.fromCharCode(byte)
+        : `%${byte.toString(16).toUpperCase().padStart(2, '0')}`,
+    )
+    .join('');
+}
+
 /** `text` percent-decoded when that succeeds and gives another text, else null. */
 function percentDecoded(text: string): string | null {
   try {
@@ -341,16 +387,27 @@ export function sanitizeRemoteLine(line: string, urls: readonly string[]): strin
       continue;
     }
     forms.add(url);
-    const split = splitUserinfo(url);
-    if (split !== null) {
-      forms.add(`${split.scheme}${split.rest}`);
-      if (split.userinfo !== '') {
-        userinfos.add(split.userinfo);
-        const decoded = percentDecoded(split.userinfo);
+    const redact = (text: string): void => {
+      if (text !== '') {
+        userinfos.add(text);
+        const decoded = percentDecoded(text);
         if (decoded !== null && decoded !== '') {
           userinfos.add(decoded);
         }
       }
+    };
+    const split = splitUserinfo(url);
+    if (split !== null) {
+      forms.add(`${split.scheme}${split.rest}`);
+      redact(split.userinfo);
+    }
+    // The user information as git and curl split a proxy URL (design.md
+    // "Review round 2"): git splits at the first `@` and prints what
+    // follows, up to the last `@`, encoded as a host; curl on git 2.32
+    // ends the authority at a raw `#` or `?` and prints the text before it
+    // as the proxy host.
+    for (const piece of splitPieces(url)) {
+      redact(piece);
     }
   }
   let out = line;
