@@ -13,7 +13,7 @@
  * time budget are in src/__tests__/hook-processes.test.ts.
  */
 
-import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -22,9 +22,10 @@ import { canonicalHash } from '../../events/canonical.js';
 import type { TicketGrantEvent } from '../../events/schema.js';
 import { dumpCache, openCache } from '../../store/cache.js';
 import { ev, eventNames, P, putEvent, T1, T2 } from '../../store/__tests__/helpers.js';
-import { cacheHashes, fixtureBoard } from '../../store/__tests__/v020-cache.js';
+import { V020_FIXTURES, cacheHashes, fixtureBoard } from '../../store/__tests__/v020-cache.js';
 import {
   AWS_KEY_ID,
+  CROCKFORD_26,
   GITHUB_TOKEN,
   HEX_40,
   HEX_64,
@@ -660,4 +661,61 @@ describe('fail open on internal errors', () => {
       expect(runHook(request).exitCode).toBe(0);
     }
   });
+});
+
+describe('no stderr line names the payload cwd or the actor', () => {
+  /**
+   * A project whose root directory is named by a token, so a line that
+   * repeated the payload's cwd would repeat the token, in one of the
+   * board states that make a hook print a line.
+   */
+  function tokenProject(state: 'no board' | 'no cache' | 'garbage cache' | 'older cache'): string {
+    const root = join(tempDir(), GITHUB_TOKEN);
+    mkdirSync(root);
+    if (state === 'no board') {
+      return root;
+    }
+    const boardDir = makeBoardDir(root);
+    if (state === 'older cache') {
+      cpSync(join(V020_FIXTURES, 'plain', 'events'), join(boardDir, 'events'), { recursive: true });
+      cpSync(join(V020_FIXTURES, 'plain', 'cache.sqlite'), join(boardDir, 'cache.sqlite'));
+      return root;
+    }
+    putEvent(join(boardDir, 'events'), ev(P.create(T1), 'orch', 1000));
+    putEvent(join(boardDir, 'events'), ev(P.claim(T1), CROCKFORD_26, 2000));
+    if (state === 'garbage cache') {
+      writeFileSync(join(boardDir, 'cache.sqlite'), 'not SQLite\n');
+    }
+    return root;
+  }
+
+  it.each(['no board', 'no cache', 'garbage cache', 'older cache'] as const)(
+    '%s: a token-shaped payload and actor appear on no stderr line',
+    (state) => {
+      const root = tokenProject(state);
+      const elsewhere = tempDir();
+      const payload = JSON.stringify({
+        session_id: HEX_64,
+        cwd: root,
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: join(root, HEX_64), content: HEX_64 },
+        stop_hook_active: false,
+      });
+      for (const argv of [
+        ['pre-tool-use', '--strict', '--as', CROCKFORD_26],
+        ['pre-tool-use', '--as', CROCKFORD_26],
+        ['stop', '--strict', '--as', CROCKFORD_26],
+        ['session-start', '--as', CROCKFORD_26],
+      ]) {
+        for (const env of [hookEnv(), hookEnv({ AGENTBOARD_ACTOR: CROCKFORD_26 })]) {
+          const out = hook(argv, elsewhere, { payload, env });
+          expect(out.exitCode, `${state} ${argv.join(' ')}`).toBe(0);
+          for (const word of [GITHUB_TOKEN, HEX_64, CROCKFORD_26, root]) {
+            expect(out.stderr, `${state} ${argv.join(' ')}`).not.toContain(word);
+          }
+        }
+      }
+    },
+  );
 });
