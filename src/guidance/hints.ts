@@ -61,7 +61,10 @@ export interface HintContext {
    * The actor, when known: on the CLI the `--as` value or else
    * `AGENTBOARD_ACTOR`; over MCP the call's `as`, else the server's
    * `--as`, else the server's `AGENTBOARD_ACTOR`. Undefined (or empty)
-   * when none is known.
+   * when none is known, and undefined when the name has not passed the
+   * actor check (`checkActorName`): callers fill it only with a name that
+   * passes, so no hint repeats a refused or unchecked name (board-cli
+   * "Actor names are checked").
    */
   readonly actor?: string;
   /**
@@ -142,6 +145,7 @@ export const HINT_REASONS: readonly string[] = [
   'holder-changed',
   'id-too-short',
   'integrity',
+  'invalid-actor',
   'invalid-queue',
   'invalid-transition',
   'malformed-event',
@@ -223,6 +227,7 @@ export const HINT_EXIT_CODES: Readonly<Record<string, Exclude<ExitCode, 0>>> = {
   'id-too-short': 1,
   integrity: 5,
   'invalid-queue': 4,
+  'invalid-actor': 1,
   'invalid-transition': 4,
   'malformed-event': 1,
   'malformed-task-ref': 1,
@@ -354,6 +359,18 @@ export function hintStep(
  *   `as argument` appear) or to start the server with
  *   `'agentboard mcp --as <actor>'` (that step, in its CLI form), and does
  *   not mention `AGENTBOARD_ACTOR`, which a tool caller cannot set.
+ * - `invalid-actor` (board-cli "Actor names are checked"): says to choose
+ *   a name of the actor form (the word `form` and the form itself appear),
+ *   one stable name per role, and how to pass it on the surface: CLI:
+ *   `--as <actor>` or `AGENTBOARD_ACTOR` (both literally), and for
+ *   `handoff` also `--to <actor>`; MCP: the `as argument` and the step
+ *   `'agentboard mcp --as <actor>'`, and for `handoff` also the `to
+ *   argument`, never `set AGENTBOARD_ACTOR`. Ends with step `help
+ *   <command>`. Always the placeholder `<actor>`, never A: the context's
+ *   actor is the refused name or has not been checked (actor-secret-check
+ *   design.md "No echo of an unchecked actor"), and the hint does not know
+ *   which name was refused, so it is the same for every context actor
+ *   and id.
  * - `malformed-event`: an agentboard bug; names step `version` to include in
  *   a report.
  * - `id-too-short`, `ambiguous-id`: give a longer unique prefix; step
@@ -687,6 +704,21 @@ function importDryRun(h: HintParts): string {
 const rebuildHint: HintTemplate = (h) =>
   `rebuild the cache from the events with ${h.step('rebuild')}`;
 
+/** The actor form, as the `invalid-actor` hint states it. */
+const ACTOR_FORM_TEXT =
+  'the actor form (1 to 32 ASCII letters, digits, . _ - or @, the first a letter or digit)';
+
+/** The template of `invalid-actor` (always the placeholder `<actor>`, see `renderHint`). */
+const invalidActorHint: HintTemplate = (h) => {
+  const handoff = h.command?.name === 'handoff';
+  if (h.context.surface === 'mcp') {
+    const to = handoff ? ' and the new assignee in the to argument' : '';
+    return `choose a name of ${ACTOR_FORM_TEXT}, one stable name per role, and pass it in the as argument of each call${to}, or start the server with ${h.step('mcp', [['as', '<actor>']])}; see ${h.help()}`;
+  }
+  const to = handoff ? ' and the new assignee with --to <actor>' : '';
+  return `choose a name of ${ACTOR_FORM_TEXT}, one stable name per role, and pass it with --as <actor> or set AGENTBOARD_ACTOR${to}; see ${h.help()}`;
+};
+
 /** The template of `secret-like`. */
 const secretLikeHint: HintTemplate = (h) => {
   const text = 'remove the secret from the text (board events are synced and kept forever)';
@@ -819,6 +851,7 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     `give at least 6 characters of the ticket id; ${h.step('list')} shows the ids`,
   'ambiguous-id': (h) =>
     `give a longer id prefix that matches one ticket; ${h.step('list')} shows the ids`,
+  'invalid-actor': invalidActorHint,
   'secret-like': secretLikeHint,
   'malformed-task-ref': (h) =>
     `write the task as <source>:<ref>#<item> (for example openspec:add-login#2), or for OpenSpec --change <name> --group <n>; see ${h.help()}`,
@@ -1014,7 +1047,13 @@ const TEMPLATES: Readonly<Record<string, HintTemplate>> = {
     `a human must inspect the file named in the message; compare the cache with the events using ${h.step('rebuild', [['check', true]])}`,
   busy: (h) =>
     h.command?.name === 'claim'
-      ? `another process held the board cache too long; if you were waiting, you are still in the queue: leave it with ${h.step('unqueue', [['id', h.id], ['as', h.actor]])}, or run the command again`
+      ? `another process held the board cache too long; if you were waiting, you are still in the queue: leave it with ${h.step(
+          'unqueue',
+          [
+            ['id', h.id],
+            ['as', h.actor],
+          ],
+        )}, or run the command again`
       : 'another process held the board cache too long; run the command again',
   'no-cache': rebuildHint,
   'schema-mismatch': rebuildHint,
