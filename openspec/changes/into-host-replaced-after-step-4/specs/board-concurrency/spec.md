@@ -85,13 +85,19 @@ Immediately before the compare-and-swap that updates
 its temporary worktree the value the ref had before the first update of
 this board that is not yet published: the value the swap compares against
 (the zero object name when the ref does not exist), except when the move
-resumes from a dead temporary of this board whose HEAD equals the ref as
-the leftover pass found it and the ref still has that value at the swap.
-Then the ref already holds this board's unpublished commits, and the move
-SHALL carry that temporary's record forward instead (an adopted temporary
-keeps its own); when that temporary has no readable, well formed record,
-the move SHALL write none, so a later run with another board refuses
-rather than resets. Such a temporary of this board SHALL NOT be removed
+resumes from a dead temporary of this board without rebase or cherry-pick
+state whose HEAD is an ancestor of, or equal to, the ref as the leftover
+pass found it, and the ref still has that value at the swap. Then the ref
+already holds this board's unpublished commits, and the move SHALL carry
+that temporary's record forward instead (an adopted temporary keeps its
+own) when that temporary's HEAD equals the ref; when its HEAD is a strict
+ancestor of the ref (another writer added commits on top), or it has no
+readable, well formed record, the move SHALL write none, so a later run
+with another board refuses rather than resets or integrates. When several
+such temporaries exist, the first in the byte order of their names is the
+one whose record is carried. A record equal to its temporary's HEAD is
+taken as content the ref held independently of that move only because a
+resume never records a value that holds its own board's commits. Such a temporary of this board SHALL NOT be removed
 before the move that resumes from it has written its own record, so no
 run that stops between the leftover pass and that write (a kill, or a
 refusal that discards its fresh temporary) loses the evidence.
@@ -106,7 +112,7 @@ not it integrated something, by the tests that decide adoption. A live one
 move exit 3 with reason `sync-in-progress`, naming the temporary, before
 anything else of this rule, changing nothing: another move may be
 running, or the pid was reused, and either way its commits are not
-integrated. A dead one that is this board's is handled as before, and what
+integrated. A live one that is this board's is left alone. A dead one that is this board's is handled as before, and what
 it put into the ref is this board's history: a move killed after it updated
 the ref completes when run again with the same board. For a dead one that
 is not this board's: when the ref equals its HEAD and its record of the
@@ -116,7 +122,9 @@ of the repository's hash algorithm) with a compare-and-swap against that
 HEAD, say so in its output, judge the remaining temporaries against the
 new value, and remove and name the temporary as left by a move of another
 board, also when a kill between the reset and the removal leaves the
-removal to the next run; when the recorded value equals that HEAD the ref
+removal to the next run; every dead temporary of another board whose HEAD
+was in the ref when the run began is named the same way, also one whose
+update a reset made for another temporary undid; when the recorded value equals that HEAD the ref
 SHALL be left as it is, with no line saying it was set back, and the
 temporary removed and named the same way; otherwise (no such record, as
 from a version that did not write it, a recorded value that is not a
@@ -270,4 +278,12 @@ integrated as before.
 #### Scenario: Refusal after a reset in the same run
 - **WHEN** two moves of other boards updated the ref one after the other, the newer one recorded its value before, the older one recorded none, and `agentboard init --into-host` runs
 - **THEN** the ref is set back for the newer one and the move exits 3 with reason `sync-failed` for the older one, saying that the reset already made was kept rather than that nothing was changed
+
+#### Scenario: Another writer on top of the unpublished update before the same board resumes
+- **WHEN** a move of board A is killed right after it updated the local `refs/agentboard/board`, another writer adds a commit on top of that update in the local ref, a run of A is killed right after its own update, `.board` is replaced by an unrelated board B, and `agentboard init --into-host` runs
+- **THEN** the resuming run recorded no value before its swap, and the run with B exits 3 with reason `sync-failed` saying that move left no record, naming the resuming run's temporary, and changes nothing; no event file of A is in `.board/events` or the host remote's `refs/agentboard/board`
+
+#### Scenario: Two temporaries of the same board undone by one reset
+- **WHEN** a run of board A that resumed from its leftover is killed right after its update, so two temporaries of A hold the ref, `.board` is replaced by an unrelated board B, and `agentboard init --into-host` runs
+- **THEN** the ref is deleted once, and both temporaries are named as left by a move of another board, neither as left by an interrupted move
 

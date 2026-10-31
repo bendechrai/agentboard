@@ -123,9 +123,15 @@ sequences D1, D2, D2b, D3, D5). So:
 
 - After the foreign updates are undone, the leftover pass reads the ref
   (`refAtLeftover`). When a dead temporary of this board without rebase
-  or cherry-pick state has its HEAD equal to that value, the record to
-  write at step 4 is that temporary's `agentboard-board-before` when well
-  formed, else none ("unknown").
+  or cherry-pick state has its HEAD an ancestor of, or equal to, that
+  value (the evidence; review round 2), the record to write at step 4 is
+  that temporary's `agentboard-board-before` when its HEAD equals the ref
+  and the record is well formed, else none ("unknown"). A strict ancestor
+  means another writer added commits on top of this board's unpublished
+  update; the value before the swap would then hold this board's commits,
+  and ruling 8 would integrate it silently (reviewer-ih4-2, N6). Of
+  several such temporaries the first in the byte order of their names is
+  the evidence (ruling 14).
 - At step 4, when such a temporary existed and `<old>` still equals
   `refAtLeftover`, the move writes the carried value instead of `<old>`
   (an adopted temporary therefore keeps its own record), or, for
@@ -323,6 +329,29 @@ tests pin them.
 12. **Hash algorithm (addendum).** The zero object name has the length of
     the board's object names (64 digits in a sha256 repository); a test
     pins it with sha256 repositories.
+
+13. **Naming of every undone temporary (review round 2).** Every dead
+    temporary of another board whose HEAD was in the ref when the run
+    began is named in the "left by a move of another board" line: the
+    one whose update was set back, one whose record equalled its HEAD,
+    one marked before a kill, and one whose update a reset made for
+    another temporary undid (the second temporary of A in sequences D1
+    and D5, which a kill between the resume's swap and the removal of the
+    evidence leaves). None of them is named as left by an interrupted
+    move.
+14. **Two evidence temporaries (review round 2).** A kill between the
+    resume's swap and the removal of the evidence leaves two dead
+    temporaries of this board whose HEAD is the ref. The first in the
+    byte order of their names (the order `findMigratingWorktrees`
+    returns) is the evidence, kept until the swap succeeds, and its record
+    is carried; the others are removed in the leftover pass as plain
+    leftovers (named as left by an interrupted move), the evidence holding
+    the record. By construction they all hold the same record, so the
+    choice does not change what is written; the test makes them differ
+    only to pin it.
+15. **Live temporary of this board (review round 2).** Left alone: not
+    refused, not removed, not named; the move goes on as if it were not
+    there.
 
 ## Alternatives considered
 
