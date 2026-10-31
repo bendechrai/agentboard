@@ -189,3 +189,36 @@ export function refusal(
   expect(doc.error.reason).toBe(reason);
   return doc.error;
 }
+
+/** The form of an actor name, in the words of the `--as` and `--to` help. */
+export const ACTOR_FORM_WORDS =
+  '1 to 32 ASCII letters, digits, . _ - or @, the first a letter or digit';
+
+/**
+ * Checks the hint of a web `invalid-actor` refusal of the hand-off's `to`
+ * (board-agent-guidance "Guide states the actor form", the web form;
+ * actor-secret-check group 2 test author ruling): one line with the
+ * placeholder `<actor>`, the word `form` and `ACTOR_FORM_WORDS`, the step
+ * `'agentboard serve --as <actor>'` and `the new assignee in the to
+ * argument`; never `AGENTBOARD_ACTOR` (the browser cannot set it), `--to`,
+ * `agentboard mcp` or `as argument` (a web body refuses `as`).
+ */
+export function expectWebActorHint(hint: string | null): void {
+  expect(hint).not.toBeNull();
+  const text = hint ?? '';
+  expect(text).not.toContain('\n');
+  expect(text).toContain('<actor>');
+  expect(text).toContain('form');
+  expect(text).toContain(ACTOR_FORM_WORDS);
+  expect(text).toContain("'agentboard serve --as <actor>'");
+  expect(text).toContain('the new assignee in the to argument');
+  expect(text).not.toContain('AGENTBOARD_ACTOR');
+  expect(text).not.toContain('--to');
+  expect(text).not.toContain('agentboard mcp');
+  expect(text).not.toContain('as argument');
+}
+
+/** Every response header of `result`, as text, for a no-echo check. */
+export function headerText(result: HttpResult): string {
+  return JSON.stringify(result.headers);
+}
