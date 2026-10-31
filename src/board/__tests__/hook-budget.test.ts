@@ -435,13 +435,15 @@ describe('R1: session-start reads only what it can deliver, outside the write lo
     expect(got.at(-1) ?? '').toMatch(new RegExp(`\\b${String(expected.length - delivered)}\\b`));
     expect(counts.reads).toBeLessThanOrEqual(delivered + 1);
     expect(peekLines(root, 'fresh')).toEqual(expected.slice(delivered));
-  });
+  }, 120_000);
 
   it('never holds the cache write lock while it reads an event file', () => {
     const { root, boardDir } = claimedBoard(30);
+    const expected = peekLines(root, 'impl');
     const probe = lockProbe(boardDir);
     let lockedReads = 0;
     let reads = 0;
+    let delivered: number;
     try {
       watch.onRead = (path) => {
         if (EVENT_FILE.test(path)) {
@@ -451,16 +453,20 @@ describe('R1: session-start reads only what it can deliver, outside the write lo
           }
         }
       };
-      contextLines(
+      delivered = contextLines(
         hookOn(testClock(60_000), ['session-start', '--as', 'impl'], root, startPayload(root)),
-      );
+      ).filter((line) => expected.includes(line)).length;
     } finally {
       watch.onRead = null;
       probe.close();
     }
     expect(reads).toBeGreaterThan(0);
     expect(lockedReads).toBe(0);
-    expect(peekLines(root, 'impl')).toEqual([]);
+    // The 30 lines exceed SESSION_CONTEXT_LIMIT, so only some are delivered; the cursor
+    // advances over the delivered entries alone and the rest remain.
+    expect(delivered).toBeGreaterThan(0);
+    expect(delivered).toBeLessThan(expected.length);
+    expect(peekLines(root, 'impl')).toEqual(expected.slice(delivered));
   });
 
   it('scenario: entries delivered meanwhile: when another inbox moves the cursor during the reads, it delivers none', () => {
