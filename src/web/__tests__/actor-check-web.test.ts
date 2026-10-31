@@ -26,6 +26,8 @@
  * - `serve` ignores `AGENTBOARD_ACTOR` and never repeats it.
  */
 
+import { createServer } from 'node:net';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -39,6 +41,7 @@ import {
 import { cliEnv, type RunEnv } from '../../cli/__tests__/cli-helpers.js';
 import { runCliAsync, type AsyncCliIo } from '../../cli/main.js';
 import { actionContext, runAction } from '../actions.js';
+import { startServer } from '../server.js';
 import {
   actionServer,
   eventFiles,
@@ -50,7 +53,7 @@ import {
   refusal,
   showTicket,
 } from './action-helpers.js';
-import { open, project, until, type HttpResult } from './web-helpers.js';
+import { freePort, open, project, until, type HttpResult } from './web-helpers.js';
 
 // Machines under load: the tables post and start servers many times.
 vi.setConfig({ testTimeout: 240_000, hookTimeout: 120_000 });
@@ -201,6 +204,89 @@ describe('scenario: Hand-off to a token from the browser', () => {
     const { root, boardDir } = project();
     const board = open(boardDir);
     expect(actionContext({ board, actor: 'ben', root, env: cliEnv() }).surface).toBe('mcp');
+  });
+});
+
+describe('to is checked before the status (review round 1)', () => {
+  it('a refused to with a status no hand-off takes, for a ticket that does not exist: invalid-actor naming the argument to', async () => {
+    const s = await writable();
+    const before = eventFiles(s.eventsDir);
+    for (const f of ACTORS_REFUSED) {
+      const result = await post(s.server, 'handoff', {
+        id: '01ZZZZZZZZZZZZZZZZZZZZZZZZ',
+        to: f.value,
+        status: 'nonsense',
+        note: 'n',
+      });
+      expectToRefusal(result, f, s.output());
+    }
+    expect(eventFiles(s.eventsDir)).toEqual(before);
+  });
+});
+
+/** Does nothing listen on 127.0.0.1:`port`? */
+async function portIsFree(port: number): Promise<boolean> {
+  const probe = createServer();
+  return new Promise((resolve) => {
+    probe.once('error', () => {
+      resolve(false);
+    });
+    probe.listen(port, '127.0.0.1', () => {
+      probe.close(() => {
+        resolve(true);
+      });
+    });
+  });
+}
+
+describe('startServer refuses a server actor that fails the check (review round 1)', () => {
+  it('a token or a name outside the form: BoardError(1, invalid-actor) naming --as, before listening, repeating nothing', async () => {
+    const { root, boardDir, eventsDir } = project();
+    const board = open(boardDir);
+    const before = eventFiles(eventsDir);
+    const cases = [
+      ACTORS_REFUSED.find((r) => r.value === GITHUB_TOKEN),
+      ACTORS_REFUSED.find((r) => r.name === 'space'),
+      ...ACTORS_REFUSED,
+    ] as RefusedActor[];
+    for (const f of cases) {
+      let output = '';
+      const port = await freePort();
+      let thrown: unknown = undefined;
+      try {
+        const server = await startServer(board, {
+          actor: f.value,
+          port,
+          root,
+          env: cliEnv(),
+          stderr: (text) => {
+            output += text;
+          },
+        });
+        await server.close();
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown, f.name).toBeInstanceOf(Error);
+      const error = thrown as { exitCode?: number; reason?: string; message: string };
+      expect(error.exitCode, f.name).toBe(1);
+      expect(error.reason, f.name).toBe('invalid-actor');
+      expect(error.message).toBe(actorMessage('--as', f));
+      expectNoLeak(f.name, [error.message, output], [f]);
+      expect(await portIsFree(port), f.name).toBe(true);
+    }
+    expect(eventFiles(eventsDir)).toEqual(before);
+  });
+
+  it('the empty actor keeps its usage refusal and an accepted name still starts', async () => {
+    const { root, boardDir } = project();
+    const board = open(boardDir);
+    await expect(startServer(board, { actor: '', root, env: cliEnv() })).rejects.toMatchObject({
+      exitCode: 1,
+      reason: 'usage',
+    });
+    const server = await startServer(board, { actor: 'reviewer-3-2', root, env: cliEnv() });
+    await server.close();
   });
 });
 
