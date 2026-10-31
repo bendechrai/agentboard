@@ -137,9 +137,10 @@ Each is judged by `belongsToBoard`, the adoption test, with the same
   `set refs/agentboard/board in the host repository back to its value
   before the interrupted move at <path>, which had updated it for another
   board and not published it` (`deleted refs/agentboard/board ... which
-  had created it ...` when the value was the zero object name), and the
-  temporary is removed and named by today's rules (as a plain leftover or
-  as left by a move of another board). The remaining candidates are then
+  had created it ...` when the value was the zero object name; exact
+  texts in "Test author rulings"), and the temporary is removed and named
+  as left by a move of another board, even when its HEAD is still
+  `refs/agentboard/migrating` (ruling 2). The remaining candidates are then
   judged against the new value of the ref, so a chain of such updates is
   undone in order or ends in the refusal below.
 - **Not this board's, otherwise** (no well formed record, as from 0.3.0
@@ -190,6 +191,64 @@ input, as the no-echo rule requires.
 This extends the leftover rule of `add-board-sharing` decision 9 as
 `guard-stale-temporary` did; it is recorded here and in the
 board-concurrency requirement.
+
+### Test author rulings
+
+Taken by the test author of group 1 (`test-author-ih4`) where the
+requirement, the scenarios and the text above leave a choice open; the
+tests pin them.
+
+1. **Output lines, exact.** The reset to a recorded commit adds the line
+   `set refs/agentboard/board in the host repository back to its value
+   before the interrupted move at <path>, which had updated it for
+   another board and not published it`; the reset to the zero object
+   name (the ref deleted) adds `deleted refs/agentboard/board in the host
+   repository, as before the interrupted move at <path>, which had
+   created it for another board and not published it`. Each is one line
+   of the message of the exit 0 move, in the text output and in the
+   `--json` document's `message`; its position among the other lines is
+   not pinned.
+2. **Naming.** A temporary whose update was set back is always named in
+   the existing line `removed <paths>, left by a move of another board
+   (not the one at <dir>, or one whose history no longer holds where that
+   move began), so nothing of it was adopted`, never in the `left by an
+   interrupted move` line, even when its HEAD is still
+   `refs/agentboard/migrating` (the temporary of a host whose remote had
+   no board ref, run "replaced"). The requirement ("remove and name the
+   temporary as left by a move of another board") and the scenario
+   "Board replaced after the move updated the host ref" say so; the
+   earlier wording here ("by today's rules, as a plain leftover or ...")
+   is superseded.
+3. **Order of a chain.** Among the candidates, one whose HEAD equals the
+   ref is handled first; after each reset the candidates are judged
+   again against the new value. The refusal is taken only when a
+   candidate of another board is left whose HEAD is in the ref and none
+   can be set back (no well formed record, or none equal to the ref).
+   Resets already made in that run stay (each was exact). The reset lines
+   appear in the order of the resets, the newest update first.
+4. **Refusal texts, exact.** When the ref cannot be set back:
+   `the interrupted move at <path> put commits of another board (not the
+   one at <dir>, or one whose history no longer holds where that move
+   began) into refs/agentboard/board in the host repository without
+   publishing them, and <why>, so the move cannot set the ref back by
+   itself; nothing was changed; set it back by hand with git update-ref
+   -d refs/agentboard/board when the host's remote holds the board or the
+   ref did not exist before that move, else with git update-ref
+   refs/agentboard/board <its earlier commit>, then run agentboard init
+   --into-host again`, where `<why>` is `that move left no record of the
+   ref's value before it` (no well formed `agentboard-board-before`) or
+   `the ref has moved on past what that move put into it`. A lost
+   compare-and-swap of the reset: `setting refs/agentboard/board in the
+   host repository back to its value before the interrupted move at
+   <path> failed because something else moved it meanwhile; nothing was
+   removed, the board at <dir> is untouched and the temporary worktree is
+   kept; run agentboard init --into-host again`. Both are exit 3
+   `sync-failed` with the existing hint, the same text on stderr
+   (`agentboard: <text>`) and in the `--json` error document's `message`.
+5. **The reset command.** The reset is the single command
+   `update-ref refs/agentboard/board <recorded> <HEAD>`, the zero object
+   name included (git deletes the ref then); the race tests intercept
+   that command line.
 
 ## Alternatives considered
 

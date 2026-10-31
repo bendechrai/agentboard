@@ -185,6 +185,29 @@ const HEAD_RECORD = 'agentboard-source-head';
 const TIP_RECORD = 'agentboard-source-tip';
 
 /**
+ * The file in a temporary worktree's git directory that records the value
+ * of `BOARD_REF` in the host immediately before the compare-and-swap of
+ * step 4: the full object name the swap compares against and a newline,
+ * or the zero object name of the board's hash algorithm (git's own
+ * convention for "no ref") when the ref does not exist. Written with
+ * `writeRecord` on every pass through step 4, for a fresh and for an
+ * adopted temporary (an adopted one's record is rewritten with the value
+ * the adopting run compares against), before the swap rather than after,
+ * so a kill between a successful swap and the write never leaves the
+ * update without its record; a kill between the write and the swap leaves
+ * a record beside a ref that does not hold the temporary's HEAD, which
+ * the leftover pass ignores. Read by the rules of `HEAD_RECORD`
+ * (`nameRecord`). It exists because a move killed, or refused at step 6,
+ * after step 4 leaves the temporary's HEAD in the local ref without
+ * publishing it: a re-run with another board at `.board` sets the ref
+ * back to this value (deleting it for the zero object name) with
+ * `update-ref BOARD_REF <recorded> <HEAD>`, so nothing of that board
+ * reaches the board now at `.board` or the host's remote (see
+ * `undoForeignUpdates`).
+ */
+const BEFORE_RECORD = 'agentboard-board-before';
+
+/**
  * The file in a temporary worktree's git directory that records a replay
  * in progress (round 4 ruling 2): its two lines are the worktree's HEAD
  * when the `cherry-pick` started and the tip of `MIGRATING_FETCH_REF` it
@@ -793,7 +816,23 @@ export interface IntoHostResult extends InitResult {
  * replayed again from the recorded integrated tip otherwise (the commits
  * already picked becoming empty and skipped, so a kill anywhere in a
  * multi-commit replay is completed by the re-run with every event, each
- * once). Otherwise `removeDeadMigratingWorktrees(hostRoot)`
+ * once). Then, before any leftover is removed or adopted, what an
+ * unfinished move of another board put into the local
+ * `refs/agentboard/board` is undone or refused (`undoForeignUpdates`):
+ * every dead temporary without rebase or cherry-pick state whose HEAD is
+ * an ancestor of, or equal to, the ref, a plain leftover included, is
+ * judged by the adoption test below; one of another board whose HEAD
+ * equals the ref and whose `agentboard-board-before` record (the ref's
+ * value before its step 4 swap, written immediately before the swap) is
+ * well formed has the ref set back to that value by compare-and-swap
+ * (deleted for the zero object name), said in the message, the rest
+ * judged again against the new value; one of another board without such
+ * a record, or whose HEAD the ref has moved past, is `BoardError(3,
+ * 'sync-failed')` naming the ref, the temporary and the `git update-ref`
+ * remedy, nothing changed; a reset that loses its compare-and-swap is the
+ * same exit saying the ref moved meanwhile. A temporary whose update was
+ * set back is removed and named as left by a move of another board
+ * whatever its HEAD. Otherwise `removeDeadMigratingWorktrees(hostRoot)`
  * removes the temporaries that hold nothing (the message names what was
  * removed), and a dead-pid temporary worktree without rebase or
  * cherry-pick state whose HEAD differs from `MIGRATING_REF` (or whose ref
@@ -985,7 +1024,11 @@ export interface IntoHostResult extends InitResult {
  *    that fails after the `ls-remote` listed it is `BoardError(3,
  *    'sync-failed')` naming `refs/agentboard/board` and the remote with
  *    git's first error line, the temporary removed the same way.
- * 4. `update-ref refs/agentboard/board <HEAD of the worktree> <old>` in
+ * 4. The record `agentboard-board-before` in the temporary's git
+ *    directory (`<old>` as a full object name, or the zero object name
+ *    when the ref does not exist, and a newline; atomic, rewritten for an
+ *    adopted temporary), then
+ *    `update-ref refs/agentboard/board <HEAD of the worktree> <old>` in
  *    `hostRoot` (the compare-and-swap against `<old>`, the value read in
  *    step 3 before any rebase; the empty old value creates the ref); a
  *    failure (something moved the ref in between, for example a hand
@@ -1444,6 +1487,16 @@ function lockedMove(
   if (stopped !== undefined) {
     throw stoppedInTemporary(host, stopped.path, dir, belongs(stopped.path));
   }
+  // What an unfinished move of another board put into the local ref is
+  // undone (or refused) before any leftover is removed or adopted; the
+  // temporaries whose update was set back are then removed and named as
+  // left by a move of another board, whatever their HEAD.
+  const undone = undoForeignUpdates(host, hostRoot, dir, plan, belongs, env);
+  const foreign: string[] = [];
+  for (const path of undone.paths) {
+    removeLeftoverWorktree(host, path);
+    foreign.push(path);
+  }
   const removed = removeDeadMigratingWorktrees(hostRoot, { env });
   // The source tip the adopted temporary worktree integrated (what the
   // ref records; the fetch of step 2 never moves it): the base of the
@@ -1466,7 +1519,6 @@ function lockedMove(
   // board replaced or rewritten since is removed and named. An adopted
   // temporary of an earlier version gains the records it lacks, with this
   // run's identity and HEAD, so the next run judges it by the full test.
-  const foreign: string[] = [];
   let adoptable: MigratingWorktree | undefined;
   for (const candidate of findMigratingWorktrees(hostRoot, { env }).filter(
     (w) => dead(w) && !w.rebasing && w.registered && w.head !== null && w.head !== oldSource,
@@ -1613,9 +1665,11 @@ function lockedMove(
     }
   }
 
-  // 4. The compare-and-swap, then the temporary ref goes, then the host
-  // .gitignore entry.
+  // 4. The value the swap compares against, recorded in the temporary so
+  // a re-run with another board can set the ref back; then the
+  // compare-and-swap, then the host .gitignore entry.
   const head = worktree.run('rev-parse', 'HEAD').trim();
+  writeRecord(host, temp, BEFORE_RECORD, `${old === '' ? zeroObjectName(plan) : old}\n`);
   if (isGitFailure(host.attempt('update-ref', BOARD_REF, head, old))) {
     throw new BoardError(
       3,
@@ -1676,6 +1730,7 @@ function lockedMove(
         'began), so nothing of it was adopted',
     );
   }
+  lines.push(...undone.lines);
   const sync = syncOrFail(dir, hostRoot, [...lines, ...warnings], keptAt, plan.oldRemoteUrl, env);
   lines.push(...sync.message.split('\n'));
   return {
@@ -1958,6 +2013,137 @@ function stoppedInTemporary(
       `and ${steps} in ${asciiText(path)}, then run ${AGAIN} again; the board at ` +
       `${asciiText(dir)} is untouched`,
   );
+}
+
+/** What `undoForeignUpdates` did: the output lines of the resets, in the order made, and the temporaries whose update was set back. */
+interface UndoneUpdates {
+  readonly lines: string[];
+  readonly paths: string[];
+}
+
+/**
+ * Undoes what an unfinished move of another board put into the local
+ * `BOARD_REF`, in the leftover pass, before any leftover is removed or
+ * adopted. A move killed, or refused at step 6, after its step 4 swap
+ * leaves a dead temporary whose HEAD is in the local ref without having
+ * published it (nothing after step 4 moves the temporary's HEAD). Every
+ * dead temporary without rebase or cherry-pick state (`stoppedInTemporary`
+ * has already refused for those) whose HEAD is an ancestor of, or equal
+ * to, the ref is a candidate, a plain leftover (HEAD still
+ * `MIGRATING_REF`, as in a host whose remote has no board ref) included,
+ * each judged once by `belongs` (`belongsToBoard`):
+ *
+ * - this board's: nothing happens here; the ref's commits are this
+ *   board's history, which step 3 integrates, and the temporary is
+ *   removed or adopted by the rules that follow;
+ * - another board's, with the ref equal to its HEAD and a well formed
+ *   `BEFORE_RECORD`: the ref is set back to the recorded value with the
+ *   compare-and-swap `update-ref BOARD_REF <recorded> <HEAD>` (which
+ *   deletes the ref when the value is the zero object name), a line says
+ *   so, and the remaining candidates are judged again against the new
+ *   value, so a chain of such updates is undone newest first; the
+ *   temporaries set back are returned for the caller to remove and name
+ *   as left by a move of another board, whatever their HEAD;
+ * - another board's otherwise: `BoardError(3, 'sync-failed')` naming the
+ *   ref, the temporary and the `git update-ref` remedy, saying why (no
+ *   well formed record, as from a version that did not write it; or the
+ *   ref moved on past the HEAD of every such candidate, naming the one
+ *   whose HEAD is the furthest along), taken before anything is removed,
+ *   so the temporary stays as the evidence and the next run judges again.
+ *   A reset that loses its compare-and-swap (something moved the ref after
+ *   it was read) is the same exit saying the ref moved meanwhile; resets
+ *   already made stay, each was exact.
+ *
+ * Nothing is removed here: a refusal part way through a chain leaves the
+ * temporaries already set back in place, their HEAD no longer in the ref,
+ * for the next run's ordinary rules.
+ */
+function undoForeignUpdates(
+  host: GitRunner,
+  hostRoot: string,
+  dir: string,
+  plan: MovePlan,
+  belongs: (path: string) => boolean,
+  env: Env,
+): UndoneUpdates {
+  const lines: string[] = [];
+  const paths: string[] = [];
+  const judged = new Map<string, boolean>();
+  const ours = (path: string): boolean => {
+    let verdict = judged.get(path);
+    if (verdict === undefined) {
+      verdict = belongs(path);
+      judged.set(path, verdict);
+    }
+    return verdict;
+  };
+  for (;;) {
+    const ref = refValue(host, BOARD_REF);
+    if (ref === '') {
+      return { lines, paths };
+    }
+    const candidates = findMigratingWorktrees(hostRoot, { env }).filter(
+      (w): w is MigratingWorktree & { head: string } =>
+        dead(w) &&
+        !w.rebasing &&
+        w.registered &&
+        w.head !== null &&
+        !paths.includes(w.path) &&
+        isAncestor(host, w.head, ref) &&
+        !ours(w.path),
+    );
+    if (candidates.length === 0) {
+      return { lines, paths };
+    }
+    const equal = candidates.find((w) => w.head === ref);
+    if (equal === undefined) {
+      // The ref holds every candidate's HEAD and more: name the one
+      // furthest along (a descendant of the others, where they are related).
+      const furthest = candidates.reduce((best, w) => (isAncestor(host, best.head, w.head) ? w : best));
+      throw cannotSetBack(furthest.path, dir, 'the ref has moved on past what that move put into it');
+    }
+    const record = nameRecord(host, equal.path, BEFORE_RECORD, plan.head.length);
+    if (!record.present || record.name === null) {
+      throw cannotSetBack(equal.path, dir, "that move left no record of the ref's value before it");
+    }
+    if (isGitFailure(host.attempt('update-ref', BOARD_REF, record.name, equal.head))) {
+      throw new BoardError(
+        3,
+        'sync-failed',
+        `setting ${BOARD_REF} in the host repository back to its value before the interrupted move ` +
+          `at ${asciiText(equal.path)} failed because something else moved it meanwhile; nothing was ` +
+          `removed, the board at ${asciiText(dir)} is untouched and the temporary worktree is kept; ` +
+          `run ${AGAIN} again`,
+      );
+    }
+    lines.push(
+      record.name === zeroObjectName(plan)
+        ? `deleted ${BOARD_REF} in the host repository, as before the interrupted move at ` +
+            `${asciiText(equal.path)}, which had created it for another board and not published it`
+        : `set ${BOARD_REF} in the host repository back to its value before the interrupted move at ` +
+            `${asciiText(equal.path)}, which had updated it for another board and not published it`,
+    );
+    paths.push(equal.path);
+  }
+}
+
+/** The refusal of `undoForeignUpdates` when the ref cannot be set back for the temporary at `path`, `why` saying what is missing. */
+function cannotSetBack(path: string, dir: string, why: string): BoardError {
+  return new BoardError(
+    3,
+    'sync-failed',
+    `the interrupted move at ${asciiText(path)} put commits of another board (not the one at ` +
+      `${asciiText(dir)}, or one whose history no longer holds where that move began) into ` +
+      `${BOARD_REF} in the host repository without publishing them, and ${why}, so the move cannot ` +
+      `set the ref back by itself; nothing was changed; set it back by hand with git update-ref -d ` +
+      `${BOARD_REF} when the host's remote holds the board or the ref did not exist before that ` +
+      `move, else with git update-ref ${BOARD_REF} <its earlier commit>, then run ${AGAIN} again`,
+  );
+}
+
+/** The zero object name of the board's hash algorithm: as many `0` digits as a full object name of it (`plan.head`) has. */
+function zeroObjectName(plan: MovePlan): string {
+  return '0'.repeat(plan.head.length);
 }
 
 /**

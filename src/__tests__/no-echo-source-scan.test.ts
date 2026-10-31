@@ -269,6 +269,27 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
     { fn: 'stoppedInTemporary', value: 'operation', why: 'a fixed phrase from the callers' },
     { fn: 'stoppedInTemporary', value: 'origin', why: CONFIG },
     { fn: 'stoppedInTemporary', value: 'steps', why: 'fixed recovery steps' },
+    { fn: 'undoForeignUpdates', value: 'BOARD_REF', why: REGISTRY },
+    {
+      fn: 'undoForeignUpdates',
+      value: 'asciiText(equal.path)',
+      why: 'configuration: the path of a temporary worktree under the host git directory, not refused input',
+    },
+    { fn: 'undoForeignUpdates', value: 'asciiText(dir)', why: CONFIG },
+    { fn: 'undoForeignUpdates', value: 'AGAIN', why: REGISTRY },
+    {
+      fn: 'cannotSetBack',
+      value: 'asciiText(path)',
+      why: 'configuration: the path of a temporary worktree under the host git directory, not refused input',
+    },
+    { fn: 'cannotSetBack', value: 'asciiText(dir)', why: CONFIG },
+    { fn: 'cannotSetBack', value: 'BOARD_REF', why: REGISTRY },
+    {
+      fn: 'cannotSetBack',
+      value: 'why',
+      why: 'one of two fixed phrases from the caller; a record that failed validation is never quoted',
+    },
+    { fn: 'cannotSetBack', value: 'AGAIN', why: REGISTRY },
   ],
   'src/board/leases.ts': [{ fn: 'parseDuration', value: 'form.message', why: REGISTRY }],
   'src/board/openspec.ts': [
