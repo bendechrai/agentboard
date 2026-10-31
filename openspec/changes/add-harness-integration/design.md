@@ -232,6 +232,67 @@ the group's ticket and pinned by the tests and the stub contracts in
   and recorded in the spec delta rather than fixed in this change;
   `rebuild --check` has the same property.
 
+## Rulings from task group 2 (test author)
+
+Taken while writing the group 2 tests, posted as `DECISION:` comments on
+the group's ticket and pinned by the tests and the contracts in
+`src/board/hook.ts` (`runHook` step 6, `warnStatePath`):
+
+- **Answer shapes.** `session-start` always answers with the
+  `SessionStart` `additionalContext` document for a resolved actor on a
+  readable board. `stop` warns with `{"systemMessage": ...}` and nothing
+  else (never `decision`); strict blocks with exit 2, stdout empty and
+  the same text on stderr, which may span lines. `pre-tool-use` warns with
+  the `PreToolUse` `additionalContext` document and never a
+  `permissionDecision`: `allow` would skip the user's permission prompt
+  and `deny` or `ask` would stop the agent in warn mode; strict blocks
+  with exit 2 and the text on stderr.
+- **Held-ticket line.** Each held ticket is written `<id> <token>`, the
+  full id and the `list` assignee token at the hook's clock, in id order;
+  the line is cut at a ticket boundary to 2000 characters, ending with
+  `and <n> more`, so the inbox always has room.
+- **Truncation advances the cursor over the delivered entries only.**
+  The truncation line sends the agent to `agentboard inbox`, which would
+  show nothing if the cursor had passed the omitted entries; so the cursor
+  advances to the last entry shown and the next `inbox` lists exactly the
+  omitted ones. Inbox lines are the `inbox` text lines, `GRANTED:` and
+  `LOST:` prefixes included. With no entry delivered nothing is written
+  (the cache is byte-identical). An event file not folded into the cache
+  is neither delivered nor skipped, since the hook does not catch up.
+- **Stop.** A comment is a `ticket.comment` or a hand-off note by the
+  actor, after the event that last made the actor the assignee (claim,
+  takeover, grant, hand-off or assignment to it); every such ticket is
+  named, in id order. `release` is named, first, only for a ticket with a
+  lease. Strict mode with `stop_hook_active` exactly `true` answers as
+  warn mode (a `systemMessage`, exit 0), so the user still sees the
+  reminder and one stop blocks at most once.
+- **Pre-tool-use target and project.** The target is
+  `tool_input.file_path`, or `notebook_path` (then `file_path`) for
+  `NotebookEdit`, resolved against the discovery directory when relative;
+  a missing or non-string target passes silently. The project is the
+  board directory's parent plus the nearest directory at or above the
+  discovery directory holding a `.git` entry, so an edit in a linked
+  worktree (outside the main checkout) is checked, with no extra `git`
+  child. Inside is decided component by component, so a sibling sharing a
+  name prefix is outside; a target in the board directory, or with a
+  `.board` component below the project, is exempt. Tool names match
+  exactly, case included.
+- **Rate-limit state.** One file per session in the OS temporary
+  directory (`os.tmpdir()`, which honours `TMPDIR`; `HookRequest.stateDir`
+  in process), named `agentboard-hook-<sha256 of session_id>` so it never
+  repeats the id; it holds the time of the last warning in milliseconds.
+  Garbage, a missing file or a time later than now counts as no warning.
+  It is written only when a warn-mode warning is printed, replaced
+  atomically through a temporary file and a rename (a symbolic link at
+  the name is replaced, never followed), and a failure to read or write
+  it never stops the warning. Strict mode neither reads nor writes it. No
+  `session_id` means a warning every time and no file. The spec's
+  read-only sentence now says "the only board state", since this file is
+  outside the board.
+- **No loop, no lock work.** No hook text names `renew`, a queue,
+  `--wait`, `--ttl`, `watch`, or waiting, polling, sleeping or retrying;
+  every `agentboard <command>` a hook names is a registry command.
+
 ## Risks / Trade-offs
 
 - **PreToolUse is intrusive and adds latency to every edit** -> warn-only

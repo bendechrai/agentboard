@@ -30,8 +30,10 @@ runs out counts as git failing, so discovery falls back to `./.board`
 being told to stop. No stderr line SHALL repeat any part of the payload
 (its `cwd` included), the actor, the event argument or other refused
 input (board-cli "Refusals never repeat the refused input"). The command
-SHALL NOT write events, run `sync`, or touch the network; the only state
-it may write is the inbox cursor in `session-start`. It SHALL read the cache as
+SHALL NOT write events, run `sync`, or touch the network; the only board
+state it may write is the inbox cursor in `session-start`, and outside the
+board only `pre-tool-use` in warn mode writes, its rate-limit file in the
+OS temporary directory. It SHALL read the cache as
 it is and SHALL NOT catch up: it folds no event file, writes no due grant
 (board-cli "Due grants are written during catch-up"), reaps no temporary
 file, and never creates, recreates or rebuilds the cache; a missing cache,
@@ -126,10 +128,17 @@ payload's `cwd` and the usual discovery rules.
 command does), preceded by one line naming the actor and the tickets the
 actor currently holds, each with its assignee token as `list` shows it
 (so an unconfirmed, expired or claimable lease is visible, for example
-`impl*+2m`). Because the hook does not catch up, a grant that is due but
-not yet written is not delivered until the next `inbox`. An empty inbox SHALL print only that line. The
-output SHALL be at most 4000 characters, truncated with a line saying how
-many entries were omitted and naming `agentboard inbox --as <actor>`.
+`impl*+2m`, written `<id> <token>`). Each inbox entry is one line, as
+`agentboard inbox` prints it. Because the hook does not catch up, a grant
+that is due but not yet written, and any event file not yet folded into
+the cache, is not delivered (nor skipped) until the next `inbox`. An empty
+inbox SHALL print only that line, and SHALL write nothing. The output SHALL
+be at most 4000 characters, truncated at an entry boundary with a line
+saying how many entries were omitted and naming `agentboard inbox --as
+<actor>`; the cursor SHALL then advance over the delivered entries only,
+so the next `inbox` lists exactly the omitted ones. The held-ticket line is
+cut at a ticket boundary to at most 2000 characters, ending with `and <n>
+more`. The answer is the `SessionStart` `additionalContext`.
 
 #### Scenario: Inbox is delivered
 - **WHEN** `hook session-start` runs for actor `impl` with two pending inbox entries
@@ -143,18 +152,29 @@ many entries were omitted and naming `agentboard inbox --as <actor>`.
 - **WHEN** the inbox is larger than 4000 characters
 - **THEN** the output is truncated at an entry boundary with the omitted count and the inbox command
 
+#### Scenario: Omitted entries stay in the inbox
+- **WHEN** a truncated `hook session-start` has run
+- **THEN** the next `agentboard inbox` lists exactly the omitted entries
+
+#### Scenario: A hand-off or a grant makes a holder
+- **WHEN** `reviewer` hands T1 to `impl`, or the queue grants M1 to `merger-2`
+- **THEN** the held-ticket line of `impl`, or of `merger-2`, names that ticket with its token
+
 ### Requirement: Stop hook
 `hook stop` SHALL check whether the actor still holds a ticket that is not
 `blocked` and has no comment by the actor since the actor last became its
-assignee (by a claim, a grant from the queue or a hand-off to it). When there is
-none it SHALL do nothing. Otherwise, without `--strict` it SHALL exit 0 with
+assignee (by a claim, a grant from the queue or a hand-off to it); a
+comment is a `ticket.comment` or a hand-off note. When there is
+none it SHALL do nothing. Every such ticket is named, in id order. Otherwise, without `--strict` it SHALL exit 0 with
 a `systemMessage` naming the ticket and the `handoff` and `comment` plus
 `move ... blocked` commands, and, for a ticket held under a lease (such as
 a mutex ticket), first `agentboard release <id> --as <actor>`, since a
 lock is released when done (board-agent-guidance "Mutex ticket recipe");
 with `--strict` it SHALL exit 2 with the same
 text on stderr, except that when the payload has `stop_hook_active` true it
-SHALL NOT block again, so one stop produces at most one block.
+SHALL NOT block again, so one stop produces at most one block: it answers
+as warn mode does. `release` is named only for a ticket with a lease, and
+the warn answer never carries a `decision`.
 
 #### Scenario: Forgot to hand off, warn mode
 - **WHEN** `impl` holds T1 with no comment since the claim and `hook stop` runs
@@ -172,6 +192,10 @@ SHALL NOT block again, so one stop produces at most one block.
 - **WHEN** `merger-1` holds the mutex ticket M1 under a lease, granted from the queue, with no comment since, and `hook stop` runs
 - **THEN** it exits 0 with a message naming M1 and `agentboard release`
 
+#### Scenario: Handed back without a new comment
+- **WHEN** `impl` commented on T1, handed it to `reviewer`, and `reviewer` handed it back to `impl`
+- **THEN** `hook stop` names T1
+
 #### Scenario: Blocked ticket is fine
 - **WHEN** `impl` holds T1 in status `blocked` with a comment
 - **THEN** `hook stop --strict` exits 0 with no output
@@ -182,14 +206,24 @@ SHALL NOT block again, so one stop produces at most one block.
 
 ### Requirement: Pre-tool-use claim check
 `hook pre-tool-use` SHALL act only when the payload's `tool_name` is `Edit`,
-`Write`, `MultiEdit` or `NotebookEdit` and the target path is inside the
-project root and not under `.board/`. It SHALL pass silently when the actor
+`Write`, `MultiEdit` or `NotebookEdit` and the target path
+(`tool_input.file_path`, or `notebook_path` for `NotebookEdit`, resolved
+against the payload's `cwd` when relative) is inside the project and not
+under `.board/`. The project is the directory holding the board directory
+and the checkout or linked worktree the payload's `cwd` is in (the nearest
+directory at or above it holding a `.git` entry); a sibling directory
+sharing a name prefix is outside. It SHALL pass silently when the actor
 holds at least one ticket. Otherwise, without `--strict`, it SHALL exit 0
 with context telling the agent to claim a ticket (naming `agentboard
 claim` and `agentboard inbox`) or to carry on if the work is not
-ticketed; with `--strict` it SHALL deny the tool call with that text (exit
-2). A given session SHALL be warned at most once per 10 minutes in warn mode,
-tracked outside the board, so that a run of edits is not a run of warnings.
+ticketed, and never with a `permissionDecision` (an `allow` would skip
+the user's permission prompt); with `--strict` it SHALL deny the tool call
+with that text (exit 2), every time. A given session (the payload's
+`session_id`) SHALL be warned at most once per 10 minutes in warn mode,
+tracked outside the board in a file of the OS temporary directory named by
+a hash of the session id and replaced atomically, so that a run of edits is
+not a run of warnings; a payload without a session id is warned every
+time.
 
 #### Scenario: Edit with a claim
 - **WHEN** `impl` holds T1 and the payload is an `Edit` of a project file
@@ -210,6 +244,14 @@ tracked outside the board, so that a run of edits is not a run of warnings.
 #### Scenario: Warnings are rate limited
 - **WHEN** warn mode runs for five consecutive edits in one session without a claim
 - **THEN** only the first prints a warning
+
+#### Scenario: The warning comes back after 10 minutes
+- **WHEN** 10 minutes have passed since a session's last warning and it edits without a claim
+- **THEN** it is warned again
+
+#### Scenario: Edit in a linked worktree
+- **WHEN** the payload's `cwd` is a linked worktree and the target is a file of that worktree
+- **THEN** the edit is checked as a project file
 
 ### Requirement: Hooks installed in Claude settings
 The `claude-hooks` target SHALL merge three hook entries into the project's
