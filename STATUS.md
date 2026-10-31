@@ -149,25 +149,17 @@ them on it (see "Known gaps").
 
 ## What is next
 
-Release 0.3.0: `staging` holds everything above and the version is
-0.3.0 (#120); promote `staging` to `main` (#119), tag `v0.3.0` and
-approve the staged npm release (CONTRIBUTING.md, "Releasing").
+0.3.0 is released (tag `v0.3.0`, npm `@bendechrai/agentboard@0.3.0`,
+GitHub Release "agentboard 0.3.0"). Nothing is queued: the open work is
+the known gaps below and the draft `openspec/add-harness-integration`
+(PR #67), which awaits review.
 
 ## Known gaps
 
-- Release gate for `add-claim-leases`: every machine that writes to a
-  shared board must be upgraded before any actor uses `--ttl`, `--wait`,
-  `release --force` or `config set` (README, "Upgrading a board shared
-  between machines"); the release notes for the version that ships it
-  must say so.
-- The `agentboard` on PATH on the maintainer's machine is the published
-  0.2.0 (guidance version 2) until 0.3.0 is installed. Run from this
-  repository it reports the version 3 guidance as `stale` and suggests
-  `agents install`, which would downgrade it, so check and install
-  guidance with a build of `staging` (`node dist/cli.js agents check`)
-  until then. Agents on this repository's board that call it are writers
-  that do not understand leases, the mixed-version case README
-  "Upgrading a board shared between machines" describes.
+- Release gate for `add-claim-leases`, stated in the 0.3.0 release notes:
+  every machine that writes to a shared board must run 0.3.0 before any
+  actor uses `--ttl`, `--wait`, `release --force` or `config set` (README,
+  "Upgrading a board shared between machines").
 - The guide is at its limit: the orchestrator output of `help agents
   --role orchestrator` is exactly 180 lines, the limit the ad hoc
   lifecycle and `add-claim-leases` share, so the next change that adds
