@@ -224,3 +224,35 @@ describe('withoutUserinfo: the form a remote URL is shown in (review round 1 add
     expect(withoutUserinfo(url)).toBe(shown);
   });
 });
+
+describe('proxy user information git and curl split differently (review round 2: R2, R3)', () => {
+  it('R2: a proxy with two raw @ is split at the first, as git 2.53 prints it re-encoded', () => {
+    const proxy = `http://a@${GH_TOKEN}%40x@127.0.0.1:3128`;
+    // git 2.53 percent-encodes what it takes for the host, `_` included.
+    const host = `${GH_TOKEN.replace('_', '%5F')}%2540x%40127.0.0.1:3128`;
+    const line = `fatal: could not read Password for 'http://a@${host}': terminal prompts disabled`;
+    const out = sanitizeRemoteLine(line, [proxy]);
+    expectNoLeak(out);
+    expect(out).toMatch(/^fatal: could not read Password for '.*': terminal prompts disabled$/);
+  });
+
+  it.each(['#', '?'])(
+    'R3: a proxy user name with a raw %s, which curl on git 2.32 takes for the proxy host',
+    (mark) => {
+      const user = `${GH_TOKEN}${'x'.repeat(30)}`;
+      const proxy = `http://${user}${mark}x@127.0.0.1:1`;
+      const line = `fatal: unable to access 'http://127.0.0.1:1/x.git/': Could not resolve proxy: ${user}`;
+      const out = sanitizeRemoteLine(line, [proxy]);
+      expectNoLeak(out);
+      expect(out.startsWith("fatal: unable to access 'http://127.0.0.1:1/x.git/': Could not resolve proxy: ")).toBe(true);
+    },
+  );
+
+  it('R3 on git 2.53: the whole invalid proxy URL is quoted, and replaced', () => {
+    const user = `${GH_TOKEN}${'x'.repeat(30)}`;
+    const proxy = `http://${user}#x@127.0.0.1:1`;
+    expect(
+      sanitizeRemoteLine(`fatal: Invalid proxy URL '${proxy}': only SOCKS proxies support paths`, [proxy]),
+    ).toBe("fatal: Invalid proxy URL '<url>': only SOCKS proxies support paths");
+  });
+});

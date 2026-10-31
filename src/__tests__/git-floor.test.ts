@@ -73,6 +73,7 @@ const REQUIRED_SHARING_TESTS = [
   'src/cli/__tests__/remote-config-no-echo-cli.test.ts',
   'src/cli/__tests__/later-steps-no-echo-cli.test.ts',
   'src/cli/__tests__/success-no-echo-cli.test.ts',
+  'src/cli/__tests__/remote-display-no-echo-cli.test.ts',
   'src/cli/__tests__/into-host-cli.test.ts',
   'src/cli/__tests__/remote-cli.test.ts',
   'src/__tests__/host-sync-clones.test.ts',
