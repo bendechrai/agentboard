@@ -2412,6 +2412,8 @@ export const COMMANDS: readonly CommandSpec[] = [
         HOOK_EVENTS,
       ),
     ],
+    actorHelp:
+      'The actor whose tickets and inbox the hook checks, before AGENTBOARD_ACTOR; with neither, the hook stays silent',
     flags: [flag('strict', 'boolean', 'Block (exit 2) instead of warning')],
     exclusive: [],
     writes: false,

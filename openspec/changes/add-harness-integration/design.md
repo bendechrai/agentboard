@@ -159,6 +159,51 @@ exclusion. Places where the main specs forced a change of substance:
 - **The guide line budget** (decision 10): no guide line is added.
 - **ADR 0016**, since 0014 and 0015 are taken.
 
+## Rulings from task group 1 (test author)
+
+Taken while writing the group 1 tests, posted as `DECISION:` comments on
+the group's ticket and pinned by the tests and the stub contracts in
+`src/board/hook.ts`:
+
+- **Routing.** The executable hands `agentboard hook ...` to the hook
+  runner before the ordinary parser (as it does for `mcp`), so an
+  argument error is the hook's exit 0 and one line, never the parser's
+  exit 1. `agentboard hook --help` and `help hook` still print the help.
+  The registry entry's `run`, reachable only through the in-process
+  `runCli`, refuses with `streaming-command` like `mcp`.
+- **The budget runs from the process start** (`performance.timeOrigin`),
+  so Node's start-up counts against it and the 3 second bound of the
+  "Time budget" scenario holds on a loaded machine; stdin is read only
+  until the deadline and then let go.
+- **Actor names.** A resolved name that a writing command could not use
+  (the reserved `agentboard`, a secret pattern, outside the actor form
+  `^[A-Za-z0-9][A-Za-z0-9._@-]{0,31}$` of `actor-secret-check`, which is
+  not merged yet) is no actor: the hook is silent (session-start prints
+  its no-actor line) and never repeats it. When `actor-secret-check`
+  lands, the hook should call its check instead of its own copy.
+- **No-actor line.** session-start prints it only where a board is found
+  (the cache is not needed), as one JSON document
+  `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":...}}`;
+  with no board it prints nothing.
+- **Escape hatch.** Only the exact value `off`; it is checked first, so
+  even an argument error is silent and stdin is not read.
+- **Payload `cwd`.** Used when it is a non-empty string naming an existing
+  directory (relative to the process directory), else the process
+  directory; `AGENTBOARD_DIR` still wins, as in every discovery.
+- **Flags.** `--json` is accepted and changes nothing (the answer is the
+  protocol); `--as` has its own help line (`actorHelp`), not "ignored".
+- **Unreadable cache** includes a file that is not SQLite; a missing cache
+  is never created.
+- **Holding** is computed on the cache as it is: a grant that is due but
+  not written makes no one the holder (the grantee holds once a catching-up
+  command writes it). Held tickets are listed in ticket id order.
+- **The guide line moves to group 1.** Adding `hook` to the MCP
+  exclusions (task 1.2) makes the existing tests that require the guide
+  and the `mcp` description to name every excluded command fail, so the
+  reflow that adds `hook` to the guide's list of commands that are not
+  tools (decision 10, no line added) is done in task 1.2, not 7.1;
+  task 7.1 keeps the README and checks the line counts.
+
 ## Risks / Trade-offs
 
 - **PreToolUse is intrusive and adds latency to every edit** -> warn-only

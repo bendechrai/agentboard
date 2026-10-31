@@ -236,13 +236,18 @@ describe('the help data of record in the registry', () => {
     ]);
   });
 
-  it('gives actorHelp to serve and mcp only, which neither write nor track a cursor', () => {
+  it('gives actorHelp to serve, mcp and hook only, which neither write nor track a cursor', () => {
     // serve --as is the actor of the web app's write actions, so its --as
     // line does not say "ignored".
     expect(COMMANDS.filter((c) => c.actorHelp !== undefined).map((c) => c.name)).toEqual([
       'serve',
       'mcp',
+      'hook',
     ]);
+    // hook: the actor whose tickets the hook checks (board-harness-hooks
+    // "Hook actor resolution"), never ignored.
+    expect(needsActor(command('hook'))).toBe(false);
+    expect(command('hook').actorHelp).toContain('AGENTBOARD_ACTOR');
     const serve = command('serve');
     expect(needsActor(serve)).toBe(false);
     expect(serve.actorHelp).toMatch(/write/i);
