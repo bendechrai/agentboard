@@ -221,20 +221,63 @@ describe('ticket ids (rows 16 and 17; board-cli "Ticket ids in refusals")', () =
     expect(`${out.stdout}${out.stderr}`.toUpperCase()).not.toContain('01NOPE0000');
   });
 
-  it('26 Crockford characters are named, 27 are not', () => {
-    const z26 = 'Z'.repeat(26);
+  it('26 Crockford characters starting 0 to 7 are named, 27 are not', () => {
+    const max = `7${'Z'.repeat(25)}`;
     expectCliRefusal(
-      ['show', z26],
+      ['show', max],
       root,
-      refusal(4, 'unknown-ticket', `no ticket matches ${z26}`, UNKNOWN_TICKET_HINT),
+      refusal(4, 'unknown-ticket', `no ticket matches ${max}`, UNKNOWN_TICKET_HINT),
       [],
     );
     expectCliRefusal(
-      ['show', `${z26}Z`],
+      ['show', `${max}Z`],
       root,
       refusal(4, 'unknown-ticket', NOT_AN_ID, UNKNOWN_TICKET_HINT),
       [],
     );
+  });
+
+  it('Crockford text that starts with 8 to Z is no ULID and is not named (review round 1, F2)', () => {
+    for (const text of [
+      'Z'.repeat(26),
+      'KZQ4XK9M2PVB8RT3NH6WD5YCFJ',
+      'JBSWY3DPEHPK3PXP',
+      '8ZZZZZZ',
+    ]) {
+      expectCliRefusal(
+        ['show', text],
+        root,
+        refusal(4, 'unknown-ticket', NOT_AN_ID, UNKNOWN_TICKET_HINT),
+        [],
+      );
+      const out = run(['show', text, '--json'], root, cliEnv());
+      expect(`${out.stdout}${out.stderr}`.toUpperCase(), text).not.toContain(text.toUpperCase());
+    }
+    expectCliRefusal(
+      ['show', 'JBSWY'],
+      root,
+      refusal(
+        1,
+        'id-too-short',
+        'the ticket id given is too short: give at least 6 characters',
+        TOO_SHORT_HINT,
+      ),
+      [],
+    );
+  });
+
+  it('a character that upper-cases into the alphabet is not id-shaped (review round 1, F3)', () => {
+    for (const text of [
+      `01${String.fromCharCode(0x17f, 0x17f)}ABCDEFGH23`,
+      `0${String.fromCharCode(0xfb06).repeat(12)}`,
+    ]) {
+      expectCliRefusal(
+        ['show', text],
+        root,
+        refusal(4, 'unknown-ticket', NOT_AN_ID, UNKNOWN_TICKET_HINT),
+        [],
+      );
+    }
   });
 
   it('lowercase is id-shaped and named as given; I, L, O and U in any case are not', () => {

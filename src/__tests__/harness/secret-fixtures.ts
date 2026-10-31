@@ -15,10 +15,12 @@
  * flag it. None of them is a real credential.
  *
  * None of the fixtures has the ticket id shape (1 to 26 Crockford base32
- * characters, case-insensitive): each contains `_`, `-`, `:`, `I` or is
- * longer than 26 characters. So the id exception of board-cli "Ticket ids
- * in refusals" never applies to them, and every refusal must keep them
- * out of every output.
+ * characters, ASCII case-insensitive, the first of them 0 to 7): each
+ * contains `_`, `-`, `:`, `I`, is longer than 26 characters, or (the two
+ * base32 fixtures of review round 1, F2) is all Crockford base32 but
+ * starts with a letter. So the id exception of board-cli "Ticket ids in
+ * refusals" never applies to them, and every refusal must keep them out
+ * of every output.
  */
 
 import { expect } from 'vitest';
@@ -71,7 +73,24 @@ export const URL_WITH_CREDENTIALS = ['https://agent:', URL_TOKEN, '@git.example.
  */
 export const LONG_WORD = ['x9k2-q7vz-m3p8', '-w4rt-j6hn-b5cd-f1gs'].join('');
 
-/** Every fixture of design.md "Testing approach", plus `HEX_64`. */
+/**
+ * A 26-character token of Crockford base32 that starts with a letter (8
+ * to Z): the length of a ULID, but not one, since every ULID starts with
+ * 0 to 7 (review round 1, F2).
+ */
+export const CROCKFORD_26 = ['KZQ4XK9M2PVB8', 'RT3NH6WD5YCFJ'].join('');
+
+/**
+ * A 16-character TOTP-style seed (RFC 4648 base32, A to Z and 2 to 7)
+ * with no I, L, O or U, so every character is Crockford base32 (review
+ * round 1, F2).
+ */
+export const TOTP_SEED = ['JBSWY3DP', 'EHPK3PXP'].join('');
+
+/**
+ * Every fixture of design.md "Testing approach", plus `HEX_64`,
+ * `CROCKFORD_26` and `TOTP_SEED`.
+ */
 export const SECRET_FIXTURES: readonly SecretFixture[] = [
   { name: 'github-token', value: GITHUB_TOKEN, secret: GITHUB_TOKEN },
   { name: 'aws-key-id', value: AWS_KEY_ID, secret: AWS_KEY_ID },
@@ -79,6 +98,8 @@ export const SECRET_FIXTURES: readonly SecretFixture[] = [
   { name: 'hex-64', value: HEX_64, secret: HEX_64 },
   { name: 'url-with-credentials', value: URL_WITH_CREDENTIALS, secret: `agent:${URL_TOKEN}` },
   { name: 'long-word', value: LONG_WORD, secret: LONG_WORD },
+  { name: 'crockford-26', value: CROCKFORD_26, secret: CROCKFORD_26 },
+  { name: 'totp-seed', value: TOTP_SEED, secret: TOTP_SEED },
 ];
 
 /** The fixtures a positional or flag value is tested with (all but the URL). */

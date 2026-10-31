@@ -12,7 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { TOKEN_FIXTURES, expectNoLeak } from '../../__tests__/harness/secret-fixtures.js';
 import { tempDir } from '../../board/__tests__/helpers.js';
 import { cliEnv, project, run, written } from '../../cli/__tests__/cli-helpers.js';
-import { expectCliRefusal } from '../../cli/__tests__/no-echo-helpers.js';
+import { expectCliRefusal, type ExpectedRefusal } from '../../cli/__tests__/no-echo-helpers.js';
 import { COMMANDS } from '../../cli/registry.js';
 import { HINT_REASONS, renderHint, type HintContext, type HintSurface } from '../hints.js';
 
@@ -20,6 +20,9 @@ import { HINT_REASONS, renderHint, type HintContext, type HintSurface } from '..
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 const SURFACES: readonly HintSurface[] = ['cli', 'mcp'];
+
+const CLOSE_RULE_MESSAGE =
+  'close needs exactly one of --decision-recorded-in <path> or --no-decision: a decision made in a ticket must be recorded in a spec delta or ADR (name it with --decision-recorded-in), or declared absent with --no-decision';
 
 /** Every command that takes a ticket id, and the unknown command. */
 const ID_COMMANDS: readonly (string | null)[] = [
@@ -50,7 +53,15 @@ describe('renderHint with an id that is not id-shaped', () => {
           expect(hint, `${reason} ${context.surface} ${String(context.command)}`).toBe(placeholder);
           expectNoLeak(reason, [hint], [f]);
         }
-        for (const text of ['01NOPE0000', 'Z'.repeat(27), '01J9K3I', 'ab_cd']) {
+        for (const text of [
+          '01NOPE0000',
+          'Z'.repeat(27),
+          'Z'.repeat(26),
+          'JBSWY3DPEHPK3PXP',
+          `01${String.fromCharCode(0x17f, 0x17f)}ABCDEFGH23`,
+          '01J9K3I',
+          'ab_cd',
+        ]) {
           expect(renderHint(reason, { ...context, id: text })).toBe(placeholder);
         }
       }
@@ -61,7 +72,7 @@ describe('renderHint with an id that is not id-shaped', () => {
     for (const reason of HINT_REASONS) {
       for (const context of contexts()) {
         const placeholder = renderHint(reason, context);
-        for (const id of ['01j9k3', '01J9K3AB', 'Z'.repeat(26)]) {
+        for (const id of ['01j9k3', '01J9K3AB', `7${'Z'.repeat(25)}`]) {
           expect(renderHint(reason, { ...context, id }), `${reason} ${id}`).toBe(
             placeholder === null ? null : placeholder.replaceAll('<id>', id),
           );
@@ -90,8 +101,7 @@ describe('Hint for an id that is not an id (CLI)', () => {
           {
             exitCode: 1,
             reason: 'no-disposition',
-            message:
-              'close needs exactly one of --decision-recorded-in <path> or --no-decision: a decision made in a ticket must be recorded in a spec delta or ADR (name it with --decision-recorded-in), or declared absent with --no-decision',
+            message: CLOSE_RULE_MESSAGE,
             hint: "close needs a disposition: 'agentboard close <id> --decision-recorded-in <path> --as orch' naming the spec delta or ADR, or 'agentboard close <id> --no-decision --as orch' when nothing was decided",
           },
           [f],
@@ -99,6 +109,44 @@ describe('Hint for an id that is not an id (CLI)', () => {
         );
       }
     }
+  });
+
+  // Review round 1, F1: when parsing fails, the actor of a hint comes from
+  // the parsed values (or AGENTBOARD_ACTOR), never from scanning the raw
+  // arguments for --as. In these command lines the string flag takes
+  // `--as` as its value, so the token is the <id> positional, not the
+  // actor, and must not be repeated as either.
+  it.each([
+    ['--unplanned', ['close', '--unplanned', '--as']],
+    ['--task', ['close', '--task', '--as']],
+  ])(
+    'close %s --as <token>: neither the message nor the hint repeats the token',
+    (_flag, prefix) => {
+      const cwd = tempDir();
+      const expected = (actor: string): ExpectedRefusal => ({
+        exitCode: 1,
+        reason: 'no-disposition',
+        message: CLOSE_RULE_MESSAGE,
+        hint: `close needs a disposition: 'agentboard close <id> --decision-recorded-in <path> --as ${actor}' naming the spec delta or ADR, or 'agentboard close <id> --no-decision --as ${actor}' when nothing was decided`,
+      });
+      for (const f of TOKEN_FIXTURES) {
+        for (const runner of ['in-process', 'child'] as const) {
+          expectCliRefusal([...prefix, f.value], cwd, expected('<actor>'), [f], { runner });
+          expectCliRefusal([...prefix, f.value], cwd, expected('env-orch'), [f], {
+            runner,
+            env: cliEnv({ AGENTBOARD_ACTOR: 'env-orch' }),
+          });
+        }
+      }
+    },
+  );
+
+  it('a failed parse still names the --as it parsed', () => {
+    const out = run(['close', '01J9K3AB', '--as', 'orch', '--json'], tempDir(), cliEnv());
+    expect(out.code).toBe(1);
+    const doc = JSON.parse(out.stdout) as { error: { reason: string; hint: string } };
+    expect(doc.error.reason).toBe('no-disposition');
+    expect(doc.error.hint).toContain("--no-decision --as orch'");
   });
 
   it('close <token> with a missing decision record: the hint writes <id>', () => {

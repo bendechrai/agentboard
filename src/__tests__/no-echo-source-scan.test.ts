@@ -351,7 +351,7 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
     { fn: 'argumentValue', value: 'name', why: `${REGISTRY} (a schema property)` },
     { fn: 'usage', value: 'message', why: PASS },
   ],
-  'src/store/board.ts': [{ fn: 'openBoard', value: 'abs', why: CONFIG }],
+  'src/store/board.ts': [{ fn: 'openBoard', value: 'asciiText(abs)', why: `${CONFIG}, escaped` }],
   'src/store/cache.ts': [
     { fn: 'inspectCache', value: 'path', why: CONFIG },
     { fn: 'schemaMismatch', value: 'String(CACHE_SCHEMA_VERSION)', why: REGISTRY },
@@ -361,7 +361,11 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
   'src/store/eventfile.ts': [{ fn: 'writeEventFile', value: 'path', why: BOARD }],
   'src/store/locate.ts': [
     { fn: 'findBoard', value: 'SOURCE_TEXT[location.source]', why: REGISTRY },
-    { fn: 'findBoard', value: 'location.dir', why: CONFIG },
+    {
+      fn: 'findBoard',
+      value: 'asciiText(location.dir)',
+      why: `${CONFIG} (AGENTBOARD_DIR), escaped (review round 1)`,
+    },
   ],
   'src/store/transaction.ts': [
     { fn: 'accept', value: 'message', why: `${BOARD}: the fold's rejection of a scanned command` },

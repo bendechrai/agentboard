@@ -58,19 +58,19 @@ function messageOf(fn: () => unknown, exitCode: number, reason: string): string 
 }
 
 describe('isIdShaped', () => {
-  it('is true for 1 to 26 Crockford base32 characters in either case', () => {
+  it('is true for 1 to 26 Crockford base32 characters in either case, the first 0 to 7', () => {
     for (const text of [
       '0',
-      'Z',
-      'z',
+      '7',
       '01J9K3',
       '01j9k3',
       '01J9K3ZZZZ',
       '0123456789ABCDEFGHJKMNPQRS',
       '0123456789abcdefghjkmnpqrs',
-      'TVWXYZ',
-      'tvwxyz',
-      'Z'.repeat(26),
+      '7TVWXYZ',
+      '7tvwxyz',
+      `7${'Z'.repeat(25)}`,
+      `7${'z'.repeat(25)}`,
     ]) {
       expect(isIdShaped(text), text).toBe(true);
     }
@@ -80,6 +80,26 @@ describe('isIdShaped', () => {
     for (const text of [
       '',
       'Z'.repeat(27),
+      `7${'Z'.repeat(26)}`,
+      // Review round 1, F2: a first character of 8 to Z is no ULID.
+      '8',
+      '9',
+      'Z',
+      'z',
+      'TVWXYZ',
+      'tvwxyz',
+      'Z'.repeat(26),
+      `8${'0'.repeat(25)}`,
+      'KZQ4XK9M2PVB8RT3NH6WD5YCFJ',
+      'JBSWY3DPEHPK3PXP',
+      'jbswy3dpehpk3pxp',
+      // Review round 1, F3: no Unicode upper-casing into the alphabet
+      // (U+017F LATIN SMALL LETTER LONG S upper-cases to S, U+FB06 LATIN
+      // SMALL LIGATURE ST to ST).
+      `01${String.fromCharCode(0x17f, 0x17f)}ABCDEFGH23`,
+      `01${String.fromCharCode(0x17f)}`,
+      `0${String.fromCharCode(0xfb06).repeat(12)}`,
+      `01J9K3${String.fromCharCode(0xfb06)}`,
       '01J9K3I',
       '01J9K3L',
       '01J9K3O',
@@ -115,8 +135,9 @@ describe('resolveTicketId', () => {
     expect(messageOf(() => resolveTicketId(state, '01j9k3zzzz'), 4, 'unknown-ticket')).toBe(
       'no ticket matches 01j9k3zzzz',
     );
-    expect(messageOf(() => resolveTicketId(state, 'Z'.repeat(26)), 4, 'unknown-ticket')).toBe(
-      `no ticket matches ${'Z'.repeat(26)}`,
+    const max = `7${'Z'.repeat(25)}`;
+    expect(messageOf(() => resolveTicketId(state, max), 4, 'unknown-ticket')).toBe(
+      `no ticket matches ${max}`,
     );
     expect(messageOf(() => resolveTicketId(state, '01j9k'), 1, 'id-too-short')).toBe(
       `ticket id prefix 01j9k is too short: give at least ${String(MIN_PREFIX_LENGTH)} characters`,
@@ -125,11 +146,26 @@ describe('resolveTicketId', () => {
 
   it('never names text that is not id-shaped', () => {
     const state = boardState('01J9K3AAAAAAAAAAAAAAAAAAAA', '01J9K4CCCCCCCCCCCCCCCCCCCC');
-    for (const text of [...TOKEN_FIXTURES.map((f) => f.value), 'Z'.repeat(27), '01NOPE0000']) {
+    for (const text of [
+      ...TOKEN_FIXTURES.map((f) => f.value),
+      'Z'.repeat(27),
+      'Z'.repeat(26),
+      '01NOPE0000',
+      `01${String.fromCharCode(0x17f, 0x17f)}ABCDEFGH23`,
+      `0${String.fromCharCode(0xfb06).repeat(12)}`,
+    ]) {
       const message = messageOf(() => resolveTicketId(state, text), 4, 'unknown-ticket');
       expect(message).toBe(NOT_AN_ID);
     }
-    for (const text of ['gh_p1', 'AKIL', 'a:b', '']) {
+    for (const text of [
+      'gh_p1',
+      'AKIL',
+      'a:b',
+      '',
+      'ZZZZZ',
+      'JBSWY',
+      `0${String.fromCharCode(0x17f)}`,
+    ]) {
       const message = messageOf(() => resolveTicketId(state, text), 1, 'id-too-short');
       expect(message).toBe('the ticket id given is too short: give at least 6 characters');
     }
