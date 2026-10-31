@@ -411,6 +411,42 @@ NITS), with the orchestrator's DECISIONs on ticket
 | `sync.ts`, `host-sync.ts` `what` | the remote name, which may be a URL | sanitised with the line |
 | `into-host.ts` local `dir` fetch | no remote | unchanged |
 
+## Review round 2
+
+From reviewer-ne2-2 (R1 to R5) and reviewer-ne2-1 (N03, N34) at 63cfb1b,
+with the orchestrator's round 2 DECISION and its addendum:
+
+- R1. A remote named by URL is shown as a name: `sync`'s `pulled from`
+  and `pushed to` lines, its `--json` `remote`, and `agentboard remote`'s
+  `remote:` and `problem:` lines and `--json` `remote.name` printed it
+  with its credential. Every displayed remote name goes through
+  `withoutUserinfo`, which leaves a real name (`origin`) as it is.
+- R2. A proxy URL with two raw `@`: `splitUserinfo` takes the user
+  information to the last `@`, git 2.53 splits a proxy URL at the first
+  and prints the rest as the host, percent-encoded
+  (`http://a@<token>%40x@proxy` printed `http://a@ghp%5F...%2540x%40proxy`).
+  The text between the first and the last `@` is redacted as given,
+  decoded and in git's host encoding (every byte other than an ASCII
+  letter, digit, `-` and `.` as `%XX`, upper-case hex).
+- R3. A proxy user name with a raw `#` or `?`: curl on git 2.32 ends the
+  authority there and prints `Could not resolve proxy: <text before it>`
+  (git 2.53 refuses the URL whole, `only SOCKS proxies support paths`,
+  which is already `<url>`). That text is redacted too. The test makes it
+  a DNS label longer than 63 characters, which the resolver refuses
+  without sending a query, so the lookup curl attempts never leaves the
+  machine.
+- R4. No change: `http://agent:pw/<x>@host`, `http:agent:<x>@host` and the
+  scp-like `<x>@host:path` carry no user information for git or curl, so
+  they never authenticate, and `withoutUserinfo` keeps them.
+- R5. A guard for a remote named by a relative path (`../<token>/repo.git`
+  is URL-valued because it holds `/`).
+- N03. The host-model push whose board ref loses the race on the last
+  retry is pinned: a `git` shim moves the remote's board ref before every
+  push, so every attempt is rejected, and prints a line quoting the
+  credentialed URL.
+- N34. `oldRemoteUrl` and the `kept` line of `init --into-host` show the
+  configured URL without its user information, on a resumed move too.
+
 ## Out of scope
 
 - The actor. `--as`, `AGENTBOARD_ACTOR` and the `as` tool argument are
