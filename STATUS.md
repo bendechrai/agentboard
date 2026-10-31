@@ -134,14 +134,24 @@ them on it (see "Known gaps").
   `mcp` processes must be stopped before upgrading. Delivered in PR #108
   (ticket 01M5Y0T56JQ1HS04A3N042Y2Z4); archived as
   `openspec/changes/archive/2026-10-30-keep-cursors-on-upgrade`.
+- **Refusals never repeat the refused input** (`board-cli`,
+  `board-agent-guidance`): no refusal, hint, `--json` error, MCP tool
+  error, web action error or stderr line repeats the value, flag name,
+  command word or argument name it refuses; it names the argument and the
+  expected form or the valid choices. The one exception is text of the
+  ticket id shape starting with `0`. `init --remote`, `sync`, `remote` and
+  the `init` paths never show a remote URL's credentials: quoted git lines
+  are sanitised against every configured remote, remote named by URL and
+  proxy, and success output shows URLs without user information. A source
+  scan fails if a refusal starts echoing input again. Delivered in PRs
+  #117 and #113 (ticket 01M5X7EGBFRQA4BH7R0A35ZW50); archived as
+  `openspec/changes/archive/2026-10-31-no-echo-refusals`.
 
 ## What is next
 
-1. `no-echo-refusals` (in progress, in `openspec/changes/`, proposed in
-   PR #110): no refusal or hint repeats the input it refuses, and `init
-   --remote` never repeats the URL given or its credentials (ticket
-   01M5X7EGBFRQA4BH7R0A35ZW50). Both task groups are in review (PRs #117
-   and #113).
+Release 0.3.0: `staging` holds everything above and the version is
+0.3.0 (#120); promote `staging` to `main` (#119), tag `v0.3.0` and
+approve the staged npm release (CONTRIBUTING.md, "Releasing").
 
 ## Known gaps
 
@@ -163,11 +173,11 @@ them on it (see "Known gaps").
   lifecycle and `add-claim-leases` share, so the next change that adds
   guidance (`GUIDANCE_VERSION` 4) has to make room or raise the limit
   through its own spec delta.
-- Refusals outside the lease commands still repeat the refused input
-  (for example `move <id> <token>` with an unknown status), where
-  `add-claim-leases` made the `--ttl`, `--timeout` and `config`
-  refusals name the expected form instead: ticket
-  01M5X7EGBFRQA4BH7R0A35ZW50, to be settled by an OpenSpec change.
+- The actor (`--as`, `AGENTBOARD_ACTOR`) is repeated in messages and
+  hints and never checked against the secret patterns: ticket
+  01M5Y9MQB9E3969DZ29VX5MZD0.
+- An MCP `resources/read` of an unknown URI repeats the URI in the SDK's
+  own error text: ticket 01M5YD930V39N0203HTTMQHYMW.
 - `init --into-host` killed after its step 4 (the local
   `refs/agentboard/board` updated) leaves the first board's events in
   that ref if `.board` is then replaced by a different board before the
