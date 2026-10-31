@@ -33,7 +33,11 @@ import {
 import { tempDir } from '../../store/__tests__/helpers.js';
 import { VERSION } from '../../version.js';
 import { createMcpServer, type BoardMcpServer } from '../server.js';
-import { mcpChild } from './mcp-helpers.js';
+import {
+  UNKNOWN_RESOURCE_CLIENT_MESSAGE,
+  UNKNOWN_RESOURCE_MESSAGE,
+  mcpChild,
+} from './mcp-helpers.js';
 
 const servers: BoardMcpServer[] = [];
 const clients: Client[] = [];
@@ -101,16 +105,26 @@ async function readText(client: Client, uri: string): Promise<string> {
   return (content as { text: string }).text;
 }
 
-/** Asserts that reading `uri` is refused with the SDK's InvalidParams error naming it. */
+/**
+ * Asserts that reading `uri` is refused with code InvalidParams, the
+ * unknown-resource message (raised by the SDK client with its own
+ * `MCP error -32602: ` prefix, once) and no `data`, and that the message
+ * does not repeat the URI. A URI that is part of a listed one (the
+ * trailing-slash near miss is the prefix of every role URI) is covered by
+ * the exact message alone.
+ */
 async function expectUnknown(client: Client, uri: string): Promise<void> {
   const error: unknown = await client.readResource({ uri }).then(
     () => undefined,
     (e: unknown) => e,
   );
   expect(error, uri).toBeInstanceOf(McpError);
-  expect((error as McpError).code, uri).toBe(ErrorCode.InvalidParams);
-  if (uri !== '') {
-    expect((error as McpError).message, uri).toContain(uri);
+  const mcpError = error as McpError;
+  expect(mcpError.code, uri).toBe(ErrorCode.InvalidParams);
+  expect(mcpError.message, uri).toBe(UNKNOWN_RESOURCE_CLIENT_MESSAGE);
+  expect(mcpError.data, uri).toBeUndefined();
+  if (uri !== '' && !UNKNOWN_RESOURCE_MESSAGE.includes(uri)) {
+    expect(mcpError.message, uri).not.toContain(uri);
   }
 }
 
@@ -205,10 +219,13 @@ describe('guide over MCP, in process', () => {
     },
   );
 
-  it.each(UNKNOWN_URIS)('reading the unknown URI %j is an InvalidParams error', async (uri) => {
-    const { client } = await inProcess();
-    await expectUnknown(client, uri);
-  });
+  it.each(UNKNOWN_URIS)(
+    'reading the unknown URI %j is an InvalidParams error naming the resources',
+    async (uri) => {
+      const { client } = await inProcess();
+      await expectUnknown(client, uri);
+    },
+  );
 
   it('an unknown URI does not stop the server', async () => {
     const { client } = await inProcess();
@@ -279,6 +296,7 @@ describe('guide over MCP, against the built server', () => {
     await expectUnknown(child.client, 'agentboard://nope');
     await expectUnknown(child.client, 'agentboard://guide/tester');
     expect(await readText(child.client, GUIDE_RESOURCE_URI)).toBe(renderGuide(VERSION));
+    expect(child.stderr()).toBe('');
     expect(child.errors).toEqual([]);
   }, 30_000);
 });
