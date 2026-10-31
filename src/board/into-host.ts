@@ -1762,16 +1762,18 @@ function lockedMove(
 
   // 4. The value the swap compares against, recorded in the temporary so
   // a re-run with another board can set the ref back; then the
-  // compare-and-swap, then the host .gitignore entry. With an evidence,
-  // `<old>` is the undo point only when it no longer holds the evidence's
-  // HEAD: when another writer moved the ref after the leftover pass and
-  // `<old>` still holds that HEAD, it holds this board's unpublished
-  // commits, so no record is written and any the temporary has goes
-  // (ruling 16), and a later run with another board refuses.
+  // compare-and-swap, then the host .gitignore entry. With candidates at
+  // the leftover pass, `<old>` is the undo point only when it holds none
+  // of their HEADs: when another writer moved the ref after the leftover
+  // pass and `<old>` still holds the HEAD of any of them (the evidence or
+  // an older leftover the ref was set back to), it holds this board's
+  // unpublished commits, so no record is written and any the temporary
+  // has goes (rulings 16 and 18), and a later run with another board
+  // refuses.
   const head = worktree.run('rev-parse', 'HEAD').trim();
   const resuming = evidencePath !== undefined && old === refAtLeftover;
   const movedOverEvidence =
-    evidence !== undefined && !resuming && old !== '' && evidence.head !== null && isAncestor(host, evidence.head, old);
+    !resuming && old !== '' && candidates.some((w) => w.head !== null && isAncestor(host, w.head, old));
   const record = resuming ? carriedRecord : movedOverEvidence ? null : old === '' ? zeroObjectName(plan) : old;
   if (record === null) {
     removeRecord(host, temp, BEFORE_RECORD);
