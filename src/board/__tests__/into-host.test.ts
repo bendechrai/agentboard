@@ -4127,4 +4127,282 @@ describe('into-host-replaced-after-step-4: what an unfinished move of another bo
       expect(keptRepositories(fx.root)).toEqual([]);
     });
   });
+
+  describe('review round 1 (reviewer-ih4-2): the record carried forward, a reset that changes nothing', () => {
+    /**
+     * `env` with a `git` shim that runs the first `update-ref
+     * refs/agentboard/board` for real, then moves `.board` (`dir`) aside and
+     * clones it back into place: another git directory, so the move of the
+     * same board refuses at step 6 (a transient refusal). Returns the env
+     * and where the original went, for the test to move it back.
+     */
+    function cloningAfterStep4(env: Env, dir: string): { env: Env; aside: string } {
+      const aside = join(tempDir(), 'original');
+      return {
+        aside,
+        env: withShellGitShim(
+          env,
+          [
+            'case " $* " in',
+            `  *" update-ref ${BOARD_REF} "*)`,
+            '    "$GIT" "$@"; status=$?',
+            `    mv '${dir}' '${aside}' && "$GIT" clone -q '${aside}' '${dir}'`,
+            '    exit $status',
+            '    ;;',
+            'esac',
+          ].join('\n'),
+        ),
+      };
+    }
+
+    /** Moves the temporary worktree at `from` to `migrating/<pid>`; returns the new path. */
+    function renameTemporary(root: string, from: string, pid: number): string {
+      const to = join(agentboardDir(root), MIGRATING_DIR, String(pid));
+      git(root, 'worktree', 'move', from, to);
+      return to;
+    }
+
+    /**
+     * Board A (two events) beside a local ref fetched by hand, its move
+     * refused at step 6 for a transient reason (the update made, the ref
+     * holding A's unpublished commits on top of the hand-fetched commit),
+     * the original repository moved back, and the temporary renamed to a
+     * dead pid (so a re-run in this process makes its own beside it).
+     */
+    function sameBoardInterrupted(env: Env): {
+      root: string;
+      remote: string;
+      dir: string;
+      aFiles: string[];
+      hand: { commit: string; file: string };
+      first: string;
+      updated: string;
+    } {
+      const { root, remote, dir } = standaloneProject(env, 2);
+      const aFiles = eventFiles(dir);
+      const hand = handFetchedRef(root, env);
+      const cloning = cloningAfterStep4(env, dir);
+      expectBoardError(() => move(root, cloning.env), 3, 'sync-failed');
+      rmSync(dir, { recursive: true, force: true });
+      fs.renameSync(cloning.aside, dir);
+      const updated = String(refCommit(root));
+      const first = renameTemporary(root, String(registeredMigrating(root)[0]), DEAD_PID);
+      expect(revParse(first)).toBe(updated);
+      expect(readRecordFile(first, BEFORE_RECORD)).toBe(`${hand.commit}\n`);
+      return { root, remote, dir, aFiles, hand, first, updated };
+    }
+
+    it("blocker: a re-run of the same board from its leftover whose HEAD is the ref carries that leftover's record forward (never the value its own update wrote); B then sets the ref back to the hand-fetched commit", () => {
+      const env = syncEnv();
+      const fx = sameBoardInterrupted(env);
+      const b = stagedBoard(env, 'bee');
+
+      // The re-run of A, refused at step 6 (.board swapped for B right after its update).
+      expectBoardError(() => move(fx.root, replacingAfterStep4(env, fx.dir, b.dir)), 3, 'sync-failed');
+
+      expect(refCommit(fx.root)).toBe(fx.updated);
+      const temporaries = registeredMigrating(fx.root);
+      expect(temporaries.length).toBeGreaterThan(0);
+      for (const temporary of temporaries) {
+        expect(readRecordFile(temporary, BEFORE_RECORD), temporary).toBe(`${fx.hand.commit}\n`);
+      }
+
+      const result = move(fx.root, env);
+
+      expect(result.action).toBe('moved');
+      const lines = result.message.split('\n');
+      expect(lines.filter((l) => l.startsWith(`set ${BOARD_REF} in the host repository back to its value before`))).toHaveLength(1);
+      expectMoved(fx.root, env);
+      const all = [...b.files, fx.hand.file].sort();
+      expect(eventFiles(fx.dir)).toEqual(all);
+      expect(refEvents(fx.root)).toEqual(all);
+      expect(refEvents(fx.remote)).toEqual(all);
+      expectNeverIn(fx.root, fx.aFiles);
+      expectNeverIn(fx.remote, fx.aFiles);
+      expect(isAncestor(fx.root, fx.hand.commit, BOARD_REF)).toBe(true);
+    });
+
+    it('blocker: with no usable record to carry forward (the leftover of 0.3.0), the re-run of the same board writes none, so a later run with B refuses rather than resets', () => {
+      const env = syncEnv();
+      const fx = sameBoardInterrupted(env);
+      rmSync(recordPath(fx.first, BEFORE_RECORD));
+      const b = stagedBoard(env, 'bee');
+
+      expectBoardError(() => move(fx.root, replacingAfterStep4(env, fx.dir, b.dir)), 3, 'sync-failed');
+
+      expect(refCommit(fx.root)).toBe(fx.updated);
+      const temporaries = registeredMigrating(fx.root);
+      for (const temporary of temporaries) {
+        expect(readRecordFile(temporary, BEFORE_RECORD), temporary).toBeNull();
+      }
+
+      const err = expectBoardError(() => move(fx.root, env), 3, 'sync-failed');
+
+      expect(temporaries.map((t) => cannotSetBack(t, fx.dir, NO_RECORD))).toContain(err.message);
+      expect(refCommit(fx.root)).toBe(fx.updated);
+      expectNeverIn(fx.remote, fx.aFiles);
+    });
+
+    it('nit: a temporary of another board whose record equals its HEAD and the ref (the board wholly in a hand-fetched ref) changes nothing and is not reported as a reset', () => {
+      const env = syncEnv();
+      const { root, remote, dir, tip } = standaloneProject(env, 2);
+      const aFiles = eventFiles(dir);
+      // The host ref already holds the whole of A, fetched by hand.
+      git(root, 'fetch', '-q', dir, `+refs/heads/main:${BOARD_REF}`);
+      expect(refCommit(root)).toBe(tip);
+      const b = stagedBoard(env, 'bee');
+      expectBoardError(() => move(root, replacingAfterStep4(env, dir, b.dir)), 3, 'sync-failed');
+      const temporary = String(registeredMigrating(root)[0]);
+      expect(revParse(temporary)).toBe(tip);
+      expect(readRecordFile(temporary, BEFORE_RECORD)).toBe(`${tip}\n`);
+
+      const result = move(root, env);
+
+      expect(result.action).toBe('moved');
+      expectNoReset(result.message);
+      expectNamedAsAnotherBoard(result.message, [temporary], dir);
+      expectMoved(root, env);
+      // The hand-fetched ref is integrated as before (it was there independently of the move).
+      expect(isAncestor(root, tip, BOARD_REF)).toBe(true);
+      expect(eventFiles(dir)).toEqual([...aFiles, ...b.files].sort());
+      expect(refEvents(remote)).toEqual([...aFiles, ...b.files].sort());
+    });
+  });
+
+  describe('review round 1 addendum (reviewer-ih4-1): resets kept by a refusal, sha256, the furthest candidate, a missing object', () => {
+    const MISSING = 'the value that move recorded for the ref is not a commit in the host repository';
+
+    /** design.md "Test author rulings" 9: the refusal of `cannotSetBack` after the resets `kept` were made earlier in the same run. */
+    function cannotSetBackAfterResets(temporary: string, dir: string, why: string, kept: readonly string[]): string {
+      return cannotSetBack(temporary, dir, why).replace(
+        'nothing was changed;',
+        `${BOARD_REF} was set back for the interrupted ${kept.length === 1 ? 'move' : 'moves'} at ` +
+          `${kept.join(', ')} earlier in this run, and nothing else was changed;`,
+      );
+    }
+
+    /**
+     * The chain of the 1.2 chain test: A's move updated the ref (zero ->
+     * A) and was refused at the rename (.board became C), C's move rebased
+     * C onto A, updated the ref (A -> C') and was refused (.board became
+     * B); their temporaries renamed to dead pids.
+     */
+    function chainOfTwo(env: Env): {
+      root: string;
+      remote: string;
+      dir: string;
+      tA: string;
+      tC: string;
+      aTip: string;
+      cTip: string;
+      aFiles: string[];
+      cFiles: string[];
+    } {
+      const { root, remote, dir } = standaloneProject(env, 2);
+      const aFiles = eventFiles(dir);
+      const c = stagedBoard(env, 'cee');
+      const b = stagedBoard(env, 'bee');
+      expectBoardError(() => move(root, replacingAfterStep4(env, dir, c.dir)), 3, 'sync-failed');
+      const aTip = String(refCommit(root));
+      const parked = join(tempDir(), 'parked');
+      git(root, 'worktree', 'move', String(registeredMigrating(root)[0]), parked);
+      expectBoardError(() => move(root, replacingAfterStep4(env, dir, b.dir)), 3, 'sync-failed');
+      const cTip = String(refCommit(root));
+      const migrating = join(agentboardDir(root), MIGRATING_DIR);
+      const tC = join(migrating, String(DEAD_PID));
+      const tA = join(migrating, String(DEAD_PID - 1));
+      git(root, 'worktree', 'move', String(registeredMigrating(root)[0]), tC);
+      git(root, 'worktree', 'move', parked, tA);
+      expect(revParse(tA)).toBe(aTip);
+      expect(revParse(tC)).toBe(cTip);
+      expect(isAncestor(root, aTip, cTip)).toBe(true);
+      return { root, remote, dir, tA, tC, aTip, cTip, aFiles, cFiles: c.files };
+    }
+
+    it('a refusal after a reset made earlier in the same run says the reset was kept, not that nothing was changed', () => {
+      const env = syncEnv();
+      const fx = chainOfTwo(env);
+      rmSync(recordPath(fx.tA, BEFORE_RECORD));
+      const remoteRefs = git(fx.remote, 'for-each-ref');
+
+      const err = expectBoardError(() => move(fx.root, env), 3, 'sync-failed');
+
+      expect(err.message).toBe(cannotSetBackAfterResets(fx.tA, fx.dir, NO_RECORD, [fx.tC]));
+      expect(err.message).not.toContain('nothing was changed');
+      // The reset for C's move stays; A's update is still in the ref.
+      expect(refCommit(fx.root)).toBe(fx.aTip);
+      expect(registeredMigrating(fx.root)).toContain(fx.tA);
+      expect(git(fx.remote, 'for-each-ref')).toBe(remoteRefs);
+    });
+
+    it('two candidates of other boards the ref has moved past: the refusal names the one whose HEAD is the furthest along, nothing changed', () => {
+      const env = syncEnv();
+      const fx = chainOfTwo(env);
+      const past = commitOnTop(fx.root, fx.cTip, 'on top');
+      git(fx.root, 'update-ref', BOARD_REF, past);
+      const before = { refs: git(fx.root, 'for-each-ref'), worktrees: git(fx.root, 'worktree', 'list', '--porcelain') };
+
+      const err = expectBoardError(() => move(fx.root, env), 3, 'sync-failed');
+
+      expect(err.message).toBe(cannotSetBack(fx.tC, fx.dir, MOVED_PAST));
+      expect({ refs: git(fx.root, 'for-each-ref'), worktrees: git(fx.root, 'worktree', 'list', '--porcelain') }).toEqual(before);
+    });
+
+    it('a well formed record naming an object the host repository does not have is refused as unusable, not as a lost race, nothing changed', () => {
+      const env = syncEnv();
+      const fx = refusedAtRename(env, 'hand-fetched');
+      const missing = 'f'.repeat(40);
+      expect(() => git(fx.root, 'cat-file', '-e', missing)).toThrow();
+      writeFileSync(recordPath(fx.temporary, BEFORE_RECORD), `${missing}\n`);
+      const before = frozen(fx);
+
+      const err = expectBoardError(() => move(fx.root, env), 3, 'sync-failed');
+
+      expect(err.message).toBe(cannotSetBack(fx.temporary, fx.dir, MISSING));
+      expect(err.message).not.toContain('moved it meanwhile');
+      expect(frozen(fx)).toEqual(before);
+    });
+
+    it('in a sha256 repository the record of a host without the ref is the 64-digit zero object name, and the run with B deletes the ref', () => {
+      const env = syncEnv();
+      /** `git init` of a sha256 repository at `dir` on `main`. */
+      const init256 = (dir: string, ...flags: string[]): string => {
+        mkdirSync(dir, { recursive: true });
+        git(dir, 'init', '-q', '--object-format=sha256', '-b', 'main', ...flags);
+        return dir;
+      };
+      const root = init256(join(tempDir(), 'a'));
+      writeFileSync(join(root, '.gitignore'), '.board/\n');
+      git(root, 'add', '.gitignore');
+      git(root, 'commit', '-q', '-m', 'ignore the board');
+      const remote = init256(join(tempDir(), 'origin.git'), '--bare');
+      git(root, 'remote', 'add', 'origin', remote);
+      git(root, 'push', '-q', 'origin', 'main');
+      const dir = init256(join(root, '.board'));
+      syncedStandalone(root, env, 2, init256(join(tempDir(), 'a-remote.git'), '--bare'));
+      const aFiles = eventFiles(dir);
+      const stagingRoot = bareHost('staging-bee');
+      init256(join(stagingRoot, '.board'));
+      const b = syncedStandalone(stagingRoot, env, 1, init256(join(tempDir(), 'b-remote.git'), '--bare'), 'bee');
+      const bFiles = eventFiles(b.dir);
+      expect(git(dir, 'rev-parse', '--show-object-format').trim()).toBe('sha256');
+      expect(git(b.dir, 'rev-parse', '--show-object-format').trim()).toBe('sha256');
+
+      expectBoardError(() => move(root, replacingAfterStep4(env, dir, b.dir)), 3, 'sync-failed');
+
+      const temporary = String(registeredMigrating(root)[0]);
+      expect(refCommit(root)).toMatch(/^[0-9a-f]{64}$/);
+      expect(readRecordFile(temporary, BEFORE_RECORD)).toBe(`${'0'.repeat(64)}\n`);
+
+      const result = move(root, env);
+
+      expect(result.action).toBe('moved');
+      expect(result.message.split('\n')).toContain(deletedLine(temporary));
+      expect(eventFiles(dir)).toEqual(bFiles);
+      expect(refEvents(root)).toEqual(bFiles);
+      expect(refEvents(remote)).toEqual(bFiles);
+      expectNeverIn(root, aFiles);
+      expectNeverIn(remote, aFiles);
+    });
+  });
 });
