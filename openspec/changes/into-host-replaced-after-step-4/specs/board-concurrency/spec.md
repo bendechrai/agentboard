@@ -94,9 +94,9 @@ keeps its own) when the evidence's HEAD equals the ref; when its HEAD is a
 strict ancestor of the ref (another writer added commits on top), or it
 has no readable, well formed record, the move SHALL write none. When the
 ref has another value at the swap (another writer moved it after the
-leftover pass) that is a descendant of, or equal to, the evidence's HEAD,
-it still holds this board's unpublished commits, and the move SHALL write
-no record either. Writing none means a later run with another board
+leftover pass) that is a descendant of, or equal to, the HEAD of any such
+temporary (the evidence or another), it still holds this board's
+unpublished commits, and the move SHALL write no record either. Writing none means a later run with another board
 refuses rather than resets or integrates. When several such temporaries
 exist, the evidence is the first in the byte order of their names whose
 HEAD equals the ref, or, when none does, the first in that order. A
@@ -301,3 +301,6 @@ integrated as before.
 - **WHEN** a move of board A is killed right after it updated the local `refs/agentboard/board`, A gains an event, a run of A that resumes from that temporary is killed between its own update and the removal of the first temporary, the first temporary's name sorts before the second's, a further run of A is killed right after its update, `.board` is replaced by an unrelated board B, and `agentboard init --into-host` runs
 - **THEN** it moves B with exit 0 and the ref deleted (said in its output), and no event file or commit of A is in `.board/events`, the local `refs/agentboard/board` or the host remote's `refs/agentboard/board`
 
+#### Scenario: Another writer sets the host ref back to an older leftover while the same board resumes
+- **WHEN** a move of board A is killed right after it updated the local `refs/agentboard/board`, A gains an event, a run of A that resumes from that temporary is killed between its own update and the removal of the first temporary, a further run of A sorts the first temporary before the second and, after its leftover pass and before its step 2 fetch, another writer sets the local ref back to the first temporary's HEAD, that run is killed right after its own update, `.board` is replaced by an unrelated board B, and `agentboard init --into-host` runs
+- **THEN** it exits 3 with reason `sync-failed` and changes nothing, and no event file of A is in `.board/events` or the host remote's `refs/agentboard/board`

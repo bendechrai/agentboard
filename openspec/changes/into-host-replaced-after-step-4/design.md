@@ -140,12 +140,14 @@ sequences D1, D2, D2b, D3, D5). So:
   with another board refuses rather than resets. When such a temporary
   existed and `<old>` differs from `refAtLeftover` (another writer moved
   the ref between the leftover pass and step 3) but `<old>` still holds
-  the evidence's HEAD (is a descendant of, or equal to, it), the move
-  writes no record and removes any the temporary has (ruling 16):
-  `<old>` then holds this board's unpublished commits, and recording it
-  would let ruling 8 integrate them in a later run with another board.
-  Otherwise (no such temporary, or `<old>` no longer holds its HEAD)
-  `<old>` as above.
+  the HEAD of any such temporary (is a descendant of, or equal to, the
+  HEAD of the evidence or of another dead leftover of this board whose
+  HEAD was an ancestor of, or equal to, `refAtLeftover`), the move
+  writes no record and removes any the temporary has (rulings 16 and
+  18): `<old>` then holds this board's unpublished commits, and
+  recording it would let ruling 8 integrate them in a later run with
+  another board. Otherwise (no such temporary, or `<old>` holds none of
+  their HEADs) `<old>` as above.
 - That leftover is not removed in the leftover pass. It is removed (and
   named as today, left by an interrupted move) only once the resuming
   move has written its own record at step 4; a run that stops earlier (a
@@ -364,14 +366,15 @@ tests pin them.
     finding 1).** When a dead leftover of this board is the evidence and
     the `<old>` read at step 3 differs from the ref as the leftover pass
     found it (another writer moved the ref in between) while `<old>` is a
-    descendant of, or equal to, the evidence's HEAD, the move writes no
+    descendant of, or equal to, the HEAD of any dead leftover of this
+    board that was a candidate (ruling 18), the move writes no
     `agentboard-board-before` at step 4 and removes any its temporary has
     (an adopted evidence included), so a later run with another board
     refuses (`that move left no record of the ref's value before it`)
     rather than treating this board's commits as content the ref held
     anyway (ruling 8). The evidence is removed after the swap only when
-    `<old>` equals that value, as before; when `<old>` no longer holds the
-    evidence's HEAD, `<old>` is recorded as for a move without evidence.
+    `<old>` equals that value, as before; when `<old>` holds none of those
+    HEADs, `<old>` is recorded as for a move without evidence.
     The tests are the reviewer's S1 (the resume killed after its swap,
     the evidence adopted because the host remote holds another clone's
     board), S1b (killed before its swap) and S1f (a fresh temporary, which
@@ -388,6 +391,17 @@ tests pin them.
     Preferring the equal one keeps that record, so a later run with
     another board resets exactly instead of refusing. The test is the
     reviewer's S2.
+18. **Any candidate, not only the evidence (review round 4, reviewer-ih4-2
+    finding 1; amends ruling 16).** The test of ruling 16 is made against
+    every dead leftover of this board that was a candidate at the
+    leftover pass (HEAD an ancestor of, or equal to, the ref then), not
+    only the chosen evidence: when the `<old>` read at step 3 differs from
+    the ref at the leftover pass and is a descendant of, or equal to, the
+    HEAD of any of them, no record is written. Since ruling 17 prefers the
+    newest leftover as evidence, another writer setting the ref back to an
+    older leftover's HEAD leaves `<old>` holding this board's unpublished
+    commits but not the evidence's HEAD; recording `<old>` would let
+    ruling 8 integrate them. The test is the reviewer's S8.
 
 ## Alternatives considered
 
