@@ -311,3 +311,50 @@ ticket):
   the values `source` and `names` in its messages; the scan's allow-list
   has those two entries.
 
+
+### Rulings of the group 2 test author
+
+Points the spec left open for the web app and the guide, ruled when the
+group 2 tests were written (each pinned by a test and posted as a
+`DECISION:` comment on the group 2 ticket):
+
+- **The web names `the argument to`.** A web action's body properties are
+  the MCP argument names, so the run context of an action
+  (`actionContext`, `src/web/actions.ts`) has `surface` `mcp`, and the
+  shared conversion of the `handoff` arguments refuses a bad `to` with
+  the message naming `the argument to`, never `--to`.
+- **The web hint.** The `invalid-actor` hint of a refused `to` answered by
+  the server is one line with the placeholder `<actor>`, the word `form`
+  and the form in the words of the `--as` help, the step
+  `'agentboard serve --as <actor>'` and the words `the new assignee in the
+  to argument`; it never names `AGENTBOARD_ACTOR` (a browser cannot set
+  it), `--to`, `agentboard mcp` or `as argument` (a web body refuses
+  `as`). The rest of its wording, and how it is rendered, are the
+  implementer's; the hints of the other action refusals are unchanged.
+- **`serve --as` keeps the CLI hint.** `agentboard serve --as <refused>`
+  is refused by the CLI before the server exists, so its hint is the CLI
+  hint of group 1 (`--as <actor>`, no `AGENTBOARD_ACTOR`, which `serve`
+  ignores). It is refused before the board is looked for and before the
+  port is tried (`invalid-actor`, not `board-not-found` or
+  `port-in-use`), and prints no URL and no access token.
+- **The order on the web.** `to` is checked before the status, the note
+  and the ticket, as on the CLI and over MCP, so a body whose `to` is
+  refused is `invalid-actor` whatever else is wrong with it.
+  `allow-secret-like` and `as` in a body stay refused with `usage`
+  whatever their value (the browser has no override).
+- **Accepted names.** Every name of the accepted table, `agentboard`
+  included, is a valid `to` from the browser; every one but `agentboard`
+  is a valid `serve --as` (`serve --as agentboard` keeps its reserved
+  refusal, `usage`).
+- **The server takes a checked actor.** The check of the server's actor is
+  the CLI's (`commandActor`, before `serve` runs); `startServer` and
+  `runAction` are given the actor `serve` was started with and do not
+  check it again.
+- **The guide stays within 180 lines by tightening, not long lines.** The
+  orchestrator output was already at 180 lines, so the actor rule's new
+  sentence is paid for by tightening the guide's prose. Every prose line
+  of every guide output (not a command line, not an exit code line) is at
+  most 80 characters. The actor rule, read with line breaks as spaces,
+  gives the form in the words `1 to 32 ASCII letters, digits, . _ - or @,
+  the first a letter or digit`, names `invalid-actor` and exit 1 and a
+  secret pattern, and contains `--allow-secret-like does not apply`.
