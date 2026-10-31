@@ -31,7 +31,7 @@ export const MIN_PREFIX_LENGTH = 6;
  * (`src/guidance/hints.ts`) decide with this. Pure.
  */
 export function isIdShaped(text: string): boolean {
-  return /^[0-7][0-9A-HJKMNP-TV-Z]{0,25}$/i.test(text);
+  return /^0[0-9A-HJKMNP-TV-Z]{0,25}$/i.test(text);
 }
 
 /**
@@ -44,8 +44,8 @@ export function isIdShaped(text: string): boolean {
  */
 export const NOT_AN_ID_MESSAGE =
   'no ticket matches the id given, which is not a ticket id: an id is 26 characters of ' +
-  'Crockford base32 (digits and letters other than I, L, O and U), or a unique prefix of ' +
-  'at least 6 of them';
+  'Crockford base32 (digits and letters other than I, L, O and U) starting with 0, or a ' +
+  'unique prefix of at least 6 of them';
 
 /**
  * Resolves a full ticket id or a unique prefix against `state.tickets`
