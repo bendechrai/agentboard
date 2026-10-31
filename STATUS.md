@@ -158,13 +158,24 @@ them on it (see "Known gaps").
   method or the parameter path. Delivered in PR #126 (ticket
   01M5YD930V39N0203HTTMQHYMW); archived as
   `openspec/changes/archive/2026-10-31-mcp-unknown-resource`.
+- **Actor names are checked** (`board-cli`, `board-events`,
+  `board-web-actions`, `board-agent-guidance`): an actor name given with
+  `--as`, `AGENTBOARD_ACTOR` (when used), `handoff --to`, an MCP `as` or
+  `to`, `serve --as` or a web hand-off's `to` is refused with exit 1
+  `invalid-actor` (HTTP 400 on the web) when it matches a secret pattern
+  or falls outside 1 to 32 ASCII letters, digits, `.`, `_`, `-` or `@`
+  starting with a letter or digit, before anything is written and without
+  repeating it; `--allow-secret-like` does not apply. Existing events of
+  any actor still fold. Delivered in PRs #128 and #131 (ticket
+  01M5Y9MQB9E3969DZ29VX5MZD0); archived as
+  `openspec/changes/archive/2026-10-31-actor-secret-check`.
 
 ## What is next
 
-0.3.0 is released (tag `v0.3.0`, npm `@bendechrai/agentboard@0.3.0`,
-GitHub Release "agentboard 0.3.0"). Nothing is queued: the open work is
-the known gaps below and the draft `openspec/add-harness-integration`
-(PR #67), which awaits review.
+0.3.0 is released (tag `v0.3.0`, npm `@bendechrai/agentboard@0.3.0`).
+In progress for the next release: `add-harness-integration` (hooks and
+more harness targets; group 1, the hook command contract, is merged in
+#127) and `into-host-replaced-after-step-4` (in review).
 
 ## Known gaps
 
@@ -177,9 +188,9 @@ the known gaps below and the draft `openspec/add-harness-integration`
   lifecycle and `add-claim-leases` share, so the next change that adds
   guidance (`GUIDANCE_VERSION` 4) has to make room or raise the limit
   through its own spec delta.
-- The actor (`--as`, `AGENTBOARD_ACTOR`) is repeated in messages and
-  hints and never checked against the secret patterns: ticket
-  01M5Y9MQB9E3969DZ29VX5MZD0.
+- The shared secret patterns miss short prefixed keys such as Stripe
+  restricted keys (`rk_live_`, `rk_test_`), which also fit the actor form:
+  ticket 01M69B8W53DGS7CF8XY4H951TC.
 - `init --into-host` killed after its step 4 (the local
   `refs/agentboard/board` updated) leaves the first board's events in
   that ref if `.board` is then replaced by a different board before the
