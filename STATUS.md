@@ -155,9 +155,9 @@ them on it (see "Known gaps").
   SDK clients no longer show the prefix twice. The code, exact matching,
   the resource list and the read results are unchanged; unknown methods
   and malformed parameters keep the SDK's errors, which name only the
-  method or the parameter path. Delivered on `mcp/mcp-unknown-resource`
-  (ticket 01M6925XB4S9713NM17QKZ3Y86); the change
-  `openspec/changes/mcp-unknown-resource` is archived once merged.
+  method or the parameter path. Delivered in PR #126 (ticket
+  01M5YD930V39N0203HTTMQHYMW); archived as
+  `openspec/changes/archive/2026-10-31-mcp-unknown-resource`.
 
 ## What is next
 
