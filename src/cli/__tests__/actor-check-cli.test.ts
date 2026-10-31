@@ -645,6 +645,7 @@ const EVERY_COMMAND: Readonly<Record<string, readonly string[]>> = {
   'config set': ['config', 'set', 'queue.window', '5m'],
   'config get': ['config', 'get', 'queue.window'],
   mcp: ['mcp'],
+  hook: ['hook', 'stop'],
   'agents install': ['agents', 'install'],
   'agents check': ['agents', 'check'],
   version: ['version'],

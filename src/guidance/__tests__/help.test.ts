@@ -212,9 +212,16 @@ describe('the help data of record in the registry', () => {
     expect(c.exitCodes[0]).toMatchObject({ code: 0 });
     expect(c.exitCodes[0]?.reason).toBeUndefined();
     if (name === 'hook') {
-      // board-cli "Exit codes": hook exits 0 or 2 only, as the harness
-      // protocol defines them, and never reports a usage error.
-      expect(codes).toEqual([0, 2]);
+      // board-cli "Exit codes": the executable exits 0 or 2 only, as the
+      // harness protocol defines them, and never reports a usage error.
+      // Like every registry command it lists 1 invalid-actor, reachable
+      // only through the in-process registry (orchestrator STOP ruling
+      // after the rebase onto the actor check).
+      expect(c.exitCodes.map((e) => [e.code, e.reason ?? null])).toEqual([
+        [0, null],
+        [1, 'invalid-actor'],
+        [2, null],
+      ]);
       return;
     }
     expect(c.exitCodes).toContainEqual(expect.objectContaining({ code: 1, reason: 'usage' }));

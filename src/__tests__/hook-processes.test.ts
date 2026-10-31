@@ -487,6 +487,9 @@ describe('scenario: read-only', SLOW, () => {
     writeFileSync(temp, 'partial');
     const dayAgo = new Date(Date.now() - 86_400_000);
     utimesSync(temp, dayAgo, dayAgo);
+    // Exact, in nanoseconds: mtimeMs is a float that Node 22 and 24 round
+    // differently.
+    const tempMtime = statSync(temp, { bigint: true }).mtimeNs;
     const files = tree(boardDir);
     const hashes = cacheHashes(join(boardDir, 'cache.sqlite'));
 
@@ -505,7 +508,7 @@ describe('scenario: read-only', SLOW, () => {
     }
 
     expect(tree(boardDir)).toEqual(files);
-    expect(statSync(temp).mtimeMs).toBe(dayAgo.getTime());
+    expect(statSync(temp, { bigint: true }).mtimeNs).toBe(tempMtime);
     expect(cacheHashes(join(boardDir, 'cache.sqlite'))).toEqual(hashes);
     expect(eventNames(eventsDir)).not.toContain(grantFile);
 
