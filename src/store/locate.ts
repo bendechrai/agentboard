@@ -42,7 +42,8 @@ export interface LocateOptions {
   env?: Readonly<Record<string, string | undefined>>;
   /**
    * A bound, in milliseconds, on the `git` child of rule 2. A `git` that
-   * has not answered within it is stopped and counts as git failing, so
+   * has not answered within it is killed (SIGKILL, so one that ignores
+   * SIGTERM is bounded too) and counts as git failing, so
    * discovery falls through to rule 3 (`./.board`). `agentboard hook`
    * passes what is left of its budget (board-harness-hooks "Hook command
    * and protocol"). Unbounded when absent; a value of zero or less is a
@@ -108,8 +109,12 @@ function gitCommonDir(
       env: { ...env },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      // A timeout of 0 would mean no bound.
-      ...(timeoutMs === undefined ? {} : { timeout: Math.max(1, Math.floor(timeoutMs)) }),
+      // A timeout of 0 would mean no bound. The child is killed with
+      // SIGKILL, which a git that ignores or traps SIGTERM cannot survive,
+      // so a bound is a bound; rev-parse holds no lock a kill could leave.
+      ...(timeoutMs === undefined
+        ? {}
+        : { timeout: Math.max(1, Math.floor(timeoutMs)), killSignal: 'SIGKILL' as const }),
     });
     const dir = out.replace(/\r?\n$/, '');
     return dir === '' ? null : dir;
