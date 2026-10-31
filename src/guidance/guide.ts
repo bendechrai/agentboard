@@ -81,7 +81,11 @@ export const GUIDE_MAX_LINES = 180;
  *    needs an actor, `--as <actor>` or else `AGENTBOARD_ACTOR`; the actor
  *    is never inferred from the OS user (those two words appear); every
  *    command accepts `--as`, so pass it always; one stable name per role
- *    instance.
+ *    instance. The form, in the words of the `--as` help (`1 to 32 ASCII
+ *    letters, digits, . _ - or @, the first a letter or digit`, read with
+ *    line breaks as spaces); a name outside it or matching a secret
+ *    pattern exits 1 with `invalid-actor`, and `--allow-secret-like does
+ *    not apply` (board-agent-guidance "Guide states the actor form").
  * 3. `Finding work`: command lines for `inbox` (run before starting or
  *    dispatching work; it acknowledges, `--peek` does not), `list` (its
  *    filters `--status`, `--assignee`, `--change`) and `show`; never rely
@@ -414,6 +418,9 @@ const GUIDE_BODY: readonly string[] = [
   'actor), needs an actor: --as <actor> or the AGENTBOARD_ACTOR environment',
   'variable; with neither it exits 1. It is never inferred from the OS user.',
   'Pass --as on every call, with one stable name per role, such as impl-1.',
+  'A name is 1 to 32 ASCII letters, digits, . _ - or @, the first a letter or',
+  'digit; one outside that form, or matching a secret pattern, exits 1 with',
+  'invalid-actor, and --allow-secret-like does not apply to it.',
   '',
   'Finding work',
   'Ask the board every time; never rely on a remembered picture of it.',
@@ -423,16 +430,14 @@ const GUIDE_BODY: readonly string[] = [
   '  agentboard list --change <change>',
   '  agentboard show <id>',
   'inbox prints every event since your last inbox (your own included) and',
-  'acknowledges them, so the next call prints only newer ones; --peek lists',
-  'without acknowledging. list prints open tickets; show prints one in full.',
+  'acknowledges them (--peek does not); list prints open tickets, show one.',
   '',
   'Claiming before you start',
   'Claim a ticket before doing any work on it:',
   '  agentboard claim <id> --as <actor>',
   'Exit 4 with already-assigned means another actor holds it: do not work on',
   'it. Claiming a ticket you already hold writes nothing, so a retried claim',
-  'is safe, and when agents race for a ticket exactly one wins. To give a',
-  'ticket up, release it:',
+  'is safe; when agents race for a ticket exactly one wins. To give it up:',
   '  agentboard release <id> --as <actor>',
   '',
   'Handing off and blocking',
@@ -452,8 +457,7 @@ const GUIDE_BODY: readonly string[] = [
   'with -- goes after a lone --.',
   '',
   'Decisions and closing',
-  'When a discussion settles something, record it in a comment that begins',
-  'with DECISION:',
+  'Record what a discussion settles in a comment that begins with DECISION:',
   '  agentboard comment <id> "DECISION: <what was decided>" --as <actor>',
   'Before the ticket closes, promote each decision to a spec delta or an ADR',
   'in the repository. Only merged or blocked tickets close, and close needs',

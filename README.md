@@ -1868,7 +1868,10 @@ $ agentboard serve --json --as ben
   through the server carries the `--as` actor. No request can choose or
   change it: an action body with an `as` property is refused with 400
   `usage`, whatever its value. To act as someone else, stop the server and
-  start it again with another `--as`.
+  start it again with another `--as`. A hand-off's `to` is the one other
+  actor name a request carries: it is checked like `--to` on the CLI ("The
+  actor rule") and refused with 400 `invalid-actor`, never echoed, with no
+  override from the browser.
 - **Only `--as` enables writes.** `AGENTBOARD_ACTOR` is ignored by
   `serve` (a deliberate exception to "The actor rule"): with it set and no
   `--as`, the server is read-only, `/api/session` reports `writable` false
@@ -1977,7 +1980,7 @@ checklist tick or untick. A refusal writes nothing and is an
 
 | Status | When |
 | ------ | ---- |
-| 400 | a refusal with exit code 1: `usage`, `secret-like`, `unpromoted-decision`, `decision-path-missing`, `path-outside-tree`, `id-too-short`, `ambiguous-id`, ... |
+| 400 | a refusal with exit code 1: `usage`, `invalid-actor` (a hand-off's `to`), `secret-like`, `unpromoted-decision`, `decision-path-missing`, `path-outside-tree`, `id-too-short`, `ambiguous-id`, ... |
 | 409 | a refusal by board state (exit code 4): `already-assigned`, `not-assignee`, `invalid-transition`, `needs-scope-disposition`, `already-linked`, `checklist-index`, `unknown-ticket`, ... |
 | 503 | `busy`: the cache stayed locked; try again |
 | 500 | anything else |

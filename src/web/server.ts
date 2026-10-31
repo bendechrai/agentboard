@@ -72,6 +72,7 @@ import {
 import type { TickerTimers, WatchDir } from '../board/ticker.js';
 import type { Env } from '../cli/types.js';
 import { errorDocument } from '../cli/main.js';
+import { checkActorName } from '../cli/parse.js';
 import type { Board } from '../store/board.js';
 import { BoardError } from '../store/errors.js';
 import { checkCache } from '../store/rebuild.js';
@@ -202,7 +203,12 @@ export interface ServerOptions {
    * makes the server writable as that actor, recorded on every event
    * written through it; undefined or null (the default) makes it read-only.
    * An empty string rejects with `BoardError(1, 'usage')` before
-   * listening. The environment (`AGENTBOARD_ACTOR`) is never consulted.
+   * listening; a name that fails the actor check (`checkActorName`,
+   * board-cli "Actor names are checked": a secret pattern or not of the
+   * actor form) rejects with `BoardError(1, 'invalid-actor')` naming
+   * `--as`, before listening and without repeating the name. The CLI's
+   * `serve` has already checked its `--as`; this is defence in depth for
+   * the library. The environment (`AGENTBOARD_ACTOR`) is never consulted.
    */
   readonly actor?: string | null;
   /**
@@ -350,6 +356,9 @@ export async function startServer(
     );
   }
   const actor = options.actor ?? null;
+  if (actor !== null) {
+    checkActorName(actor, '--as');
+  }
   const env = options.env ?? process.env;
   const root = options.root ?? actionRoot(process.cwd(), env);
   const token = options.token ?? newToken();

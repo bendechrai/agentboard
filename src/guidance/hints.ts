@@ -68,6 +68,15 @@ export interface HintContext {
    */
   readonly actor?: string;
   /**
+   * True when the hint answers a web action (`runAction`,
+   * `src/web/actions.ts`): the browser passes no actor and cannot set
+   * `AGENTBOARD_ACTOR`; the server's actor was given as `serve --as`, and
+   * the new assignee of a hand-off is the body's `to`. Only the
+   * `invalid-actor` hint reads it; every other hint is the CLI hint of
+   * its reason. Undefined on the CLI and over MCP.
+   */
+  readonly web?: true;
+  /**
    * The decision disposition `close` was given, when the command is
    * `close` and it was parsed: `--no-decision`, or `--decision-recorded-in`
    * with the path exactly as given. Undefined for every other command and
@@ -368,7 +377,11 @@ export function hintStep(
  *   the actor, `, and the new assignee with --to <actor>`; MCP: the `as
  *   argument` and the step `'agentboard mcp --as <actor>'`, and for
  *   `handoff` `, and the new assignee in the to argument`, never `set
- *   AGENTBOARD_ACTOR`. Ends with step `help <command>`. Always the placeholder `<actor>`, never A: the context's
+ *   AGENTBOARD_ACTOR`; web (`context.web`): the step `'agentboard serve
+ *   --as <actor>'` (the server's actor) and for `handoff` `, and the new
+ *   assignee in the to argument`, never `AGENTBOARD_ACTOR`, `--to`,
+ *   `agentboard mcp` or `as argument`, none of which a browser can use.
+ *   Ends with step `help <command>`. Always the placeholder `<actor>`, never A: the context's
  *   actor is the refused name or has not been checked (actor-secret-check
  *   design.md "No echo of an unchecked actor"), and the hint does not know
  *   which name was refused, so it is the same for every context actor
@@ -714,11 +727,17 @@ const ACTOR_FORM_TEXT =
  * The template of `invalid-actor` (always the placeholder `<actor>`, see
  * `renderHint`). On the CLI, `set AGENTBOARD_ACTOR` is named only for a
  * command that uses the variable as its actor (one that writes or tracks
- * a cursor); for `handoff`, the new assignee follows the actor.
+ * a cursor); for `handoff`, the new assignee follows the actor. For a web
+ * action (`context.web`) the actor is the one `serve` was started with,
+ * so the hint names that step and, for `handoff`, the `to` argument.
  */
 const invalidActorHint: HintTemplate = (h) => {
   const handoff = h.command?.name === 'handoff';
   const choose = `choose a name of ${ACTOR_FORM_TEXT}, one stable name per role, and`;
+  if (h.context.web === true) {
+    const to = handoff ? ', and the new assignee in the to argument' : '';
+    return `${choose} give it as the server's actor with ${h.step('serve', [['as', '<actor>']])}${to}; see ${h.help()}`;
+  }
   if (h.context.surface === 'mcp') {
     const to = handoff ? ', and the new assignee in the to argument' : '';
     return `${choose} pass it in the as argument of each call or start the server with ${h.step('mcp', [['as', '<actor>']])}${to}; see ${h.help()}`;
