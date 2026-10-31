@@ -367,12 +367,16 @@ export const ACTORS_REFUSED: readonly RefusedActor[] = [
 ];
 
 /**
- * Every distinct actor name on this repository's own board (every event's
- * `actor`, every hand-off's `to`), collected from its event files on
- * 2026-10-31: all lowercase letters, digits and `-`, the longest 15
- * characters (`implementer-dm2`).
+ * A snapshot of every distinct actor name on this repository's own board
+ * (every event's `actor` and `ts.actor`, and every hand-off's `to`; the
+ * `to` of a `ticket.move` is a status, not an actor, and is left out),
+ * collected from its 1032 event files on 2026-10-31 after review round 1:
+ * 91 names, all lowercase letters, digits and `-`, the longest 15
+ * characters (`implementer-dm2`). The board keeps growing, so this is a
+ * snapshot; the reviewer recomputes it from the board.
  */
 export const BOARD_ACTORS: readonly string[] = [
+  'ben',
   'flake-fixer',
   'implementer-1',
   'implementer-2',
@@ -387,10 +391,14 @@ export const BOARD_ACTORS: readonly string[] = [
   'implementer-a4',
   'implementer-a5',
   'implementer-a6',
+  'implementer-ac1',
   'implementer-dm',
   'implementer-dm2',
   'implementer-gst',
+  'implementer-hk1',
+  'implementer-ih4',
   'implementer-kc',
+  'implementer-mr',
   'implementer-ne1',
   'implementer-ne2',
   'orchestrator',
@@ -417,13 +425,18 @@ export const BOARD_ACTORS: readonly string[] = [
   'reviewer-a4',
   'reviewer-a5',
   'reviewer-a6',
+  'reviewer-ac1-1',
+  'reviewer-ac1-2',
   'reviewer-dm-1',
   'reviewer-dm-2',
   'reviewer-dm2',
   'reviewer-gst-1',
   'reviewer-gst-2',
+  'reviewer-hk1',
+  'reviewer-ih4-1',
   'reviewer-kc-1',
   'reviewer-kc-2',
+  'reviewer-mr',
   'reviewer-ne1-1',
   'reviewer-ne1-2',
   'reviewer-ne2-1',
@@ -442,10 +455,14 @@ export const BOARD_ACTORS: readonly string[] = [
   'test-author-a4',
   'test-author-a5',
   'test-author-a6',
+  'test-author-ac1',
   'test-author-dm',
   'test-author-dm2',
   'test-author-gst',
+  'test-author-hk1',
+  'test-author-ih4',
   'test-author-kc',
+  'test-author-mr',
   'test-author-ne1',
   'test-author-ne2',
   'writer-7',

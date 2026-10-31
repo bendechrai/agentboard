@@ -38,17 +38,36 @@ describe('invalid-actor is a reason with a hint', () => {
 
 describe('the invalid-actor hint on the CLI', () => {
   it.each(COMMAND_NAMES.map((c) => [c]))(
-    '%s: one ASCII line naming --as <actor> and AGENTBOARD_ACTOR, with the word form',
+    '%s: one ASCII line naming --as <actor>, with the word form',
     (command) => {
       const text = hint({ surface: 'cli', command });
       expect(text).toMatch(ASCII_LINE);
       expect(text).not.toMatch(/^hint:/);
       expect(text).toContain('--as <actor>');
-      expect(text).toContain('AGENTBOARD_ACTOR');
       expect(text).toContain('form');
       expect(text).not.toContain('agentboard mcp');
     },
   );
+
+  it.each(COMMANDS.map((c) => [c.name, c] as const))(
+    '%s: says set AGENTBOARD_ACTOR exactly when the command uses it as the actor (review round 1 F5)',
+    (name, command) => {
+      const text = hint({ surface: 'cli', command: name });
+      if (command.writes || command.tracksCursor === true) {
+        expect(text).toContain('set AGENTBOARD_ACTOR');
+      } else {
+        expect(text).not.toContain('AGENTBOARD_ACTOR');
+      }
+    },
+  );
+
+  it('for handoff it names the actor and then, unambiguously, the new assignee (review round 1 F5)', () => {
+    const text = hint({ surface: 'cli', command: 'handoff' });
+    expect(text).toContain('--as <actor>');
+    expect(text).toContain('set AGENTBOARD_ACTOR');
+    expect(text).toContain(', and the new assignee with --to <actor>');
+    expect(text).not.toContain('AGENTBOARD_ACTOR and the new assignee');
+  });
 
   it('for handoff it also names --to <actor>, the other actor name the command takes', () => {
     expect(hint({ surface: 'cli', command: 'handoff' })).toContain('--to <actor>');
@@ -126,3 +145,52 @@ interface HelpDocument {
   flags: { name: string; summary: string }[];
   globalFlags: { name: string; summary: string }[];
 }
+
+/**
+ * How the help of `--as` and `--to` states the form (board-agent-guidance
+ * "Guide states the actor form", review round 1 F1): the same words as the
+ * `--as` summary of a command that needs an actor.
+ */
+const HELP_FORM = '1 to 32 ASCII letters, digits, . _ - or @, the first a letter or digit';
+
+/** The `--as <actor>` line of the text help of `name`. */
+function asLine(name: string): string {
+  const out = run(['help', ...name.split(' ')], tempDir());
+  expect(out.code, out.stderr).toBe(0);
+  const lines = out.stdout.split('\n').filter((line) => /^ {2}--as <actor> /.test(line));
+  expect(lines, name).toHaveLength(1);
+  return lines[0] ?? '';
+}
+
+describe('the human help of --as on every command (review round 1 F1)', () => {
+  it.each(COMMANDS.map((c) => [c.name]))(
+    'help %s: the --as line says a given name is checked, gives the form, and never says ignored',
+    (name) => {
+      const line = asLine(name);
+      expect(line).toContain(HELP_FORM);
+      expect(line).toContain('checked');
+      expect(line).not.toContain('Accepted and ignored');
+      expect(line).not.toContain('ignored by this command');
+    },
+  );
+
+  it('help serve and help mcp keep their own text and add the check and the form', () => {
+    expect(asLine('serve')).toContain('write actions');
+    expect(asLine('mcp')).toContain(HELP_FORM);
+  });
+
+  it.each(COMMANDS.map((c) => [c.name]))(
+    'help %s --json: the --as summary gives the form',
+    (name) => {
+      const doc = oneJson(run(['help', ...name.split(' '), '--json'], tempDir())) as HelpDocument;
+      const as = doc.globalFlags.find((f) => f.name === 'as')?.summary ?? '';
+      expect(as).toContain(HELP_FORM);
+    },
+  );
+
+  it('help handoff: the text --to line gives the form', () => {
+    const out = run(['help', 'handoff'], tempDir());
+    const line = out.stdout.split('\n').find((l) => /^ {2}--to <to> /.test(l)) ?? '';
+    expect(line).toContain(HELP_FORM);
+  });
+});

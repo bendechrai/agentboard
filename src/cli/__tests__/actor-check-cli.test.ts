@@ -19,7 +19,9 @@ import {
   ACTORS_REFUSED_BY_FORM,
   AWS_KEY_ID,
   GITHUB_TOKEN,
+  HEX_32,
   HEX_40,
+  TOTP_SEED,
   actorFormMessage,
   actorMessage,
   actorPatternMessage,
@@ -295,6 +297,33 @@ describe('scenario: Read command ignores the environment actor', () => {
         expectNoLeak(argv.join(' '), [out.stdout, out.stderr], [f]);
       }
     }
+  });
+
+  it('an ignored AGENTBOARD_ACTOR that passes the check is not repeated either: top (built CLI) writes <actor>', () => {
+    // reviewer-ac1-2 finding 1: top ignores the variable, so its hint
+    // (which suggests watch --as <actor>) must not repeat it, even when it
+    // passes the check (32 hex characters, the residual-risk class). Built
+    // CLI only: in process, runCli cannot stream and hints the executable.
+    const runner: Runner = 'child';
+    const b = board();
+    for (const value of [HEX_32, TOTP_SEED, 'impl-1']) {
+      const env = cliEnv({ AGENTBOARD_ACTOR: value });
+      for (const json of [false, true]) {
+        const out = runWith(runner, json ? ['top', '--json'] : ['top'], b.root, env);
+        expect(out.code).toBe(1);
+        const hint = /^hint: (.*)$/m.exec(out.stderr)?.[1] ?? '';
+        expect(hint).toContain('watch --as <actor>');
+        expect(out.stderr).not.toContain(value);
+        expect(out.stdout).not.toContain(value);
+      }
+    }
+  });
+
+  it('an AGENTBOARD_ACTOR that a command uses and that passes is still repeated (unchanged)', () => {
+    const b = board();
+    const out = run(['close', b.id], b.root, cliEnv({ AGENTBOARD_ACTOR: HEX_32 }));
+    expect(out.code).toBe(1);
+    expect(out.stderr).toContain(`--as ${HEX_32}`);
   });
 
   it('a failing read command does not repeat an ignored AGENTBOARD_ACTOR in its hint', () => {
