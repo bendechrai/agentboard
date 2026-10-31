@@ -83,8 +83,12 @@ function argLine(arg: ArgSpec, positional: boolean): RegExp {
   );
 }
 
-/** Commands that never open a board. */
-const BOARDLESS = new Set(['init', 'agents install', 'agents check', 'version', 'help']);
+/**
+ * Commands that never report a board error: those that never open a
+ * board, and `hook`, which locates and reads one but fails open, exiting
+ * 0 or 2 only (board-cli "Exit codes", add-harness-integration).
+ */
+const BOARDLESS = new Set(['init', 'agents install', 'agents check', 'version', 'help', 'hook']);
 
 /**
  * Commands that locate a board but cannot exit 5: `mcp` locates the board
@@ -146,6 +150,7 @@ describe('the help data of record in the registry', () => {
         'config set',
         'config get',
         'mcp',
+        'hook',
         'agents install',
         'agents check',
         'version',
@@ -197,6 +202,12 @@ describe('the help data of record in the registry', () => {
     // Every command succeeds with 0.
     expect(c.exitCodes[0]).toMatchObject({ code: 0 });
     expect(c.exitCodes[0]?.reason).toBeUndefined();
+    if (name === 'hook') {
+      // board-cli "Exit codes": hook exits 0 or 2 only, as the harness
+      // protocol defines them, and never reports a usage error.
+      expect(codes).toEqual([0, 2]);
+      return;
+    }
     expect(c.exitCodes).toContainEqual(expect.objectContaining({ code: 1, reason: 'usage' }));
   });
 

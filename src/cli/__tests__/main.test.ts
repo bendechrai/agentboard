@@ -101,6 +101,7 @@ describe('every command prints exactly one JSON document with --json', () => {
       'config set': () => run(['config', 'set', 'queue.window', '5m', ...AS, '--json'], root),
       'config get': () => run(['config', 'get', '--json'], root),
       mcp: () => run(['mcp', '--json'], root),
+      hook: () => run(['hook', 'stop', '--json'], root),
       'agents install': () => run(['agents', 'install', '--target', 'agents-md', '--json'], root),
       'agents check': () => run(['agents', 'check', '--json'], root),
       version: () => run(['version', '--json'], root),
@@ -124,7 +125,7 @@ describe('every command prints exactly one JSON document with --json', () => {
     for (const [name, step] of Object.entries(steps(root, state))) {
       const out = step();
       expect(out.code, `${name}: ${out.stderr}`).toBe(
-        ['mcp', 'watch', 'serve', 'top'].includes(name) ? 1 : name === 'unqueue' ? 4 : 0,
+        ['mcp', 'hook', 'watch', 'serve', 'top'].includes(name) ? 1 : name === 'unqueue' ? 4 : 0,
       );
       docs[name] = oneJson(out);
     }
