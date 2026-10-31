@@ -2376,7 +2376,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'hook',
     summary: 'Answer a coding harness hook event (Claude Code) from the board, read-only',
     description:
-      "Run by a coding harness on one of three events, never by hand: session-start, stop or pre-tool-use. Reads the harness's JSON payload from stdin and answers in Claude Code's hook protocol: exit 0, with at most one JSON document on stdout, continues; exit 2, only with --strict, blocks with the reason on stderr. Warn-only unless --strict. It fails open: no board, an unreadable, locked or older cache, no actor, a malformed payload, an unknown event or a run past its 2 second budget all exit 0 without blocking. It is read-only: it writes no event, never syncs or catches up (so it writes no due grant) and never creates or rebuilds the cache; session-start may only advance the actor's inbox cursor. The actor is --as or AGENTBOARD_ACTOR, never the OS user or the payload. Set AGENTBOARD_HOOKS=off to make every event exit 0 at once. It never reports the other exit codes, and it is not an MCP tool.",
+      "Run by a coding harness on one of three events, never by hand: session-start, stop or pre-tool-use. Reads the harness's JSON payload from stdin and answers in Claude Code's hook protocol: exit 0, with at most one JSON document on stdout, continues; exit 2, only with --strict, blocks with the reason on stderr. Warn-only unless --strict. It fails open: no board, an unreadable, locked or older cache, no actor, a malformed payload, an unknown event or a run past its 2 second budget all exit 0 without blocking. It is read-only: it writes no event, never syncs or catches up (so it writes no due grant) and never creates or rebuilds the cache; session-start may only advance the actor's inbox cursor. The actor is --as or AGENTBOARD_ACTOR, never the OS user or the payload. --json is accepted and changes nothing: the answer is always the hook protocol. Set AGENTBOARD_HOOKS=off to make every event exit 0 at once. It never reports the other exit codes, and it is not an MCP tool.",
     group: 'setup',
     examples: [
       {
@@ -2413,7 +2413,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       ),
     ],
     actorHelp:
-      'The actor whose tickets and inbox the hook checks, before AGENTBOARD_ACTOR; with neither, the hook stays silent',
+      'The actor whose tickets and inbox the hook checks, before AGENTBOARD_ACTOR; with neither, stop and pre-tool-use do nothing and session-start asks for one',
     flags: [flag('strict', 'boolean', 'Block (exit 2) instead of warning')],
     exclusive: [],
     writes: false,

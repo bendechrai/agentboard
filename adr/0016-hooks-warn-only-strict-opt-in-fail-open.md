@@ -41,24 +41,32 @@ tickets, or in a worktree whose agent has not set `AGENTBOARD_ACTOR`.
   whose payload has `stop_hook_active` true is never blocked again, so
   one stop produces at most one block. Reinstalling in the other mode
   updates the owned entries without `--force`.
-- **Fail open, read-only, bounded.** Every failure of the hook itself is
-  exit 0 with nothing on stdout and at most one line on stderr: no board,
-  a missing, locked, unreadable or other-version cache, no resolvable
-  actor, a payload that is not a JSON object, an error in the command's
-  own arguments, an internal error, or the 2 second budget running out
-  (measured from the start of the process, so Node's start-up counts and
-  the settings `timeout` of 5 seconds is never reached). The command is
-  the one exception to board-cli "Exit codes": it exits 0 or 2 only, and
-  never the usual 1 to 5. It reads the cache as it is, through an
-  inspect-only open that never creates, migrates or rebuilds it, and
-  never catches up: it folds no event file, writes no due grant and reaps
-  no temporary file. The only state it may write is the actor's inbox
-  cursor in `session-start`. It never claims, renews, releases, queues or
-  unqueues, never runs `sync` and never touches the network. The actor
-  comes from `--as` or `AGENTBOARD_ACTOR` only, never from the OS user or
-  the payload, and a name a writing command could not use counts as no
-  actor and is never repeated. `AGENTBOARD_HOOKS=off` disables every
-  hook at once, before stdin, the arguments or the board are read.
+- **Fail open, read-only, bounded.** A failure of the hook itself never
+  blocks: it is exit 0 (or the strict exit 2 the event had already
+  decided) with nothing on stdout, at most one line on stderr and never a
+  stack trace. That covers no board, a missing, locked, unreadable or
+  other-version cache, no resolvable actor, a payload that is not a JSON
+  object, an error in the command's own arguments, a process directory
+  removed under the process, a stdout or stderr that is closed or failing
+  (a broken pipe, a full device), an internal error, and the 2 second
+  budget running out. The budget is measured from the start of the
+  process and covers everything the command does: Node's start-up, board
+  discovery (whose `git` child is bounded by the time left and counts as
+  failing when it does not answer, so discovery falls back to `./.board`),
+  the stdin read and the cache read, so the settings `timeout` of 5
+  seconds is not normally reached. The command is the one exception to
+  board-cli "Exit codes": it exits 0 or 2 only, and never the usual 1 to
+  5. It reads the cache as it is, through an inspect-only open that never
+  creates, migrates or rebuilds it, and never catches up: it folds no
+  event file, writes no due grant and reaps no temporary file. The only
+  state it may write is the actor's inbox cursor in `session-start`. It
+  never claims, renews, releases, queues or unqueues, never runs `sync`
+  and never touches the network. The actor comes from `--as` or
+  `AGENTBOARD_ACTOR` only, never from the OS user or the payload, and a
+  name a writing command could not use counts as no actor and is never
+  repeated; no stderr line names the payload's `cwd` or the actor.
+  `AGENTBOARD_HOOKS=off` disables every hook at once, before stdin, the
+  arguments or the board are read.
 
 ## Consequences
 
@@ -86,4 +94,15 @@ tickets, or in a worktree whose agent has not set `AGENTBOARD_ACTOR`.
 - The 2 second internal budget and the inspect-only open mean the cache's
   usual 5 second busy timeout is capped at what is left of the budget;
   `openCache` gained a `busyTimeoutMs` option for inspect-only opens to
-  make that possible without changing the ordinary open.
+  make that possible without changing the ordinary open, and
+  `locateBoard` a `timeoutMs` option that bounds its `git` child the same
+  way.
+- Known limit: the inspect-only open is a read-write connection, as
+  `rebuild --check` opens the cache (a read-only connection leaves empty
+  `-wal` and `-shm` files behind on a clean cache). After an unclean
+  shutdown that left a non-empty write-ahead log, the hook's connection
+  is the last to close and checkpoints that log into `cache.sqlite`: the
+  cache's content is unchanged, its bytes and modification time are not.
+  The read-only guarantee is therefore literal for a cleanly closed
+  cache, which every scenario assumes; a crash recovery is the one write
+  the hook can cause, and it writes nothing of its own.
