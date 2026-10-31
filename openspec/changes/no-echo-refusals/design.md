@@ -447,6 +447,65 @@ with the orchestrator's round 2 DECISION and its addendum:
 - N34. `oldRemoteUrl` and the `kept` line of `init --into-host` show the
   configured URL without its user information, on a resumed move too.
 
+## Review round 3
+
+From reviewer-ne2-2 (S1 to S3) at b2da7cc, with the orchestrator's round 3
+DECISION.
+
+### S1: every place a remote name or URL is displayed
+
+The search: every template literal under `src/` (tests excluded) that
+interpolates an expression naming `remote`, `Remote`, `chosen`, `url`,
+`Url` or `URL`, read one by one, plus every result field typed as a
+remote name or URL (`InitResult.remote`, `IntoHostResult.remote`,
+`InitRemoteResult.remote` and `remoteUrl`, `SyncResult.remote`,
+`RemoteReport`), the hint templates and the help text. Each site:
+
+| Site | Shows | Status at b2da7cc |
+|---|---|---|
+| `init.ts` existing board (`remote: <name>`, both models) and `remote` | chosen remote name | leaks: wrap |
+| `init.ts` new host board (`sync publishes it to <name>`) | chosen remote name | leaks: wrap |
+| `init.ts` joined host board (`joined N events from <name>`) and `remote` | chosen remote name | leaks: wrap |
+| `init.ts` repair (`sourceText`, `joined from <name>`) and `remote` | chosen remote name | leaks: wrap |
+| `into-host.ts` board already in the host (`remote: <name>`) and `remote` | chosen remote name | leaks: wrap |
+| `init-remote.ts` `remote-mismatch`, `agentboard.remote` variant | `chosen.name`, a URL when no such remote | leaks: wrap (both the sentence and the `remote add` step) |
+| `init-remote.ts` `remote-mismatch` (`chosen.name` of an existing remote), `unchanged` | a configured remote's name | compliant (a git remote name cannot be a URL: `git remote add` refuses `:`) |
+| `sync.ts` `sync-conflict` (`pulling from <name>`) | chosen remote name | leaks: wrap |
+| `host-sync.ts` `rebaseOnto` `sync-conflict` (`what <name> holds`) | chosen remote name | leaks: wrap |
+| `into-host.ts` rebase conflict (`integrating what <name> holds`) | chosen remote name | leaks: wrap |
+| `sync.ts`, `host-sync.ts` `syncFailed` messages, `host-init.ts` join warning and fetch, `into-host.ts` unreachable warning and fetch | remote name in a refusal | compliant (whole message sanitised) |
+| `sync.ts`, `host-sync.ts` pulled/pushed lines and `remote` | remote name | compliant (round 2) |
+| `remote.ts` report, problem line, remotes list | names and URLs | compliant (round 2); `remoteNames` lists configured remote names only |
+| `init-remote.ts` created, cloned, attached, unchanged, `remoteUrl` | URL | compliant (round 1) |
+| `into-host.ts` `oldRemoteUrl`, kept line | URL | compliant (round 2) |
+| `hints.ts`, help text | placeholders (`<url>`, `<name>`) only | compliant |
+| `web/serve.ts` | the server's own URL | not a remote |
+
+Every leaking site is pinned by `src/cli/__tests__/remote-sites-no-echo-cli.test.ts`.
+
+### S2: split pieces
+
+The pieces `splitPieces` makes from a URL with more than one raw `@` (and
+from a proxy user name with `#` or `?`) were redacted before the generic
+`<scheme>://<userinfo>@` step, so a configured `https://a@http@host/x.git`
+turned `http://<token>@proxy` into `<redacted>://<token>@proxy`, which the
+generic step no longer recognised; a one-letter piece also mangled
+`refs/agentboard/board`. Now the generic step runs first, and a piece is
+not used when it is shorter than 6 characters, has no letter or digit, or
+is a URL scheme name. Six: a piece is redacted everywhere in the line, so
+a short one collides with ordinary words (`a`, `http`, `board`, `main`,
+`refs`), while the secrets this change protects (tokens, passwords) are
+far longer; the leak checks themselves treat 8 characters as the
+shortest secret substring. The user information as a whole, as given and
+decoded, is still redacted at any length, so a short `user:pw` is still
+covered where git prints it whole; only a short piece printed alone (a
+4-character password between two raw `@` of a proxy) is accepted.
+
+### S3
+
+A test pins the host encoding per UTF-8 byte: `http://a@<token>\u00e9@proxy`
+is printed by git 2.53 as `<token>%C3%A9%40proxy`.
+
 ## Out of scope
 
 - The actor. `--as`, `AGENTBOARD_ACTOR` and the `as` tool argument are

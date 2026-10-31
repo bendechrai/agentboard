@@ -165,7 +165,14 @@ host (every byte other than an ASCII letter, a digit, `-` and `.`
 written `%XX` with upper-case hex); and when the user name holds a raw
 `#` or `?`, curl on git 2.32 takes the text before it for the proxy host
 (`Could not resolve proxy: <text>`), so that text SHALL be redacted too.
-The whole message that quotes the line SHALL be
+The generic `<scheme>://<userinfo>@` redaction SHALL run before these
+pieces are redacted, and a piece SHALL NOT be used when it is shorter
+than 6 characters, holds no letter or digit, or is a URL scheme name
+(`http`, `https`, `ftp`, `ftps`, `git`, `ssh`, `file`, `git+ssh`,
+`ssh+git`, `socks4`, `socks4a`, `socks5`, `socks5h`, in any case), so no
+piece can remove a `scheme://` marker the generic step needs or mangle an
+ordinary word. (The user information as a whole is still redacted at any
+length.) The whole message that quotes the line SHALL be
 sanitised the same way, so a remote named by URL in `reaching <remote>
 failed` is written `<url>`. A git command of these paths that fails
 SHALL be reported as a refusal quoting its sanitised line, never as a raw
@@ -215,6 +222,14 @@ from the path in a form no URL rule recognises; that is a known limit.
 - **WHEN** `http_proxy` is `http://a@<token>%40x@<proxy>` (git 2.53 prints `http://a@<token, encoded>%2540x%40<proxy>`), or `http://<token>#x@<proxy>` or `http://<token>?x@<proxy>` (curl on git 2.32 prints `Could not resolve proxy: <token>`), and `agentboard sync` runs
 - **THEN** it exits 3 with reason `sync-failed` and the token appears in no output, in any encoding
 
+#### Scenario: Split pieces neither unmask nor mangle
+- **WHEN** a configured URL is `https://a@http@<host>/x.git` (or `https://a@:@...`, or holds one-letter pieces) and a git line quotes another URL with a token as its user name, or names `refs/agentboard/board` or a host
+- **THEN** the other URL is written `http://<redacted>@...`, and the board ref and the host are printed unchanged
+
+#### Scenario: Multi-byte character in a proxy's user information
+- **WHEN** `http_proxy` is `http://a@<token>\u00e9@<proxy>` and git 2.53 prints the host `<token, encoded>%C3%A9%40<proxy>`
+- **THEN** the token appears in no output
+
 #### Scenario: Remote named by a relative path
 - **WHEN** `branch.main.remote` is `../<token>/repo.git` and `agentboard sync` cannot reach it
 - **THEN** the message reads `reaching <url> failed: ...` (or `pulling from <url>`), and the token appears in no output
@@ -233,7 +248,13 @@ wherever it shows a remote's name, which is a URL when `agentboard.remote`
 or `branch.<b>.remote` names the remote by URL (`sync`'s `pulled from` and
 `pushed to` lines and its `--json` `remote`, on both board models, and
 `agentboard remote`'s `remote:` and `problem:` lines and its `--json`
-`remote.name`), and the old remote URL `init --into-host` reports
+`remote.name`; `init` on an existing board, standalone and host model,
+and its `--json` `remote`; `init` creating, joining or repairing a
+host-model board (`sync publishes it to`, `joined ... from`); `init
+--into-host` on a board already in the host and its `--json` `remote`;
+the `remote-mismatch` variant of `init --remote` that names the remote
+`agentboard.remote` sets; and the `sync-conflict` refusals naming the
+remote a pull or rebase used), and the old remote URL `init --into-host` reports
 (`oldRemoteUrl` and its `kept` line, from the configured URL, also when a
 move is resumed), it SHALL show the URL with its user information removed
 (`<scheme>://<userinfo>@<rest>` written `<scheme>://<rest>`; a URL
@@ -252,6 +273,10 @@ still prints it.
 #### Scenario: Remote named by URL on success
 - **WHEN** `agentboard.remote` or `branch.main.remote` is `http://agent:<secret>@<host>/r.git`, git can reach it, and `agentboard sync` (standalone or host model) and `agentboard remote` run, with and without `--json`
 - **THEN** `sync` prints `pushed main to http://<host>/r.git` and its `--json` `remote` is `http://<host>/r.git`, `agentboard remote` prints `remote: http://<host>/r.git (chosen by ...)` and its `--json` `remote.name` is `http://<host>/r.git`, and the secret appears in no output
+
+#### Scenario: Every place a remote named by URL is shown
+- **WHEN** `agentboard.remote` or `branch.main.remote` is `http://agent:<secret>@<host>/r.git` and `agentboard init` runs on an existing standalone or host-model board, creates, joins or repairs a host-model board, `agentboard init --into-host` runs on a board already in the host, `agentboard init --remote <another url>` runs, or a `sync` or `init --into-host` stops on a conflict, with and without `--json`
+- **THEN** each message and each `--json` `remote` names `http://<host>/r.git`, and the secret appears in no output
 
 #### Scenario: Old remote URL of a moved or resumed board
 - **WHEN** a standalone board whose `origin` is `http://agent:<secret>@<host>/board.git` is moved with `agentboard init --into-host`, or a move interrupted after the worktree was placed is resumed
