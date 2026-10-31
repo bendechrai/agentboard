@@ -1546,9 +1546,10 @@ function lockedMove(
     foreign.push(path);
   }
   // The evidence of this board's own unpublished update (design.md "Carry
-  // the record forward"): the first, by the byte order of names, dead
-  // temporary of this board whose HEAD is an ancestor of, or equal to,
-  // the ref as the leftover pass finds it (ruling 14). The ref then
+  // the record forward"): among the dead temporaries of this board whose
+  // HEAD is an ancestor of, or equal to, the ref as the leftover pass
+  // finds it, the first by the byte order of names whose HEAD equals the
+  // ref, otherwise the first in that order (ruling 17). The ref then
   // already holds this board's commits, so the value this run's swap
   // compares against is not the undo point; the record to write at step
   // 4 is that temporary's own when its HEAD equals the ref
@@ -1562,10 +1563,10 @@ function lockedMove(
   // process's own pid is renamed first, as the fresh temporary of this
   // run takes that path.
   const refAtLeftover = refValue(host, BOARD_REF);
-  const evidence =
+  const candidates =
     refAtLeftover === ''
-      ? undefined
-      : findMigratingWorktrees(hostRoot, { env }).find(
+      ? []
+      : findMigratingWorktrees(hostRoot, { env }).filter(
           (w) =>
             dead(w) &&
             !w.rebasing &&
@@ -1574,6 +1575,7 @@ function lockedMove(
             isAncestor(host, w.head, refAtLeftover) &&
             belongs(w.path),
         );
+  const evidence = candidates.find((w) => w.head === refAtLeftover) ?? candidates[0];
   let evidencePath = evidence?.path;
   let carriedRecord: string | null = null;
   if (evidence !== undefined) {
@@ -1760,15 +1762,21 @@ function lockedMove(
 
   // 4. The value the swap compares against, recorded in the temporary so
   // a re-run with another board can set the ref back; then the
-  // compare-and-swap, then the host .gitignore entry.
+  // compare-and-swap, then the host .gitignore entry. With an evidence,
+  // `<old>` is the undo point only when it no longer holds the evidence's
+  // HEAD: when another writer moved the ref after the leftover pass and
+  // `<old>` still holds that HEAD, it holds this board's unpublished
+  // commits, so no record is written and any the temporary has goes
+  // (ruling 16), and a later run with another board refuses.
   const head = worktree.run('rev-parse', 'HEAD').trim();
   const resuming = evidencePath !== undefined && old === refAtLeftover;
-  if (!resuming) {
-    writeRecord(host, temp, BEFORE_RECORD, `${old === '' ? zeroObjectName(plan) : old}\n`);
-  } else if (carriedRecord === null) {
+  const movedOverEvidence =
+    evidence !== undefined && !resuming && old !== '' && evidence.head !== null && isAncestor(host, evidence.head, old);
+  const record = resuming ? carriedRecord : movedOverEvidence ? null : old === '' ? zeroObjectName(plan) : old;
+  if (record === null) {
     removeRecord(host, temp, BEFORE_RECORD);
   } else {
-    writeRecord(host, temp, BEFORE_RECORD, `${carriedRecord}\n`);
+    writeRecord(host, temp, BEFORE_RECORD, `${record}\n`);
   }
   if (isGitFailure(host.attempt('update-ref', BOARD_REF, head, old))) {
     throw new BoardError(
