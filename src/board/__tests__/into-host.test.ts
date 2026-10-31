@@ -3550,8 +3550,12 @@ describe('into-host-replaced-after-step-4: what an unfinished move of another bo
     );
   }
 
-  /** Asserts no commit of `ref` in `repo` ever added any of `files` (`<hash>.json`) under `events/`. */
+  /** Asserts no commit of `ref` in `repo` ever added any of `files` (`<hash>.json`) under `events/`; an absent `ref` holds none. */
   function expectNeverIn(repo: string, files: readonly string[], ref: string = BOARD_REF): void {
+    // An absent ref holds nothing; a present one is searched commit by commit.
+    if (git(repo, 'for-each-ref', '--format=%(refname)', ref).trim() === '') {
+      return;
+    }
     for (const file of files) {
       expect(git(repo, 'log', '--format=%H', ref, '--', `events/${file}`).trim(), `${repo} ${file}`).toBe('');
     }
@@ -4240,6 +4244,7 @@ describe('into-host-replaced-after-step-4: what an unfinished move of another bo
 
       expect(temporaries.map((t) => cannotSetBack(t, fx.dir, NO_RECORD))).toContain(err.message);
       expect(refCommit(fx.root)).toBe(fx.updated);
+      expect(refCommit(fx.remote)).toBeNull();
       expectNeverIn(fx.remote, fx.aFiles);
     });
 
