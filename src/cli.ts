@@ -117,9 +117,29 @@ function mcpInvocation(): { actor: string | undefined } | null {
 const stderr = (text: string): void => {
   process.stderr.write(text);
 };
-const mcp = mcpInvocation();
 
-if (mcp !== null) {
+/**
+ * `hook`: handed to the hook runner before the ordinary parser (so an
+ * argument error is the hook's exit 0 and one line, never the parser's
+ * exit 1), unless `--help` or `-h` asks for the command's help
+ * (`isHookInvocation`). The module is loaded only for `hook`.
+ */
+const hook = argv[0] === 'hook' ? await import('./board/hook.js') : null;
+const isHook = hook !== null && hook.isHookInvocation(argv);
+const mcp = isHook ? null : mcpInvocation();
+
+if (hook !== null && isHook) {
+  process.exitCode = await hook.runHookProcess({
+    argv: argv.slice(1),
+    cwd: process.cwd(),
+    env: process.env,
+    stdin: process.stdin,
+    stdout: (text) => {
+      process.stdout.write(text);
+    },
+    stderr,
+  });
+} else if (mcp !== null) {
   const { serveMcp } = await import('./mcp/server.js');
   process.exitCode = await serveMcp({
     cwd: process.cwd(),

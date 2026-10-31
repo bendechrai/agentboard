@@ -529,7 +529,7 @@ const GUIDE_BODY: readonly string[] = [
   '  agentboard mcp --as <actor>',
   "and then the server's AGENTBOARD_ACTOR. A failed call returns exitCode,",
   'reason, message and hint. init, watch, serve, top, rebuild, sync, remote,',
-  'config set, config get, mcp, version, help, agents install and',
+  'config set, config get, hook, mcp, version, help, agents install and',
   'agents check are not tools; run those in a shell.',
   '',
   'Exit codes and hints',
