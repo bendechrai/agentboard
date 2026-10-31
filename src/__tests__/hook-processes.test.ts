@@ -19,8 +19,19 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
+import { delimiter, join } from 'node:path';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
@@ -28,7 +39,13 @@ import { canonicalHash } from '../events/canonical.js';
 import type { TicketGrantEvent } from '../events/schema.js';
 import { ev, eventNames, P, putEvent, T1, T2 } from '../store/__tests__/helpers.js';
 import { cacheHashes } from '../store/__tests__/v020-cache.js';
-import { TOKEN_FIXTURES, expectNoLeak } from './harness/secret-fixtures.js';
+import {
+  CROCKFORD_26,
+  GITHUB_TOKEN,
+  HEX_64,
+  TOKEN_FIXTURES,
+  expectNoLeak,
+} from './harness/secret-fixtures.js';
 import { fixtureProject } from './harness/upgrade.js';
 import {
   boardProject,
@@ -75,6 +92,7 @@ function runHook(
   cwd: string,
   stdin: string | null,
   env: RunEnv = cliEnv(),
+  nodeArgs: readonly string[] = [],
 ): Promise<HookRun> {
   const cli = requireBuiltCli();
   const childEnv: Record<string, string> = {};
@@ -84,7 +102,7 @@ function runHook(
     }
   }
   const started = performance.now();
-  const child = spawn(process.execPath, [cli, 'hook', ...argv], {
+  const child = spawn(process.execPath, [...nodeArgs, cli, 'hook', ...argv], {
     cwd,
     env: childEnv,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -463,6 +481,12 @@ describe('scenario: read-only', SLOW, () => {
       expect(inbox.code, inbox.stderr).toBe(0);
     }
     expect(eventNames(eventsDir)).not.toContain(grantFile);
+    // A stale temporary file (a day old, far past the one minute after
+    // which catch-up reaps it): the hook must leave it.
+    const temp = join(eventsDir, '.tmp-stale-from-a-crashed-writer');
+    writeFileSync(temp, 'partial');
+    const dayAgo = new Date(Date.now() - 86_400_000);
+    utimesSync(temp, dayAgo, dayAgo);
     const files = tree(boardDir);
     const hashes = cacheHashes(join(boardDir, 'cache.sqlite'));
 
@@ -481,6 +505,7 @@ describe('scenario: read-only', SLOW, () => {
     }
 
     expect(tree(boardDir)).toEqual(files);
+    expect(statSync(temp).mtimeMs).toBe(dayAgo.getTime());
     expect(cacheHashes(join(boardDir, 'cache.sqlite'))).toEqual(hashes);
     expect(eventNames(eventsDir)).not.toContain(grantFile);
 
@@ -490,5 +515,298 @@ describe('scenario: read-only', SLOW, () => {
     expect(eventNames(eventsDir)).toContain(grantFile);
     const doc = oneDocument(inbox) as { entries: { hash: string }[] };
     expect(doc.entries.map((e) => `${e.hash}.json`)).toContain(grantFile);
+  });
+});
+
+/** A finished child process (any command), with what it printed. */
+interface RawRun {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Spawns `command args` in `cwd` with `stdio` as given ('pipe' entries are
+ * collected); writes `stdin` when stdin is a pipe. `beforeInput` runs on
+ * the child before stdin is written and closed, so a test can close the
+ * reading end of stdout first.
+ */
+function spawnRaw(
+  command: string,
+  args: readonly string[],
+  options: {
+    cwd: string;
+    env?: RunEnv;
+    stdio?: ('pipe' | 'ignore' | number)[];
+    stdin?: string;
+    beforeInput?: (child: ChildProcess) => void;
+  },
+): Promise<RawRun> {
+  const childEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(options.env ?? cliEnv())) {
+    if (value !== undefined) {
+      childEnv[key] = value;
+    }
+  }
+  const child = spawn(command, [...args], {
+    cwd: options.cwd,
+    env: childEnv,
+    stdio: options.stdio ?? ['pipe', 'pipe', 'pipe'],
+  });
+  children.add(child);
+  let stdout = '';
+  let stderr = '';
+  child.stdout?.setEncoding('utf8');
+  child.stdout?.on('data', (chunk: string) => {
+    stdout += chunk;
+  });
+  child.stdout?.on('error', () => undefined);
+  child.stderr?.setEncoding('utf8');
+  child.stderr?.on('data', (chunk: string) => {
+    stderr += chunk;
+  });
+  child.stderr?.on('error', () => undefined);
+  child.stdin?.on('error', () => undefined);
+  options.beforeInput?.(child);
+  child.stdin?.end(options.stdin ?? '');
+  const timer = setTimeout(() => child.kill('SIGKILL'), 20_000);
+  return new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      children.delete(child);
+      resolve({ code, signal, stdout, stderr });
+    });
+  });
+}
+
+/** Asserts at most one stderr line and nothing that looks like a stack trace. */
+function expectNoStack(stderr: string): void {
+  expect(stderr === '' || /^[^\n]*\n$/.test(stderr), stderr).toBe(true);
+  expect(stderr).not.toMatch(/^\s+at /m);
+  expect(stderr).not.toMatch(/node:internal|Unhandled|uv_cwd|Error: (EPIPE|ENOSPC|ENOENT)/);
+}
+
+/** A Claude Code SessionStart payload. */
+function startPayload(cwd: string): string {
+  return JSON.stringify({ session_id: 'hook-processes', cwd, hook_event_name: 'SessionStart' });
+}
+
+describe('scenario: removed working directory', SLOW, () => {
+  it('a hook started in a removed directory exits 0 with at most one line and no stack trace', async () => {
+    const cli = requireBuiltCli();
+    for (const argv of [
+      ['stop', '--strict', '--as', 'impl'],
+      ['pre-tool-use', '--strict', '--as', 'impl'],
+      ['session-start'],
+      ['session-start', '--as', 'impl'],
+    ]) {
+      const base = scratchDir();
+      const gone = join(base, 'worktree');
+      mkdirSync(gone);
+      const out = await spawnRaw(
+        '/bin/sh',
+        [
+          '-c',
+          'cd "$1" && rmdir "$1" && shift && exec "$@"',
+          'sh',
+          gone,
+          process.execPath,
+          cli,
+          'hook',
+          ...argv,
+        ],
+        { cwd: base, stdin: '{}' },
+      );
+      expect(out.signal, argv.join(' ')).toBeNull();
+      expect(out.code, `${argv.join(' ')}: ${out.stderr}`).toBe(0);
+      expect(out.stdout).toBe('');
+      expectNoStack(out.stderr);
+    }
+  });
+
+  it("the payload's cwd still finds the board when the process directory is gone", async () => {
+    const cli = requireBuiltCli();
+    const { root } = await claimedProject();
+    const base = scratchDir();
+    const gone = join(base, 'worktree');
+    mkdirSync(gone);
+    const out = await spawnRaw(
+      '/bin/sh',
+      [
+        '-c',
+        'cd "$1" && rmdir "$1" && shift && exec "$@"',
+        'sh',
+        gone,
+        process.execPath,
+        cli,
+        'hook',
+        'session-start',
+      ],
+      { cwd: base, stdin: startPayload(root) },
+    );
+    expect(out.code, out.stderr).toBe(0);
+    expectNoStack(out.stderr);
+    const doc = JSON.parse(out.stdout) as { hookSpecificOutput?: { additionalContext?: string } };
+    expect(doc.hookSpecificOutput?.additionalContext).toContain('AGENTBOARD_ACTOR');
+  });
+});
+
+describe('scenario: output closed or failing', SLOW, () => {
+  it('stdout closed by the reader before the answer (EPIPE): exit 0, no stack trace', async () => {
+    const cli = requireBuiltCli();
+    const { root } = await claimedProject();
+    // session-start with no actor on a board writes a document to stdout.
+    const out = await spawnRaw(process.execPath, [cli, 'hook', 'session-start'], {
+      cwd: root,
+      stdin: startPayload(root),
+      beforeInput: (child) => {
+        child.stdout?.destroy();
+      },
+    });
+    expect(out.signal).toBeNull();
+    expect(out.code, out.stderr).toBe(0);
+    expectNoStack(out.stderr);
+  });
+
+  it('stderr closed by the reader before an argument-error line: exit 0', async () => {
+    const cli = requireBuiltCli();
+    const dir = scratchDir();
+    const out = await spawnRaw(process.execPath, [cli, 'hook', 'frobnicate'], {
+      cwd: dir,
+      stdin: '{}',
+      beforeInput: (child) => {
+        child.stderr?.destroy();
+      },
+    });
+    expect(out.signal).toBeNull();
+    expect(out.code).toBe(0);
+  });
+
+  it.runIf(existsSync('/dev/full'))(
+    'stdout on a full device (ENOSPC): exit 0, no stack trace',
+    async () => {
+      const cli = requireBuiltCli();
+      const { root } = await claimedProject();
+      const full = openSync('/dev/full', 'w');
+      try {
+        const out = await spawnRaw(process.execPath, [cli, 'hook', 'session-start'], {
+          cwd: root,
+          stdin: startPayload(root),
+          stdio: ['pipe', full, 'pipe'],
+        });
+        expect(out.signal).toBeNull();
+        expect(out.code, out.stderr).toBe(0);
+        expectNoStack(out.stderr);
+      } finally {
+        closeSync(full);
+      }
+    },
+  );
+
+  it.runIf(existsSync('/dev/full'))('stderr on a full device (ENOSPC): exit 0', async () => {
+    const cli = requireBuiltCli();
+    const dir = scratchDir();
+    const full = openSync('/dev/full', 'w');
+    try {
+      for (const argv of [['frobnicate'], ['stop', '--strict', '--as', 'impl']]) {
+        const out = await spawnRaw(process.execPath, [cli, 'hook', ...argv], {
+          cwd: dir,
+          stdin: '{}',
+          stdio: ['pipe', 'pipe', full],
+        });
+        expect(out.signal, argv.join(' ')).toBeNull();
+        expect(out.code, argv.join(' ')).toBe(0);
+        expect(out.stdout).toBe('');
+      }
+    } finally {
+      closeSync(full);
+    }
+  });
+});
+
+describe('scenario: slow discovery', SLOW, () => {
+  it('a git that never answers does not hold the hook past 3 seconds from its start', async () => {
+    const { root } = await claimedProject();
+    const shim = scratchDir();
+    const git = join(shim, 'git');
+    writeFileSync(git, '#!/bin/sh\nexec sleep 30\n');
+    chmodSync(git, 0o755);
+    const env = cliEnv({ PATH: [shim, process.env.PATH ?? ''].join(delimiter) });
+    for (const [argv, stdin] of [
+      [['pre-tool-use', '--strict', '--as', 'impl'], editPayload(root, join(root, 'src', 'a.ts'))],
+      [['session-start'], startPayload(root)],
+      [['stop', '--strict', '--as', 'impl'], stopPayload(root)],
+    ] as const) {
+      const out = await runHook(argv, root, stdin, env);
+      expect(out.signal, argv.join(' ')).toBeNull();
+      expect(out.code, `${argv.join(' ')}: ${out.stderr}`).toBe(0);
+      expect(out.ms, argv.join(' ')).toBeLessThan(BOUND_MS);
+      expectNoStack(out.stderr);
+    }
+  });
+});
+
+describe('scenario: slow start-up', SLOW, () => {
+  it('1.5 seconds of start-up before the hook code, with the cache locked: exit 0 within 3 seconds of the start', async () => {
+    const { root, boardDir } = await claimedProject('someone-else');
+    const busy = join(scratchDir(), 'busy-start.mjs');
+    writeFileSync(busy, 'const t = Date.now();\nwhile (Date.now() - t < 1500) {}\n');
+    const holder = await lockCache(join(boardDir, 'cache.sqlite'));
+    try {
+      const out = await runHook(
+        ['pre-tool-use', '--strict', '--as', 'impl'],
+        root,
+        editPayload(root, join(root, 'src', 'a.ts')),
+        cliEnv(),
+        ['--import', busy],
+      );
+      expect(out.code, out.stderr).toBe(0);
+      expect(out.stdout).toBe('');
+      // The budget runs from the process start: about 2 seconds here. A
+      // budget counted from when the hook code starts ends near 3.5.
+      expect(out.ms).toBeLessThan(BOUND_MS);
+    } finally {
+      await unlock(holder);
+    }
+  });
+});
+
+describe('no stderr line names the payload cwd or the actor', SLOW, () => {
+  it('a locked cache, and a run out of time on stdin, name neither', async () => {
+    const base = scratchDir();
+    const root = join(base, GITHUB_TOKEN);
+    mkdirSync(join(root, '.board', 'events'), { recursive: true });
+    const now = Date.now();
+    putEvent(join(root, '.board', 'events'), ev(P.create(T1, 'Held work'), 'orch', now - 60_000));
+    putEvent(join(root, '.board', 'events'), ev(P.claim(T1), CROCKFORD_26, now - 50_000));
+    expect((await runCliAsync(['list', '--json'], root, cliEnv())).code).toBe(0);
+    const elsewhere = scratchDir();
+    const payload = JSON.stringify({
+      session_id: HEX_64,
+      cwd: root,
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: join(root, HEX_64), content: HEX_64 },
+    });
+    const holder = await lockCache(join(root, '.board', 'cache.sqlite'));
+    try {
+      for (const argv of [
+        ['pre-tool-use', '--strict', '--as', CROCKFORD_26],
+        ['stop', '--strict', '--as', CROCKFORD_26],
+        ['session-start', '--as', CROCKFORD_26],
+      ]) {
+        for (const stdin of [payload, null]) {
+          const out = await runHook(argv, stdin === null ? root : elsewhere, stdin);
+          expect(out.code, argv.join(' ')).toBe(0);
+          for (const word of [GITHUB_TOKEN, HEX_64, CROCKFORD_26, root, base]) {
+            expect(out.stderr, `${argv.join(' ')}: stderr`).not.toContain(word);
+          }
+        }
+      }
+    } finally {
+      await unlock(holder);
+    }
   });
 });
