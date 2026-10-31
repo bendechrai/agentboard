@@ -20,8 +20,10 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   statSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -40,6 +42,7 @@ import {
   EDIT_TOOLS,
   HELD_LINE_LIMIT,
   SESSION_CONTEXT_LIMIT,
+  STOP_TEXT_LIMIT,
   WARN_INTERVAL_MS,
   runHook,
   warnStatePath,
@@ -331,6 +334,7 @@ describe('constants', () => {
   it('pins the limits and the tools of the spec', () => {
     expect(SESSION_CONTEXT_LIMIT).toBe(4000);
     expect(HELD_LINE_LIMIT).toBe(2000);
+    expect(STOP_TEXT_LIMIT).toBe(2000);
     expect(WARN_INTERVAL_MS).toBe(600_000);
     expect([...EDIT_TOOLS]).toEqual(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
   });
@@ -653,13 +657,11 @@ describe('stop', () => {
   it('scenario: forgot to hand off, strict mode: exit 2 and stderr names T1, the warn text', () => {
     const { root, id } = claimed();
     const warn = stopMessage(hook(['stop', '--as', 'impl'], root, stopPayload(root, false)));
-    for (const active of [false, undefined]) {
-      const reason = blockReason(
-        hook(['stop', '--strict', '--as', 'impl'], root, stopPayload(root, active)),
-      );
-      expect(reason).toContain(id);
-      expect(reason).toBe(warn);
-    }
+    const reason = blockReason(
+      hook(['stop', '--strict', '--as', 'impl'], root, stopPayload(root, false)),
+    );
+    expect(reason).toContain(id);
+    expect(reason).toBe(warn);
   });
 
   it('scenario: strict mode does not loop: stop_hook_active true exits 0, answering as warn mode', () => {
@@ -670,12 +672,32 @@ describe('stop', () => {
     expect(again).toEqual(warn);
   });
 
-  it('only a JSON true counts as stop_hook_active', () => {
+  it('R2: strict blocks only when stop_hook_active is exactly false; any other value answers as warn mode', () => {
     const { root } = claimed();
-    for (const active of ['true', 1, 'yes', null]) {
-      blockReason(hook(['stop', '--strict', '--as', 'impl'], root, stopPayload(root, active)));
+    const warn = hook(['stop', '--as', 'impl'], root, stopPayload(root, false));
+    stopMessage(warn);
+    for (const active of [undefined, true, 'false', 'true', 0, 1, 'yes', null, [], {}]) {
+      const out = hook(['stop', '--strict', '--as', 'impl'], root, stopPayload(root, active));
+      expect(out, `stop_hook_active ${JSON.stringify(active) ?? 'missing'}`).toEqual(warn);
     }
   });
+
+  it.each([
+    ['empty stdin', ''],
+    ['garbage', 'not json'],
+    ['an array', '[false]'],
+    ['an object without the field', '{"hook_event_name":"Stop"}'],
+    ['the string "false"', '{"stop_hook_active":"false"}'],
+  ])(
+    'R2 scenario: strict mode cannot see stop_hook_active (%s): exit 0 with the warn-mode systemMessage',
+    (_label, payload) => {
+      const { root, id } = claimed();
+      const warn = hook(['stop', '--as', 'impl'], root, stopPayload(root, false));
+      const out = hook(['stop', '--strict', '--as', 'impl'], root, payload);
+      expect(out).toEqual(warn);
+      expect(stopMessage(out)).toContain(id);
+    },
+  );
 
   it('scenario: held mutex names release: a grant from the queue with no comment since names agentboard release first', () => {
     const { root } = grantedBoard();
@@ -892,7 +914,32 @@ describe('pre-tool-use', () => {
       ),
     );
     expect(reason).toContain('agentboard claim');
-    expect(reason).toBe(warn);
+    expect(reason).toContain('agentboard inbox');
+    expect(warn).toMatch(/carry on/i);
+  });
+
+  it('R3 scenario: strict denial does not invite a retry: refused, claim or ask the user, never carry on', () => {
+    const { root } = claimed();
+    const reason = blockReason(
+      hook(
+        ['pre-tool-use', '--strict', '--as', 'nobody'],
+        root,
+        editPayload(root, join(root, 'src', 'a.ts')),
+      ),
+    );
+    expect(reason).toMatch(/\brefused\b/i);
+    expect(reason).toContain('holds no ticket');
+    expect(reason).toContain('agentboard claim <id> --as nobody');
+    expect(reason).toContain('agentboard inbox --as nobody');
+    expect(reason).toMatch(/\bask the user\b/i);
+    expect(reason).not.toMatch(/carry on|carrying on|continue|try again|again later/i);
+    expectMutexSafe('strict pre-tool-use denial', reason);
+    // The warn text is unchanged: it still says carrying on is fine.
+    const warn = editContext(
+      hook(['pre-tool-use', '--as', 'nobody'], root, editPayload(root, join(root, 'src', 'a.ts'))),
+    );
+    expect(warn).toMatch(/carry on/i);
+    expect(warn).not.toMatch(/\brefused\b/i);
   });
 
   it('acts on each edit tool, NotebookEdit through notebook_path', () => {
@@ -1221,5 +1268,431 @@ describe('pre-tool-use warning rate limit', () => {
       hook(['pre-tool-use', '--as', 'impl'], root, editPayload(root, join(root, 'a.ts'))),
     ).toEqual(SILENT);
     expect(readdirSync(stateDir)).toEqual([]);
+  });
+});
+
+/** The `i`th of a run of distinct ticket ids, in increasing id order for `i` < 1024. */
+function bulkId(i: number): string {
+  const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  return `01ARYZ6S41TSV4RRFFQ69G${alphabet[Math.floor(i / 32) % 32] ?? '0'}${alphabet[i % 32] ?? '0'}AV`;
+}
+
+/**
+ * A board where `actor` holds `count` tickets (created by orch, claimed
+ * by `actor`, no comment), written as event files and folded by `list`;
+ * the first `waited` tickets in id order also have one waiter, so their
+ * `list` token gains `^1`. The clock is left at 3000.
+ */
+function heldBoard(
+  actor: string,
+  count: number,
+  waited = 0,
+): { root: string; boardDir: string; ids: string[] } {
+  const { root, boardDir } = project();
+  const events = join(boardDir, 'events');
+  const ids: string[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const id = bulkId(i);
+    ids.push(id);
+    putEvent(events, ev(P.create(id, `Ticket ${String(i)}`), 'orch', 1000, i));
+    putEvent(events, ev(P.claim(id), actor, 2000, i));
+    if (i < waited) {
+      putEvent(
+        events,
+        ev({ kind: 'ticket.queue.join', ticket: id, body: { ttl: 600_000 } }, 'waiter', 2500, i),
+      );
+    }
+  }
+  vi.setSystemTime(3000);
+  cli(['list'], root);
+  return { root, boardDir, ids };
+}
+
+describe('review round 1: stop', () => {
+  it('R4 scenario: many held tickets: at most STOP_TEXT_LIMIT characters, the first tickets in id order, ending and <n> more', () => {
+    const { root, ids } = heldBoard('impl', 200);
+    const text = stopMessage(hook(['stop', '--as', 'impl'], root, stopPayload(root, false)));
+    expect(text.length).toBeLessThanOrEqual(STOP_TEXT_LIMIT);
+    const sorted = [...ids].sort();
+    const named = sorted.filter((id) => text.includes(id));
+    expect(named.length).toBeGreaterThanOrEqual(2);
+    expect(named.length).toBeLessThan(ids.length);
+    // Whole tickets, from the start in id order: each named one has its commands.
+    expect(named).toEqual(sorted.slice(0, named.length));
+    for (const id of named) {
+      expect(text).toContain(`agentboard handoff ${id}`);
+      expect(text).toContain(`agentboard comment ${id}`);
+      expect(text).toContain(`agentboard move ${id} blocked`);
+    }
+    const last = lines(text).at(-1) ?? '';
+    expect(last).toMatch(new RegExp(`\\band ${String(ids.length - named.length)} more\\b`));
+    expectMutexSafe('stop, many tickets', text);
+    // Strict blocks with the same bounded text.
+    const reason = blockReason(
+      hook(['stop', '--strict', '--as', 'impl'], root, stopPayload(root, false)),
+    );
+    expect(reason).toBe(text);
+  });
+
+  it('R4: release stays first for each leased ticket among those shown in a cut text', () => {
+    const { root, boardDir } = project();
+    const events = join(boardDir, 'events');
+    const count = 60;
+    for (let i = 0; i < count; i += 1) {
+      putEvent(events, ev(P.create(bulkId(i), `Ticket ${String(i)}`), 'orch', 1000, i));
+      if (i !== 0 && i !== 2) {
+        putEvent(events, ev(P.claim(bulkId(i)), 'impl', 2000, i));
+      }
+    }
+    vi.setSystemTime(3000);
+    cli(['list'], root);
+    for (const id of [bulkId(0), bulkId(2)]) {
+      cli(['claim', id, '--ttl', '10m', '--as', 'impl'], root);
+    }
+    const text = stopMessage(hook(['stop', '--as', 'impl'], root, stopPayload(root, false)));
+    expect(text.length).toBeLessThanOrEqual(STOP_TEXT_LIMIT);
+    expect(lines(text).at(-1) ?? '').toMatch(/\band \d+ more\b/);
+    for (const id of [bulkId(0), bulkId(2)]) {
+      expect(text).toContain(`agentboard release ${id}`);
+      expect(text.indexOf(`agentboard release ${id}`)).toBeLessThan(
+        text.indexOf(`agentboard handoff ${id}`),
+      );
+    }
+    expect(text).not.toContain(`agentboard release ${bulkId(1)}`);
+  });
+
+  it('R4: a text that fits names every ticket and has no and <n> more line', () => {
+    const { root, ids } = heldBoard('impl', 3);
+    const text = stopMessage(hook(['stop', '--as', 'impl'], root, stopPayload(root, false)));
+    for (const id of ids) {
+      expect(text).toContain(id);
+    }
+    expect(text).not.toMatch(/\band \d+ more\b/);
+  });
+
+  it('R5 scenario: hand-off to oneself: the note counts as a comment, so stop says nothing', () => {
+    const { root, id } = claimed();
+    cli(
+      [
+        'handoff',
+        id,
+        '--to',
+        'impl',
+        '--status',
+        'todo',
+        '--note',
+        'done the parser, tests next',
+        '--as',
+        'impl',
+      ],
+      root,
+    );
+    expect(hook(['stop', '--strict', '--as', 'impl'], root, stopPayload(root, false))).toEqual(
+      SILENT,
+    );
+    expect(hook(['stop', '--as', 'impl'], root, stopPayload(root, false))).toEqual(SILENT);
+  });
+
+  it('R5: a hand-off to the actor by someone else still needs a comment by the actor', () => {
+    const { root, id } = claimed('reviewer');
+    cli(
+      ['handoff', id, '--to', 'impl', '--status', 'todo', '--note', 'yours', '--as', 'reviewer'],
+      root,
+    );
+    expect(
+      blockReason(hook(['stop', '--strict', '--as', 'impl'], root, stopPayload(root, false))),
+    ).toContain(id);
+  });
+
+  it('R10: a comment from an earlier hold does not count once the queue grants the ticket back', () => {
+    const { root, boardDir } = project();
+    const events = join(boardDir, 'events');
+    putEvent(events, ev(P.create(T1, 'Merge lock'), 'orch', 1000));
+    putEvent(events, ev(P.claim(T1), 'merger-2', 1500));
+    putEvent(events, ev(P.comment(T1, 'merged the first batch'), 'merger-2', 1600));
+    putEvent(events, ev({ kind: 'ticket.release', ticket: T1, body: {} }, 'merger-2', 1700));
+    putEvent(events, ev(P.claim(T1), 'merger-1', 2000));
+    putEvent(
+      events,
+      ev({ kind: 'ticket.queue.join', ticket: T1, body: { ttl: 600_000 } }, 'merger-2', 3000),
+    );
+    putEvent(events, ev({ kind: 'ticket.release', ticket: T1, body: {} }, 'merger-1', 5000));
+    vi.setSystemTime(6000);
+    cli(['list'], root);
+    expect(listToken(root, T1).startsWith('merger-2*')).toBe(true);
+    const reason = blockReason(
+      hook(['stop', '--strict', '--as', 'merger-2'], root, stopPayload(root, false)),
+    );
+    expect(reason).toContain(T1);
+    expect(reason).toContain(`agentboard release ${T1}`);
+  });
+
+  it('R10: a comment from an earlier hold does not count once the ticket is assigned back', () => {
+    const { root, boardDir } = project();
+    const events = join(boardDir, 'events');
+    putEvent(events, ev(P.create(T1, 'Work'), 'orch', 1000));
+    putEvent(events, ev(P.claim(T1), 'impl', 2000));
+    putEvent(events, ev(P.comment(T1, 'first pass done'), 'impl', 2500));
+    putEvent(events, ev({ kind: 'ticket.release', ticket: T1, body: {} }, 'impl', 2600));
+    putEvent(events, ev({ kind: 'ticket.assign', ticket: T1, body: { to: 'impl' } }, 'orch', 4000));
+    vi.setSystemTime(5000);
+    cli(['list'], root);
+    expect(listToken(root, T1)).toBe('impl');
+    expect(
+      blockReason(hook(['stop', '--strict', '--as', 'impl'], root, stopPayload(root, false))),
+    ).toContain(T1);
+    putEvent(events, ev(P.comment(T1, 'picked it up again'), 'impl', 5500));
+    vi.setSystemTime(6000);
+    cli(['list'], root);
+    expect(hook(['stop', '--strict', '--as', 'impl'], root, stopPayload(root, false))).toEqual(
+      SILENT,
+    );
+  });
+
+  it('R10: a rejected assigning event after the actor comment is ignored', () => {
+    const { root, boardDir, id } = claimed();
+    cli(['comment', id, 'halfway: parser done', '--as', 'impl'], root);
+    advance(1000);
+    // todo -> merged is not a permitted move, so this hand-off is rejected.
+    putEvent(
+      join(boardDir, 'events'),
+      ev(P.handoff(id, 'impl', 'merged', 'rejected note'), 'reviewer', Date.now()),
+    );
+    advance(1000);
+    const shown = oneJson(cli(['show', id, '--json'], root)) as {
+      ticket: { comments: { text: string }[] };
+    };
+    expect(shown.ticket.comments.map((c) => c.text)).not.toContain('rejected note');
+    expect(hook(['stop', '--strict', '--as', 'impl'], root, stopPayload(root, false))).toEqual(
+      SILENT,
+    );
+  });
+});
+
+describe('review round 1: pre-tool-use', () => {
+  it('R6 scenario: symbolic link to the project: a cwd through a link and a target by its real path, and the other way round', () => {
+    const { root } = claimed();
+    mkdirSync(join(root, 'src'));
+    const link = join(tempDir(), 'link');
+    symlinkSync(root, link);
+    for (const [cwd, target] of [
+      [link, join(root, 'src', 'a.ts')],
+      [root, join(link, 'src', 'a.ts')],
+      [link, join(link, 'src', 'a.ts')],
+      [root, join(link, 'new', 'deep', 'b.ts')],
+      [link, join(root, 'new', 'deep', 'b.ts')],
+      [link, 'src/a.ts'],
+    ] as const) {
+      const label = `cwd ${cwd === link ? 'link' : 'real'}, target ${target}`;
+      blockReason(
+        hook(['pre-tool-use', '--strict', '--as', 'nobody'], root, editPayload(cwd, target)),
+      );
+      expect(
+        hook(['pre-tool-use', '--strict', '--as', 'impl'], root, editPayload(cwd, target)),
+        label,
+      ).toEqual(SILENT);
+    }
+  });
+
+  it('R6: the board directory stays exempt through a link, by either path', () => {
+    const { root, boardDir } = claimed();
+    const link = join(tempDir(), 'link');
+    symlinkSync(root, link);
+    for (const [cwd, target] of [
+      [link, join(boardDir, 'notes.md')],
+      [root, join(link, '.board', 'events', 'x.json')],
+      [link, join(link, '.board', 'cache.sqlite')],
+    ] as const) {
+      expect(
+        hook(['pre-tool-use', '--strict', '--as', 'nobody'], root, editPayload(cwd, target)),
+        target,
+      ).toEqual(SILENT);
+    }
+  });
+
+  it('R6: a link inside the project that leads outside it is outside', () => {
+    const { root } = claimed();
+    const outside = tempDir();
+    symlinkSync(outside, join(root, 'vendor'));
+    for (const target of [join(root, 'vendor', 'a.ts'), join(root, 'vendor', 'new', 'b.ts')]) {
+      expect(
+        hook(['pre-tool-use', '--strict', '--as', 'nobody'], root, editPayload(root, target)),
+        target,
+      ).toEqual(SILENT);
+    }
+  });
+
+  it('R10: a board directory not named .board (AGENTBOARD_DIR) is exempt, and the project around it is checked', () => {
+    const { root, boardDir } = claimed();
+    const tracker = join(root, 'tracker');
+    renameSync(boardDir, tracker);
+    const env = hookEnv({ AGENTBOARD_DIR: tracker });
+    for (const target of [
+      join(tracker, 'events', 'x.json'),
+      join(tracker, 'cache.sqlite'),
+      join(tracker, 'notes.md'),
+    ]) {
+      expect(
+        hook(['pre-tool-use', '--strict', '--as', 'nobody'], root, editPayload(root, target), {
+          env,
+        }),
+        target,
+      ).toEqual(SILENT);
+    }
+    blockReason(
+      hook(
+        ['pre-tool-use', '--strict', '--as', 'nobody'],
+        root,
+        editPayload(root, join(root, 'src', 'a.ts')),
+        { env },
+      ),
+    );
+  });
+});
+
+describe('review round 1: the rate-limit file is never followed and never blocks (R7)', () => {
+  it('a symbolic link at the state name to a file holding a recent time counts as no warning', () => {
+    const { root } = claimed();
+    const elsewhere = join(tempDir(), 'recent');
+    writeFileSync(elsewhere, `${String(Date.now() - 1000)}\n`);
+    symlinkSync(elsewhere, warnStatePath(stateDir, 'session-1'));
+    editContext(
+      hook(['pre-tool-use', '--as', 'nobody'], root, editPayload(root, join(root, 'a.ts'))),
+    );
+    // The target of the link is never written either.
+    expect(readFileSync(elsewhere, 'utf8')).toBe(`${String(Date.now() - 1000)}\n`);
+  });
+
+  it('a symbolic link at the state name to a large file counts as no warning', () => {
+    const { root } = claimed();
+    const big = join(tempDir(), 'big');
+    writeFileSync(big, `${String(Date.now() - 1000)}\n`);
+    truncateSync(big, 64 * 1024 * 1024);
+    symlinkSync(big, warnStatePath(stateDir, 'session-1'));
+    editContext(
+      hook(['pre-tool-use', '--as', 'nobody'], root, editPayload(root, join(root, 'a.ts'))),
+    );
+  });
+
+  it('a directory at the state name counts as no warning and never stops the warning', () => {
+    const { root } = claimed();
+    mkdirSync(warnStatePath(stateDir, 'session-1'));
+    editContext(
+      hook(['pre-tool-use', '--as', 'nobody'], root, editPayload(root, join(root, 'a.ts'))),
+    );
+  });
+
+  it('only the first 64 bytes are read: a recent time followed by more than 64 bytes is not a record', () => {
+    const { root } = claimed();
+    const file = warnStatePath(stateDir, 'session-1');
+    writeFileSync(file, `${String(Date.now() - 1000)}${' '.repeat(100)}7\n`);
+    editContext(
+      hook(['pre-tool-use', '--as', 'nobody'], root, editPayload(root, join(root, 'a.ts'))),
+    );
+  });
+});
+
+describe('review round 1: the character limits at the boundary (R10)', () => {
+  /**
+   * The held-ticket line of `actor` holding `n` tickets, `q` of them with a
+   * waiter, read from the hook (session-start; its inbox lines follow).
+   */
+  function heldFor(actor: string, n: number, q: number): string {
+    const { root } = heldBoard(actor, n, q);
+    return heldLine(hook(['session-start', '--as', actor], root, startPayload(root)));
+  }
+
+  /**
+   * A ticket count `n` and waiter count `q` (`q` <= `n`) whose full
+   * held-ticket line is exactly `target` characters, from the measured
+   * length of the line for one ticket (`one`), the growth per ticket
+   * (`step`) and the 2 characters a `^1` adds.
+   */
+  function sizeFor(target: number, one: number, step: number): { n: number; q: number } {
+    for (let n = 1; n < 400; n += 1) {
+      const rest = target - one - (n - 1) * step;
+      if (rest >= 0 && rest % 2 === 0 && rest / 2 <= n) {
+        return { n, q: rest / 2 };
+      }
+    }
+    throw new Error(`no size gives ${String(target)}`);
+  }
+
+  it.each([
+    [HELD_LINE_LIMIT, false],
+    [HELD_LINE_LIMIT + 1, true],
+  ])(
+    'a held-ticket line of %i characters is cut: %s',
+    (target, cut) => {
+      for (const actor of ['impl-x', 'impl5']) {
+        const one = heldFor(actor, 1, 0).length;
+        const step = heldFor(actor, 2, 0).length - one;
+        expect(heldFor(actor, 2, 1).length).toBe(one + step + 2);
+        let size: { n: number; q: number };
+        try {
+          size = sizeFor(target, one, step);
+        } catch {
+          continue;
+        }
+        const line = heldFor(actor, size.n, size.q);
+        if (cut) {
+          expect(line.length).toBeLessThanOrEqual(HELD_LINE_LIMIT);
+          expect(line).toMatch(/\band \d+ more$/);
+        } else {
+          expect(line.length).toBe(HELD_LINE_LIMIT);
+          expect(line).not.toMatch(/\bmore$/);
+          expect(line).toContain(bulkId(size.n - 1));
+        }
+        return;
+      }
+      throw new Error(`no actor gives a ${String(target)} character line`);
+    },
+    60_000,
+  );
+
+  it.each([
+    [SESSION_CONTEXT_LIMIT, false],
+    [SESSION_CONTEXT_LIMIT + 1, true],
+  ])('a session-start context of %i characters is cut: %s', (target, cut) => {
+    const { root, id } = claimed();
+    cli(['inbox', '--as', 'impl'], root);
+    const held = lines(
+      sessionContext(hook(['session-start', '--as', 'impl'], root, startPayload(root))),
+    );
+    expect(held).toHaveLength(1);
+    const heldLength = (held[0] ?? '').length;
+    // Measure the line of one orch comment entry: a fixed part and the text.
+    cli(['comment', id, 'x'.repeat(200), '--as', 'orch'], root);
+    const first = peekLines(root, 'impl');
+    expect(first).toHaveLength(1);
+    const fixed = (first[0] ?? '').length - 200;
+    // Fill to `target`: whole lines of 300 characters of text, then the last one.
+    let total = heldLength + 1 + (first[0] ?? '').length;
+    let count = 1;
+    while (target - total > 2 * (fixed + 300 + 1)) {
+      cli(['comment', id, 'y'.repeat(300), '--as', 'orch'], root);
+      total += 1 + fixed + 300;
+      count += 1;
+    }
+    const lastText = target - total - 1 - fixed;
+    expect(lastText).toBeGreaterThan(0);
+    cli(['comment', id, 'z'.repeat(lastText), '--as', 'orch'], root);
+    count += 1;
+    const expected = peekLines(root, 'impl');
+    expect(expected).toHaveLength(count);
+    expect([held[0], ...expected].join('\n').length).toBe(target);
+
+    const text = sessionContext(hook(['session-start', '--as', 'impl'], root, startPayload(root)));
+    const got = lines(text);
+    if (cut) {
+      expect(text.length).toBeLessThanOrEqual(SESSION_CONTEXT_LIMIT);
+      // The held line, the entries that fit (fewer than all), the omitted line.
+      expect(got.slice(1, -1)).toEqual(expected.slice(0, got.length - 2));
+      expect(got.length - 2).toBeLessThan(count);
+      expect(got.at(-1) ?? '').toContain('agentboard inbox --as impl');
+    } else {
+      expect(text).toBe([held[0], ...expected].join('\n'));
+      expect(peekLines(root, 'impl')).toEqual([]);
+    }
   });
 });
