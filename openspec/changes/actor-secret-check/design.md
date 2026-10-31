@@ -220,8 +220,11 @@ the risk is the same as for any text the board accepts. It is accepted.
   received event's actor.
 - Per-actor `inbox` cursors (local cache state) of a refused name simply
   stop being used.
-- This repository's board: 82 distinct actor names in 950 events, all of
-  `[a-z0-9-]`, the longest 15 characters, all of the form. The docs, the
+- This repository's board: 91 distinct actor names in 1032 events (every
+  event's `actor` and every hand-off's `to`, counted after review round
+  1; an earlier count of 82 in 950 events wrongly included five statuses
+  from the `to` of move events, and was 77), all of `[a-z0-9-]`, the
+  longest 15 characters, all of the form. The docs, the
   guide, the help examples and README use `orch`, `orchestrator`,
   `impl`, `impl-1`, `impl-2`, `reviewer`, `reviewer-1`, `reviewer-3-2`,
   `merger-1` to `merger-4`, `releaser-1`, `test-1`, `ben`, `a` and `x`,
@@ -268,9 +271,17 @@ ticket):
   carry which name was refused. So the `invalid-actor` hint always writes
   the placeholder `<actor>` and never a context actor or id (the
   context's actor is either the refused name or unchecked), and for
-  `handoff` it names both ways: `--as <actor>` and `AGENTBOARD_ACTOR`, and
-  `--to <actor>` (over MCP the `as` and `to` arguments). Every hint names
-  the word `form`.
+  `handoff` it names both ways: the actor first, then `, and the new
+  assignee with --to <actor>` (over MCP the `as` and `to` arguments).
+  Every hint names the word `form`. On the CLI it says `set
+  AGENTBOARD_ACTOR` only for a command that uses the variable as its
+  actor (one that writes or tracks a cursor), and no other command's hint
+  names the variable (review round 1, F5).
+- **An ignored AGENTBOARD_ACTOR is never repeated.** A hint names
+  `AGENTBOARD_ACTOR`'s value only for a command that uses it as the actor,
+  even when the value passes the check; for any other command (`top`,
+  `list`, `show`, a read tool over MCP) the hint writes `<actor>`
+  (reviewer-ac1-2 finding 1).
 - **The actor before the new assignee.** When both the actor and `--to`
   (or `as` and `to`) fail, the refusal names the actor's source:
   `commandActor` runs before the command's arguments are converted, on
@@ -284,9 +295,13 @@ ticket):
 - **Every command lists the reason.** Every command checks a given
   `--as`, so every registry command (`help`, `version`, `init` and
   `agents` included) lists exit 1 `invalid-actor` in its exit codes.
-- **"States the form" in help.** The summaries of `--as` and `--to`
-  contain `1 to 32` and `ASCII`; the rest of the wording is the
-  implementer's.
+- **"States the form" in help.** The `--as` line of the text and the
+  `--json` help of every command (`serve` and `mcp` included) says that a
+  given name is checked and gives the form in the words `1 to 32 ASCII
+  letters, digits, . _ - or @, the first a letter or digit`, and no
+  longer says `Accepted and ignored by this command`; the `--to` summary
+  gives the form in the same words (review round 1, F1). The rest of the
+  wording is the implementer's.
 - **Accepted secret-shaped fixtures.** The no-echo fixtures `CROCKFORD_26`,
   `CROCKFORD_26_SEVEN` and `TOTP_SEED`, and 32 hexadecimal characters,
   have the form and match no pattern, so they are accepted actor names
