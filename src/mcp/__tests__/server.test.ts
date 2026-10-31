@@ -605,13 +605,15 @@ describe('help words in tool arguments', () => {
     const handed = ok(
       h.server.callTool('board_handoff', {
         id,
-        to: '-h',
+        // Not -h: a new assignee must pass the actor check, whose form
+        // refuses a leading '-' (actor-secret-check).
+        to: 'h',
         status: 'todo',
         note: '--help',
         as: 'orch',
       }),
     ) as { ticket: { assignee: string; comments: { text: string }[] } };
-    expect(handed.ticket.assignee).toBe('-h');
+    expect(handed.ticket.assignee).toBe('h');
     expect(handed.ticket.comments.at(-1)?.text).toBe('--help');
   });
 });
