@@ -115,10 +115,14 @@ function stopPayload(cwd: string, active?: unknown): string {
   });
 }
 
+/** Passed as `session` to `editPayload`: the payload has no `session_id` key. */
+const NO_SESSION = Symbol('no session_id');
+
 /**
  * A Claude Code PreToolUse payload of `tool` on `target` from `cwd`
  * (`notebook_path` for NotebookEdit, `file_path` otherwise); `session`
- * undefined leaves `session_id` out.
+ * `NO_SESSION` leaves the `session_id` key out (an `undefined` argument
+ * would take the default, `session-1`).
  */
 function editPayload(
   cwd: string,
@@ -131,7 +135,7 @@ function editPayload(
       ? { notebook_path: target, new_source: 'x' }
       : { file_path: target, content: 'x', old_string: 'a', new_string: 'b' };
   return JSON.stringify({
-    ...(session === undefined ? {} : { session_id: session }),
+    ...(session === NO_SESSION ? {} : { session_id: session }),
     transcript_path: join(cwd, 'transcript.jsonl'),
     cwd,
     hook_event_name: 'PreToolUse',
@@ -1146,7 +1150,7 @@ describe('pre-tool-use warning rate limit', () => {
 
   it('a payload with no session id is warned every time and writes no state', () => {
     const { root } = claimed();
-    for (const session of [undefined, '', 5, null]) {
+    for (const session of [NO_SESSION, '', 5, null]) {
       for (let i = 0; i < 2; i += 1) {
         editContext(
           hook(
