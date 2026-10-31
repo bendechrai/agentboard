@@ -130,14 +130,22 @@ sequences D1, D2, D2b, D3, D5). So:
   means another writer added commits on top of this board's unpublished
   update; the value before the swap would then hold this board's commits,
   and ruling 8 would integrate it silently (reviewer-ih4-2, N6). Of
-  several such temporaries the first in the byte order of their names is
-  the evidence (ruling 14).
+  several such temporaries the evidence is one whose HEAD equals the ref
+  if there is one (the first in the byte order of their names), otherwise
+  the first in that order (ruling 17).
 - At step 4, when such a temporary existed and `<old>` still equals
   `refAtLeftover`, the move writes the carried value instead of `<old>`
   (an adopted temporary therefore keeps its own record), or, for
   "unknown", writes no record and removes any it has, so a later run
-  with another board refuses rather than resets. Otherwise `<old>` as
-  above.
+  with another board refuses rather than resets. When such a temporary
+  existed and `<old>` differs from `refAtLeftover` (another writer moved
+  the ref between the leftover pass and step 3) but `<old>` still holds
+  the evidence's HEAD (is a descendant of, or equal to, it), the move
+  writes no record and removes any the temporary has (ruling 16):
+  `<old>` then holds this board's unpublished commits, and recording it
+  would let ruling 8 integrate them in a later run with another board.
+  Otherwise (no such temporary, or `<old>` no longer holds its HEAD)
+  `<old>` as above.
 - That leftover is not removed in the leftover pass. It is removed (and
   named as today, left by an interrupted move) only once the resuming
   move has written its own record at step 4; a run that stops earlier (a
@@ -346,12 +354,40 @@ tests pin them.
     returns) is the evidence, kept until the swap succeeds, and its record
     is carried; the others are removed in the leftover pass as plain
     leftovers (named as left by an interrupted move), the evidence holding
-    the record. By construction they all hold the same record, so the
-    choice does not change what is written; the test makes them differ
-    only to pin it.
+    the record. Ruling 17 refines the choice: the statement made here
+    that they all hold the same record by construction is wrong once a
+    strict ancestor counts as evidence (review round 3).
 15. **Live temporary of this board (review round 2).** Left alone: not
     refused, not removed, not named; the move goes on as if it were not
     there.
+16. **The ref moved during the resume (review round 3, reviewer-ih4-2
+    finding 1).** When a dead leftover of this board is the evidence and
+    the `<old>` read at step 3 differs from the ref as the leftover pass
+    found it (another writer moved the ref in between) while `<old>` is a
+    descendant of, or equal to, the evidence's HEAD, the move writes no
+    `agentboard-board-before` at step 4 and removes any its temporary has
+    (an adopted evidence included), so a later run with another board
+    refuses (`that move left no record of the ref's value before it`)
+    rather than treating this board's commits as content the ref held
+    anyway (ruling 8). The evidence is removed after the swap only when
+    `<old>` equals that value, as before; when `<old>` no longer holds the
+    evidence's HEAD, `<old>` is recorded as for a move without evidence.
+    The tests are the reviewer's S1 (the resume killed after its swap,
+    the evidence adopted because the host remote holds another clone's
+    board), S1b (killed before its swap) and S1f (a fresh temporary, which
+    already refuses as moved past: a guard).
+17. **Which evidence (review round 3, finding 2; corrects ruling 14).**
+    Among the dead temporaries of this board whose HEAD is an ancestor
+    of, or equal to, the ref, the evidence is the first in the byte order
+    of their names whose HEAD equals the ref, if any, otherwise the first
+    in that order. A strict ancestor carries no record even when it has
+    one, while an equal one carries its own: after this board gained a
+    commit, a resume killed between its swap and the removal of the
+    evidence leaves the older temporary a strict ancestor and the
+    resume's temporary equal to the ref, both with a usable record.
+    Preferring the equal one keeps that record, so a later run with
+    another board resets exactly instead of refusing. The test is the
+    reviewer's S2.
 
 ## Alternatives considered
 
