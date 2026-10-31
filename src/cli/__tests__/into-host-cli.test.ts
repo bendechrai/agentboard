@@ -26,6 +26,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -34,6 +35,7 @@ import { COMMANDS, expectCheckClean, expectKilled, canonicalDump } from '../../_
 import { git, tempDir } from '../../board/__tests__/helpers.js';
 import {
   agentboardDir,
+  bareHost,
   cloneProject,
   cloneWithStandalone,
   conflictingClones,
@@ -1531,4 +1533,269 @@ describe('into-host-replaced-after-step-4: a move killed after it updated the ho
       expect(git(fx.remote, 'for-each-ref')).toBe(remoteRefs);
     },
   );
+
+  describe('review round 1 (reviewer-ih4-2): a same-board move interrupted twice, evidence kept, live temporaries, naming', () => {
+    /** The start of the line of a reset that deleted the ref, whichever temporary it names. */
+    const DELETED_PREFIX = `deleted ${BOARD_REF} in the host repository, as before the interrupted move at `;
+
+    /** The suffix of the existing line naming removed temporaries of another board. */
+    function anotherBoardSuffix(dir: string): string {
+      return (
+        `, left by a move of another board (not the one at ${dir}, or one whose history no longer ` +
+        'holds where that move began), so nothing of it was adopted'
+      );
+    }
+
+    /** design.md "Test author rulings" 6: the refusal for a live temporary of another board whose HEAD is in the ref. */
+    function liveRefusal(temporary: string, dir: string): string {
+      return (
+        `the temporary worktree at ${temporary} was made by a move that may still be running (its ` +
+        'process is alive) and put commits of another board (not the one at ' +
+        `${dir}, or one whose history no longer holds where that move began) into ${BOARD_REF} in ` +
+        'the host repository without publishing them; nothing was changed; run agentboard init ' +
+        '--into-host again once that move has finished'
+      );
+    }
+
+    /** A standalone board A (two events, its own remote) in a project whose `origin` holds no board ref or (`joined`) another clone's. */
+    function boardA(env: Env, joined: boolean): { root: string; remote: string; dir: string; files: string[]; otherFiles: string[] } {
+      const { root, remote, dir } = standaloneProject(env, 2);
+      const files = eventFiles(dir);
+      const otherFiles = joined ? [otherClonePublished(remote, env)] : [];
+      return { root, remote, dir, files, otherFiles };
+    }
+
+    /** Runs `init --into-host` in `root` with a shim killing it at `trigger` (`when`, the `nth` match), asserting it was killed. */
+    function killed(root: string, env: Env, trigger: readonly string[], when: KillWhen, nth = 1): void {
+      expectKilled(intoHost(root, withKillingGitShim(env, trigger, when, nth)));
+    }
+
+    /**
+     * `env` with a `git` shim that runs the first `update-ref
+     * refs/agentboard/board` for real, then moves `.board` (`dir`) aside and
+     * an unrelated standalone board (one event by `bee`, built outside the
+     * host) into its place: the move then refuses at step 6. Returns the
+     * env and the replacement's event files.
+     */
+    function replacingAfterStep4(env: Env, dir: string): { env: Env; files: string[] } {
+      const staged = syncedStandalone(bareHost('staging-bee'), env, 1, bareRemote(), 'bee');
+      const files = eventFiles(staged.dir);
+      const scratch = tempDir();
+      const fired = join(scratch, 'fired');
+      return {
+        files,
+        env: withShellGitShim(
+          env,
+          [
+            'case " $* " in',
+            `  *" update-ref ${BOARD_REF} "*)`,
+            `    if [ ! -e '${fired}' ]; then`,
+            `      : > '${fired}'`,
+            '      "$GIT" "$@"; status=$?',
+            `      mv '${dir}' '${join(scratch, 'replaced')}' && mv '${staged.dir}' '${dir}'`,
+            '      exit $status',
+            '    fi',
+            '    ;;',
+            'esac',
+          ].join('\n'),
+        ),
+      };
+    }
+
+    /** Moves `<root>/.board` aside and builds B (one event by `bee`, its own remote) at its path; returns B's files. */
+    function replaceWithB(root: string, env: Env): string[] {
+      const dir = join(root, '.board');
+      if (existsSync(dir)) {
+        renameSync(dir, join(tempDir(), 'a-aside'));
+      }
+      syncedStandalone(root, env, 1, bareRemote(), 'bee');
+      return eventFiles(dir);
+    }
+
+    /**
+     * The run with B at `.board` after A's interrupted moves: exit 0, a real
+     * reset (the ref deleted, A's update having created it), never a
+     * "set back" line, the temporary named as another board's; after a
+     * sync, `.board/events`, the local and the remote ref hold B's events
+     * (and the other clone's) and no commit of either ref ever added one of
+     * A's.
+     */
+    function expectBMovedWithoutA(
+      fx: { root: string; remote: string; dir: string; files: string[]; otherFiles: string[] },
+      bFiles: readonly string[],
+      env: Env,
+    ): void {
+      const doc = intoHostOk(fx.root, env, 'the run with B');
+      const lines = String(doc.message).split('\n');
+      expect(lines.filter((l) => l.startsWith(DELETED_PREFIX)), String(doc.message)).toHaveLength(1);
+      expect(String(doc.message)).not.toContain('back to its value before the interrupted move');
+      expect(lines.some((l) => l.startsWith('removed ') && l.endsWith(anotherBoardSuffix(fx.dir))), String(doc.message)).toBe(true);
+      syncOk(fx.root, env);
+      expectMoved(fx.root, env);
+      const all = [...bFiles, ...fx.otherFiles].sort();
+      expect(eventFiles(fx.dir)).toEqual(all);
+      expect(refEvents(fx.root)).toEqual(all);
+      expect(refEvents(fx.remote)).toEqual(all);
+      expectNeverIn(fx.root, fx.files);
+      expectNeverIn(fx.remote, fx.files);
+      expectCheckClean(fx.root, env);
+    }
+
+    it.each([
+      ['D1: the re-run of A (fresh temporary) killed after its step 4 update', 'D1'],
+      ["D2: joined, the re-run of A (adopted temporary) killed after its step 4 update", 'D2'],
+      ['D2b: joined, the re-run of A (adopted temporary) killed between the record and the swap', 'D2b'],
+      ['D3: the re-run of A refused at step 6, .board swapped for B right after its update', 'D3'],
+      ['D5: the re-run of A (fresh temporary) killed between the record and the swap', 'D5'],
+    ] as const)(
+      'blocker: A killed after step 4, then %s, then B: a real reset, nothing of A anywhere',
+      (_label, sequence) => {
+        const env = syncEnv();
+        const fx = boardA(env, sequence === 'D2' || sequence === 'D2b');
+        killed(fx.root, env, COMMANDS.updateRef, 'after');
+        const first = String(registeredMigrating(fx.root)[0]);
+        expect(readRecordFile(first, BEFORE_RECORD)).toBe(`${ZERO}\n`);
+        const ha = String(refCommit(fx.root));
+        let bFiles: string[];
+        if (sequence === 'D3') {
+          const replacing = replacingAfterStep4(env, fx.dir);
+          const refused = intoHost(fx.root, replacing.env);
+          expect(refused.code, refused.stderr).toBe(3);
+          expect(errorOf(refused).message).toContain('replaced meanwhile');
+          bFiles = replacing.files;
+        } else {
+          killed(fx.root, env, COMMANDS.updateRef, sequence === 'D2b' || sequence === 'D5' ? 'before' : 'after');
+          bFiles = replaceWithB(fx.root, env);
+        }
+        // The ref still holds A's unpublished update; no record names it as the value to set back to.
+        expect(refCommit(fx.root)).toBe(ha);
+        for (const temporary of registeredMigrating(fx.root)) {
+          expect(readRecordFile(temporary, BEFORE_RECORD), temporary).not.toBe(`${ha}\n`);
+        }
+
+        expectBMovedWithoutA(fx, bFiles, env);
+      },
+    );
+
+    it.each([
+      ['killed before the fetch of step 2, after the leftover pass', 'kill'],
+      ['refused when the fetch of the host remote ref fails after ls-remote listed it (another clone published meanwhile)', 'fetch'],
+    ] as const)(
+      'high (D4): A killed after step 4, the re-run of A %s: the evidence survives, and the run with B resets, nothing of A anywhere',
+      (_label, how) => {
+        const env = syncEnv();
+        const fx = boardA(env, false);
+        killed(fx.root, env, COMMANDS.updateRef, 'after');
+        const ha = String(refCommit(fx.root));
+        if (how === 'kill') {
+          killed(fx.root, env, [`:${MIGRATING_FETCH_REF}`], 'before');
+        } else {
+          fx.otherFiles.push(otherClonePublished(fx.remote, env));
+          const away = `${fx.remote}.away`;
+          const breaking = withGitShimBefore(env, ['fetch', '--no-tags', 'origin', BOARD_REF], `mv '${fx.remote}' '${away}'`);
+          const out = intoHost(fx.root, breaking);
+          expect(out.code, out.stderr).toBe(3);
+          expect(errorOf(out).reason).toBe('sync-failed');
+          renameSync(away, fx.remote);
+        }
+        expect(refCommit(fx.root)).toBe(ha);
+        // The leftover of A's first move, whose HEAD is the ref, is still there with its record.
+        const kept = registeredMigrating(fx.root).filter((t) => revParse(t) === ha);
+        expect(kept.length).toBeGreaterThan(0);
+        expect(kept.some((t) => readRecordFile(t, BEFORE_RECORD) === `${ZERO}\n`)).toBe(true);
+        const bFiles = replaceWithB(fx.root, env);
+
+        expectBMovedWithoutA(fx, bFiles, env);
+      },
+    );
+
+    /** A process that stays alive until `stopPid`, not a child of this process (so it is reaped as soon as it dies). */
+    function livePid(): number {
+      return Number(execFileSync('sh', ['-c', 'sleep 600 >/dev/null 2>&1 & echo $!'], { encoding: 'utf8' }).trim());
+    }
+
+    /** Kills the process `pid` and waits until it no longer exists. */
+    function stopPid(pid: number): void {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        return;
+      }
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        try {
+          process.kill(pid, 0);
+        } catch {
+          return;
+        }
+        expect(Date.now()).toBeLessThan(deadline);
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      }
+    }
+
+    it('medium: a temporary of another board named by a live pid (pid reuse) whose HEAD is the ref: exit 3 sync-in-progress naming it, text and --json, nothing changed; once the pid is gone, B moves with a reset (the chain knock-on cannot form)', () => {
+      const env = syncEnv();
+      const fx = boardA(env, false);
+      killed(fx.root, env, COMMANDS.updateRef, 'after');
+      const ha = String(refCommit(fx.root));
+      const pid = livePid();
+      try {
+        const live = join(agentboardDir(fx.root), MIGRATING_DIR, String(pid));
+        git(fx.root, 'worktree', 'move', String(registeredMigrating(fx.root)[0]), live);
+        const bFiles = replaceWithB(fx.root, env);
+        const before = untouched(fx.root, fx.dir);
+        const remoteRefs = git(fx.remote, 'for-each-ref');
+        const expected = liveRefusal(live, fx.dir);
+
+        const text = intoHost(fx.root, env, false);
+
+        expect(text.code, text.stderr).toBe(3);
+        expect(text.stdout).toBe('');
+        expect(text.stderr).toContain(`agentboard: ${expected}\n`);
+        const hint = hintOf(text);
+        expect(hint).toBe(renderHint('sync-in-progress', { surface: 'cli', command: 'init' }));
+        const json = intoHost(fx.root, env);
+        expect(json.code).toBe(3);
+        expect(errorOf(json)).toEqual({ exitCode: 3, reason: 'sync-in-progress', message: expected, hint });
+        expect(untouched(fx.root, fx.dir)).toEqual(before);
+        expect(git(fx.remote, 'for-each-ref')).toBe(remoteRefs);
+        expect(refCommit(fx.root)).toBe(ha);
+        expect(registeredMigrating(fx.root)).toEqual([live]);
+        expect(readRecordFile(live, BEFORE_RECORD)).toBe(`${ZERO}\n`);
+
+        // The knock-on: had B's move integrated the ref, a later run would
+        // have refused B's own temporary ("moved on past") and the remedy
+        // would have published A. With the refusal, once the pid is gone
+        // the next run with B undoes A's update.
+        stopPid(pid);
+        expectBMovedWithoutA(fx, bFiles, env);
+      } finally {
+        stopPid(pid);
+      }
+    });
+
+    it('low: a run with B killed right after its reset of the ref: the next run names the temporary as left by a move of another board, not as an interrupted move', () => {
+      const env = syncEnv();
+      const fx = boardA(env, false);
+      killed(fx.root, env, COMMANDS.updateRef, 'after');
+      const temporary = String(registeredMigrating(fx.root)[0]);
+      const bFiles = replaceWithB(fx.root, env);
+      // The reset of design.md: `update-ref refs/agentboard/board <zero> <HEAD>`.
+      killed(fx.root, env, ['update-ref', BOARD_REF, ZERO], 'after');
+      expect(refCommit(fx.root)).toBeNull();
+      expect(registeredMigrating(fx.root)).toEqual([temporary]);
+
+      const doc = intoHostOk(fx.root, env);
+
+      const message = String(doc.message);
+      expect(message.split('\n')).toContain(removedAsAnotherBoard(temporary, fx.dir));
+      expect(message).not.toContain('left by an interrupted move');
+      syncOk(fx.root, env);
+      expectMoved(fx.root, env);
+      expect(eventFiles(fx.dir)).toEqual(bFiles);
+      expect(refEvents(fx.remote)).toEqual(bFiles);
+      expectNeverIn(fx.root, fx.files);
+      expectNeverIn(fx.remote, fx.files);
+    });
+  });
 });
