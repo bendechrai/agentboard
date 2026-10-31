@@ -35,13 +35,29 @@
  * budget and the escape hatch.
  */
 
-import { statSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { createHash, randomBytes } from 'node:crypto';
+import { existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 
-import type { BoardState, Ticket } from '../events/fold.js';
+import { compareFoldOrder, type BoardState, type Ticket } from '../events/fold.js';
+import { isKnownEvent, SYSTEM_ACTOR } from '../events/schema.js';
 import { CACHE_FILE, openCache, readState } from '../store/cache.js';
+import {
+  advanceCursor,
+  comparePositions,
+  readCursor,
+  writeCursor,
+  type CursorPosition,
+} from '../store/cursors.js';
+import { inImmediate, inSnapshot } from '../store/engine.js';
+import { readEventFile, readEventLog } from '../store/eventfile.js';
+import { recordedPositions } from '../store/folded.js';
 import { boardExists, locateBoard } from '../store/locate.js';
-import { SYSTEM_ACTOR } from '../events/schema.js';
+import { assigneeToken } from './leases.js';
+import { renderInboxLine } from './inbox.js';
+import { pendingPositions, toEntries } from './pending.js';
 import { isActorName } from './secrets.js';
 import type { Env } from './text.js';
 
@@ -121,9 +137,8 @@ export const WARN_INTERVAL_MS = 600_000;
  * writes it.
  */
 export function warnStatePath(stateDir: string, sessionId: string): string {
-  void stateDir;
-  void sessionId;
-  throw new Error('not implemented');
+  const digest = createHash('sha256').update(sessionId, 'utf8').digest('hex');
+  return join(stateDir, `agentboard-hook-${digest}`);
 }
 
 /** A parsed hook payload: always a plain object. */
@@ -229,15 +244,30 @@ function discoverBoard(cwd: string, env: Env, deadline: number, now: () => numbe
  * Null when the cache cannot be read; never throws.
  */
 function readCacheState(boardDir: string, deadline: number, now: () => number): BoardState | null {
-  const left = Math.max(0, deadline - now());
-  let db: ReturnType<typeof openCache> | null = null;
+  const db = openHookCache(boardDir, deadline, now);
+  if (db === null) {
+    return null;
+  }
   try {
-    db = openCache(join(boardDir, CACHE_FILE), { prepare: false, busyTimeoutMs: left });
     return readState(db);
   } catch {
     return null;
   } finally {
-    db?.close();
+    db.close();
+  }
+}
+
+/**
+ * The cache of `boardDir` opened as `readCacheState` opens it, for a
+ * caller that reads more than the state (and, in `session-start`, writes
+ * the cursor) and closes it. Null when it cannot be opened; never throws.
+ */
+function openHookCache(boardDir: string, deadline: number, now: () => number): DatabaseSync | null {
+  const left = Math.max(0, deadline - now());
+  try {
+    return openCache(join(boardDir, CACHE_FILE), { prepare: false, busyTimeoutMs: left });
+  } catch {
+    return null;
   }
 }
 
@@ -414,25 +444,353 @@ function sessionStartContext(text: string): HookOutcome {
   };
 }
 
+/** Exit 2 with nothing on stdout and `text` (which may span lines) on stderr. */
+function block(text: string): HookOutcome {
+  return { exitCode: 2, stdout: '', stderr: `${text}\n` };
+}
+
+/** What the events read and, in `session-start`, write. */
+interface EventContext {
+  readonly actor: string;
+  readonly payload: HookPayload;
+  readonly view: HookView;
+  /** The open cache connection (`openHookCache`); the caller closes it. */
+  readonly db: DatabaseSync;
+  /** The directory discovery started from (`discoveryCwd`). */
+  readonly cwd: string;
+  readonly now: () => number;
+  /** `HookRequest.stateDir`, resolved. */
+  readonly stateDir: string;
+}
+
 /**
- * The answer of `event` for `actor` on a readable board (see `runHook`
- * step 6). Not implemented yet: every event continues silently.
+ * The held-ticket line of `session-start`: the actor and, in id order,
+ * each held ticket as `<id> <token>` (`assigneeToken` at `now`), or that
+ * the actor holds none; cut at a ticket boundary to `HELD_LINE_LIMIT`
+ * characters, ending with `and <n> more`. Pure.
  */
-function answerEvent(
-  event: HookEvent,
-  strict: boolean,
+function heldLine(actor: string, held: readonly Ticket[], now: number): string {
+  if (held.length === 0) {
+    return `agentboard: actor ${actor} holds no ticket.`;
+  }
+  const prefix = `agentboard: actor ${actor} holds `;
+  const parts = held.map((ticket) => `${ticket.id} ${assigneeToken(ticket, now)}`);
+  const full = `${prefix}${parts.join(', ')}`;
+  if (full.length <= HELD_LINE_LIMIT) {
+    return full;
+  }
+  let line = `${prefix}and ${String(parts.length)} more`;
+  for (let k = 1; k < parts.length; k += 1) {
+    const cut = `${prefix}${parts.slice(0, k).join(', ')}, and ${String(parts.length - k)} more`;
+    if (cut.length > HELD_LINE_LIMIT) {
+      break;
+    }
+    line = cut;
+  }
+  return line;
+}
+
+/** The last line of a truncated `session-start` context: `omitted` entries were left out. */
+function omittedLine(omitted: number, actor: string): string {
+  const entries = omitted === 1 ? 'entry' : 'entries';
+  return `${String(omitted)} more inbox ${entries} not shown; read them with: agentboard inbox --as ${actor}`;
+}
+
+/**
+ * The `session-start` context from the held line and the inbox lines:
+ * every line when the whole fits in `SESSION_CONTEXT_LIMIT`, else the
+ * most entries, from the start, that fit together with `omittedLine`;
+ * `delivered` counts the entries included. Lines are joined with a
+ * newline and nothing follows the last. Pure.
+ */
+function sessionText(
+  held: string,
+  entries: readonly string[],
   actor: string,
-  payload: HookPayload,
-  view: HookView,
-  now: () => number,
-): HookOutcome {
-  void event;
-  void strict;
-  void actor;
-  void payload;
-  void view;
-  void now;
-  return SILENT;
+): { text: string; delivered: number } {
+  const full = [held, ...entries].join('\n');
+  if (full.length <= SESSION_CONTEXT_LIMIT) {
+    return { text: full, delivered: entries.length };
+  }
+  let best = { text: [held, omittedLine(entries.length, actor)].join('\n'), delivered: 0 };
+  for (let k = 1; k < entries.length; k += 1) {
+    const text = [held, ...entries.slice(0, k), omittedLine(entries.length - k, actor)].join('\n');
+    if (text.length > SESSION_CONTEXT_LIMIT) {
+      break;
+    }
+    best = { text, delivered: k };
+  }
+  return best;
+}
+
+/**
+ * `session-start` (board-harness-hooks "Session start hook"; `runHook`
+ * step 6). The pending entries are listed in one snapshot first; only
+ * when there is at least one does a write transaction list them again
+ * (so two concurrent runs never deliver one entry twice) and advance the
+ * cursor over the delivered ones. Nothing else of the board is written.
+ */
+function sessionStart(ctx: EventContext): HookOutcome {
+  const { actor, db, now } = ctx;
+  const held = heldLine(actor, heldTickets(ctx.view.state, actor), now());
+  const board = { eventsDir: join(ctx.view.boardDir, 'events') };
+  const pending = inSnapshot(db, () => pendingPositions(db, readCursor(db, actor)));
+  if (pending.length === 0) {
+    return sessionStartContext(held);
+  }
+  return inImmediate(db, () => {
+    const cursor = readCursor(db, actor);
+    const entries = toEntries(board, pendingPositions(db, cursor), readEventFile);
+    const { text, delivered } = sessionText(
+      held,
+      entries.map((entry) => renderInboxLine(entry, actor)),
+      actor,
+    );
+    if (delivered > 0) {
+      const positions: CursorPosition[] = entries
+        .slice(0, delivered)
+        .map((entry) => ({ hash: entry.hash, ts: entry.ts }));
+      writeCursor(db, advanceCursor(cursor, positions));
+    }
+    return sessionStartContext(text);
+  });
+}
+
+/**
+ * For each ticket of `tickets`, the position of the applied event that
+ * last made `actor` its assignee (a `ticket.claim` by the actor, a
+ * takeover included; a `ticket.grant`, `ticket.handoff` or
+ * `ticket.assign` to the actor), read from the board's event files; a
+ * ticket with no such event is absent. Applied means recorded as
+ * effective in the cache (`folded.folded = 1`).
+ */
+function assignedAt(
+  db: DatabaseSync,
+  eventsDir: string,
+  actor: string,
+  tickets: readonly Ticket[],
+): Map<string, CursorPosition> {
+  const wanted = new Set(tickets.map((ticket) => ticket.id));
+  const applied = new Set(
+    recordedPositions(db, { effectiveOnly: true }).map((position) => position.hash),
+  );
+  const inputs = readEventLog(eventsDir).inputs.filter((input) => applied.has(input.hash));
+  const last = new Map<string, CursorPosition>();
+  for (const input of inputs.sort(compareFoldOrder)) {
+    const { event } = input;
+    if (!isKnownEvent(event) || event.kind === 'board.meta' || !wanted.has(event.ticket)) {
+      continue;
+    }
+    const assignee =
+      event.kind === 'ticket.claim'
+        ? event.actor
+        : event.kind === 'ticket.grant' ||
+            event.kind === 'ticket.handoff' ||
+            event.kind === 'ticket.assign'
+          ? event.body.to
+          : null;
+    if (assignee === actor) {
+      last.set(event.ticket, { hash: input.hash, ts: event.ts });
+    }
+  }
+  return last;
+}
+
+/** The `stop` text naming `tickets` (in id order), for `actor`. */
+function stopText(actor: string, tickets: readonly Ticket[]): string {
+  const ids = tickets.map((ticket) => ticket.id).join(', ');
+  const lines = [
+    `agentboard: ${actor} still holds ${ids} with no comment or hand-off since taking it. Before stopping, record where it stands:`,
+  ];
+  for (const ticket of tickets) {
+    const { id } = ticket;
+    if (ticket.lease !== null) {
+      lines.push(
+        `  agentboard release ${id} --as ${actor}   (it is held under a lease: release it when the work it locks is done)`,
+      );
+    }
+    lines.push(
+      `  agentboard handoff ${id} --to <actor> --status <status> --note "<what is done, what is next>" --as ${actor}`,
+      `  agentboard comment ${id} "<progress so far>" --as ${actor}`,
+      `  agentboard move ${id} blocked --as ${actor}   (when stuck)`,
+    );
+  }
+  return lines.join('\n');
+}
+
+/** `stop` (board-harness-hooks "Stop hook"; `runHook` step 6). Reads only. */
+function stop(strict: boolean, ctx: EventContext): HookOutcome {
+  const { actor, view } = ctx;
+  const candidates = heldTickets(view.state, actor).filter((ticket) => ticket.status !== 'blocked');
+  if (candidates.length === 0) {
+    return SILENT;
+  }
+  const eventsDir = join(view.boardDir, 'events');
+  const since = inSnapshot(ctx.db, () => assignedAt(ctx.db, eventsDir, actor, candidates));
+  const silent = candidates.filter((ticket) => {
+    const start = since.get(ticket.id);
+    return ticket.comments.some(
+      (comment) =>
+        comment.actor === actor &&
+        (start === undefined ||
+          comparePositions({ hash: comment.hash, ts: comment.ts }, start) > 0),
+    );
+  });
+  const named = candidates.filter((ticket) => !silent.includes(ticket));
+  if (named.length === 0) {
+    return SILENT;
+  }
+  const text = stopText(actor, named);
+  if (strict && ctx.payload.stop_hook_active !== true) {
+    return block(text);
+  }
+  return { exitCode: 0, stdout: document({ systemMessage: text }), stderr: '' };
+}
+
+/** The target of an edit tool call (see `EDIT_TOOLS`), or null when there is none. */
+function editTarget(payload: HookPayload): string | null {
+  const input = payload.tool_input;
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    return null;
+  }
+  const fields = input as Record<string, unknown>;
+  const candidates =
+    payload.tool_name === 'NotebookEdit'
+      ? [fields.notebook_path, fields.file_path]
+      : [fields.file_path];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate !== '') {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+/** True when `path` is `root` or below it, component by component (both absolute). */
+function within(path: string, root: string): boolean {
+  const rel = relative(root, path);
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
+}
+
+/** The nearest directory at or above `dir` holding a `.git` entry, or null. */
+function gitRoot(dir: string): string | null {
+  for (let current = dir; ; current = dirname(current)) {
+    if (existsSync(join(current, '.git'))) {
+      return current;
+    }
+    if (dirname(current) === current) {
+      return null;
+    }
+  }
+}
+
+/**
+ * True when `target` (absolute) is a project file `pre-tool-use` checks:
+ * inside the parent of `boardDir` or inside the checkout or linked
+ * worktree `cwd` is in (`gitRoot`), and not exempt (in the board
+ * directory, or with a `.board` component below the project directory).
+ */
+function isProjectFile(target: string, boardDir: string, cwd: string): boolean {
+  if (within(target, boardDir)) {
+    return false;
+  }
+  const roots = [dirname(boardDir), gitRoot(cwd)];
+  for (const root of roots) {
+    if (root !== null && within(target, root)) {
+      return !relative(root, target).split(sep).includes('.board');
+    }
+  }
+  return false;
+}
+
+/**
+ * True when the state file `file` records a warning at `t` with
+ * `t <= now < t + WARN_INTERVAL_MS` (see `warnStatePath`). Never throws.
+ */
+function recentlyWarned(file: string, now: number): boolean {
+  try {
+    const text = readFileSync(file, 'utf8').trim();
+    if (!/^\d+$/.test(text)) {
+      return false;
+    }
+    const at = Number(text);
+    return at <= now && now < at + WARN_INTERVAL_MS;
+  } catch {
+    return false;
+  }
+}
+
+/** Records a warning at `now` in `file`, atomically (see `warnStatePath`). Never throws. */
+function recordWarning(file: string, now: number): void {
+  const temp = `${file}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    writeFileSync(temp, `${String(now)}\n`);
+    renameSync(temp, file);
+  } catch {
+    try {
+      unlinkSync(temp);
+    } catch {
+      // The temporary file was never written.
+    }
+  }
+}
+
+/** The `pre-tool-use` text for `actor`. */
+function claimText(actor: string): string {
+  return (
+    `agentboard: ${actor} holds no ticket on the board. Claim the ticket this edit belongs to before changing project files: ` +
+    `agentboard inbox --as ${actor} shows what is new, and agentboard claim <id> --as ${actor} takes a ticket. ` +
+    'If this work is not ticketed, carry on.'
+  );
+}
+
+/** `pre-tool-use` (board-harness-hooks "Pre-tool-use claim check"; `runHook` step 6). */
+function preToolUse(strict: boolean, ctx: EventContext): HookOutcome {
+  const { actor, payload, view } = ctx;
+  const tool = payload.tool_name;
+  if (typeof tool !== 'string' || !(EDIT_TOOLS as readonly string[]).includes(tool)) {
+    return SILENT;
+  }
+  const target = editTarget(payload);
+  if (target === null || !isProjectFile(resolve(ctx.cwd, target), view.boardDir, ctx.cwd)) {
+    return SILENT;
+  }
+  if (heldTickets(view.state, actor).length > 0) {
+    return SILENT;
+  }
+  const text = claimText(actor);
+  if (strict) {
+    return block(text);
+  }
+  const session = payload.session_id;
+  const file =
+    typeof session === 'string' && session !== '' ? warnStatePath(ctx.stateDir, session) : null;
+  const now = ctx.now();
+  if (file !== null) {
+    if (recentlyWarned(file, now)) {
+      return SILENT;
+    }
+    recordWarning(file, now);
+  }
+  return {
+    exitCode: 0,
+    stdout: document({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text },
+    }),
+    stderr: '',
+  };
+}
+
+/** The answer of `event` for `actor` on a readable board (see `runHook` step 6). */
+function answerEvent(event: HookEvent, strict: boolean, ctx: EventContext): HookOutcome {
+  switch (event) {
+    case 'session-start':
+      return sessionStart(ctx);
+    case 'stop':
+      return stop(strict, ctx);
+    case 'pre-tool-use':
+      return preToolUse(strict, ctx);
+  }
 }
 
 /**
@@ -537,21 +895,39 @@ export function runHook(request: HookRequest): HookOutcome {
     const cwd = discoveryCwd(payload, request.cwd);
     const actor = resolveHookActor(args.as, request.env);
     const boardDir = cwd === null ? null : discoverBoard(cwd, request.env, deadline, now);
-    if (boardDir === null) {
+    if (cwd === null || boardDir === null) {
       // No board (or nowhere to look): silent, whether or not there is an actor.
       return SILENT;
     }
     if (actor === null) {
       return args.event === 'session-start' ? sessionStartContext(LINES.noActor) : SILENT;
     }
-    const state = readCacheState(boardDir, deadline, now);
-    if (state === null) {
+    const db = openHookCache(boardDir, deadline, now);
+    if (db === null) {
       return continueWith(LINES.unreadable);
     }
-    if (now() > deadline) {
-      return continueWith(LINES.budget);
+    try {
+      let state: BoardState;
+      try {
+        state = readState(db);
+      } catch {
+        return continueWith(LINES.unreadable);
+      }
+      if (now() > deadline) {
+        return continueWith(LINES.budget);
+      }
+      return answerEvent(args.event, args.strict, {
+        actor,
+        payload,
+        view: { boardDir, state },
+        db,
+        cwd,
+        now,
+        stateDir: request.stateDir ?? tmpdir(),
+      });
+    } finally {
+      db.close();
     }
-    return answerEvent(args.event, args.strict, actor, payload, { boardDir, state }, now);
   } catch {
     return continueWith(LINES.internal);
   }
@@ -587,18 +963,21 @@ export function readHookStdin(input: HookInput, timeoutMs: number): Promise<stri
     // input that never ends does not keep the process alive: a stream is
     // destroyed (its iterator's `return` would only be queued behind the
     // pending `next`), any other input is asked to return.
-    const timer = setTimeout(() => {
-      settle('');
-      try {
-        if ('destroy' in input && typeof input.destroy === 'function') {
-          input.destroy();
-        } else {
-          iterator.return?.()?.catch(() => undefined);
+    const timer = setTimeout(
+      () => {
+        settle('');
+        try {
+          if ('destroy' in input && typeof input.destroy === 'function') {
+            input.destroy();
+          } else {
+            iterator.return?.()?.catch(() => undefined);
+          }
+        } catch {
+          // The input refused to be released; nothing more can be done.
         }
-      } catch {
-        // The input refused to be released; nothing more can be done.
-      }
-    }, Math.max(0, timeoutMs));
+      },
+      Math.max(0, timeoutMs),
+    );
     void (async (): Promise<void> => {
       try {
         for (;;) {
