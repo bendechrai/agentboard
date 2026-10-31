@@ -15,10 +15,10 @@
  * flag it. None of them is a real credential.
  *
  * None of the fixtures has the ticket id shape (1 to 26 Crockford base32
- * characters, ASCII case-insensitive, the first of them 0 to 7): each
- * contains `_`, `-`, `:`, `I`, is longer than 26 characters, or (the two
- * base32 fixtures of review round 1, F2) is all Crockford base32 but
- * starts with a letter. So the id exception of board-cli "Ticket ids in
+ * characters, ASCII case-insensitive, the first of them 0): each
+ * contains `_`, `-`, `:`, `I`, is longer than 26 characters, or (the
+ * base32 fixtures of review rounds 1 and 2) is all Crockford base32 but
+ * starts with a letter or with 7. So the id exception of board-cli "Ticket ids in
  * refusals" never applies to them, and every refusal must keep them out
  * of every output.
  */
@@ -81,6 +81,13 @@ export const LONG_WORD = ['x9k2-q7vz-m3p8', '-w4rt-j6hn-b5cd-f1gs'].join('');
 export const CROCKFORD_26 = ['KZQ4XK9M2PVB8', 'RT3NH6WD5YCFJ'].join('');
 
 /**
+ * A 26-character token of Crockford base32 that starts with 7: the shape
+ * of a ULID from the far future, which the id exception no longer repeats
+ * since it requires a first character of 0 (review round 2).
+ */
+export const CROCKFORD_26_SEVEN = ['7MZ4QK9X2PVB8', 'GW3NH6TD5YCAE'].join('');
+
+/**
  * A 16-character TOTP-style seed (RFC 4648 base32, A to Z and 2 to 7)
  * with no I, L, O or U, so every character is Crockford base32 (review
  * round 1, F2).
@@ -89,7 +96,7 @@ export const TOTP_SEED = ['JBSWY3DP', 'EHPK3PXP'].join('');
 
 /**
  * Every fixture of design.md "Testing approach", plus `HEX_64`,
- * `CROCKFORD_26` and `TOTP_SEED`.
+ * `CROCKFORD_26`, `CROCKFORD_26_SEVEN` and `TOTP_SEED`.
  */
 export const SECRET_FIXTURES: readonly SecretFixture[] = [
   { name: 'github-token', value: GITHUB_TOKEN, secret: GITHUB_TOKEN },
@@ -100,6 +107,7 @@ export const SECRET_FIXTURES: readonly SecretFixture[] = [
   { name: 'long-word', value: LONG_WORD, secret: LONG_WORD },
   { name: 'crockford-26', value: CROCKFORD_26, secret: CROCKFORD_26 },
   { name: 'totp-seed', value: TOTP_SEED, secret: TOTP_SEED },
+  { name: 'crockford-26-seven', value: CROCKFORD_26_SEVEN, secret: CROCKFORD_26_SEVEN },
 ];
 
 /** The fixtures a positional or flag value is tested with (all but the URL). */

@@ -14,16 +14,17 @@ export const MIN_PREFIX_LENGTH = 6;
 /**
  * True when `text` has the shape of a ticket id or id prefix (board-cli
  * "Ticket ids in refusals"): it could be a ULID or a prefix of one, that
- * is, it matches `^[0-7][0-9A-HJKMNP-TV-Z]{0,25}$` with ASCII letters
+ * is, it matches `^0[0-9A-HJKMNP-TV-Z]{0,25}$` with ASCII letters
  * compared without regard to case: 1 to 26 characters of Crockford base32
  * (the digits and the letters other than I, L, O and U), the first of them
- * 0 to 7. No Unicode upper-casing is applied, so a character that
- * upper-cases into the alphabet (U+017F to `S`, U+FB06 to `ST`) never
- * matches. So `01j9k3`, `01J9K3ZZZZ` and `7ZZZZZZZZZZZZZZZZZZZZZZZZZ` are
- * id-shaped, and the empty string, `01NOPE` (an `O`), a 27-character run,
- * a text starting with 8 to Z (`ZZZZZZ`, the TOTP-style seed
+ * 0 (every ULID until about the year 3084). No Unicode upper-casing is
+ * applied, so a character that upper-cases into the alphabet (U+017F to
+ * `S`, U+FB06 to `ST`) never matches. So `01j9k3`, `01J9K3ZZZZ` and
+ * `0ZZZZZZZZZZZZZZZZZZZZZZZZZ` are id-shaped, and the empty string,
+ * `01NOPE` (an `O`), a 27-character run, a text starting with anything
+ * but 0 (`7ZZZZZZ`, `1J9K3Z`, `ZZZZZZ`, the TOTP-style seed
  * `JBSWY3DPEHPK3PXP`), and anything with `_`, `-`, `:` or `/` are not
- * (review round 1, F2 and F3).
+ * (review rounds 1 and 2).
  *
  * Only an id-shaped text given as a ticket id may be repeated in a
  * refusal or a hint; `resolveTicketId` and `renderHint`
@@ -36,7 +37,10 @@ export function isIdShaped(text: string): boolean {
 /**
  * The message of the `unknown-ticket` refusal for a ticket id that is not
  * id-shaped (`isIdShaped` false), which names the id form and not the
- * text given.
+ * text given, exactly `no ticket matches the id given, which is not a
+ * ticket id: an id is 26 characters of Crockford base32 (digits and
+ * letters other than I, L, O and U) starting with 0, or a unique prefix of
+ * at least 6 of them` (review round 2).
  */
 export const NOT_AN_ID_MESSAGE =
   'no ticket matches the id given, which is not a ticket id: an id is 26 characters of ' +

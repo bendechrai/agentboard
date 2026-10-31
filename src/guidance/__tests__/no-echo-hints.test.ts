@@ -58,6 +58,8 @@ describe('renderHint with an id that is not id-shaped', () => {
           'Z'.repeat(27),
           'Z'.repeat(26),
           'JBSWY3DPEHPK3PXP',
+          `7${'Z'.repeat(25)}`,
+          '1J9K3ZZZZ',
           `01${String.fromCharCode(0x17f, 0x17f)}ABCDEFGH23`,
           '01J9K3I',
           'ab_cd',
@@ -72,7 +74,7 @@ describe('renderHint with an id that is not id-shaped', () => {
     for (const reason of HINT_REASONS) {
       for (const context of contexts()) {
         const placeholder = renderHint(reason, context);
-        for (const id of ['01j9k3', '01J9K3AB', `7${'Z'.repeat(25)}`]) {
+        for (const id of ['01j9k3', '01J9K3AB', `0${'Z'.repeat(25)}`]) {
           expect(renderHint(reason, { ...context, id }), `${reason} ${id}`).toBe(
             placeholder === null ? null : placeholder.replaceAll('<id>', id),
           );

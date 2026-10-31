@@ -40,8 +40,8 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 const NOT_AN_ID =
   'no ticket matches the id given, which is not a ticket id: an id is 26 characters of ' +
-  'Crockford base32 (digits and letters other than I, L, O and U), or a unique prefix of ' +
-  'at least 6 of them';
+  'Crockford base32 (digits and letters other than I, L, O and U) starting with 0, or a ' +
+  'unique prefix of at least 6 of them';
 
 /** A board state holding tickets with these ids and nothing else. */
 function boardState(...ids: string[]): BoardState {
@@ -58,19 +58,20 @@ function messageOf(fn: () => unknown, exitCode: number, reason: string): string 
 }
 
 describe('isIdShaped', () => {
-  it('is true for 1 to 26 Crockford base32 characters in either case, the first 0 to 7', () => {
+  it('is true for 1 to 26 Crockford base32 characters in either case, the first 0', () => {
     for (const text of [
       '0',
-      '7',
+      '00',
       '01J9K3',
       '01j9k3',
       '01J9K3ZZZZ',
       '0123456789ABCDEFGHJKMNPQRS',
       '0123456789abcdefghjkmnpqrs',
-      '7TVWXYZ',
-      '7tvwxyz',
-      `7${'Z'.repeat(25)}`,
-      `7${'z'.repeat(25)}`,
+      '0TVWXYZ',
+      '0tvwxyz',
+      `0${'Z'.repeat(25)}`,
+      `0${'z'.repeat(25)}`,
+      '01J9K3AAAAAAAAAAAAAAAAAAAA',
     ]) {
       expect(isIdShaped(text), text).toBe(true);
     }
@@ -80,7 +81,16 @@ describe('isIdShaped', () => {
     for (const text of [
       '',
       'Z'.repeat(27),
-      `7${'Z'.repeat(26)}`,
+      `0${'Z'.repeat(26)}`,
+      // Review round 2: a first character of 1 to 7 is no longer enough
+      // (every ULID starts with 0 until about the year 3084).
+      '1',
+      '7',
+      '1J9K3ZZZZ',
+      `7${'Z'.repeat(25)}`,
+      `7${'z'.repeat(25)}`,
+      '7TVWXYZ',
+      `1${'0'.repeat(25)}`,
       // Review round 1, F2: a first character of 8 to Z is no ULID.
       '8',
       '9',
@@ -135,7 +145,7 @@ describe('resolveTicketId', () => {
     expect(messageOf(() => resolveTicketId(state, '01j9k3zzzz'), 4, 'unknown-ticket')).toBe(
       'no ticket matches 01j9k3zzzz',
     );
-    const max = `7${'Z'.repeat(25)}`;
+    const max = `0${'Z'.repeat(25)}`;
     expect(messageOf(() => resolveTicketId(state, max), 4, 'unknown-ticket')).toBe(
       `no ticket matches ${max}`,
     );

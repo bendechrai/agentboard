@@ -53,8 +53,8 @@ function refusal(
 
 const NOT_AN_ID =
   'no ticket matches the id given, which is not a ticket id: an id is 26 characters of ' +
-  'Crockford base32 (digits and letters other than I, L, O and U), or a unique prefix of ' +
-  'at least 6 of them';
+  'Crockford base32 (digits and letters other than I, L, O and U) starting with 0, or a ' +
+  'unique prefix of at least 6 of them';
 
 const UNKNOWN_TICKET_HINT = "no ticket matches that id; find it with 'agentboard list'";
 const TOO_SHORT_HINT =
@@ -221,8 +221,8 @@ describe('ticket ids (rows 16 and 17; board-cli "Ticket ids in refusals")', () =
     expect(`${out.stdout}${out.stderr}`.toUpperCase()).not.toContain('01NOPE0000');
   });
 
-  it('26 Crockford characters starting 0 to 7 are named, 27 are not', () => {
-    const max = `7${'Z'.repeat(25)}`;
+  it('26 Crockford characters starting with 0 are named, 27 are not', () => {
+    const max = `0${'Z'.repeat(25)}`;
     expectCliRefusal(
       ['show', max],
       root,
@@ -237,12 +237,16 @@ describe('ticket ids (rows 16 and 17; board-cli "Ticket ids in refusals")', () =
     );
   });
 
-  it('Crockford text that starts with 8 to Z is no ULID and is not named (review round 1, F2)', () => {
+  it('Crockford text that does not start with 0 is not named (review rounds 1 and 2)', () => {
     for (const text of [
       'Z'.repeat(26),
       'KZQ4XK9M2PVB8RT3NH6WD5YCFJ',
       'JBSWY3DPEHPK3PXP',
       '8ZZZZZZ',
+      // Review round 2: 1 to 7 is no longer enough either.
+      `7${'Z'.repeat(25)}`,
+      '1J9K3ZZZZ',
+      '5f3c1a7e5b2d8c4f',
     ]) {
       expectCliRefusal(
         ['show', text],

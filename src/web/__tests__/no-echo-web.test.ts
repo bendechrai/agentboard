@@ -19,8 +19,8 @@ const STATUS_LIST = 'todo, tests, implementing, review, merged, blocked';
 
 const NOT_AN_ID =
   'no ticket matches the id given, which is not a ticket id: an id is 26 characters of ' +
-  'Crockford base32 (digits and letters other than I, L, O and U), or a unique prefix of ' +
-  'at least 6 of them';
+  'Crockford base32 (digits and letters other than I, L, O and U) starting with 0, or a ' +
+  'unique prefix of at least 6 of them';
 
 async function writable(): Promise<{
   server: Awaited<ReturnType<typeof actionServer>>['server'];
