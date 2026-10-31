@@ -60,10 +60,12 @@
  * templates are not scanned: src/guidance/__tests__/no-echo-hints.test.ts
  * renders every reason, on both surfaces and for every command, with every
  * fixture as the id and requires the hint with no id known, which covers
- * every template, present and future. `src/board/init-remote.ts` is left
- * to task group 2 (`sharing/no-echo-remote-url`), which rewrites its
- * refusals; `PENDING_GROUP_2` names it, and whichever group merges second
- * removes it from there and adds its entries.
+ * every template, present and future. `src/board/init-remote.ts` was left
+ * to task group 2 (`sharing/no-echo-remote-url`) while it rewrote its
+ * refusals; group 2 merged second, so `PENDING_GROUP_2` is empty and its
+ * entries are listed with the rest (the git lines it quotes go through
+ * `sanitizeRemoteLine`, and the remote names and URLs it shows through
+ * `withoutUserinfo`).
  */
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -80,7 +82,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC = join(ROOT, 'src');
 
 /** Files whose refusals another task group of no-echo-refusals rewrites. */
-const PENDING_GROUP_2: readonly string[] = ['src/board/init-remote.ts'];
+const PENDING_GROUP_2: readonly string[] = [];
 
 /** One interpolated value of one refusal message. */
 interface Site {
@@ -106,6 +108,10 @@ const CONFIG = 'configuration or environment: a path of the board or the working
 const PASS = 'pass-through: the message parameter of a helper whose every call is scanned';
 const BUILDER =
   'message builder from registry objects only; its output is pinned by unit tests with token fixtures';
+const SANITISED =
+  'git output about the board, sanitised before escaping: every configured remote, proxy or given URL ' +
+  'becomes <url> and URL credentials <redacted> (sanitizeRemoteLine; pinned by the no-echo tests of group 2)';
+const REMOTE_SHOWN = 'configuration: the chosen remote, shown without its user information (withoutUserinfo)';
 
 /** Every allowed interpolated value, by file. */
 const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
@@ -153,9 +159,7 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
     { fn: 'checkGitFloor', value: 'floor', why: REGISTRY },
     { fn: 'checkGitFloor', value: 'found', why: 'environment: the git version found' },
     { fn: 'integrateLocalRef', value: 'BOARD_REF', why: REGISTRY },
-    { fn: 'push', value: 'asciiText(refused)', why: 'configuration: a ref the remote refused' },
-    { fn: 'push', value: "said.join(';')", why: 'git output about the board repository' },
-    { fn: 'push', value: 'what', why: 'a fixed phrase from the callers' },
+    { fn: 'push', callee: 'remoteMessage', why: SANITISED },
     { fn: 'rebaseOnto', value: "conflicted.map((p)=>asciiText(p)).join(',')", why: BOARD },
     { fn: 'rebaseOnto', value: 'dir', why: CONFIG },
     { fn: 'rebaseOnto', value: 'what', why: 'a fixed phrase from the callers' },
@@ -170,6 +174,20 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
       why: REGISTRY,
     },
     { fn: 'parseImportTarget', value: 'String(TASK_SOURCE_PATTERN)', why: REGISTRY },
+  ],
+  'src/board/init-remote.ts': [
+    { fn: 'checkNothingInTheWay', value: 'dir', why: CONFIG },
+    { fn: 'checkNothingInTheWay', value: 'kind', why: 'a fixed phrase naming what is in the way' },
+    { fn: 'cloneBoard', callee: 'quote', why: SANITISED },
+    { fn: 'cloneBoard', value: "asciiText(checkout.branch??'')", why: 'configuration: a branch name read from the remote' },
+    { fn: 'cloneBoard', value: 'asciiText(branch)', why: 'configuration: a branch name read from the remote' },
+    { fn: 'existingBoard', value: 'BOARD_REF', why: REGISTRY },
+    { fn: 'existingBoard', value: 'dir', why: CONFIG },
+    { fn: 'existingBoard', value: 'asciiText(chosen.name)', why: 'configuration: the name of an existing remote (git refuses a URL as a remote name)' },
+    { fn: 'existingBoard', value: 'asciiText(withoutUserinfo(chosen.name))', why: REMOTE_SHOWN },
+    { fn: 'existingBoard', value: 'asciiText(withoutUserinfo(chosen.url))', why: 'configuration: the configured URL, shown without its user information (withoutUserinfo)' },
+    { fn: 'initBoardWithRemote', callee: 'quote', why: SANITISED },
+    { fn: 'usage', value: 'why', why: 'a fixed phrase: the value given is never named' },
   ],
   'src/board/into-host.ts': [
     { fn: 'MoveSyncFailure.constructor', value: 'message', why: PASS },
@@ -226,7 +244,7 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
       value: "conflicted.map((p)=>asciiText(p)).join(',')",
       why: BOARD,
     },
-    { fn: 'replayFreshCommits', value: 'firstErrorLine(out)', why: 'git output about the board' },
+    { fn: 'replayFreshCommits', value: 'remoteErrorLine(out,worktree)', why: SANITISED },
     { fn: 'replayFreshCommits', value: 'local', why: CONFIG },
     { fn: 'stoppedInTemporary', value: 'asciiText(dir)', why: CONFIG },
     { fn: 'stoppedInTemporary', value: 'asciiText(path)', why: CONFIG },
@@ -284,13 +302,16 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
       why: 'paths staged in the board repository',
     },
     { fn: 'checkNothingInProgress', value: 'dir', why: CONFIG },
-    { fn: 'syncFailed', value: 'firstErrorLine(failure)', why: 'git output about the board' },
-    { fn: 'syncFailed', value: 'what', why: 'a fixed phrase from the callers' },
+    { fn: 'syncFailed', callee: 'remoteMessage', why: SANITISED },
   ],
   'src/board/sync.ts': [
     { fn: 'checkRepository', value: 'dir', why: CONFIG },
     { fn: 'checkRepository', value: "info.detail??'thelinkcannotberead'", why: CONFIG },
-    { fn: 'pull', value: 'asciiText(remote)', why: 'configuration: the chosen remote' },
+    {
+      fn: 'pull',
+      value: 'asciiText(withoutUserinfo(remote))',
+      why: REMOTE_SHOWN,
+    },
     { fn: 'pull', value: "conflicted.map((p)=>asciiText(p)).join(',')", why: BOARD },
     { fn: 'pull', value: 'dir', why: CONFIG },
   ],
@@ -662,6 +683,6 @@ describe('refusal messages under src/', () => {
   });
 
   it('leaves only init-remote.ts to group 2', () => {
-    expect(PENDING_GROUP_2).toEqual(['src/board/init-remote.ts']);
+    expect(PENDING_GROUP_2).toEqual([]);
   });
 });

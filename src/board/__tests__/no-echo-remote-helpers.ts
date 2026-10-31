@@ -12,13 +12,18 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { secretFixture, SECRET_FIXTURES } from '../../__tests__/harness/secret-fixtures.js';
+import { secretFixture, SECRET_FIXTURES, URL_TOKEN as URL_FIXTURE_TOKEN } from '../../__tests__/harness/secret-fixtures.js';
 import { git, tempDir } from './helpers.js';
 import { realGit } from './sharing-helpers.js';
 import { syncEnv, type Env } from './sync-helpers.js';
 
-/** The token of the URL fixture (`https://agent:<token>@git.example.com/x.git`). */
-export const URL_TOKEN = secretFixture('url-with-credentials').secret;
+/**
+ * The token of the URL fixture (`https://agent:<token>@git.example.com/x.git`):
+ * the token alone, not the fixture's `secret` (`agent:<token>`, whose user
+ * name the leak check also counts), so the URLs built here carry it as
+ * the password of `agent`.
+ */
+export const URL_TOKEN = URL_FIXTURE_TOKEN;
 
 /** The GitHub-style token fixture. */
 export const GH_TOKEN = secretFixture('github-token').value;
