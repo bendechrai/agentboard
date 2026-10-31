@@ -412,8 +412,8 @@ Every command that writes, and `inbox` and `watch` (which keep a per-actor
 cursor), needs an actor: `--as <actor>` or, as the fallback, the
 `AGENTBOARD_ACTOR` environment variable. With neither, the command exits 1
 and says so. The actor is never inferred from the OS user. Every command
-accepts `--as`, and commands that do not need it ignore it, so an agent can
-pass it on every call.
+accepts `--as`, so an agent can pass it on every call; a command that needs
+no actor checks a given name (below) and does not otherwise use it.
 
 The one exception is `serve`: it needs no actor, ignores
 `AGENTBOARD_ACTOR`, and accepts write actions from its web page only when
@@ -422,6 +422,28 @@ that actor (see "Acting from the browser").
 
 Use one stable name per role instance, for example `orchestrator`,
 `test-1`, `impl-1`, `reviewer-1`.
+
+An actor name is recorded on every event and shared with every clone of
+the board, so it is checked before anything is written. A name passes when
+it matches none of the secret patterns of "No secrets on the board" and
+has the actor form: 1 to 32 ASCII letters, digits, `.`, `_`, `-` or `@`,
+the first a letter or digit (`impl-1`, `Ben`, `ben.dechrai`, `test_author`,
+`ben@laptop`). Every command checks a given `--as`, reads included; a
+command that needs an actor also checks `AGENTBOARD_ACTOR` when it falls
+back to it (a command that needs no actor ignores the variable and never
+repeats it); `handoff` checks `--to`; over MCP the `as` and `to` arguments
+and `agentboard mcp --as` are checked the same way. A name that fails is
+refused with exit 1 and reason `invalid-actor` before the board is opened,
+the refusal names where the name came from (`--as`, `AGENTBOARD_ACTOR` or
+`--to`) and never the name itself, and `--allow-secret-like` does not
+apply: choose another name. The reserved actor `agentboard` is refused as
+before (exit 1, `usage`).
+
+Events already on a board are not checked: a ticket held by a name that
+can no longer be passed is handed on by another actor with
+`release <id> --force --reason "<why>" --as <actor>` (see "Forced
+release") or claimed once its lease is claimable, and
+`list --assignee <name>` still finds its tickets, whatever the name.
 
 ## Tickets and task references
 
@@ -2577,7 +2599,7 @@ argument and `agentboard mcp --as <actor>`.
 | Code | Meaning |
 | ---- | ------- |
 | 0 | success |
-| 1 | usage error (including an unknown command or flag), missing actor, refused text or close disposition, `rebuild --check` found a difference, an `agents install` target was refused or nothing was detected, `agents check` found guidance that is not current, `serve` could not use its port (`port-in-use`) or was given an empty `--as` or both `--open` and `--no-open`, or `top` was not run in an interactive terminal (`not-a-tty`) |
+| 1 | usage error (including an unknown command or flag), missing actor, a refused actor name (`invalid-actor`: a secret pattern or not of the actor form), refused text or close disposition, `rebuild --check` found a difference, an `agents install` target was refused or nothing was detected, `agents check` found guidance that is not current, `serve` could not use its port (`port-in-use`) or was given an empty `--as` or both `--open` and `--no-open`, or `top` was not run in an interactive terminal (`not-a-tty`) |
 | 2 | board not found or unreadable |
 | 3 | sync problem that needs a human |
 | 4 | action rejected by board state: `invalid-transition`, `already-assigned`, `queued`, `not-assignee`, `invalid-queue`, `wait-timeout`, `wait-interrupted`, `unknown-ticket`, `duplicate-create`, `needs-scope-disposition`, `already-linked`, `checklist-index`, `reconcile-blocked`, `reconcile-ambiguous` |

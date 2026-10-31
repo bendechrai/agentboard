@@ -88,6 +88,10 @@ are not checked.
 - **WHEN** `agentboard list` and `agentboard show <unknown-id>` run with no `--as` and `AGENTBOARD_ACTOR` set to a token
 - **THEN** `list` exits 0, `show` exits 4 with reason `unknown-ticket`, and neither output nor hint contains the token
 
+#### Scenario: Ignored environment actor that passes the check
+- **WHEN** `agentboard top` runs without a terminal, with no `--as` and `AGENTBOARD_ACTOR` set to 32 hexadecimal characters (a name that passes the check)
+- **THEN** its hint writes `watch --as <actor>` and does not repeat the value, because `top` does not use the variable as its actor
+
 #### Scenario: Names outside the actor form
 - **WHEN** a writing command runs with `--as` set to a 33-character name, `impl 1`, `claude/opus`, `-impl`, `.impl`, `_impl`, a name holding a non-ASCII letter, and a name holding an ESC character
 - **THEN** each exits 1 with reason `invalid-actor` and the form message, writes nothing, and the name appears nowhere in stdout or stderr

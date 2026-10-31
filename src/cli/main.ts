@@ -16,8 +16,10 @@ import { closeDecisionOf, hintFor, type HintContext } from '../guidance/hints.js
 import {
   ACTOR_ENV,
   parseArgs,
+  checkActorName,
   refuseReservedActor,
   resolveActor,
+  type ActorSource,
   type ParsedCommand,
 } from './parse.js';
 import { COMMANDS, findCommand } from './registry.js';
@@ -132,10 +134,13 @@ export function errorDocument(error: unknown, context?: HintContext): ErrorDocum
  * Runs one CLI invocation and returns its exit code.
  *
  * 1. `parseArgs(io.argv)`.
- * 2. `refuseReservedActor(values.as)` for every command, then, for a
+ * 2. `refuseReservedActor(values.as)` and `checkActorName(values.as,
+ *    '--as')` (when given and non-empty) for every command, then, for a
  *    writing command or one that tracks a cursor
- *    (`CommandSpec.tracksCursor`), `resolveActor(values.as, io.env)` and
- *    `refuseReservedActor` of the result (both in `commandActor`).
+ *    (`CommandSpec.tracksCursor`), `resolveActor(values.as, io.env)`,
+ *    `refuseReservedActor` of the result and, when it came from
+ *    `AGENTBOARD_ACTOR`, `checkActorName(actor, 'AGENTBOARD_ACTOR')` (all
+ *    in `commandActor`; board-cli "Actor names are checked").
  * 3. `command.run(ctx, values)` with a context whose `board()` finds and
  *    opens the board lazily (`findBoard` with `io.cwd` and `io.env`, then
  *    `openBoard`, passing `catchUp: false` when the first call asks for
@@ -162,12 +167,17 @@ export function errorDocument(error: unknown, context?: HintContext): ErrorDocum
  *    arguments select (the longest match, as `parseArgs` selects it), else
  *    null; `id` the parsed `id` value when there is one (undefined when
  *    parsing failed); `actor` the parsed `--as` when non-empty (when
- *    parsing failed: the argument after the first `--as`, or the value of
- *    the first `--as=<value>`, before any lone `--`), else
- *    `AGENTBOARD_ACTOR` from `io.env` when non-empty, else undefined. So
- *    `close <id> --as orch` without a disposition hints commands with
- *    `--as orch`. The same applies to a failing streaming command in
- *    `runCliAsync`.
+ *    parsing failed: the `as` of the relaxed re-parse, `parsedActor`),
+ *    else `AGENTBOARD_ACTOR` from `io.env` when non-empty and the command
+ *    uses the variable as its actor (`usesActorEnv`; a command that
+ *    ignores it never repeats it), else undefined, and in every case
+ *    only when that name passes the actor check (`checkActorName`), else
+ *    undefined, so the hint writes `<actor>` for a refused or unchecked
+ *    name (actor-secret-check design.md "No echo of an unchecked
+ *    actor"). So `close <id> --as orch`
+ *    without a disposition hints commands with `--as orch`, and the same
+ *    with a token in place of `orch` hints `--as <actor>`. The same
+ *    applies to a failing streaming command in `runCliAsync`.
  *
  * Steps 1 and 2 happen before any board lookup, so a usage error or a
  * missing actor exits 1 even where there is no board. Diagnostics never go
@@ -263,38 +273,93 @@ function cliBoard(io: CliIo): LazyBoard {
 /**
  * The actor of `command`: `resolveActor(given, env)` for a writing or
  * cursor-tracking command, null for any other (shared with the MCP server).
- * The reserved actor is refused first as `given` (every command, so `show
- * --as agentboard` exits 1) and then as the resolved actor (so
- * `AGENTBOARD_ACTOR=agentboard` is refused by a command that needs one).
+ * Before the board is opened, in this order (board-cli "Actor names are
+ * checked"; actor-secret-check design.md "Where the check runs"):
  *
- * @throws BoardError exit 1, reason `missing-actor`, from `resolveActor`,
- *   or reason `usage` from `refuseReservedActor`.
+ * 1. The reserved actor is refused as `given` (every command, so `show
+ *    --as agentboard` exits 1, reason `usage`).
+ * 2. A non-empty `given` is checked with `checkActorName(given,
+ *    givenSource)` on every command, reads included, so `show T1 --as
+ *    <token>` exits 1 with reason `invalid-actor`. `givenSource` is
+ *    `--as` (the CLI, the default) or `the argument as` (an MCP tool
+ *    call). An empty `given` is not a given name and is not checked.
+ * 3. For a command that needs no actor, null: `AGENTBOARD_ACTOR` is
+ *    neither read nor checked.
+ * 4. Else the actor is resolved, the reserved actor refused as the
+ *    resolved actor (so `AGENTBOARD_ACTOR=agentboard` is refused) and,
+ *    when the actor came from the environment, checked with source
+ *    `AGENTBOARD_ACTOR`. A name already checked as `given` is not checked
+ *    again (the check is pure, so it would pass anyway).
+ *
+ * @throws BoardError exit 1: reason `missing-actor` from `resolveActor`,
+ *   reason `usage` from `refuseReservedActor`, or reason `invalid-actor`
+ *   from `checkActorName`.
  */
 export function commandActor(
   command: CommandSpec,
   given: string | undefined,
   env: Env,
+  givenSource: Extract<ActorSource, '--as' | 'the argument as'> = '--as',
 ): string | null {
   refuseReservedActor(given);
-  if (!(command.writes || command.tracksCursor === true)) {
+  if (given !== undefined && given !== '') {
+    checkActorName(given, givenSource);
+  }
+  if (!usesActorEnv(command)) {
     return null;
   }
   const actor = resolveActor(given, env);
   refuseReservedActor(actor);
+  if (actor !== given) {
+    checkActorName(actor, ACTOR_ENV);
+  }
   return actor;
 }
 
-/** The `RunContext` of one command run on `opened` (shared with the MCP server). */
+/**
+ * True when `command` uses `AGENTBOARD_ACTOR` as its actor when `--as` is
+ * not given: it writes or tracks a per-actor cursor (`commandActor`
+ * resolves an actor for exactly these). Pure.
+ */
+export function usesActorEnv(command: CommandSpec): boolean {
+  return command.writes || command.tracksCursor === true;
+}
+
+/**
+ * `actor` when it passes the actor check (`checkActorName`), else
+ * undefined, for a hint context: a hint names an actor only when the name
+ * has passed (board-cli "Actor names are checked"). The source is
+ * immaterial, nothing is thrown. Pure.
+ */
+export function checkedActor(actor: string | undefined): string | undefined {
+  if (actor === undefined) {
+    return undefined;
+  }
+  try {
+    checkActorName(actor, '--as');
+    return actor;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The `RunContext` of one command run on `opened` (shared with the MCP
+ * server and the web app's actions); `surface` is `RunContext.surface`,
+ * `cli` by default.
+ */
 export function runContext(
   cwd: string,
   env: Env,
   actor: string | null,
   opened: LazyBoard,
+  surface: RunContext['surface'] = 'cli',
 ): RunContext {
   return {
     cwd,
     env,
     actor,
+    surface,
     boardDir: () => opened.dir(),
     board: (options?: BoardOpenOptions) => opened.get(options),
   };
@@ -325,12 +390,20 @@ function nonEmpty(value: unknown): string | undefined {
   return typeof value === 'string' && value !== '' ? value : undefined;
 }
 
-/** The hint context of a failed CLI run (step 5 of `runCli`). */
+/**
+ * The hint context of a failed CLI run (step 5 of `runCli`): its actor is
+ * the `--as` or, for a command that uses the variable as its actor
+ * (`usesActorEnv`), the `AGENTBOARD_ACTOR` the run would have used, only
+ * when that name passes the actor check (`checkedActor`). A command that
+ * ignores the variable never repeats it, whatever its value.
+ */
 function cliHintContext(io: CliIo, parsed: ParsedCommand | null): HintContext {
   const fromEnv = nonEmpty(io.env[ACTOR_ENV]);
   if (parsed !== null) {
     const id = nonEmpty(parsed.values.id);
-    const actor = nonEmpty(parsed.values.as) ?? fromEnv;
+    const actor = checkedActor(
+      nonEmpty(parsed.values.as) ?? (usesActorEnv(parsed.command) ? fromEnv : undefined),
+    );
     const closeDecision =
       parsed.command.name === 'close' ? closeDecisionOf(parsed.values) : undefined;
     const force = parsed.command.name === 'release' && parsed.values.force === true;
@@ -344,7 +417,11 @@ function cliHintContext(io: CliIo, parsed: ParsedCommand | null): HintContext {
     };
   }
   const command = leadingCommand(io.argv);
-  const actor = parsedActor(io.argv, command) ?? fromEnv;
+  const spec = command === null ? undefined : findCommand(command);
+  const actor = checkedActor(
+    parsedActor(io.argv, command) ??
+      (spec !== undefined && usesActorEnv(spec) ? fromEnv : undefined),
+  );
   return {
     surface: 'cli',
     command,

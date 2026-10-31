@@ -101,6 +101,16 @@ export interface RunContext {
    */
   readonly actor: string | null;
   /**
+   * How the arguments were given: `cli` (the default when absent) for
+   * command-line flags, `mcp` for the named arguments of an MCP tool call
+   * (and of a web action body, whose properties are the MCP argument
+   * names). It only names the source of a refused actor name in a
+   * refusal (`--to` or `the argument to` for the new assignee of
+   * `handoff`; board-cli "Actor names are checked"); the values
+   * themselves are the same on every surface.
+   */
+  readonly surface?: 'cli' | 'mcp';
+  /**
    * The board, found by discovery (`findBoard` with `cwd` and `env`) and
    * opened (`openBoard`) on first call; later calls return the same handle.
    * The caller of `run` closes it. Throws `BoardError(2,
@@ -279,9 +289,11 @@ export interface CommandSpec {
   readonly exitCodes: readonly ExitCodeSpec[];
   /**
    * Help text for `--as` on a command that neither writes nor tracks a
-   * cursor but still uses the actor: one ASCII line replacing
-   * `Accepted and ignored by this command` on the `--as` line of its help
-   * (the line still reads `string, optional`). Only `serve` and `mcp`
+   * cursor but still uses the actor: one ASCII line replacing the default
+   * summary (that a given name is checked and otherwise not used) on the
+   * `--as` line of its help (the line still reads `string, optional`); it
+   * states the actor form too (board-agent-guidance "Guide states the
+   * actor form"). Only `serve` and `mcp`
    * have it: on `serve`, `--as` is the actor of the web app's write
    * actions and the only way to enable them; on `mcp`, the server's
    * default actor for tool calls. Absent on
