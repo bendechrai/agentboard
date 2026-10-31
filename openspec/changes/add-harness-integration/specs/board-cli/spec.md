@@ -1,12 +1,13 @@
 ## MODIFIED Requirements
 
 ### Requirement: Command surface
-The CLI SHALL provide: `init [--remote <url> | --into-host] [--agents | --no-agents]`;
-`new <title> [--description] [--label]...
+The CLI SHALL provide: `init [--remote <url> | --into-host] [--agents | --no-agents]`; `new <title> [--description] [--label]...
 (--task <source>:<ref>#<item> | --change <name> --group <n> | --adhoc <reason>)
 [--checklist <line>]...`; `show <id>`;
 `list [--status] [--assignee] [--task <source>:<ref>[#<item>]] [--change <name>] [--label] [--closed]`;
-`claim <id> --as <actor>`; `release <id> --as <actor>`;
+`claim <id> --as <actor> [--ttl <duration>] [--wait --timeout <duration>]`;
+`renew <id> --as <actor> [--ttl <duration>]`; `unqueue <id> --as <actor>`;
+`release <id> --as <actor> [--force --reason <text>]`;
 `move <id> <status> --as <actor> [--task <source>:<ref>#<item> | --change <name> --group <n> | --unplanned <reason>]`;
 `comment <id> --as <actor> <text>`;
 `handoff <id> --as <actor> --to <actor> --status <status> --note <text>`;
@@ -14,7 +15,9 @@ The CLI SHALL provide: `init [--remote <url> | --into-host] [--agents | --no-age
 `checklist tick <id> <index> --as <actor>` and `checklist untick`;
 `close <id> --as <actor> (--decision-recorded-in <path> | --no-decision) [--task <source>:<ref>#<item> | --change <name> --group <n> | --unplanned <reason>]`;
 `inbox --as <actor> [--since <cursor>] [--peek]`; `watch --as <actor>`;
-`rebuild [--check]`; `sync`; `remote`; `import-change <name>`; `close-merged`;
+`rebuild [--check]`; `sync`; `remote`; `import-change <name> [--dry-run] [--force]`;
+`close-merged`;
+`config set <key> <value> --as <actor>` and `config get [<key>]`;
 `serve [--port <port>] [--open | --no-open] [--as <actor>]`; `top`;
 `health [--stale-after <duration>] [--blocked-after <duration>] [--unplanned-within <duration>] [--check]`;
 `hook <event> [--strict]`; `mcp`; and `version`. Every command SHALL
@@ -26,11 +29,15 @@ given as a unique prefix of at least 6 characters. `--change <name> --group
 `list --change <name>` to `list --task openspec:<name>`. Commands, their
 arguments and flags SHALL be defined once, in a single command registry that
 drives argument parsing and the MCP tool definitions, so the two surfaces
-cannot drift. `serve` and `top` are streaming commands like `watch`:
+cannot drift; a flag the registry marks CLI-only (`claim --timeout`) is
+parsed on the command line and left out of the tool definitions. `serve`
+and `top` are streaming commands like `watch`:
 `serve` runs until SIGINT or SIGTERM (see board-web), and `top` until the
-user quits it or it receives SIGINT or SIGTERM (see board-tui). `init`,
-`sync` and `remote` are the commands that run git on the board; they need
-no actor (see "Initialising and joining a shared board").
+user quits it or it receives SIGINT or SIGTERM (see board-tui). `claim
+--wait` blocks in the foreground until it is granted the ticket, times out
+or is interrupted (see "Waiting on the command line"). `init`, `sync` and
+`remote` are the commands that run git on the board; they need no actor
+(see "Initialising and joining a shared board").
 
 #### Scenario: OpenSpec shorthand is the same task reference
 - **WHEN** one ticket is created with `--change add-board-core --group 3` and another with `--task openspec:add-board-core#3`
@@ -47,6 +54,14 @@ no actor (see "Initialising and joining a shared board").
 #### Scenario: Ambiguous prefix is refused
 - **WHEN** a prefix matches two tickets
 - **THEN** the command exits 1 and lists both full ids
+
+#### Scenario: Claim has help for leases and waiting
+- **WHEN** `agentboard help claim` runs with no board and no actor
+- **THEN** it prints the synopsis with `--ttl`, `--wait` and `--timeout`, the exit codes including 4 `already-assigned`, `queued`, `wait-timeout` and `wait-interrupted`, and an example that parses to `claim` with `--ttl`, and exits 0
+
+#### Scenario: Renew, unqueue and config have help
+- **WHEN** `agentboard help renew`, `agentboard help unqueue` and `agentboard help config` run with no board and no actor
+- **THEN** each prints its synopsis and an example that parses to that command, and exits 0, and the `config` synopsis names `lease.grace` and `queue.window`
 
 #### Scenario: Top has help
 - **WHEN** `agentboard help top` runs with no board and no actor
@@ -121,12 +136,14 @@ codes above.
 ### Requirement: MCP server
 `agentboard mcp` SHALL serve an MCP server over stdio exposing one tool per
 command in the registry except `init`, `watch`, `serve`, `top`, `rebuild`,
-`sync`, `remote`, `hook`, `mcp` and `version`, which are setup, streaming or maintenance commands run
-by a human or an orchestrator in a shell. Tool names SHALL be the command name with
+`sync`, `remote`, `config`, `hook`, `mcp` and `version`, which are setup, streaming,
+settings or maintenance commands run by a human or an orchestrator in a
+shell. Tool names SHALL be the command name with
 spaces and hyphens replaced by underscores and prefixed `board_` (for
 example `board_claim`, `board_checklist_tick`, `board_import_change`). Each
 tool's input schema SHALL be generated from the registry, with the same
-required arguments and the same validation as the CLI; `--json` is implied.
+required arguments and the same validation as the CLI, and without the
+flags the registry marks CLI-only; `--json` is implied.
 Writing tools SHALL take the actor as an `as` argument, falling back to the
 actor given to the server as `agentboard mcp --as <actor>`, then to the
 server process's `AGENTBOARD_ACTOR`, and SHALL fail exactly as the CLI does
@@ -135,7 +152,9 @@ the CLI prints with `--json` as a text content item, and as structured
 content: the document itself when it is an object, or `{items: <array>}`
 when it is an array (MCP structured content must be an object). A call to an
 unknown or excluded tool name SHALL return a tool error with `exitCode` 1
-and `reason` `usage`, not a protocol error. A failed call
+and `reason` `usage`, not a protocol error, and so SHALL a call that passes
+an argument the tool's schema does not define, such as a CLI-only flag. A
+failed call
 SHALL return a tool error (`isError` true) whose structured content is
 `{exitCode, reason, message}`, where `exitCode` is the code the CLI would
 have exited with and `reason` is the rejection reason where one exists (for
@@ -143,10 +162,12 @@ example `already-assigned`). The server SHALL locate the board once at
 start-up by the same discovery rules, and SHALL fail to start, exiting 2,
 when no board is found. Every tool call SHALL run the same single-transaction
 path as the CLI, so concurrent CLI and MCP writers obey the same guarantees.
+No tool call SHALL block waiting on another actor (see "Lease and queue
+tools over MCP").
 
 #### Scenario: Tools are listed from the registry
 - **WHEN** an MCP client connects and lists tools
-- **THEN** the list contains `board_new`, `board_show`, `board_list`, `board_claim`, `board_release`, `board_move`, `board_comment`, `board_handoff`, `board_link`, `board_checklist_tick`, `board_checklist_untick`, `board_close`, `board_inbox`, `board_import_change`, `board_close_merged` and `board_health`, and no tool for `init`, `watch`, `serve`, `top`, `rebuild`, `sync`, `remote`, `hook`, `mcp` or `version`
+- **THEN** the list contains `board_new`, `board_show`, `board_list`, `board_claim`, `board_renew`, `board_unqueue`, `board_release`, `board_move`, `board_comment`, `board_handoff`, `board_link`, `board_checklist_tick`, `board_checklist_untick`, `board_close`, `board_inbox`, `board_import_change`, `board_close_merged` and `board_health`, and no tool for `init`, `watch`, `serve`, `top`, `rebuild`, `sync`, `remote`, `config`, `hook`, `mcp` or `version`
 
 #### Scenario: Rejection maps to a tool error
 - **WHEN** `board_claim` is called on a ticket assigned to `impl` with `as` set to `reviewer`
@@ -172,9 +193,17 @@ path as the CLI, so concurrent CLI and MCP writers obey the same guarantees.
 - **WHEN** an MCP client calls the tool `board_remote`
 - **THEN** the call returns a tool error with `exitCode` 1 and `reason` `usage`
 
+#### Scenario: Excluded config tool
+- **WHEN** an MCP client calls the tool `board_config_set` or `board_config_get`
+- **THEN** the call returns a tool error with `exitCode` 1 and `reason` `usage`, and no event is written
+
 #### Scenario: Excluded hook tool
 - **WHEN** an MCP client calls the tool `board_hook`
 - **THEN** the call returns a tool error with `exitCode` 1 and `reason` `usage`
+
+#### Scenario: CLI-only flag is refused over MCP
+- **WHEN** `board_claim` is called with `ttl` `30m`, `wait` true and `timeout` `10m`
+- **THEN** the call returns a tool error with `exitCode` 1 and `reason` `usage`, and no event is written
 
 #### Scenario: Health is a tool
 - **WHEN** an MCP client lists tools
@@ -184,10 +213,35 @@ path as the CLI, so concurrent CLI and MCP writers obey the same guarantees.
 - **WHEN** an MCP client lists tools, then calls `board_move` with `{"id": "<T1>", "status": "merged"}` for an undisposed ad hoc ticket T1 in `review`, then with `{"id": "<T1>", "status": "merged", "unplanned": "hotfix"}`
 - **THEN** `board_move` and `board_close` list the optional properties `task`, `change`, `group` and `unplanned`; the first call returns a tool error with `exitCode` 4, `reason` `needs-scope-disposition` and a hint naming both `task` and `unplanned`; the second succeeds with T1 in `merged`, and its events are byte-identical in body to those the CLI writes for the same arguments and actor on a copy of the board
 
+### Requirement: Due grants are written during catch-up
+Every command that catches up (every command except `rebuild`,
+`rebuild --check` and `hook`, which reads the cache as it is; see
+board-harness-hooks "Hook command and protocol") SHALL, within its catch-up and under the write lock,
+write each grant that is due (its slot time at or before the local clock)
+and not yet present, exactly as the fold derives it, and fold it like a
+late-arriving event. A read-only command SHALL take the write lock only
+when there is something to fold, reap or grant. Catch-up SHALL read event
+files to derive grants only when the local clock has reached the cache's
+grant watermark (see board-cache "Cache schema").
+
+#### Scenario: Inbox writes the due grant
+- **WHEN** `merger-1` released T1 with `merger-2` queued, no other command has run, and `inbox --as merger-2` runs
+- **THEN** the grant to `merger-2` is written and returned in that inbox call
+
+#### Scenario: Hook writes no due grant
+- **WHEN** `merger-1` released T1 with `merger-2` queued, no other command has run, and `agentboard hook session-start --as merger-2` runs
+- **THEN** no grant event is written, the board's event files are byte-identical afterwards, and the next `inbox --as merger-2` writes the grant and returns it
+
+#### Scenario: Grant written late is still exact
+- **WHEN** no command runs for ten minutes after a release with a window of 2 minutes and waiters `a` and `b`
+- **THEN** the next command writes the grant to `a` at its original slot time and then the grant to `b` after `a`'s lapse, and `rebuild` on another clone of the same events produces identical state
+
 ## ADDED Requirements
 
 ### Requirement: Init offers to install agent guidance
-`agentboard init` SHALL, after creating or finding the board, offer to run
+`agentboard init` SHALL, after creating, joining or finding the board
+(with or without `--remote` or `--into-host`; an `init` that fails neither
+asks nor installs), offer to run
 `agents install` when stdin and stdout are both terminals and neither
 `--json`, `--agents` nor `--no-agents` is given: it asks `Install agent
 guidance now? [Y/n]` and runs the install on `y`, `yes` or an empty answer

@@ -29,7 +29,8 @@ without hooks; the release workflow; a general TOML library.
 2. **Hooks are warn-only by default; `--hooks-strict` is an explicit opt-in.**
    Warn output goes to the agent as context (`session-start`, `pre-tool-use`)
    or to the user as a `systemMessage` (`stop`).
-3. **Fail open and be fast.** Hook mode is read-only, never syncs, has a 2
+3. **Fail open and be fast.** Hook mode is read-only, never syncs, never
+   catches up (no fold, no due grant, no reaping, no cache rebuild), has a 2
    second internal deadline and a settings `timeout` of 5 seconds, and
    treats every error as "allow". A hook that cannot do its job must be
    invisible rather than a reason the agent cannot edit.
@@ -83,6 +84,65 @@ without hooks; the release workflow; a general TOML library.
    `--model auto`) and agy (about 5 requests, then a week) have tiny quotas,
    and `codex exec` costs money, so none runs by default; `claude` may.
 
+10. **The agent guide gains no line.** Since `add-claim-leases`, the
+   orchestrator output of `help agents --role orchestrator` is exactly at
+   the 180-line limit, and every line added to the guide body lands in all
+   four role outputs. The change makes room rather than raising the limit:
+   it adds `hook` to the guide's list of commands that are not MCP tools by
+   reflowing the existing lines, and documents hooks, `--hooks-strict` and
+   `AGENTBOARD_HOOKS=off` in the README and in `help hook` instead. Agents
+   meet hooks only through hook output, which names the commands to run,
+   while hooks are installed and tuned by a human, who reads the README.
+   Raising the limit would reopen a budget `add-claim-leases` (ADR 0014)
+   has just settled, for text that every agent would read on every start.
+11. **Hooks respect leases and the mutex recipe.** A ticket the actor holds
+   is one it is the assignee of, whatever its lease state (as `claim`
+   treats it); `session-start` shows each held ticket with the `list`
+   assignee token so an unconfirmed or lapsed lease is visible; `stop`
+   names `release` first for a ticket held under a lease, because a lock is
+   released when done; no hook ever claims, renews or queues, so a hook is
+   never the background process the worker rules forbid.
+
+## Re-sync with the main specs
+
+Re-synced on 2026-10-31 with the main specs as of `a455011` (after the
+archives of `add-claim-leases`, `guard-stale-temporary`,
+`keep-cursors-on-upgrade` and `no-echo-refusals`). The MODIFIED text
+restates the current main text of board-cli "Command surface", "Exit
+codes" and "MCP server" and board-agent-guidance "Help is not an MCP
+tool", "Installing guidance into a host project", "Installed guidance
+never clobbers user content" and "Checking installed guidance" (those four
+are unchanged in main since 0.2.0), so archiving keeps `renew`,
+`unqueue`, `config`, the lease flags, CLI-only flags and the `config` MCP
+exclusion. Places where the main specs forced a change of substance:
+
+- **Hooks never catch up.** board-cli "Due grants are written during
+  catch-up" makes every command except `rebuild` write due grants, which
+  contradicts "the hook writes no events". The change keeps the hook
+  read-only and adds `hook` to that requirement's exceptions (MODIFIED).
+  Consequence: `session-start` does not deliver a grant that is due but
+  not yet written (open question below). A cache of another schema
+  version counts as unreadable, since opening it would recreate it
+  (`keep-cursors-on-upgrade`).
+- **Guidance version 4 is now stated in the spec.** board-agent-guidance
+  "Mutex ticket recipe" says the version SHALL be 3; it is MODIFIED to
+  "3 or later" and "Installing guidance into a host project" says 4.
+- **Cursor and Copilot carry the mutex short form.** "Mutex ticket recipe"
+  puts a short form in all installed project guidance; to keep the
+  proposal's "same rules in every target", the `cursor` rule and the
+  `copilot` block are the `AGENTS.md` block's text (codex and antigravity
+  already use that block), with the recipe's line limits. The block is
+  2868 bytes at 0.3.0, within the 4096-byte Antigravity cap.
+- **Hook output follows leases and the mutex recipe** (decision 11): the
+  held-ticket line shows lease state, "since its latest claim" becomes
+  "since it last became the assignee" (a grant makes an assignee without
+  a claim), and `stop` names `release` for a leased ticket.
+- **No refused input is repeated** (`no-echo-refusals`): an unknown hook
+  event or argument, an unknown answer at the bare-project prompt, and an
+  empty or multi-line `--command` are refused without repeating the input.
+- **The guide line budget** (decision 10): no guide line is added.
+- **ADR 0016**, since 0014 and 0015 are taken.
+
 ## Risks / Trade-offs
 
 - **PreToolUse is intrusive and adds latency to every edit** -> warn-only
@@ -128,3 +188,8 @@ three marked entries, or install with an explicit `--target` list.
 - Whether Codex reads `AGENTS.md` is confirmed in the sandbox suite; if it does
   not, the `codex` target only prints its command and the spec changes.
 - An ADR (0016) recording decisions 2 and 3 is planned in task group 1.
+- Should `hook session-start` catch up like `inbox` (and so write any due
+  grant and fold late files) so that a pending grant is delivered at
+  session start? The spec keeps decision 3 (no catch-up, no event
+  writes); catching up would make `session-start` the one hook event that
+  can write an event and take the write lock.

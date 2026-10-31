@@ -17,9 +17,18 @@ other outcome SHALL be exit 0 and no output. The command SHALL fail open:
 no board, an unreadable or locked cache, an unresolvable actor, an unknown
 payload shape, an internal error or running past its time budget of 2
 seconds SHALL each end in exit 0 without blocking, and at most one line on
-stderr. The command SHALL NOT write events, run `sync`, or touch the
-network; the only state it may write is the inbox cursor in `session-start`.
-Setting `AGENTBOARD_HOOKS=off` SHALL make every event exit 0 immediately.
+stderr. So SHALL an unknown event or any other error in the command's own
+arguments, whose line names the three events. That line SHALL NOT repeat
+any part of the payload, the event argument or other refused input
+(board-cli "Refusals never repeat the refused input"). The command SHALL
+NOT write events, run `sync`, or touch the network; the only state it may
+write is the inbox cursor in `session-start`. It SHALL read the cache as
+it is and SHALL NOT catch up: it folds no event file, writes no due grant
+(board-cli "Due grants are written during catch-up"), reaps no temporary
+file, and never creates, recreates or rebuilds the cache; a missing cache,
+or one of another schema version, counts as unreadable. It SHALL never
+claim, renew, release or join or leave a queue. Setting
+`AGENTBOARD_HOOKS=off` SHALL make every event exit 0 immediately.
 
 #### Scenario: No board
 - **WHEN** `agentboard hook pre-tool-use --strict` runs in a directory with no board
@@ -28,6 +37,14 @@ Setting `AGENTBOARD_HOOKS=off` SHALL make every event exit 0 immediately.
 #### Scenario: Garbage payload
 - **WHEN** `agentboard hook stop` runs with stdin `not json`
 - **THEN** it exits 0
+
+#### Scenario: Unknown event is not repeated
+- **WHEN** `agentboard hook <token>` runs with a token-shaped word, with and without `--json`
+- **THEN** it exits 0, prints at most one line on stderr naming `session-start`, `stop` and `pre-tool-use`, and the token appears nowhere in stdout or stderr
+
+#### Scenario: Cache of another schema version
+- **WHEN** the board's cache was made by an earlier agentboard and `agentboard hook pre-tool-use --strict` runs
+- **THEN** it exits 0 without blocking, and the cache file is byte-identical afterwards
 
 #### Scenario: Time budget
 - **WHEN** the cache is locked by another process for longer than 2 seconds and `agentboard hook pre-tool-use --strict` runs
@@ -38,12 +55,16 @@ Setting `AGENTBOARD_HOOKS=off` SHALL make every event exit 0 immediately.
 - **THEN** it exits 0 and prints nothing
 
 #### Scenario: Read-only
-- **WHEN** `pre-tool-use` and `stop` run against a board
+- **WHEN** `pre-tool-use` and `stop` run against a board, including one where a grant is due and not yet written
 - **THEN** the board's event files, cache and cursors are byte-identical afterwards
 
 ### Requirement: Hook actor resolution
 The hook command SHALL take the actor from `--as` or `AGENTBOARD_ACTOR` only,
-never from the OS user or the payload. With no actor, `session-start` SHALL
+never from the OS user or the payload. A ticket the actor holds is an open
+ticket whose assignee is the actor, whatever the state of its lease (a
+lapsed lease is held until another actor takes it over, as board-cli
+"Leases on the command line" defines); being queued for a ticket is not
+holding it. With no actor, `session-start` SHALL
 print one line telling the agent to set `AGENTBOARD_ACTOR` or pass `--as`,
 and `stop` and `pre-tool-use` SHALL do nothing. Subagents and linked
 worktrees of the same session inherit the process environment and are
@@ -66,7 +87,10 @@ payload's `cwd` and the usual discovery rules.
 `hook session-start` SHALL print, as context for the agent, the output of
 `agentboard inbox` for the actor (advancing the actor's cursor like the
 command does), preceded by one line naming the actor and the tickets the
-actor currently holds. An empty inbox SHALL print only that line. The
+actor currently holds, each with its assignee token as `list` shows it
+(so an unconfirmed, expired or claimable lease is visible, for example
+`impl*+2m`). Because the hook does not catch up, a grant that is due but
+not yet written is not delivered until the next `inbox`. An empty inbox SHALL print only that line. The
 output SHALL be at most 4000 characters, truncated with a line saying how
 many entries were omitted and naming `agentboard inbox --as <actor>`.
 
@@ -74,16 +98,24 @@ many entries were omitted and naming `agentboard inbox --as <actor>`.
 - **WHEN** `hook session-start` runs for actor `impl` with two pending inbox entries
 - **THEN** the context contains both entries and the held-ticket line, and a second run prints no entries
 
+#### Scenario: Held lease is shown with its state
+- **WHEN** `merger-1` holds T1 under an unconfirmed lease and `hook session-start --as merger-1` runs
+- **THEN** the held-ticket line names T1 with the token `list` shows for it, including `*`
+
 #### Scenario: Large inbox
 - **WHEN** the inbox is larger than 4000 characters
 - **THEN** the output is truncated at an entry boundary with the omitted count and the inbox command
 
 ### Requirement: Stop hook
 `hook stop` SHALL check whether the actor still holds a ticket that is not
-`blocked` and has no comment by the actor since its latest claim. When there is
+`blocked` and has no comment by the actor since the actor last became its
+assignee (by a claim, a grant from the queue or a hand-off to it). When there is
 none it SHALL do nothing. Otherwise, without `--strict` it SHALL exit 0 with
 a `systemMessage` naming the ticket and the `handoff` and `comment` plus
-`move ... blocked` commands; with `--strict` it SHALL exit 2 with the same
+`move ... blocked` commands, and, for a ticket held under a lease (such as
+a mutex ticket), first `agentboard release <id> --as <actor>`, since a
+lock is released when done (board-agent-guidance "Mutex ticket recipe");
+with `--strict` it SHALL exit 2 with the same
 text on stderr, except that when the payload has `stop_hook_active` true it
 SHALL NOT block again, so one stop produces at most one block.
 
@@ -98,6 +130,10 @@ SHALL NOT block again, so one stop produces at most one block.
 #### Scenario: Strict mode does not loop
 - **WHEN** the same state runs `hook stop --strict` with `stop_hook_active` true
 - **THEN** it exits 0
+
+#### Scenario: Held mutex names release
+- **WHEN** `merger-1` holds the mutex ticket M1 under a lease, granted from the queue, with no comment since, and `hook stop` runs
+- **THEN** it exits 0 with a message naming M1 and `agentboard release`
 
 #### Scenario: Blocked ticket is fine
 - **WHEN** `impl` holds T1 in status `blocked` with a comment

@@ -66,7 +66,9 @@ reason. When nothing is selected and stdin and stdout are both terminals
 (and `--json` is not given), it SHALL list the targets numbered and ask
 which to create, as a comma-separated list of numbers or names; an empty
 answer or an unknown token SHALL exit 1 listing the targets and write
-nothing, and each chosen target is reported as selected by the prompt.
+nothing, without repeating the answer (board-cli "Refusals never repeat
+the refused input"), and each chosen target is reported as selected by
+the prompt.
 When nothing is selected and the session is not interactive it SHALL exit 1
 listing the targets, as before. `--hooks-strict` SHALL write the hooks in
 strict mode (see board-harness-hooks) and has no effect without
@@ -76,10 +78,14 @@ the output SHALL name `--command` as the reason. `--mcp-command <executable>` SH
 `--command`, behaving identically and printing a one-line deprecation notice
 on stderr. `--command` sets the executable for every MCP entry and for the
 hooks. An empty
-`--command` value or one containing a newline SHALL exit 1 with reason
-`usage` and write nothing. The command SHALL NOT require a board and
+`--command` (or `--mcp-command`) value or one containing a newline SHALL
+exit 1 with reason `usage`, naming the flag but not the value, and write
+nothing. The command SHALL NOT require a board and
 SHALL NOT run git commands that modify anything. `init` SHALL end its
-output with a line suggesting `agentboard agents install`.
+output with a line suggesting `agentboard agents install` unless it ran the
+install (see board-cli "Init offers to install agent guidance"). The
+guidance version SHALL be 4, so `agents check` reports installations of
+guidance version 3 or earlier as `stale`.
 
 #### Scenario: Install the Claude skill
 - **WHEN** `agentboard agents install --target claude` runs in a project with no `.claude/skills/agentboard`
@@ -101,6 +107,10 @@ output with a line suggesting `agentboard agents install`.
 - **WHEN** the same command runs with stdin from `/dev/null`
 - **THEN** it does not prompt, exits 1 listing the targets, and writes nothing
 
+#### Scenario: Unknown answer is not repeated
+- **WHEN** the bare-project prompt is answered with a token-shaped word that names no target
+- **THEN** it exits 1 listing the targets, writes nothing, and the word appears nowhere in stdout or stderr
+
 #### Scenario: Hooks are opt-in
 - **WHEN** `agentboard agents install` runs in a project that has `.claude/`
 - **THEN** `claude` is installed and `claude-hooks` is not, and `.claude/settings.json` is not created or modified
@@ -120,6 +130,10 @@ output with a line suggesting `agentboard agents install`.
 #### Scenario: Installed guidance covers ad hoc tickets
 - **WHEN** `agentboard agents install --target claude --target agents-md` runs with guidance version 2
 - **THEN** `SKILL.md` and the `AGENTS.md` block each state the ad hoc rule, contain no text saying an ad hoc ticket cannot enter `implementing`, carry the guidance version marker `v2`, and `agents check` reports installations of guidance version 1 as `stale`
+
+#### Scenario: Version 3 installs are stale
+- **WHEN** `agents check` runs where the skill and the `AGENTS.md` block were installed with guidance version 3 and the running CLI has guidance version 4
+- **THEN** it reports the `claude` and `agents-md` targets as `stale` and exits 1
 
 ### Requirement: Installed guidance never clobbers user content
 Each target SHALL own only its marked region: the whole of `SKILL.md` only
@@ -175,7 +189,9 @@ processed.
 ### Requirement: Checking installed guidance
 `agentboard agents check` SHALL inspect every target, including
 `claude-hooks`, `codex`, `cursor`, `antigravity` and `copilot`, that has an
-agentboard marker or managed entry in the current working tree and report
+agentboard marker or managed entry in the current working tree (and, with
+`--global` only, the global harness files of "Global harness config is
+never edited by default") and report
 each as `current`, `stale` (installed with a different guidance version) or
 `modified` (the managed text differs from what its recorded version renders,
 or its version or markers cannot be read). It SHALL exit 0 when
@@ -194,6 +210,107 @@ project's own checks. With `--json` it SHALL print an array of
 #### Scenario: Stale skill after upgrade
 - **WHEN** the skill was installed with guidance version 1 and the running CLI has guidance version 2
 - **THEN** `agents check` reports the `claude` target as `stale` and exits 1
+
+### Requirement: Mutex ticket recipe
+The guide section `Mutex tickets` SHALL describe, with commands that
+parse against the registry:
+- what a mutex ticket is: one standing ad hoc ticket per lock, never
+  closed while the lock is in use;
+- acquiring: `claim <id> --ttl <duration>`, then `renew <id>` as the first
+  action of real work (an unconfirmed claim lapses after the grace
+  period), with a ttl longer than the critical section, renewing at about
+  half the ttl and immediately before the critical step, and stopping if
+  `renew` fails with `not-assignee` (the lock was lost);
+- releasing with `release` when done, including on failure;
+- worker rules: never wait on a mutex in a loop and never claim from a
+  background process; either wait in the foreground with
+  `claim <id> --ttl <duration> --wait --timeout <duration>` (CLI only) and
+  renew on return, or report ready (a comment or a hand-off to the
+  orchestrator) and stop; over MCP, `board_claim` with `wait` only joins
+  the queue, and the grant arrives in `board_inbox`;
+- orchestrator rules: for merge-style mutexes where agents cannot block,
+  act as the single queue runner, dispatching one holder at a time and
+  dispatching the next only when the ticket is released or its holder's
+  lease lapses; set `queue.window` and `lease.grace` with `config set`
+  when the defaults do not fit; handle stale holds by waiting for the
+  lease to lapse, or with `release --force --reason` after checking the
+  holder is gone, never by impersonating the holder with `--as`;
+- that across machines the lock is only as strong as `sync` (sync before
+  claiming and before the critical step), while within one machine it is
+  exact;
+- a wait that ends without a grant: exit 4 `wait-timeout` or
+  `wait-interrupted` means the actor does not hold the ticket, so it does
+  not run the critical step, and retries the wait or reports;
+- over MCP, the grantee accepts a grant by calling `board_renew` within the
+  accept window, or the grant passes on to the next waiter.
+
+The section SHALL follow `Tickets and planning tasks` and precede `Using
+the MCP tools`, and its command lines SHALL pass `--as`. Read with line
+breaks as spaces and ignoring case, it SHALL contain these phrases:
+`standing`, `ad hoc`, `never close` (as in never closed), `first action of
+real work`, `grace period`, `longer than the critical section`, `half the
+ttl`, `before the critical step`, `not-assignee`, `on failure`, `never wait
+on a mutex in a loop`, `background process`, `foreground`, `CLI only`,
+`report ready`, `only joins the queue`, `board_claim`, `board_inbox`,
+`queue runner`, `one holder at a time`, `lapse`, `queue.window`,
+`lease.grace`, `impersonat` (as in never by impersonating the holder),
+`sync`, `before claiming`, `exact`, `wait-timeout`, `wait-interrupted`,
+`do not hold`, `do not run the critical step`, `retry`, `report`,
+`board_renew`, `accept window` and `passes on`. The worker step of the test-author,
+implementer and reviewer checklists SHALL contain `mutex`, `in a loop`,
+`background process` and `report ready`; the queue-runner step of the
+orchestrator checklist SHALL contain `mutex`, `queue runner` and `one
+holder at a time`.
+
+The installed `claude`, `agents-md`, `cursor` and `copilot` guidance
+(and so `codex` and `antigravity`, which install the `AGENTS.md` block)
+SHALL contain a short form of the recipe (the worker rules, the claim, renew, wait and release
+commands, and the pointer to `agentboard help agents`), the MCP server
+`instructions` summary SHALL contain the worker rules in one or two
+sentences while staying within 2000 characters, and the guidance version
+SHALL be 3 or later (3 introduced the short form; see "Installing
+guidance into a host project" for the current version), so `agents check`
+reports version 2 installations as `stale`.
+In `SKILL.md` the short form is a section headed `## Mutex tickets` after
+the rules and before `## Everything else`; in the AGENTS.md block it is a
+paragraph introduced by the line `Mutex tickets:` after the rules and
+before the pointer to the full guide. The `copilot` block and the body of
+`.cursor/rules/agentboard.mdc` (after its frontmatter) are the `AGENTS.md`
+block's text. All of them contain, with line breaks as
+spaces and ignoring case, `never wait on a mutex in a loop`, `background
+process`, `report ready`, `first action of real work`, `only joins the
+queue` and `board_inbox`, and in backticks a `claim` with `--ttl`, a
+`renew`, a `claim` with `--ttl`, `--wait` and `--timeout`, and a
+`release`, each passing `--as`. The skill stays at most 45 lines, the
+block and the `copilot` block at most 40, and the Cursor rule at most 45
+including its frontmatter. The summary contains `never wait on a mutex`, `in a
+loop`, `background process`, `only joins the queue`, `board_renew`,
+`accept window` and `passes on`. The installed short forms also contain
+`board_renew`.
+
+#### Scenario: Mutex lines in every role checklist
+- **WHEN** `agentboard help agents --role <role>` runs for each role
+- **THEN** the test-author, implementer and reviewer checklists each have a step with the worker rules, and the orchestrator checklist a step saying to act as the queue runner of a mutex, dispatching one holder at a time
+
+#### Scenario: Recipe commands parse
+- **WHEN** every line beginning with `agentboard ` in the mutex section is parsed against the registry
+- **THEN** each parses, and the section includes `claim` with `--ttl`, `renew`, `claim` with `--wait` and `--timeout`, `release`, `release` with `--force` and `--reason`, and `config set`
+
+#### Scenario: Installed skill carries the recipe
+- **WHEN** `agentboard agents install --target claude` runs with guidance version 3
+- **THEN** `SKILL.md` contains a `Mutex tickets` section with the worker rules and the claim, renew, wait and release commands, and the version 3 marker
+
+#### Scenario: Cursor and Copilot carry the recipe
+- **WHEN** `agentboard agents install --target cursor --target copilot` runs
+- **THEN** `.cursor/rules/agentboard.mdc` and the block in `.github/copilot-instructions.md` each contain the `Mutex tickets:` paragraph with the worker rules and the claim, renew, wait and release commands, the rule file is at most 45 lines and the block at most 40
+
+#### Scenario: MCP instructions carry the worker rule
+- **WHEN** an MCP client connects to `agentboard mcp`
+- **THEN** the server instructions say never to wait on a mutex in a loop or claim from a background process, and are at most 2000 characters
+
+#### Scenario: Version 2 installs are stale
+- **WHEN** `agents check` runs where the skill was installed with guidance version 2
+- **THEN** it reports the `claude` target as `stale` and exits 1
 
 ## ADDED Requirements
 

@@ -1,16 +1,21 @@
 # Tasks
 
 The MODIFIED text in this change's deltas (`board-cli` "Command surface",
-"Exit codes" and "MCP server"; `board-agent-guidance` "Help is not an MCP
-tool", "Installing guidance into a host project", "Installed guidance never
-clobbers user content" and "Checking installed guidance") was re-synced on
-2026-10-26 with the main specs as left by the archives of
-`add-board-sharing` and `add-adhoc-ticket-lifecycle`, so it keeps their
-`remote` command, `init --remote` and `--into-host`, the scope disposition
-flags and exit reasons and the six installed rules. `add-claim-leases` is
-proposed first and takes `GUIDANCE_VERSION` 3 and ADR 0014, so this
-change's guidance group (group 4) sets `GUIDANCE_VERSION` to 4 and its ADR
-(task 1.4) is 0016.
+"Exit codes", "MCP server" and "Due grants are written during catch-up";
+`board-agent-guidance` "Help is not an MCP tool", "Installing guidance
+into a host project", "Installed guidance never clobbers user content",
+"Checking installed guidance" and "Mutex ticket recipe") was re-synced on
+2026-10-31 with the main specs as of `a455011`, after the archives of
+`add-board-sharing`, `add-adhoc-ticket-lifecycle`, `add-claim-leases`,
+`guard-stale-temporary`, `keep-cursors-on-upgrade` and `no-echo-refusals`.
+It keeps `remote`, `init --remote` and `--into-host`, the scope
+disposition flags, `renew`, `unqueue`, `config`, the lease flags and the
+CLI-only flags. `add-claim-leases` took `GUIDANCE_VERSION` 3 and ADR
+0014, and ADR 0015 is taken, so this change's guidance group (group 4)
+sets `GUIDANCE_VERSION` to 4 and its ADR (task 1.4) is 0016. The agent
+guide gains no line (design.md decision 10). Every new refusal follows
+board-cli "Refusals never repeat the refused input": its tests pass a
+token-shaped value and assert it appears in no output.
 
 Every group is delivered by a test author, an implementer and a reviewer in
 turn (see CONTRIBUTING.md), on one branch per group named
@@ -23,22 +28,21 @@ different model from its implementer; group 2 (hooks that can block the
 agent) gets a second reviewer. Sandbox projects live in a temporary
 directory outside the repository and are removed after each test.
 
-This change and `add-claim-leases` both restate `board-cli` "Command
-surface" and "MCP server"; re-sync that text with the main spec before
-archiving whichever lands second.
+Before archiving, re-sync the MODIFIED text again with any requirement
+another archived change has touched since `a455011`.
 
 ## 1. Hook command contract (`hooks/command`)
 
-- [ ] 1.1 Test author: write tests for every scenario of "Hook command and protocol" and "Hook actor resolution" (no board, garbage payload, 2 second budget with a locked cache, `AGENTBOARD_HOOKS=off`, read-only byte comparison, worktree discovery, missing actor), and stubs for the hook module and registry entry. Verify: tests compile, are red, and pre-push subset passes
-- [ ] 1.2 Implementer: add the `hook` registry entry (events, `--strict`, exit codes 0 and 2, MCP exclusion), the stdin reader, the deadline wrapper and actor resolution. Verify: the group 1 tests pass, `agentboard help hook` renders, `board_hook` is refused over MCP, the layering test passes
-- [ ] 1.3 Reviewer: check conformance to the scenarios, that no code path in hook mode writes (other than the inbox cursor), and that every failure is fail-open. Verify: report with a verdict; at least one hook payload recomputed by a throwaway script
+- [ ] 1.1 Test author: write tests for every scenario of "Hook command and protocol" and "Hook actor resolution" (no board, garbage payload, unknown event not repeated, 2 second budget with a locked cache, a cache of an earlier schema version left byte-identical, `AGENTBOARD_HOOKS=off`, read-only byte comparison including a due grant left unwritten, worktree discovery, missing actor, a lapsed lease still held, a queued actor holding nothing) and for board-cli "Due grants are written during catch-up" scenario "Hook writes no due grant", and stubs for the hook module and registry entry. Verify: tests compile, are red, and pre-push subset passes
+- [ ] 1.2 Implementer: add the `hook` registry entry (events, `--strict`, exit codes 0 and 2, MCP exclusion), the stdin reader, the deadline wrapper, actor resolution and a cache read that never catches up, rebuilds or reaps. Verify: the group 1 tests pass, `agentboard help hook` renders, `board_hook` is refused over MCP, the layering test passes
+- [ ] 1.3 Reviewer: check conformance to the scenarios, that no code path in hook mode writes (other than the inbox cursor) or catches up, that no stderr line repeats input, and that every failure is fail-open. Verify: report with a verdict; at least one hook payload recomputed by a throwaway script
 - [ ] 1.4 Write ADR 0016 recording warn-only default, strict opt-in and fail-open. Verify: `make ascii` and the ADR index in `adr/README.md` list it
 
 ## 2. Hook events (`hooks/events`)
 
-- [ ] 2.1 Test author: tests for "Session start hook", "Stop hook" and "Pre-tool-use claim check", including the strict no-loop case, truncation at an entry boundary, the 10 minute warning rate limit and path exemptions. Verify: tests are red, pre-push subset passes
+- [ ] 2.1 Test author: tests for "Session start hook", "Stop hook" and "Pre-tool-use claim check", including the strict no-loop case, truncation at an entry boundary, the 10 minute warning rate limit, path exemptions, the held-ticket line with its `list` assignee token, a ticket that became the actor's by a grant or hand-off, and `release` named for a ticket held under a lease. Verify: tests are red, pre-push subset passes
 - [ ] 2.2 Implementer: implement the three events over the existing inbox and ticket queries, with the rate-limit state kept in the OS temp directory keyed by session id. Verify: group 2 tests pass; a 500 ticket board answers `pre-tool-use` in under 200 ms in a timing test run locally (not asserted in CI)
-- [ ] 2.3 Reviewer (two, second on the strongest model): check against the Claude Code hook protocol, loop safety and latency. Verify: both reports; a hand-written payload for each event run against the built CLI
+- [ ] 2.3 Reviewer (two, second on the strongest model): check against the Claude Code hook protocol, loop safety, latency, and that no hook message contradicts the mutex recipe (no hook claims, renews, queues or suggests waiting in a loop). Verify: both reports; a hand-written payload for each event run against the built CLI
 
 ## 3. Claude hooks target (`guidance/claude-hooks`)
 
@@ -48,13 +52,13 @@ archiving whichever lands second.
 
 ## 4. Other harness targets (`guidance/harness-targets`)
 
-- [ ] 4.1 Test author: tests for `codex`, `cursor`, `antigravity` and `copilot` install, auto-detection, the printed `codex mcp add` / `agy mcp add` commands, `--global` (explicit target required, scratch `CODEX_HOME` and `HOME`, other entries untouched), refusal (foreign TOML table, markerless mdc, unmanaged MCP entries), `--command` reaching each MCP entry, the 4096 byte `AGENTS.md` block and the 24 KB warning, check states, and "Harness MCP entries". Verify: tests are red, pre-push subset passes
-- [ ] 4.2 Implementer: implement the four targets with the existing block, owned-key and refusal helpers; the rendered rule text states the six rules and points to `agentboard help agents`; set `GUIDANCE_VERSION` to 4. Verify: group 4 tests pass; every `agentboard ` line in the new texts parses against the registry
+- [ ] 4.1 Test author: tests for `codex`, `cursor`, `antigravity` and `copilot` install, auto-detection, the printed `codex mcp add` / `agy mcp add` commands, `--global` (explicit target required, scratch `CODEX_HOME` and `HOME`, other entries untouched), refusal (foreign TOML table, markerless mdc, unmanaged MCP entries), `--command` reaching each MCP entry, the 4096 byte `AGENTS.md` block and the 24 KB warning, check states, "Harness MCP entries", the mutex short form in the `cursor` rule and `copilot` block with their line limits ("Mutex ticket recipe"), version 3 installs reported `stale`, and an empty or multi-line `--command` refused without repeating it. Verify: tests are red, pre-push subset passes
+- [ ] 4.2 Implementer: implement the four targets with the existing block, owned-key and refusal helpers; the `cursor` rule body and the `copilot` block are the `AGENTS.md` block's text (the six rules, the mutex short form and the pointer to `agentboard help agents`); set `GUIDANCE_VERSION` to 4. Verify: group 4 tests pass; every `agentboard ` line in the new texts parses against the registry
 - [ ] 4.3 Reviewer: check no user bytes change outside owned regions in any target. Verify: report with verdict
 
 ## 5. Prompts (`guidance/prompts`)
 
-- [ ] 5.1 Test author: tests for the bare-project prompt and "Init offers to install agent guidance" using a fake terminal (answers `1,3`, empty, unknown token, `y`, `n`, Enter installing) and real non-TTY runs (no stdin read, exit 1). Verify: tests are red, pre-push subset passes
+- [ ] 5.1 Test author: tests for the bare-project prompt and "Init offers to install agent guidance" using a fake terminal (answers `1,3`, empty, an unknown token-shaped answer that appears in no output, `y`, `n`, Enter installing, an `init` that fails neither asking nor installing) and real non-TTY runs (no stdin read, exit 1). Verify: tests are red, pre-push subset passes
 - [ ] 5.2 Implementer: add the TTY prompt helper, the `init --agents/--no-agents` flags and the install-failure exit behavior. Verify: group 5 tests pass; `init --json` never prompts
 - [ ] 5.3 Reviewer: check TTY detection and that nothing reads stdin in a script. Verify: report with verdict
 
@@ -67,7 +71,7 @@ archiving whichever lands second.
 
 ## 7. Docs and status (`docs/harness-integration`)
 
-- [ ] 7.1 Document install targets, hooks (warn-only default, `--hooks-strict`, `AGENTBOARD_HOOKS=off`, the risks and recommended local executable) and the prompts in README.md and the agent guide. Verify: the README commands run as written in a sandbox project; `help agents` stays within its line limit and its `agentboard ` lines parse
+- [ ] 7.1 Document install targets, hooks (warn-only default, `--hooks-strict`, `AGENTBOARD_HOOKS=off`, the risks and recommended local executable) and the prompts in README.md and `help hook`; in the agent guide only add `hook` to the list of commands that are not MCP tools, reflowing the existing lines (design.md decision 10). Verify: the README commands run as written in a sandbox project; `help agents` and each `--role` output have the same line count as before (154, and 180 for the orchestrator at 0.3.0) and their `agentboard ` lines parse
 - [ ] 7.2 Update STATUS.md: list this change under "What is next" and remove it once archived. Item 1 (publish 0.1.0, then a release workflow) is already resolved on `staging` (0.1.0 is on npm and `.github/workflows/release.yml` landed in #66), so confirm no such item remains rather than rewriting it. Verify: `make ascii` and a read of STATUS.md
 - [ ] 7.3 Record in the PR description that a prepack build script, if still wanted, is a separate follow-up and not part of this change. Verify: the PR text says so
 

@@ -14,8 +14,9 @@ install`, and `init` only prints a hint.
 ## What Changes
 
 - New `agentboard hook <event>` command (`session-start`, `stop`,
-  `pre-tool-use`) with a fail-open, read-only, time-boxed contract. It is
-  warn-only by default; `--strict` blocks.
+  `pre-tool-use`) with a fail-open, read-only, time-boxed contract (it never
+  catches up, so it writes no due grant). It is warn-only by default;
+  `--strict` blocks. Its output respects leases and the mutex recipe.
 - New `agents install` targets: `claude-hooks` (merged non-destructively into
   `.claude/settings.json`, marked, checked by `agents check`), `codex`
   and `antigravity` (the shared `AGENTS.md` block plus the exact `codex mcp
@@ -23,7 +24,9 @@ install`, and `init` only prints a hint.
   only with `--target ... --global`), `cursor`
   (`.cursor/rules/agentboard.mdc` and `.cursor/mcp.json`) and `copilot`
   (`.github/copilot-instructions.md` block), all with the existing marker,
-  refuse-unless-`--force` and `check` semantics. New flag `--hooks-strict`.
+  refuse-unless-`--force` and `check` semantics, and every project
+  guidance text carries the mutex short form. New flag `--hooks-strict`.
+  `GUIDANCE_VERSION` becomes 4.
 - In a bare project, `agents install` prompts for targets on a terminal;
   non-interactive runs keep the no-targets failure.
 - `init` offers to run `agents install` on a terminal, with `--agents` and
@@ -45,9 +48,11 @@ install`, and `init` only prints a hint.
 ### Modified Capabilities
 - `board-agent-guidance`: new install targets, bare-project prompt,
   non-clobbering rules and `check` for them, harness MCP entries, the
-  sandbox verification requirement, `hook` excluded from MCP.
+  sandbox verification requirement, `hook` excluded from MCP, guidance
+  version 4, and the mutex short form in the `cursor` and `copilot` texts.
 - `board-cli`: command surface (`hook`, `init` flags), the `hook` exit-code
-  exception, `hook` excluded from MCP, and `init` offering the install.
+  exception, `hook` excluded from MCP, `hook` excepted from writing due
+  grants during catch-up, and `init` offering the install.
 
 ## Impact
 
@@ -56,12 +61,17 @@ install`, and `init` only prints a hint.
   `src/guidance/`, `src/cli/registry.ts`, `src/board/init.ts`, a small TTY
   prompt helper.
 - Tests: a sandbox suite creating temporary projects per target.
-- Docs: README (install section, hooks, the risks), the agent guide, STATUS.md.
+- Docs: README (install section, hooks, the risks), `help hook`, the
+  agent guide's list of non-tool commands (no new line), STATUS.md.
 - No schema or event changes; no new runtime dependency (a TOML parser is not
   needed, see design.md).
-- Overlaps `add-claim-leases` and its known gap (STATUS.md): both restate
-  `board-cli` "Command surface" and "MCP server". Whichever is archived
-  second re-syncs that text.
+- Re-synced on 2026-10-31 with the main specs as of `a455011`, after the
+  archives of `add-claim-leases`, `guard-stale-temporary`,
+  `keep-cursors-on-upgrade` and `no-echo-refusals`; design.md "Re-sync
+  with the main specs" lists what that forced.
+- The agent guide gains no line: the orchestrator output is at its
+  180-line limit (design.md decision 10).
+- ADR 0016 (0014 and 0015 are taken).
 - Out of scope: the release workflow (already landed in #66 as
   `.github/workflows/release.yml`; any prepack build script is a separate
   follow-up), VS Code `.vscode/mcp.json`, user-level (global) harness config.
