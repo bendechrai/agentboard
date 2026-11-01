@@ -138,31 +138,60 @@ export function isActorName(name: string): boolean {
 }
 
 /**
+ * The left anchor of every provider pattern from `anthropic-api-key` to
+ * `stripe-webhook-secret` (secret-prefix-patterns design.md "Anchoring"
+ * and "Rulings from review round 1", R2): the prefix starts where the
+ * preceding character is not one of `blocking`, or where the two or three
+ * preceding characters are a backslash escape (`\n`, `\r`, `\t`, `\b`,
+ * `\f`, judged on those two characters alone) or a percent-encoding (`%`
+ * and two hexadecimal digits). Every lookbehind has a fixed length, so the
+ * check stays linear. `blocking` is the ASCII letters and digits, and for
+ * `jwt` also `_` and `-`, its own alphabet.
+ */
+function anchored(blocking: string, body: string): RegExp {
+  return new RegExp(`(?:(?<![${blocking}])|(?<=\\\\[nrtbf])|(?<=%[0-9A-Fa-f]{2}))${body}`);
+}
+
+/** The characters that block the general anchor. */
+const ALNUM = '0-9A-Za-z';
+
+/**
  * The expression of each pattern, as documented on `SECRET_PATTERN_NAMES`.
- * The lookbehind `(?<![0-9A-Za-z])` is the left anchor of every provider
- * pattern from `anthropic-api-key` to `stripe-webhook-secret`. Each
- * expression is a literal prefix, a fixed character class and a minimum
- * count, with no alternation inside a repeat and no nested quantifier.
+ * Each is a literal prefix, a fixed character class and a count. A
+ * minimum with no maximum on a run that another character must follow
+ * (the `jwt` segments and the first `sendgrid-api-key` segment) is written
+ * as the fixed count followed by a star, which V8 runs without a backtrack
+ * entry per character, so a run of several MiB cannot overflow its stack
+ * (R1).
  */
 const PATTERNS: Record<SecretPatternName, RegExp> = {
   'pem-private-key': /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/,
   'aws-access-key-id': /(?<![0-9A-Za-z])(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Za-z])/,
   'github-token': /gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22}/,
-  'anthropic-api-key': /(?<![0-9A-Za-z])sk-ant-[A-Za-z0-9_-]{16}/,
-  'digitalocean-token': /(?<![0-9A-Za-z])do[por]_v1_[a-f0-9]{16}/,
-  'docker-token': /(?<![0-9A-Za-z])dckr_[po]at_[A-Za-z0-9_-]{16}/,
-  'gitlab-token': /(?<![0-9A-Za-z])glpat-[A-Za-z0-9_-]{16}/,
-  'google-api-key': /(?<![0-9A-Za-z])AIza[A-Za-z0-9_-]{32}/,
-  'huggingface-token': /(?<![0-9A-Za-z])hf_[A-Za-z0-9]{32}/,
-  jwt: /(?<![0-9A-Za-z_-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16}/,
-  'npm-token': /(?<![0-9A-Za-z])npm_[A-Za-z0-9]{32}/,
-  'openai-api-key': /(?<![0-9A-Za-z])sk-(?:(?:proj|svcacct|admin)-[A-Za-z0-9_-]{16}|[A-Za-z0-9]{32})/,
-  'pypi-token': /(?<![0-9A-Za-z])pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{16}/,
-  'sendgrid-api-key': /(?<![0-9A-Za-z])SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16}/,
-  'shopify-token': /(?<![0-9A-Za-z])shp(?:at|ca|pa|ss)_[A-Fa-f0-9]{16}/,
-  'slack-token': /(?<![0-9A-Za-z])x(?:ox[abeprs]|app)-[0-9]+-[A-Za-z0-9-]{16}/,
-  'stripe-secret-key': /(?<![0-9A-Za-z])[sr]k_(?:live|test)_[A-Za-z0-9]{16}/,
-  'stripe-webhook-secret': /(?<![0-9A-Za-z])whsec_[A-Za-z0-9]{16}/,
+  'anthropic-api-key': anchored(ALNUM, 'sk-ant-[A-Za-z0-9_-]{16}'),
+  'digitalocean-token': anchored(ALNUM, 'do[por]_v1_[a-f0-9]{16}'),
+  'docker-token': anchored(ALNUM, 'dckr_[po]at_[A-Za-z0-9_-]{16}'),
+  'gitlab-token': anchored(ALNUM, 'glpat-[A-Za-z0-9_-]{16}'),
+  'google-api-key': anchored(ALNUM, 'AIza[A-Za-z0-9_-]{32}'),
+  'huggingface-token': anchored(ALNUM, 'hf_[A-Za-z0-9]{32}'),
+  jwt: anchored(
+    `${ALNUM}_-`,
+    'eyJ[A-Za-z0-9_-]{8}[A-Za-z0-9_-]*\\.eyJ[A-Za-z0-9_-]{8}[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]{16}',
+  ),
+  'npm-token': anchored(ALNUM, 'npm_[A-Za-z0-9]{32}'),
+  'openai-api-key': anchored(
+    ALNUM,
+    'sk-(?:(?:proj|svcacct|admin|None)-[A-Za-z0-9_-]{16}|[A-Za-z0-9]{32})',
+  ),
+  'pypi-token': anchored(ALNUM, 'pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{16}'),
+  'sendgrid-api-key': anchored(
+    ALNUM,
+    'SG\\.[A-Za-z0-9_-]{16}[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]{16}',
+  ),
+  'shopify-token': anchored(ALNUM, 'shp(?:at|ca|pa|ss)_[A-Fa-f0-9]{16}'),
+  'slack-token': anchored(ALNUM, 'x(?:ox[abeprs]|app)-[0-9]+-[A-Za-z0-9-]{16}'),
+  'stripe-secret-key': anchored(ALNUM, '[sr]k_(?:live|test)_[A-Za-z0-9]{16}'),
+  'stripe-webhook-secret': anchored(ALNUM, 'whsec_[A-Za-z0-9]{16}'),
   'generic-secret-assignment': /(?:token|secret|password|key) *[:=] *["']?[A-Za-z0-9+/_-]{32}/i,
 };
 
