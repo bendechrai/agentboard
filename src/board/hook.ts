@@ -54,6 +54,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import type { DatabaseSync } from 'node:sqlite';
 
 import type { BoardState, Ticket } from '../events/fold.js';
+import { compareHlc, type Hlc } from '../events/hlc.js';
 import { isKnownEvent, SYSTEM_ACTOR } from '../events/schema.js';
 import { CACHE_FILE, openCache, readState } from '../store/cache.js';
 import {
@@ -740,55 +741,81 @@ function unansweredTickets(ctx: EventContext, candidates: readonly Ticket[]): Ti
   if (lastComment.size === 0) {
     return [...candidates];
   }
-  const floor = [...lastComment.values()].sort(comparePositions)[0];
-  if (floor === undefined) {
-    return [...candidates];
+  // The tickets still in question: those updated after the actor's last
+  // comment, each with its window (after the comment, at or before the
+  // update). A ticket whose last update is not later than the comment
+  // cannot have been reassigned since: decided with no read.
+  const byId = new Map(candidates.map((ticket) => [ticket.id, ticket]));
+  const windows = new Map<string, { since: CursorPosition; until: Hlc }>();
+  for (const [id, since] of lastComment) {
+    const until = byId.get(id)?.updatedAt;
+    if (until !== undefined && compareHlc(until, since.ts) > 0) {
+      windows.set(id, { since, until });
+    }
   }
-  const skip = new Set<string>();
-  for (const ticket of Object.values(ctx.view.state.tickets)) {
-    const inQuestion = lastComment.has(ticket.id);
-    for (const comment of ticket.comments) {
-      if (!inQuestion || comment.actor === actor) {
-        skip.add(comment.hash);
+  const reassigned = new Set<string>();
+  const inWindow = (p: CursorPosition, w: { since: CursorPosition; until: Hlc }): boolean =>
+    comparePositions(p, w.since) > 0 && compareHlc(p.ts, w.until) <= 0;
+  if (windows.size > 0) {
+    const skip = new Set<string>();
+    for (const ticket of Object.values(ctx.view.state.tickets)) {
+      const inQuestion = windows.has(ticket.id);
+      for (const comment of ticket.comments) {
+        if (!inQuestion || comment.actor === actor) {
+          skip.add(comment.hash);
+        }
+      }
+    }
+    const spans = [...windows.values()];
+    const minWall = Math.min(...spans.map((w) => w.since.ts.wall));
+    const maxWall = Math.max(...spans.map((w) => w.until.wall));
+    const after = inSnapshot(db, () =>
+      recordedPositions(db, { effectiveOnly: true, minWall, maxWall }),
+    )
+      .filter((p) => !skip.has(p.hash) && spans.some((w) => inWindow(p, w)))
+      .sort(comparePositions);
+    const eventsDir = join(ctx.view.boardDir, 'events');
+    for (const position of after) {
+      // A ticket whose window this position has passed was not reassigned.
+      for (const [id, w] of windows) {
+        if (compareHlc(position.ts, w.until) > 0) {
+          windows.delete(id);
+        }
+      }
+      if (windows.size === 0) {
+        break;
+      }
+      if (![...windows.values()].some((w) => inWindow(position, w))) {
+        continue;
+      }
+      now();
+      const outcome = readEventFile(eventsDir, `${position.hash}.json`);
+      if (outcome.status !== 'ok') {
+        continue;
+      }
+      const { event } = outcome.input;
+      if (!isKnownEvent(event) || event.kind === 'board.meta') {
+        continue;
+      }
+      const w = windows.get(event.ticket);
+      if (w === undefined || !inWindow(position, w)) {
+        continue;
+      }
+      const assignee =
+        event.kind === 'ticket.claim'
+          ? event.actor
+          : event.kind === 'ticket.grant' ||
+              event.kind === 'ticket.handoff' ||
+              event.kind === 'ticket.assign'
+            ? event.body.to
+            : null;
+      if (assignee === actor) {
+        reassigned.add(event.ticket);
+        windows.delete(event.ticket);
       }
     }
   }
-  const after = inSnapshot(db, () =>
-    recordedPositions(db, { effectiveOnly: true, minWall: floor.ts.wall }),
-  )
-    .filter((p) => comparePositions(p, floor) > 0 && !skip.has(p.hash))
-    .sort(comparePositions);
-  const eventsDir = join(ctx.view.boardDir, 'events');
-  const reassigned = new Set<string>();
-  for (const position of after) {
-    now();
-    const outcome = readEventFile(eventsDir, `${position.hash}.json`);
-    if (outcome.status !== 'ok') {
-      continue;
-    }
-    const { event } = outcome.input;
-    if (!isKnownEvent(event) || event.kind === 'board.meta') {
-      continue;
-    }
-    const since = lastComment.get(event.ticket);
-    if (since === undefined || comparePositions(position, since) <= 0) {
-      continue;
-    }
-    const assignee =
-      event.kind === 'ticket.claim'
-        ? event.actor
-        : event.kind === 'ticket.grant' ||
-            event.kind === 'ticket.handoff' ||
-            event.kind === 'ticket.assign'
-          ? event.body.to
-          : null;
-    if (assignee === actor) {
-      reassigned.add(event.ticket);
-    }
-  }
-  return candidates.filter(
-    (ticket) => !lastComment.has(ticket.id) || reassigned.has(ticket.id),
-  );
+  return candidates.filter((ticket) => !lastComment.has(ticket.id) || reassigned.has(ticket.id));
 }
 
 /** The command lines of one ticket in the `stop` text (`release` first under a lease). */
@@ -1212,7 +1239,8 @@ export function runHook(request: HookRequest): HookOutcome {
       if (args.event !== 'session-start') {
         return SILENT;
       }
-      const given = args.as !== undefined && args.as !== '' ? args.as : request.env.AGENTBOARD_ACTOR;
+      const given =
+        args.as !== undefined && args.as !== '' ? args.as : request.env.AGENTBOARD_ACTOR;
       const set = given !== undefined && given !== '';
       return sessionStartContext(set ? LINES.invalidActor : LINES.noActor);
     }
