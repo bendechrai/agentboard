@@ -149,7 +149,7 @@ const PATTERNS: Record<SecretPatternName, RegExp> = {
   'gitlab-token': /(?<![0-9A-Za-z])glpat-[A-Za-z0-9_-]{16}/,
   'google-api-key': /(?<![0-9A-Za-z])AIza[A-Za-z0-9_-]{32}/,
   'huggingface-token': /(?<![0-9A-Za-z])hf_[A-Za-z0-9]{32}/,
-  jwt: /(?<![0-9A-Za-z])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16}/,
+  jwt: /(?<![0-9A-Za-z_-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16}/,
   'npm-token': /(?<![0-9A-Za-z])npm_[A-Za-z0-9]{32}/,
   'openai-api-key': /(?<![0-9A-Za-z])sk-(?:(?:proj|svcacct|admin)-[A-Za-z0-9_-]{16}|[A-Za-z0-9]{32})/,
   'pypi-token': /(?<![0-9A-Za-z])pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{16}/,
