@@ -100,6 +100,14 @@ tickets, or in a worktree whose agent has not set `AGENTBOARD_ACTOR`.
   make that possible without changing the ordinary open, and
   `locateBoard` a `timeoutMs` option that bounds its `git` child the same
   way.
+- Known limit: `stop` reads, for a ticket the actor commented on, the
+  applied events after that comment and at or before the ticket's last
+  update, to see whether it became the actor's again. A ticket updated
+  long after the actor's comment, with many unrelated events between,
+  can still spend the budget; `stop` then fails open with the
+  out-of-time line and exit 0, and the reminder (or the strict block) is
+  lost for that stop. An index of the ticket per folded event in the
+  cache would remove the limit and is left for a later change.
 - Known limit: the inspect-only open is a read-write connection, as
   `rebuild --check` opens the cache (a read-only connection leaves empty
   `-wal` and `-shm` files behind on a clean cache). After an unclean

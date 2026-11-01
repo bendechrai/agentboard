@@ -220,7 +220,22 @@ text on stderr only when the payload has `stop_hook_active` exactly JSON
 empty, not JSON or larger than the payload limit, it SHALL NOT block: it
 answers as warn mode does (failing open, ADR 0016), so one stop produces
 at most one block even when the hook cannot see the field. `release` is named only for a ticket with a lease, and
-the warn answer never carries a `decision`.
+the warn answer never carries a `decision`. To tell whether a ticket the
+actor has commented on became its own again since, the hook SHALL read no
+event when the ticket's last update (the cache's `updated_at`) is not
+later than that comment, and otherwise only the applied events after the
+comment and at or before that update, in fold order, stopping as soon as
+every such ticket is decided. Known limit: when many events fall in that
+window the budget can still run out, and the run then fails open (exit
+0, the out-of-time line, no block).
+
+#### Scenario: Comment is the ticket's last update
+- **WHEN** `impl` holds T1, its comment is the last event on T1, and many events on other tickets follow
+- **THEN** `hook stop --strict --as impl` exits 0 with no output without reading any event file
+
+#### Scenario: Handed back, then a busy board
+- **WHEN** `impl` commented on T1 and handed it to `reviewer`, `reviewer` handed it back, and many events on other tickets follow
+- **THEN** `hook stop --strict --as impl` names T1 without reading any event written after T1's last update
 
 #### Scenario: Forgot to hand off, warn mode
 - **WHEN** `impl` holds T1 with no comment since the claim and `hook stop` runs

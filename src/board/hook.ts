@@ -712,6 +712,15 @@ function commentPosition(comment: { hash: string; ts: CursorPosition['ts'] }): C
  * those by other actors on the tickets in question, which may be
  * hand-offs to the actor) are skipped without a read. Each remaining
  * event file is read after a deadline check.
+ *
+ * Bounded reads (design.md "Rulings from review round 2 of task group 2",
+ * R11): a ticket whose `updatedAt` is not later (`compareHlc`) than the
+ * actor's last comment on it is decided with no read. For the others,
+ * only applied events after that comment and with a `ts` at or before
+ * the ticket's `updatedAt` are read, in fold order; an event outside
+ * every remaining ticket's window is never opened, and reading stops as
+ * soon as every ticket in question is decided (each either found
+ * reassigned or past its window).
  */
 function unansweredTickets(ctx: EventContext, candidates: readonly Ticket[]): Ticket[] {
   const { actor, db, now } = ctx;

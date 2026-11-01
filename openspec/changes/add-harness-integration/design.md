@@ -379,6 +379,40 @@ and pinned by the tests and the contracts in `src/board/hook.ts`:
   board); a warn-mode `stop` `systemMessage` reaches only the user, not
   the model, as the spec intends (group 7's README says so).
 
+## Rulings from review round 2 of task group 2
+
+Taken by the orchestrator on reviewer-hk2-2's round 2 report on PR #133
+(reviewer-hk2-1 approved 52d1947), posted as `DECISION:` comments on the
+group's ticket:
+
+- **R11 stop reads no more than it needs** (finding 2). (a) A ticket
+  whose cache `updated_at` is not later than the actor's last comment on
+  it is decided with no read: nothing can have reassigned it since.
+  `updated_at` is `encodeHlc(Ticket.updatedAt)`, the `ts` of the last
+  applied event on the ticket in fold order, and positions compare by
+  `compareHlc` first, so the two are comparable (an event whose `ts`
+  equals `updated_at` counts as at or before it). (b) For the rest, only
+  applied events after the actor's last comment and at or before the
+  ticket's `updated_at` can be the assigning event; only those are read
+  (known comments still skipped), in fold order, and the reading stops as
+  soon as every ticket in question is decided. (c) Known limit, also in
+  ADR 0016: a ticket updated long after the actor's comment, with many
+  unrelated events between, may still run out of budget; `stop` then
+  fails open (out-of-time line, exit 0). No cache schema change in this
+  group (an index of the ticket per folded event would remove the
+  limit).
+- **Tests for round 2 findings 1, 3 and 4.** Finding 1 (major): the
+  deadline checks in the stop read loop and before the stop answer, and
+  the check before the pre-tool-use block, each have a test that fails
+  when the check is removed or reads `Date.now()` instead of the run's
+  clock: a holder that commented and got the ticket back after many
+  non-comment events, with slow reads crossing the deadline mid-loop and
+  at the last read. Finding 3: the 2000-character stop text at exactly
+  the limit and one over, for the uncut and the cut text. Finding 4:
+  with the budget spent from the start, the outcome is exactly the
+  out-of-time line (a discovery that swallowed the signal would answer
+  silently).
+
 ## Risks / Trade-offs
 
 - **PreToolUse is intrusive and adds latency to every edit** -> warn-only
