@@ -392,8 +392,11 @@ export type InstallAction = 'created' | 'updated' | 'unchanged' | 'refused';
  *   table plus the dotted key) is `mcp_servers` (an inline table or other
  *   value) or is at or below `mcp_servers.agentboard` outside a foreign
  *   table (a dotted key, or `agentboard = { ... }` under `[mcp_servers]`).
- *   Refused even with `--force`; the message says to remove the
- *   definition by hand.
+ *   The block's own header sets the current table like any other, so a
+ *   key/value line after the end marker and before the next table header
+ *   (a top-level setting appended below the block) is read by TOML into
+ *   `[mcp_servers.agentboard]` and is `toml-shape` too. Refused even with
+ *   `--force`; the message says to remove or move the definition by hand.
  * - `outside-tree` does not apply to a global file, which is outside the
  *   tree by design: a symbolic link there is followed and kept (dotfile
  *   managers link these files); `not-a-file` and `unwritable` apply.
