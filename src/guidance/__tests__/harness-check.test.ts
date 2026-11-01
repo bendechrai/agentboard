@@ -229,7 +229,7 @@ describe('the 24 KB warning', () => {
 
   it('measures bytes, not characters', () => {
     const { root, scratch } = setup();
-    writeRel(root, AGENTS, `${'é'.repeat(12_289)}\n`);
+    writeRel(root, AGENTS, `${'\u00e9'.repeat(12_289)}\n`);
     expect(checkCommand(root, scratch.env).warnings).toEqual([SIZE_WARNING(24579)]);
   });
 
