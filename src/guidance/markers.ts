@@ -254,9 +254,22 @@ function linesOf(text: string): Line[] {
   return lines;
 }
 
-/** A marker-like line without its trailing `\r` and surrounding spaces and tabs. */
+/**
+ * A marker-like line without its trailing `\r` and surrounding spaces and
+ * tabs. Trimmed by index, not by a regular expression: `[ \t]+$` tried at
+ * every position of a 200 KB line of blanks is quadratic (review round 1
+ * of task group 4, R5), and a marker-like line can be any length.
+ */
 function bare(line: string): string {
-  return line.replace(/\r$/, '').replace(/^[ \t]+|[ \t]+$/g, '');
+  let end = line.endsWith('\r') ? line.length - 1 : line.length;
+  while (end > 0 && (line[end - 1] === ' ' || line[end - 1] === '\t')) {
+    end -= 1;
+  }
+  let start = 0;
+  while (start < end && (line[start] === ' ' || line[start] === '\t')) {
+    start += 1;
+  }
+  return line.slice(start, end);
 }
 
 /**

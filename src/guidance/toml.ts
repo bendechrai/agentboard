@@ -63,6 +63,14 @@ export interface TomlScan {
    * inline table, so that text appended to it would land inside.
    */
   readonly unterminated: boolean;
+  /**
+   * True when some line could not be fully read (review round 1 of task
+   * group 4, R4): a statement that is no header and no key/value line
+   * (kind `other`), or an escape in a basic string, key or value, other
+   * than `\b \t \n \f \r \e \" \\`, a valid `\uXXXX` or `\UXXXXXXXX` and a
+   * multi-line string's line-ending backslash.
+   */
+  readonly unreadable: boolean;
 }
 
 /** The state of a string the scan is inside. */
@@ -77,7 +85,42 @@ interface ParsedKey {
   readonly next: number;
 }
 
-const BARE_KEY = /^[A-Za-z0-9_-]+/;
+/** A bare key, matched in place (sticky) so a long line is never copied per key part. */
+const BARE_KEY = /[A-Za-z0-9_-]+/y;
+const HEX = /^[0-9A-Fa-f]+$/;
+
+/**
+ * The length of the escape sequence starting at the backslash `text[at]`
+ * inside a basic string (the backslash included), or 0 when it is not one
+ * TOML knows: a short escape, `\uXXXX`, `\UXXXXXXXX`, or, when `multi`, a
+ * backslash followed by blanks and a line feed (the line-ending
+ * backslash).
+ */
+function escapeLength(text: string, at: number, multi: boolean): number {
+  const e = text[at + 1] ?? '';
+  if ('btnfre"\\'.includes(e) && e !== '') {
+    return 2;
+  }
+  const width = e === 'u' ? 4 : e === 'U' ? 8 : 0;
+  if (width > 0) {
+    const hex = text.slice(at + 2, at + 2 + width);
+    if (hex.length !== width || !HEX.test(hex)) {
+      return 0;
+    }
+    const code = Number.parseInt(hex, 16);
+    return code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) ? 0 : 2 + width;
+  }
+  if (multi) {
+    let i = at + 1;
+    while (text[i] === ' ' || text[i] === '\t' || text[i] === '\r') {
+      i += 1;
+    }
+    if (text[i] === '\n') {
+      return i + 1 - at;
+    }
+  }
+  return 0;
+}
 
 /** `from` moved past spaces and tabs. */
 function skipBlanks(text: string, from: number): number {
@@ -170,7 +213,8 @@ function parseKey(text: string, from: number): ParsedKey | null {
       parts.push(quoted.value);
       i = quoted.next;
     } else {
-      const bareMatch = BARE_KEY.exec(text.slice(i));
+      BARE_KEY.lastIndex = i;
+      const bareMatch = BARE_KEY.exec(text);
       if (bareMatch === null) {
         return null;
       }
@@ -198,6 +242,7 @@ export function scanToml(text: string): TomlScan {
   const lines: TomlLine[] = [];
   let str: OpenString | null = null;
   let depth = 0;
+  let unreadable = false;
   let table: readonly string[] = [];
   let at = 0;
   for (;;) {
@@ -246,7 +291,11 @@ export function scanToml(text: string): TomlScan {
       const c = text[i];
       if (str !== null) {
         if (c === '\\' && str.kind === 'basic') {
-          i += 1;
+          const length = escapeLength(text, i, str.multi);
+          if (length === 0) {
+            unreadable = true;
+          }
+          i += Math.max(length, 2) - 1;
         } else if (c === '\n' && !str.multi) {
           str = null;
         } else if (c === (str.kind === 'basic' ? '"' : "'")) {
@@ -275,13 +324,34 @@ export function scanToml(text: string): TomlScan {
         depth -= 1;
       }
     }
+    if (kind === 'other') {
+      unreadable = true;
+    }
     lines.push({ start: at, end, text: lineText, kind, key, fullKey });
     if (nl === -1) {
       break;
     }
     at = nl + 1;
   }
-  return { lines, unterminated: str !== null || depth > 0 };
+  return { lines, unterminated: str !== null || depth > 0, unreadable };
+}
+
+/**
+ * True when some line of `scan` holds the text of a marker of `syntax`
+ * without being a comment line by the scan (inside a multi-line string,
+ * inside an array or inline table spanning lines, or after a key): such a
+ * line is part of the user's data and never one of the block's markers
+ * (review round 1 of task group 4, R1). Pure.
+ */
+export function hasNonCommentMarkerLine(
+  scan: TomlScan,
+  syntax: MarkerSyntax = CODEX_MARKERS,
+): boolean {
+  return scan.lines.some(
+    (line) =>
+      line.kind !== 'comment' &&
+      (line.text.includes(syntax.startText) || line.text.includes(syntax.endText)),
+  );
 }
 
 /** True when `key` is `mcp_servers.agentboard` or a key below it. */
@@ -313,9 +383,11 @@ export interface LineRange {
 export interface ServerDefinitions {
   /**
    * `foreign-table`: each `[k]` header outside the markers with `k` at or
-   * below `mcp_servers.agentboard`, as the range from its header line to
-   * the line before the next header or marker-like line, or the end of
-   * the text. In text order.
+   * below `mcp_servers.agentboard`, as the range from its header line
+   * through its last key/value or continuation line before the next
+   * header, marker-like line or the end of the text (line break
+   * included); the comment and blank lines directly above what follows
+   * stay (review round 1 of task group 4, R3). In text order.
    */
   readonly foreign: readonly LineRange[];
   /**
@@ -336,27 +408,33 @@ export function serverDefinitions(
   const foreign: LineRange[] = [];
   let shape = false;
   let open: number | null = null;
+  let openEnd = 0;
   let inRegion = false;
   let inForeign = false;
   for (const line of scan.lines) {
     const isStart = line.text.includes(syntax.startText);
     const isEnd = line.text.includes(syntax.endText);
     const isHeader = line.kind === 'header' || line.kind === 'array-header';
+    const afterLine = line.end < textLength ? line.end + 1 : line.end;
     if (isStart) {
       inRegion = true;
     }
     if (isHeader || isStart || isEnd) {
       if (open !== null) {
-        foreign.push({ start: open, end: line.start });
+        foreign.push({ start: open, end: openEnd });
         open = null;
       }
       inForeign = false;
+    }
+    if (inForeign && (line.kind === 'keyval' || line.kind === 'continuation')) {
+      openEnd = afterLine;
     }
     if (!inRegion && line.key !== null) {
       if (line.kind === 'array-header' && (isServers(line.key) || underServer(line.key))) {
         shape = true;
       } else if (line.kind === 'header' && underServer(line.key)) {
         open = line.start;
+        openEnd = afterLine;
         inForeign = true;
       } else if (
         line.kind === 'keyval' &&
@@ -372,7 +450,7 @@ export function serverDefinitions(
     }
   }
   if (open !== null) {
-    foreign.push({ start: open, end: textLength });
+    foreign.push({ start: open, end: openEnd });
   }
   return { foreign, shape };
 }

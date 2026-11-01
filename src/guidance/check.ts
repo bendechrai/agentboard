@@ -72,7 +72,13 @@ import {
   targetPath,
   type TargetPath,
 } from './markers.js';
-import { codexMarkers, managedCodexCommand, scanToml, serverDefinitions } from './toml.js';
+import {
+  codexMarkers,
+  hasNonCommentMarkerLine,
+  managedCodexCommand,
+  scanToml,
+  serverDefinitions,
+} from './toml.js';
 
 /**
  * - `current`: the target is exactly what `agents install` would write now.
@@ -402,7 +408,8 @@ function checkCodexToml(path: string, v: number): Found | null {
     return { state: 'modified', installedVersion: null };
   }
   const scan = scanToml(read.text);
-  if (scan.unterminated) {
+  if (scan.unterminated || scan.unreadable || hasNonCommentMarkerLine(scan)) {
+    // Unreadable (R4), or marker text inside a value (R1): never the block.
     return { state: 'modified', installedVersion: null };
   }
   const markers = codexMarkers(read.text);

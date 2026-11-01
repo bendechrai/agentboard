@@ -44,6 +44,7 @@ import {
   CURSOR_MCP_PATH,
   CURSOR_RULE_PATH,
   GUIDANCE_VERSION,
+  HOOKS_MARKER_TEXT,
   MCP_JSON_PATH,
   MCP_SERVER_NAME,
   OPENSPEC_CONFIG_PATH,
@@ -66,8 +67,11 @@ import {
   type OpenSpecOperation,
 } from './installed-text.js';
 import {
+  AGENTS_MARKERS,
+  CODEX_MARKERS,
   MAX_JSON_DEPTH,
   PERMISSION_CODES,
+  SKILL_MARKER_TEXT,
   agentsMarkers,
   errorCode,
   globalPath,
@@ -96,6 +100,7 @@ import {
 import {
   CODEX_TABLE_HEADER,
   codexMarkers,
+  hasNonCommentMarkerLine,
   managedCodexCommand,
   scanToml,
   serverDefinitions,
@@ -1222,6 +1227,21 @@ function editCodexToml(
       `${abs} cannot be edited: it ends inside a multi-line string, an array or an inline table, where the agentboard block cannot be appended`,
     );
   }
+  if (scan.unreadable) {
+    return refuse(
+      'malformed-file',
+      `${abs} cannot be edited: it holds a line that is not a table header, a key/value line or a comment, or an escape TOML does not define, so its tables and keys cannot be read`,
+    );
+  }
+  if (hasNonCommentMarkerLine(scan)) {
+    // Not forceable (R1): the marker text is part of a value, never a marker.
+    return {
+      action: 'refused',
+      refusal: 'malformed-marker',
+      message: `${abs} holds agentboard marker text on a line that is not a comment line (inside a string, an array or an inline table, or after a key); that text is part of your data and the markers are not usable, so move it by hand`,
+      manual: [],
+    };
+  }
   const { foreign, shape } = serverDefinitions(scan, text.length);
   if (shape) {
     return refuse(
@@ -1494,7 +1514,24 @@ function validateCommand(command: string | undefined, flag: InstallOptions['comm
       `--${name} must not be a shell built-in; give the path of the executable`,
     );
   }
+  if (command !== undefined && MARKER_TEXTS.some((marker) => command.includes(marker))) {
+    throw new BoardError(1, 'usage', `--${name} must not contain agentboard marker text`);
+  }
 }
+
+/**
+ * The texts of every agentboard ownership marker; a `--command` value
+ * holding one would write a file agentboard then refuses itself (review
+ * round 1 of task group 4, R2).
+ */
+const MARKER_TEXTS: readonly string[] = [
+  AGENTS_MARKERS.startText,
+  AGENTS_MARKERS.endText,
+  CODEX_MARKERS.startText,
+  CODEX_MARKERS.endText,
+  SKILL_MARKER_TEXT,
+  HOOKS_MARKER_TEXT,
+];
 
 /** The selected targets of `options`, in `GUIDANCE_TARGETS` order. */
 function selectTargets(
@@ -1655,7 +1692,8 @@ function selectTargets(
  *   without `command`), unless `force`, which replaces it in place by
  *   `wanted` (rewritten as above): `updated`.
  *
- * `codex`, `antigravity` (design.md "Rulings from task group 4"): the
+ * `codex`, `antigravity` (design.md "Rulings from task group 4" and
+ * "Rulings from review round 1 of task group 4"): the
  * `AGENTS.md` outcome exactly as `agents-md` (the same block, markers,
  * refusals and `--force`), reported under the target's name; selecting
  * several of `agents-md`, `codex` and `antigravity` processes the file
