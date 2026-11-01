@@ -16,13 +16,17 @@ import { execFileSync } from 'node:child_process';
 import {
   accessSync,
   chmodSync,
+  closeSync,
   constants,
+  fsyncSync,
   mkdirSync,
+  openSync,
   realpathSync,
   renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
@@ -40,6 +44,7 @@ import {
   OPENSPEC_CONFIG_PATH,
   OPENSPEC_GUIDANCE,
   OPENSPEC_OPERATIONS,
+  SHELL_SPECIAL_BUILTINS,
   SKILL_PATH,
   hookGroup,
   manualOpenSpecLines,
@@ -63,13 +68,14 @@ import {
   isManagedMcpEntry,
   isOwnedHandler,
   jsonEqual,
+  jsonRewriteIsLossless,
   openSpecItems,
-  parseClaudeSettings,
   parseConfig,
   parseHookCommand,
   parseMcpJson,
   readBytes,
   readText,
+  readUtf8Json,
   targetPath,
 } from './markers.js';
 
@@ -681,21 +687,21 @@ function installOpenSpec(path: string, version: number, force: boolean): Handled
  * `mcpCommand` is the `--command` executable, undefined when not given.
  */
 function installMcpJson(path: string, force: boolean, mcpCommand: string | undefined): Handled {
-  const text = readText(path);
-  const serialize = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`;
+  const read = readUtf8Json(path);
   const entry = mcpEntry(mcpCommand);
-  if (text === null) {
-    write(path, serialize({ mcpServers: { [MCP_SERVER_NAME]: entry } }));
+  if (read === null) {
+    write(path, settingsText({ mcpServers: { [MCP_SERVER_NAME]: entry } }, false));
     return done('created', `wrote ${MCP_JSON_PATH} with the agentboard MCP server`);
   }
-  const config = parseMcpJson(text);
+  const config = read === 'invalid' ? null : parseMcpJson(read.text);
   const servers = config?.mcpServers;
-  if (config === null || (servers !== undefined && !isJsonObject(servers))) {
+  if (read === 'invalid' || config === null || (servers !== undefined && !isJsonObject(servers))) {
     return refuse(
       'malformed-file',
-      `${MCP_JSON_PATH} cannot be edited: it is not a JSON object with an mcpServers object`,
+      `${MCP_JSON_PATH} cannot be edited: it is not UTF-8 text holding a JSON object with an mcpServers object`,
     );
   }
+  const serialize = (value: unknown): string => settingsText(value, read.bom);
   const map = servers ?? {};
   if (Object.hasOwn(map, MCP_SERVER_NAME)) {
     const existing = map[MCP_SERVER_NAME];
@@ -710,24 +716,33 @@ function installMcpJson(path: string, force: boolean, mcpCommand: string | undef
       );
     }
   }
+  if (!force && !jsonRewriteIsLossless(read.text)) {
+    return refuse('lossy-json', lossyMessage(MCP_JSON_PATH));
+  }
   map[MCP_SERVER_NAME] = entry;
   config.mcpServers = map;
   writeFileSync(path, serialize(config), 'utf8');
   return done('updated', `wrote the agentboard MCP server into ${MCP_JSON_PATH}`);
 }
 
-/** `value` as the installer serializes a settings file, with a byte order mark when `bom`. */
+/** `value` as the installer serializes a JSON file, with a byte order mark when `bom`. */
 function settingsText(value: unknown, bom: boolean): string {
   return `${bom ? '\uFEFF' : ''}${JSON.stringify(value, null, 2)}\n`;
 }
 
+/** The `lossy-json` refusal message for the file at `rel`. */
+function lossyMessage(rel: string): string {
+  return `${rel} holds JSON that a rewrite would not give back exactly (a number beyond double precision, -0, a duplicate key, or array-index keys JavaScript reorders), so it was left as it is`;
+}
+
 /**
  * Replaces the file at `path` (symlinks already resolved) by `content`
- * atomically: the content goes to a temporary file in the same directory,
- * which takes the mode of the file it replaces and is renamed over it. A
- * file the process may not write (`accessSync` for writing) throws
- * `EACCES` before anything is created, and a temporary file is never left
- * behind when a step fails.
+ * atomically: the content goes to a new temporary file in the same
+ * directory, which takes the mode of the file it replaces (set explicitly,
+ * so the umask does not narrow it), is flushed to disk (`fsyncSync`) and
+ * is then renamed over the file. A file the process may not write
+ * (`accessSync` for writing) throws `EACCES` before anything is created,
+ * and a temporary file is never left behind when a step fails.
  */
 function replaceFile(path: string, content: string): void {
   accessSync(path, constants.W_OK);
@@ -736,11 +751,19 @@ function replaceFile(path: string, content: string): void {
     dirname(path),
     `.${basename(path)}.${String(process.pid)}.${Math.random().toString(36).slice(2)}.tmp`,
   );
+  let fd: number | null = null;
   try {
-    writeFileSync(temp, content, { encoding: 'utf8', mode });
+    fd = openSync(temp, 'wx', mode);
+    writeSync(fd, content, null, 'utf8');
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = null;
     chmodSync(temp, mode);
     renameSync(temp, path);
   } catch (error) {
+    if (fd !== null) {
+      closeSync(fd);
+    }
     try {
       unlinkSync(temp);
     } catch {
@@ -816,7 +839,7 @@ function mergeHookGroups(groups: readonly unknown[], wanted: object): readonly u
  * `.claude/settings.json` (see `installGuidance`, `claude-hooks`).
  */
 function installClaudeHooks(path: string, version: number, run: RunOptions): Handled {
-  const text = readText(path);
+  const read = readUtf8Json(path);
   const render = (settings: Record<string, unknown>): ClaudeHookOptions => {
     const kept = run.command ?? installedExecutable(settings);
     return {
@@ -832,25 +855,25 @@ function installClaudeHooks(path: string, version: number, run: RunOptions): Han
     );
     return settingsText({ hooks }, bom);
   };
-  if (text === null) {
+  if (read === null) {
     write(path, fresh(false));
     return done('created', `wrote ${CLAUDE_SETTINGS_PATH} with the agentboard hooks`);
   }
-  const parsed = parseClaudeSettings(text);
-  if (parsed === null) {
+  const bom = read === 'invalid' ? readBytes(path)?.startsWith('\xef\xbb\xbf') === true : read.bom;
+  const settings = read === 'invalid' ? null : parseMcpJson(read.text);
+  if (read === 'invalid' || settings === null) {
     if (!run.force) {
       return refuse(
         'malformed-settings',
-        `${CLAUDE_SETTINGS_PATH} is not a JSON object (invalid JSON, or a top level that is not an object), so the agentboard hooks cannot be merged into it`,
+        `${CLAUDE_SETTINGS_PATH} is not UTF-8 text holding a JSON object (invalid JSON, or a top level that is not an object), so the agentboard hooks cannot be merged into it`,
       );
     }
-    replaceFile(path, fresh(text.startsWith('\uFEFF')));
+    replaceFile(path, fresh(bom));
     return done(
       'updated',
       `replaced the unreadable ${CLAUDE_SETTINGS_PATH} by a fresh file with the agentboard hooks`,
     );
   }
-  const { bom, settings } = parsed;
   if (!hasHooksShape(settings)) {
     if (!run.force) {
       return refuse(
@@ -877,6 +900,9 @@ function installClaudeHooks(path: string, version: number, run: RunOptions): Han
   }
   if (!changed) {
     return done('unchanged', `${CLAUDE_SETTINGS_PATH} is up to date`);
+  }
+  if (!run.force && !jsonRewriteIsLossless(read.text)) {
+    return refuse('lossy-json', lossyMessage(CLAUDE_SETTINGS_PATH));
   }
   replaceFile(path, settingsText(settings, bom));
   return done('updated', `wrote the agentboard hooks into ${CLAUDE_SETTINGS_PATH}`);
@@ -984,6 +1010,16 @@ function validateCommand(command: string | undefined, flag: InstallOptions['comm
   }
   if (command?.includes('\n') === true) {
     throw new BoardError(1, 'usage', `--${name} must not contain a newline`);
+  }
+  if (command?.startsWith('-') === true) {
+    throw new BoardError(1, 'usage', `--${name} must not start with a hyphen`);
+  }
+  if (command !== undefined && SHELL_SPECIAL_BUILTINS.includes(command)) {
+    throw new BoardError(
+      1,
+      'usage',
+      `--${name} must not be a shell special built-in; give the path of the executable`,
+    );
   }
 }
 

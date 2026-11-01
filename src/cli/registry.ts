@@ -897,10 +897,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       },
     ],
     exitCodes: [
-      {
-        code: 0,
-        meaning: 'The board was created, already existed, or was moved into the host repository',
-      },
+      { code: 0, meaning: 'The board was created, already existed, or was moved into the host repository' },
       EXIT_USAGE,
       EXIT_INVALID_ACTOR,
       { code: 1, reason: 'git-missing', meaning: 'git could not be run' },
@@ -931,8 +928,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       {
         code: 1,
         reason: 'remote-mismatch',
-        meaning:
-          'The existing standalone board already has a remote with another URL; nothing changed',
+        meaning: 'The existing standalone board already has a remote with another URL; nothing changed',
       },
       {
         code: 1,
@@ -1125,14 +1121,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         summary: 'List the tickets of the OpenSpec change add-parser as JSON',
       },
     ],
-    exitCodes: [
-      EXIT_OK,
-      EXIT_USAGE,
-      EXIT_INVALID_ACTOR,
-      EXIT_TASK_REF,
-      EXIT_NO_BOARD,
-      EXIT_INTEGRITY,
-    ],
+    exitCodes: [EXIT_OK, EXIT_USAGE, EXIT_INVALID_ACTOR, EXIT_TASK_REF, EXIT_NO_BOARD, EXIT_INTEGRITY],
     positionals: [],
     flags: [
       flag('status', 'string', 'Only tickets in this status'),
@@ -1393,12 +1382,13 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'release',
     summary: 'Give up a ticket you hold',
     description:
-      "Clears the assignment of a ticket the actor holds, leaving its status unchanged, so another actor (or the next waiter) can have it. Only the current assignee can release a ticket, except with --force and a --reason, which breaks another actor's hold and records who did it and why; reserve it for the orchestrator or a human, after checking the holder is gone.",
+      'Clears the assignment of a ticket the actor holds, leaving its status unchanged, so another actor (or the next waiter) can have it. Only the current assignee can release a ticket, except with --force and a --reason, which breaks another actor\'s hold and records who did it and why; reserve it for the orchestrator or a human, after checking the holder is gone.',
     group: 'lifecycle',
     examples: [
       { command: 'agentboard release 01J9K3 --as impl', summary: 'Give up ticket 01J9K3' },
       {
-        command: 'agentboard release 01J9K3 --force --reason "merger-1 crashed" --as orchestrator',
+        command:
+          'agentboard release 01J9K3 --force --reason "merger-1 crashed" --as orchestrator',
         summary: 'Break the hold of a crashed holder on ticket 01J9K3',
       },
     ],
@@ -1746,8 +1736,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         summary: 'Close ticket 01J9K3, which made no decision',
       },
       {
-        command:
-          'agentboard close 01J9K3 --no-decision --unplanned "abandoned: superseded" --as orch',
+        command: 'agentboard close 01J9K3 --no-decision --unplanned "abandoned: superseded" --as orch',
         summary: 'Close a blocked ad hoc ticket, recording why its work was never planned',
       },
       {
@@ -1868,7 +1857,9 @@ export const COMMANDS: readonly CommandSpec[] = [
       });
       return {
         json: result,
-        text: result.entries.map((entry) => `${renderInboxLine(entry, actorOf(ctx))}\n`).join(''),
+        text: result.entries
+          .map((entry) => `${renderInboxLine(entry, actorOf(ctx))}\n`)
+          .join(''),
       };
     },
   },
@@ -2501,7 +2492,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'agents install',
     summary: "Install guidance that points this project's coding agents at the board",
     description:
-      "Writes short agent guidance into the root of the current working tree (git rev-parse --show-toplevel, or the current directory outside git): claude writes the Claude Code skill .claude/skills/agentboard/SKILL.md, agents-md a managed block in AGENTS.md, openspec agentboard: guidance entries for apply and archive in openspec/config.yaml, mcp-json an agentboard server in .mcp.json that runs npx -y @bendechrai/agentboard mcp, and claude-hooks the three agentboard hook entries (SessionStart, Stop and PreToolUse running agentboard hook) in .claude/settings.json, merged beside the user's own settings and hooks. With --command <executable>, the MCP server and the hooks run that executable instead of npx (for a linked or local install; the value is written as given); --mcp-command is its deprecated alias. The hooks warn by default; --hooks-strict writes them in strict mode, where stop and pre-tool-use block (see agentboard help hook). With no --target it selects claude, agents-md and openspec when .claude/, AGENTS.md or openspec/config.yaml exist, and says why; mcp-json is installed only when asked for with --target mcp-json or --command, which selects it in addition to the other targets, and claude-hooks only with --target claude-hooks. An existing agentboard server or hook executable is kept on reinstall, and --command replaces it with the given executable. Only agentboard's own region of each file is changed. A file or entry agentboard does not own is refused unless --force is given, and the other targets are still installed. The installed text points agents to agentboard help agents. Needs no board and no actor; commit the files it writes.",
+      "Writes short agent guidance into the root of the current working tree (git rev-parse --show-toplevel, or the current directory outside git): claude writes the Claude Code skill .claude/skills/agentboard/SKILL.md, agents-md a managed block in AGENTS.md, openspec agentboard: guidance entries for apply and archive in openspec/config.yaml, mcp-json an agentboard server in .mcp.json that runs npx -y @bendechrai/agentboard mcp, and claude-hooks the three agentboard hook entries (SessionStart, Stop and PreToolUse running agentboard hook) in .claude/settings.json, merged beside the user's own settings and hooks. With --command <executable>, the MCP server and the hooks run that executable instead of npx (for a linked or local install; the value goes into .mcp.json as given and is quoted where needed in the hooks); --mcp-command is its deprecated alias. The hooks warn by default; --hooks-strict writes them in strict mode, where stop and pre-tool-use block (see agentboard help hook). With no --target it selects claude, agents-md and openspec when .claude/, AGENTS.md or openspec/config.yaml exist, and says why; mcp-json is installed only when asked for with --target mcp-json or --command, which selects it in addition to the other targets, and claude-hooks only with --target claude-hooks. An existing agentboard server or hook executable is kept on reinstall, and --command replaces it with the given executable. Only agentboard's own region of each file is changed. A file or entry agentboard does not own is refused unless --force is given, and the other targets are still installed. The installed text points agents to agentboard help agents. Needs no board and no actor; commit the files it writes.",
     group: 'setup',
     examples: [
       {
@@ -2542,7 +2533,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         code: 1,
         reason: 'usage',
         meaning:
-          'Invalid arguments: unknown command, flag or --target, a missing or malformed argument, a --command (or --mcp-command) that is empty or contains a newline, or both --command and --mcp-command (nothing is written)',
+          'Invalid arguments: unknown command, flag or --target, a missing or malformed argument, a --command (or --mcp-command) that is empty, contains a newline, starts with a hyphen or is a shell special built-in, or both --command and --mcp-command (nothing is written)',
       },
       EXIT_INVALID_ACTOR,
       {

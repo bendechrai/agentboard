@@ -421,7 +421,7 @@ export function hookExecutable(command?: string): string {
   if (command === undefined) {
     return HOOK_DEFAULT_EXECUTABLE;
   }
-  if (SHELL_SAFE_WORD.test(command)) {
+  if (SHELL_SAFE_WORD.test(command) && !SHELL_RESERVED_WORDS.includes(command)) {
     return command;
   }
   return `'${command.replaceAll("'", "'\\''")}'`;
@@ -481,8 +481,12 @@ export const SHELL_SPECIAL_BUILTINS: readonly string[] = [
   'unset',
 ];
 
-/** A non-empty executable text that needs no quoting in a POSIX shell. */
-const SHELL_SAFE_WORD = /^[A-Za-z0-9_./@%+=:,-]+$/;
+/**
+ * A non-empty executable text that needs no quoting in a POSIX shell: the
+ * safe characters, not starting with `-` (shell options) and without `=`
+ * (an assignment). Reserved words are checked apart.
+ */
+const SHELL_SAFE_WORD = /^[A-Za-z0-9_./@%+:,][A-Za-z0-9_./@%+:,-]*$/;
 
 /**
  * The command string of one agentboard hook: `hookExecutable(command)`,

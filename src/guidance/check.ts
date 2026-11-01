@@ -44,12 +44,12 @@ import {
   jsonEqual,
   openSpecCommentVersion,
   openSpecItems,
-  parseClaudeSettings,
   parseConfig,
   parseHookCommand,
   parseMcpJson,
   readBytes,
   readText,
+  readUtf8Json,
   skillVersion,
   targetPath,
 } from './markers.js';
@@ -318,8 +318,8 @@ function checkOpenSpec(path: string, v: number): Found | null {
 }
 
 function checkMcpJson(path: string): Found | null {
-  const text = readText(path);
-  const config = text === null ? null : parseMcpJson(text);
+  const read = readUtf8Json(path);
+  const config = read === null || read === 'invalid' ? null : parseMcpJson(read.text);
   const servers = config?.mcpServers;
   if (!isJsonObject(servers) || !Object.hasOwn(servers, MCP_SERVER_NAME)) {
     return null;
@@ -333,17 +333,17 @@ function checkMcpJson(path: string): Found | null {
 
 /** The `claude-hooks` check (see `checkGuidance`). */
 function checkClaudeHooks(path: string, v: number): Found | null {
-  const text = readText(path);
-  if (text === null) {
+  const read = readUtf8Json(path);
+  if (read === null) {
     return null;
   }
-  const parsed = parseClaudeSettings(text);
-  if (parsed === null || !hasHooksShape(parsed.settings)) {
-    return text.includes(HOOKS_MARKER_TEXT)
+  const settings = read === 'invalid' ? null : parseMcpJson(read.text);
+  if (settings === null || !hasHooksShape(settings)) {
+    return (readBytes(path) ?? '').includes(HOOKS_MARKER_TEXT)
       ? { target: 'claude-hooks', state: 'modified', installedVersion: null }
       : null;
   }
-  const arrays = hookArrays(parsed.settings);
+  const arrays = hookArrays(settings);
   const owned = arrays.flatMap(({ event, groups }) =>
     groups.flatMap((group) =>
       groupHandlers(group)

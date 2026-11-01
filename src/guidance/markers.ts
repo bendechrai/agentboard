@@ -6,6 +6,7 @@
  */
 
 import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import { TextDecoder } from 'node:util';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 
 import { isMap, isScalar, isSeq, parseDocument, type Document } from 'yaml';
@@ -436,7 +437,7 @@ const HOOK_MARKER_AT_END = /# agentboard-hooks: v(0|[1-9]\d*)$/;
  * marker. Groups: executable text, event, `--strict`, version.
  */
 const HOOK_COMMAND = new RegExp(
-  `^(${HOOK_DEFAULT_EXECUTABLE.replaceAll(/[.+@/-]/g, '\\$&')}|[A-Za-z0-9_./@%+=:,-]+|'(?:[^']|'\\\\'')*')` +
+  `^(${HOOK_DEFAULT_EXECUTABLE.replaceAll(/[.+@/-]/g, '\\$&')}|[A-Za-z0-9_./@%+:,][A-Za-z0-9_./@%+:,-]*|'(?:[^']|'\\\\'')*')` +
     ` hook (${CLAUDE_HOOK_EVENTS.map((e) => e.event).join('|')})( --strict)? # agentboard-hooks: v(0|[1-9]\\d*)$`,
 );
 
@@ -484,23 +485,6 @@ export function parseHookCommand(command: string): ParsedHookCommand | null {
 
 function isHookEvent(value: string): value is ClaudeHookEvent {
   return CLAUDE_HOOK_EVENTS.some((e) => e.event === value);
-}
-
-/** The parsed `.claude/settings.json`: its top-level object and whether it began with a byte order mark. */
-export interface ClaudeSettings {
-  readonly bom: boolean;
-  readonly settings: Record<string, unknown>;
-}
-
-/**
- * Parses the text of `.claude/settings.json`: a leading UTF-8 byte order
- * mark is skipped and recorded; null when the rest is not valid JSON or
- * its top level is not an object (`malformed-settings`).
- */
-export function parseClaudeSettings(text: string): ClaudeSettings | null {
-  const bom = text.startsWith('\uFEFF');
-  const settings = parseMcpJson(bom ? text.slice(1) : text);
-  return settings === null ? null : { bom, settings };
 }
 
 /**
@@ -565,8 +549,19 @@ export function hookArrays(
 export function readUtf8Json(
   path: string,
 ): { readonly text: string; readonly bom: boolean } | 'invalid' | null {
-  void path;
-  throw new Error('not implemented');
+  if (!existsSync(path)) {
+    return null;
+  }
+  const bytes = readFileSync(path);
+  const bom = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+      bom ? bytes.subarray(3) : bytes,
+    );
+    return { text, bom };
+  } catch {
+    return 'invalid';
+  }
 }
 
 /**
@@ -588,6 +583,174 @@ export function readUtf8Json(
  * Pure; never throws for valid JSON.
  */
 export function jsonRewriteIsLossless(text: string): boolean {
-  void text;
-  throw new Error('not implemented');
+  return new LosslessScan(text).value();
+}
+
+/** The largest array index: an object key that is a canonical decimal up to it is reordered by JavaScript. */
+const MAX_ARRAY_INDEX = 4294967294;
+const ARRAY_INDEX_KEY = /^(?:0|[1-9]\d*)$/;
+const NUMBER_LITERAL = /^-?(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?/;
+
+/**
+ * A decimal value in normal form, for comparing a JSON number literal with
+ * what `JSON.stringify` writes for it: the significant digits without
+ * leading or trailing zeros, and the power of ten of the last digit. Zero
+ * has no digits and exponent 0. Null for `null` (a literal out of range)
+ * or for text that is not a number literal.
+ */
+function decimalOf(
+  literal: string,
+): { negative: boolean; digits: string; exponent: number } | null {
+  const match = NUMBER_LITERAL.exec(literal);
+  if (match === null) {
+    return null;
+  }
+  const [, whole = '', fraction = '', exp = '0'] = match;
+  let digits = `${whole}${fraction}`;
+  let exponent = Number(exp) - fraction.length;
+  digits = digits.replace(/^0+/, '');
+  const trailing = /0+$/.exec(digits)?.[0].length ?? 0;
+  if (trailing > 0) {
+    digits = digits.slice(0, -trailing);
+    exponent += trailing;
+  }
+  if (digits === '') {
+    exponent = 0;
+  }
+  return { negative: literal.startsWith('-'), digits, exponent };
+}
+
+/** True when the number literal `literal` is written back by `JSON.stringify` with the same value and sign. */
+function numberRoundTrips(literal: string): boolean {
+  const value = Number(literal);
+  if (Object.is(value, -0)) {
+    return false;
+  }
+  const written = decimalOf(JSON.stringify(value));
+  const given = decimalOf(literal);
+  return (
+    written !== null &&
+    given !== null &&
+    written.digits === given.digits &&
+    written.exponent === given.exponent &&
+    (written.digits === '' || written.negative === given.negative)
+  );
+}
+
+/**
+ * A scan of valid JSON text (`jsonRewriteIsLossless`): walks the values
+ * once, checking every number literal (`numberRoundTrips`) and every
+ * object's keys (duplicates; array-index keys first and ascending).
+ */
+class LosslessScan {
+  private at = 0;
+
+  constructor(private readonly text: string) {}
+
+  /** Scans the whole document; false at the first lossy construct. */
+  value(): boolean {
+    this.space();
+    const ok = this.scanValue();
+    return ok;
+  }
+
+  private space(): void {
+    while (this.at < this.text.length && ' \t\n\r'.includes(this.text[this.at] ?? '')) {
+      this.at += 1;
+    }
+  }
+
+  private scanValue(): boolean {
+    const c = this.text[this.at] ?? '';
+    if (c === '{') {
+      return this.scanObject();
+    }
+    if (c === '[') {
+      return this.scanArray();
+    }
+    if (c === '"') {
+      this.scanString();
+      return true;
+    }
+    if (c === '-' || (c >= '0' && c <= '9')) {
+      const literal = /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(this.text.slice(this.at))?.[0] ?? '';
+      this.at += literal.length;
+      return numberRoundTrips(literal);
+    }
+    const word = /^(?:true|false|null)/.exec(this.text.slice(this.at))?.[0] ?? '';
+    this.at += word.length;
+    return true;
+  }
+
+  /** Consumes a string token, returning its decoded value. */
+  private scanString(): string {
+    const start = this.at;
+    this.at += 1;
+    while (this.at < this.text.length && this.text[this.at] !== '"') {
+      this.at += this.text[this.at] === '\\' ? 2 : 1;
+    }
+    this.at += 1;
+    return JSON.parse(this.text.slice(start, this.at)) as string;
+  }
+
+  private scanArray(): boolean {
+    this.at += 1;
+    this.space();
+    if (this.text[this.at] === ']') {
+      this.at += 1;
+      return true;
+    }
+    for (;;) {
+      this.space();
+      if (!this.scanValue()) {
+        return false;
+      }
+      this.space();
+      const c = this.text[this.at];
+      this.at += 1;
+      if (c === ']') {
+        return true;
+      }
+    }
+  }
+
+  private scanObject(): boolean {
+    this.at += 1;
+    this.space();
+    const seen = new Set<string>();
+    let lastIndex = -1;
+    let ordinarySeen = false;
+    if (this.text[this.at] === '}') {
+      this.at += 1;
+      return true;
+    }
+    for (;;) {
+      this.space();
+      const key = this.scanString();
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      if (ARRAY_INDEX_KEY.test(key) && Number(key) <= MAX_ARRAY_INDEX) {
+        if (ordinarySeen || Number(key) <= lastIndex) {
+          return false;
+        }
+        lastIndex = Number(key);
+      } else {
+        ordinarySeen = true;
+      }
+      this.space();
+      this.at += 1; // ':'
+      this.space();
+      if (!this.scanValue()) {
+        return false;
+      }
+      this.space();
+      const c = this.text[this.at];
+      this.at += 1;
+      if (c === '}') {
+        return true;
+      }
+    }
+  }
 }
