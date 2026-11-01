@@ -1696,3 +1696,120 @@ describe('review round 1: the character limits at the boundary (R10)', () => {
     }
   });
 });
+
+describe('round 2 finding 3: the stop text limit at the boundary', () => {
+  /**
+   * The warn-mode stop text of `actor` holding `n` tickets, the first `m`
+   * in id order under a lease (claimed with `--ttl`), none commented.
+   */
+  function stopFor(actor: string, n: number, m: number): string {
+    const { root, boardDir } = project();
+    const events = join(boardDir, 'events');
+    for (let i = 0; i < n; i += 1) {
+      putEvent(events, ev(P.create(bulkId(i), `Ticket ${String(i)}`), 'orch', 1000, i));
+      if (i >= m) {
+        putEvent(events, ev(P.claim(bulkId(i)), actor, 2000, i));
+      }
+    }
+    vi.setSystemTime(3000);
+    cli(['list'], root);
+    for (let i = 0; i < m; i += 1) {
+      cli(['claim', bulkId(i), '--ttl', '10m', '--as', actor], root);
+    }
+    return stopMessage(hook(['stop', '--as', actor], root, stopPayload(root, false)));
+  }
+
+  /**
+   * The measured shape of the stop text of `actor` (`n` >= 2): its
+   * length for two tickets, the growth per ticket and the growth per lease
+   * (one ticket is off the line, as the header says "it" for one).
+   */
+  const shapes = new Map<string, { two: number; step: number; lease: number }>();
+  function shapeOf(actor: string): { two: number; step: number; lease: number } {
+    const known = shapes.get(actor);
+    if (known !== undefined) {
+      return known;
+    }
+    const two = stopFor(actor, 2, 0).length;
+    const step = stopFor(actor, 3, 0).length - two;
+    const lease = stopFor(actor, 3, 1).length - two - step;
+    const shape = { two, step, lease };
+    shapes.set(actor, shape);
+    return shape;
+  }
+
+  /**
+   * The actor (3 to 32 characters), ticket count `n` (2 to 12) and leased
+   * count `m` (<= `n`) whose uncut stop text is the shortest at or above
+   * `target` characters, with that length. The text's length moves only
+   * with those three, so not every length is reachable: 2000 is, 2001 is
+   * not, and the "one over" cases take the nearest length above.
+   */
+  function sizeAtLeast(target: number): { actor: string; n: number; m: number; length: number } {
+    let best: { actor: string; n: number; m: number; length: number } | null = null;
+    for (let size = 3; size <= 32; size += 1) {
+      const actor = `a${'b'.repeat(size - 1)}`;
+      const { two, step, lease } = shapeOf(actor);
+      for (let n = 2; n <= 12; n += 1) {
+        for (let m = 0; m <= n; m += 1) {
+          const length = two + (n - 2) * step + m * lease;
+          if (length >= target && (best === null || length < best.length)) {
+            best = { actor, n, m, length };
+          }
+        }
+      }
+    }
+    if (best === null) {
+      throw new Error(`no board gives a stop text of ${String(target)} characters or more`);
+    }
+    if (best.length <= STOP_TEXT_LIMIT) {
+      // A longer text is cut, so only an uncut one can confirm the shape.
+      expect(stopFor(best.actor, best.n, best.m).length, 'the measured growth is linear').toBe(
+        best.length,
+      );
+    }
+    return best;
+  }
+
+  it('an uncut text of exactly STOP_TEXT_LIMIT characters is not cut', () => {
+    const size = sizeAtLeast(STOP_TEXT_LIMIT);
+    expect(size.length).toBe(STOP_TEXT_LIMIT);
+    const text = stopFor(size.actor, size.n, size.m);
+    expect(text.length).toBe(STOP_TEXT_LIMIT);
+    expect(text).not.toMatch(/\band \d+ more\b/);
+    expect(text).toContain(`agentboard handoff ${bulkId(size.n - 1)}`);
+  }, 300_000);
+
+  it('an uncut text over STOP_TEXT_LIMIT, by as little as a board allows, is cut', () => {
+    const size = sizeAtLeast(STOP_TEXT_LIMIT + 1);
+    const text = stopFor(size.actor, size.n, size.m);
+    expect(text.length).toBeLessThanOrEqual(STOP_TEXT_LIMIT);
+    expect(lines(text).at(-1) ?? '').toMatch(/^and \d+ more$/);
+    expect(text).not.toContain(bulkId(size.n - 1));
+  }, 300_000);
+
+  // k tickets alone make the text length L; with a (k+1)th ticket, last in
+  // id order and too long to fit, the cut text is L + "\nand 1 more".
+  const SUFFIX = '\nand 1 more'.length;
+
+  it('a cut text of exactly STOP_TEXT_LIMIT characters is kept, leaving out one ticket', () => {
+    const size = sizeAtLeast(STOP_TEXT_LIMIT - SUFFIX);
+    expect(size.length).toBe(STOP_TEXT_LIMIT - SUFFIX);
+    const k = size.n;
+    const text = stopFor(size.actor, k + 1, size.m);
+    expect(text.length).toBe(STOP_TEXT_LIMIT);
+    expect(lines(text).at(-1)).toBe('and 1 more');
+    expect(text).toContain(`agentboard handoff ${bulkId(k - 1)}`);
+    expect(text).not.toContain(bulkId(k));
+  }, 300_000);
+
+  it('a cut text that would pass STOP_TEXT_LIMIT, by as little as a board allows, leaves out one more ticket', () => {
+    const size = sizeAtLeast(STOP_TEXT_LIMIT - SUFFIX + 1);
+    const k = size.n;
+    const text = stopFor(size.actor, k + 1, size.m);
+    expect(text.length).toBeLessThanOrEqual(STOP_TEXT_LIMIT);
+    expect(lines(text).at(-1)).toBe('and 2 more');
+    expect(text).toContain(`agentboard handoff ${bulkId(k - 2)}`);
+    expect(text).not.toContain(bulkId(k - 1));
+  }, 300_000);
+});
