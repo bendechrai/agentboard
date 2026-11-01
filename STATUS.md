@@ -132,7 +132,8 @@ them on it (see "Known gaps").
   of another board whose HEAD the ref still equals, with a compare-and-swap,
   and moves the new board without the old one's events, or exits 3
   `sync-failed` naming the temporary and the `git update-ref` remedy
-  (no record, ref moved past, lost race); a live temporary of another
+  (no record, ref moved past, the recorded value not a commit of the
+  host, lost race); a live temporary of another
   board is `sync-in-progress`. README "Moving a board into the host
   repository". Ticket 01M5XYG0VT09DBAW7PZJK1CZ5Y is closed by it.
 - **Inbox positions survive a cache schema upgrade** (`board-cache`):
@@ -186,7 +187,8 @@ them on it (see "Known gaps").
 0.3.0 is released (tag `v0.3.0`, npm `@bendechrai/agentboard@0.3.0`).
 In progress for the next release: `add-harness-integration` (hooks and
 more harness targets; group 1, the hook command contract, is merged in
-#127) and `into-host-replaced-after-step-4` (code merged; documentation in review).
+#127) and `into-host-replaced-after-step-4` (code merged; documentation in
+review).
 
 ## Known gaps
 

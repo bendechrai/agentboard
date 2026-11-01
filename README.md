@@ -1576,8 +1576,10 @@ and the move is run again, it sets the ref back before it moves the new
 board, so none of the old board's events reach the new one or the project's
 remote. It does so only when the ref still holds exactly what that move
 put there; it records the ref's value before its update for this and
-resets the ref only if the ref still equals the temporary's HEAD. The run
-adds one line, then removes and names the worktree as above:
+resets the ref only if the ref still equals the temporary's HEAD. When a
+chain of such worktrees holds the ref, it is set back for each in turn,
+newest update first, and the run adds one line per reset made, then
+removes and names every such worktree as above:
 
 ```
 set refs/agentboard/board in the host repository back to its value before the interrupted move at /path/to/project/.git/agentboard/migrating/4242, which had updated it for another board and not published it
@@ -1586,9 +1588,14 @@ set refs/agentboard/board in the host repository back to its value before the in
 When that move had created the ref, the line is instead `deleted
 refs/agentboard/board in the host repository, as before the interrupted
 move at <path>, which had created it for another board and not published
-it`. A move of this board resumed after a kill never resets the ref, and
-a ref fetched by hand beside a worktree that does not hold it is
-integrated, not reset.
+it`. A move of this board resumed after a kill never resets the ref. When
+the value that move recorded equals its own HEAD (the ref held that
+content independently, for example fetched by hand), the run makes no
+reset and prints no reset line: the ref is integrated as before, and the
+worktree is still removed and named as another board's. A run killed
+between the reset and the removal of the worktree leaves it for the next
+run, which prints no reset line (the killed run made the reset) and names
+it as left by a move of another board, not as an interrupted move's.
 
 When the ref cannot be set back, the run exits 3 `sync-failed` and
 changes nothing, naming the interrupted move's worktree and the remedy:
@@ -1610,9 +1617,11 @@ move at <paths> earlier in this run, and nothing else was changed`. If
 the ref changes while the run resets it, the run exits 3 `sync-failed`
 saying something else moved it meanwhile, with the worktree kept; run it
 again. A worktree of another board whose process is still alive (a move
-that may still be running) is never touched: exit 3 `sync-in-progress`
-naming it, `nothing was changed`, and to run `agentboard init
---into-host` again once that move has finished.
+that may still be running) and whose HEAD is in the ref is judged before
+any reset and refused: exit 3 `sync-in-progress` naming it, saying
+`nothing was changed`, and to run `agentboard init --into-host` again once
+that move has finished. A live worktree whose HEAD is not in the ref is
+left alone.
 
 When a rebase or cherry-pick is stopped in such a worktree, the
 `sync-in-progress` refusal says so instead (same exit code, reason and
