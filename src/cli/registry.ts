@@ -2533,7 +2533,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         code: 1,
         reason: 'usage',
         meaning:
-          'Invalid arguments: unknown command, flag or --target, a missing or malformed argument, a --command (or --mcp-command) that is empty, contains a newline, starts with a hyphen or is a shell special built-in, or both --command and --mcp-command (nothing is written)',
+          'Invalid arguments: unknown command, flag or --target, a missing or malformed argument, a --command (or --mcp-command) that is empty, contains a newline, starts with a hyphen, a plus sign or a percent sign, or is a shell special built-in or another shell built-in, or both --command and --mcp-command (nothing is written)',
       },
       EXIT_INVALID_ACTOR,
       {

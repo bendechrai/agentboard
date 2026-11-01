@@ -601,10 +601,11 @@ export const SHELL_BUILTINS: readonly string[] = [
 
 /**
  * A non-empty executable text that needs no quoting in a POSIX shell: the
- * safe characters, not starting with `-` (shell options) and without `=`
- * (an assignment). Reserved words are checked apart.
+ * safe characters, not starting with `-` or `+` (shell options) or `%` (a
+ * job reference) and without `=` (an assignment). Reserved words are
+ * checked apart.
  */
-const SHELL_SAFE_WORD = /^[A-Za-z0-9_./@%+:,][A-Za-z0-9_./@%+:,-]*$/;
+const SHELL_SAFE_WORD = /^[A-Za-z0-9_./@:,][A-Za-z0-9_./@%+:,-]*$/;
 
 /**
  * The command string of one agentboard hook: `hookExecutable(command)`,
