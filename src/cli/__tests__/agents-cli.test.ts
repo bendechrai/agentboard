@@ -118,13 +118,13 @@ describe('agents install through the built CLI', SPAWNS, () => {
   });
 
   it('exits 1 on an unknown target', () => {
-    const out = cli(['agents', 'install', '--target', 'cursor', '--json'], plainProject());
+    const out = cli(['agents', 'install', '--target', 'windsurf', '--json'], plainProject());
     expect(out.code).toBe(1);
     expect(errorOf(out)).toMatchObject({ exitCode: 1, reason: 'usage' });
     expect(errorOf(out).message).toBe(
-      'unknown target given with --target; expected one of claude, agents-md, openspec, mcp-json, claude-hooks',
+      'unknown target given with --target; expected one of claude, agents-md, openspec, mcp-json, claude-hooks, codex, cursor, antigravity, copilot',
     );
-    expect(out.stdout + out.stderr).not.toContain('cursor');
+    expect(out.stdout + out.stderr).not.toContain('windsurf');
   });
 
   it('scenario: a foreign SKILL.md is refused and named, and the other targets still install', () => {
@@ -430,6 +430,7 @@ describe('agents install --command through the built CLI', SPAWNS, () => {
           manual: [],
         },
       ],
+      registerCommands: [],
     });
   });
 
@@ -525,7 +526,7 @@ describe('agents install --command through the built CLI', SPAWNS, () => {
     const out = run(['help', 'agents', 'install'], plainProject(), cliEnv());
     expect(out.code, out.stderr).toBe(0);
     expect(out.stdout).toMatch(
-      /^Usage: agentboard agents install \[--target <target>\]\.\.\. \[--hooks-strict\] \[--force\] \[--command <command> \| --mcp-command <mcp-command>\] \[--json\]$/m,
+      /^Usage: agentboard agents install \[--target <target>\]\.\.\. \[--hooks-strict\] \[--global\] \[--force\] \[--command <command> \| --mcp-command <mcp-command>\] \[--json\]$/m,
     );
     expect(out.stdout).toContain('agentboard agents install --command agentboard');
     expect(out.stdout).not.toContain('agentboard agents install --mcp-command');

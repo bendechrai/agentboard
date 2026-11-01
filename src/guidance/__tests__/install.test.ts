@@ -222,6 +222,10 @@ describe('selection', () => {
       openspec: CONFIG,
       'mcp-json': MCP,
       'claude-hooks': '.claude/settings.json',
+      codex: AGENTS,
+      cursor: '.cursor/rules/agentboard.mdc',
+      antigravity: AGENTS,
+      copilot: '.github/copilot-instructions.md',
     });
     expect(GUIDANCE_TARGETS).toEqual([
       'claude',
@@ -229,6 +233,10 @@ describe('selection', () => {
       'openspec',
       'mcp-json',
       'claude-hooks',
+      'codex',
+      'cursor',
+      'antigravity',
+      'copilot',
     ]);
   });
 
