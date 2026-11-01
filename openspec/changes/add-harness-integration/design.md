@@ -853,6 +853,91 @@ where they change behaviour and pinned by the tests and the contracts in
   the 0.3.0 behaviour of the `AGENTS.md` block, and changing it would
   change existing installs.
 
+## Rulings from task group 5 (test author)
+
+Taken while writing the group 5 tests, posted as `DECISION:` comments on
+the group's ticket, written into the spec deltas where they settle
+something the spec left open, and pinned by the tests and the contracts
+in `src/cli/prompt.ts` (`PromptTerminal`, `processPromptTerminal`,
+`askLine`, `PROMPT_LINE_LIMIT`, `INIT_QUESTION`, `parseYesNo`),
+`src/cli/types.ts` (`CommandSpec.prompting`, `PromptIo`),
+`src/cli/main.ts` (`AsyncCliIo.promptTerminal`) and
+`src/guidance/install.ts` (`PROMPT_TARGETS`, `PROMPT_REASON`,
+`renderTargetPrompt`, `parsePromptAnswer`, `InstallOptions.chosen`).
+
+- **Where the prompt runs.** `init` and `agents install` gain an async
+  `prompting` run that `runCliAsync` uses when the executable passes a
+  prompt terminal; `run` stays the non-interactive behaviour, so the
+  in-process `runCli` and every other caller never ask. A question is
+  asked only when stdin and stdout are both terminals and `--json` is not
+  given; otherwise stdin is never listened to (the tests prove it with a
+  regular file as stdin whose shared offset must not move, and an open
+  pipe the child must not wait on). One of the two being a terminal (a CI
+  log, `init < answers.txt`) is not interactive. `TERM` and `CI` are not
+  consulted: the spec names only the two terminals.
+- **The terminal is used in cooked mode.** Raw mode is never turned on,
+  so line editing, Ctrl-C and Ctrl-D behave as at any shell prompt. Ctrl-C
+  keeps Node's default SIGINT behaviour, as every non-streaming command
+  does (`src/cli.ts`): the process ends by the signal. Nothing is
+  installed before a complete answer has been read, so an interrupted
+  prompt leaves no guidance file; the board `init` created before asking
+  stays, as it does for an install that fails.
+- **Reading an answer.** One line, ended by `\n` (one `\r` before it is
+  dropped). The end of input before a line end is no answer, and text
+  typed before it is never acted on (`y` then Ctrl-D does not install). A
+  line is at most 4096 bytes (`PROMPT_LINE_LIMIT`, the canonical-mode line
+  length of a Linux terminal); more is refused as soon as the limit is
+  passed, without waiting for the rest. Bytes after the first line end
+  are dropped: input typed ahead is not the answer to the next question.
+  The CLI never writes any part of an answer; the terminal's own echo of
+  what the user types is the user's input, not CLI output.
+- **The init question** is asked after the board message is printed, so
+  the user sees what was created first. `y`, `yes` and the empty answer
+  install, `n` and `no` skip (any case, spaces and tabs around ignored).
+  Any other answer, the end of input and an over-long line install
+  nothing, print one stderr line saying which answers the question takes
+  (never the answer), end the output with the hint line, and exit 1,
+  matching the bare-project prompt, which refuses what it cannot read.
+- **The bare-project prompt lists** `claude`, `agents-md`, `codex`,
+  `cursor`, `antigravity` and `copilot`, numbered from 1
+  (`PROMPT_TARGETS`): the targets auto-detection can select, minus
+  `openspec`, which a bare project cannot have (its `config.yaml` is
+  missing, so it would be refused `missing-file`). `mcp-json` and
+  `claude-hooks` stay opt-in with `--target` (and `--command`), as
+  decision 6 and "Installing guidance into a host project" already
+  require. So the scenario's "first and third listed targets" are
+  `claude` and `codex`, both installable in a bare project. The answer is
+  split at commas; spaces and tabs around items and empty items are
+  ignored; repeats count once; an item is a listed number exactly as
+  listed (no sign, no leading zero) or a listed name exactly (case
+  matters, as for `--target`). An empty answer (or the end of input) is
+  `no-targets`, the refusal the non-interactive run gives; any item that
+  names no listed target, a valid item beside it or not, is `usage`, and
+  nothing is written. Neither repeats the answer; both list the targets.
+  Targets chosen at the prompt are reported `selected <target>: chosen at
+  the prompt` and the install result's `autoDetected` is false.
+- **Checks before asking.** Every usage error of `agents install`
+  (`--command`, an unknown `--target`, `--global` without `--target codex`
+  or `--target antigravity`) is raised before the prompt, so the user is
+  never asked a question whose answer is then refused for a flag.
+- **`init --no-agents`** skips the install without asking and its output
+  still ends with the hint line: "silently" in the requirement means
+  without the question, while "When the install is not run, `init` SHALL
+  end its output with the line" and board-agent-guidance's "unless it ran
+  the install" apply as written.
+- **An install that ran and failed** counts as run: no hint line, since
+  its refusal and hint already name what to do. Text mode prints the
+  board message on stdout, the install's message on stderr, and exits 1.
+- **`init --json --agents`** prints one document: the init result with
+  an `agents` key holding the install result, or, when the install threw
+  (`no-targets`), `{error: {exitCode, reason, message, hint}}` as in the
+  CLI's error document; exit 0 or 1 as the install. Without an install
+  (no `--agents`, since `--json` never asks) the document is unchanged and
+  has no `agents` key.
+- **An init that fails** (a usage error, `--into-host` with no host or no
+  board) prints no question, reads nothing and installs nothing, with or
+  without `--agents`.
+
 ## Risks / Trade-offs
 
 - **PreToolUse is intrusive and adds latency to every edit** -> warn-only

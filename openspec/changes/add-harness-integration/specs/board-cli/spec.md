@@ -243,17 +243,27 @@ grant watermark (see board-cache "Cache schema").
 (with or without `--remote` or `--into-host`; an `init` that fails neither
 asks nor installs), offer to run
 `agents install` when stdin and stdout are both terminals and neither
-`--json`, `--agents` nor `--no-agents` is given: it asks `Install agent
+`--json`, `--agents` nor `--no-agents` is given: after printing its
+message about the board it asks `Install agent
 guidance now? [Y/n]` and runs the install on `y`, `yes` or an empty answer
-(any case) and skips it on `n` or `no`. `--agents` SHALL
-run the install without asking and `--no-agents` SHALL skip it silently;
+(any case) and skips it on `n` or `no`. Any other answer, the end of
+input before a line end, or a line longer than 4096 bytes SHALL install
+nothing and exit 1, saying which answers the question takes without
+repeating the answer. Without such a terminal, or with `--json`, `init`
+SHALL NOT read stdin. Ctrl-C at a question ends the process before
+anything is installed. `--agents` SHALL
+run the install without asking and `--no-agents` SHALL skip it without
+asking;
 giving both SHALL exit 1 with reason `usage` before writing anything. When
 the install is not run, `init` SHALL end its output with the line
 suggesting `agentboard agents install`. The install runs exactly as `agents
 install` does with no `--target`, including its bare-project prompt on a
 terminal. A failure of the install SHALL NOT undo the board: `init` reports
 the board as created, prints the install's refusal, and exits with the
-install's exit code.
+install's exit code. With `--json` and `--agents`, the one JSON document
+is the init result with an `agents` key holding the install result, or
+the install's error (`{error: {exitCode, reason, message, hint}}`) when
+it was refused; without an install the document has no `agents` key.
 
 #### Scenario: Prompt on a terminal
 - **WHEN** `agentboard init` runs on a terminal with no flags and the user answers `y`
@@ -282,3 +292,19 @@ install's exit code.
 #### Scenario: Install failure keeps the board
 - **WHEN** `agentboard init --agents` runs non-interactively in a bare project
 - **THEN** the board exists, the output says no target was selected, and the exit code is 1
+
+#### Scenario: Unrecognised answer
+- **WHEN** the user answers the init question with a token-shaped word
+- **THEN** the board is created, no guidance file is written, the output ends with the hint line, the word appears nowhere in stdout or stderr, and the exit code is 1
+
+#### Scenario: End of input at the question
+- **WHEN** the user types `y` and ends the input without pressing Enter
+- **THEN** the board is created, no guidance file is written, the output ends with the hint line, and the exit code is 1
+
+#### Scenario: No agents is still hinted
+- **WHEN** `agentboard init --no-agents` runs on a terminal
+- **THEN** it asks nothing, does not read stdin, creates the board and ends with the hint line
+
+#### Scenario: JSON with the install
+- **WHEN** `agentboard init --json --agents` runs in a project with `.claude/`
+- **THEN** stdout is one JSON document, the init result with an `agents` key whose targets include `claude` created
