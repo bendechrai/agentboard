@@ -7,31 +7,101 @@ import { BoardError } from '../store/errors.js';
 
 /**
  * Names of the secret patterns, in the order they are checked and
- * reported:
+ * reported (board-cli "No secrets on the board"; secret-prefix-patterns
+ * design.md "The patterns"): the three original provider patterns, the
+ * other provider patterns alphabetically, then the catch-all.
  *
- * - `pem-private-key`: a PEM private key header, `-----BEGIN ` then any
- *   run of upper-case letters, digits and spaces ending in `PRIVATE KEY`,
- *   then `-----` (for example `-----BEGIN PRIVATE KEY-----`,
- *   `-----BEGIN RSA PRIVATE KEY-----`, `-----BEGIN OPENSSH PRIVATE
- *   KEY-----`).
+ * - `pem-private-key`: `-----BEGIN ` then any run of upper-case ASCII
+ *   letters, digits and spaces ending in `PRIVATE KEY`, optionally
+ *   followed by ` BLOCK`, then `-----`: the PEM private key headers
+ *   (`PRIVATE KEY`, `RSA PRIVATE KEY`, `OPENSSH PRIVATE KEY`, `ENCRYPTED
+ *   PRIVATE KEY` and the like between `-----BEGIN ` and `-----`) and the
+ *   PGP private key block header (`PGP PRIVATE KEY BLOCK`). Public key
+ *   and certificate headers do not match.
  * - `aws-access-key-id`: `AKIA` or `ASIA` followed by exactly 16
  *   characters of `[0-9A-Z]`, not preceded or followed by another
- *   `[0-9A-Za-z]` character.
+ *   ASCII letter or digit.
  * - `github-token`: a classic token `ghp_`, `gho_`, `ghu_`, `ghs_` or `ghr_`
  *   followed by at least 36 characters of `[A-Za-z0-9]`, or a fine-grained
  *   token `github_pat_` followed by at least 22 characters of
  *   `[A-Za-z0-9_]`.
+ * - `anthropic-api-key`: `sk-ant-` followed by at least 16 characters of
+ *   `[A-Za-z0-9_-]`.
+ * - `digitalocean-token`: `dop_v1_`, `doo_v1_` or `dor_v1_` followed by at
+ *   least 16 characters of `[a-f0-9]`.
+ * - `docker-token`: `dckr_pat_` or `dckr_oat_` followed by at least 16
+ *   characters of `[A-Za-z0-9_-]`.
+ * - `gitlab-token`: `glpat-` followed by at least 16 characters of
+ *   `[A-Za-z0-9_-]`.
+ * - `google-api-key`: `AIza` followed by at least 32 characters of
+ *   `[A-Za-z0-9_-]`.
+ * - `huggingface-token`: `hf_` followed by at least 32 characters of
+ *   `[A-Za-z0-9]`.
+ * - `jwt`: `eyJ` and at least 8 characters of `[A-Za-z0-9_-]`, a `.`,
+ *   `eyJ` and at least 8 characters of `[A-Za-z0-9_-]`, a `.`, then at
+ *   least 16 characters of `[A-Za-z0-9_-]`.
+ * - `npm-token`: `npm_` followed by at least 32 characters of
+ *   `[A-Za-z0-9]`.
+ * - `openai-api-key`: `sk-proj-`, `sk-svcacct-`, `sk-admin-` or `sk-None-` followed by
+ *   at least 16 characters of `[A-Za-z0-9_-]`, or `sk-` followed by at
+ *   least 32 characters of `[A-Za-z0-9]` (so `sk-ant-` keys, and
+ *   hyphenated words, never match it).
+ * - `pypi-token`: `pypi-AgEIcHlwaS5vcmc` followed by at least 16
+ *   characters of `[A-Za-z0-9_-]`.
+ * - `sendgrid-api-key`: `SG.`, at least 16 characters of `[A-Za-z0-9_-]`,
+ *   a `.`, then at least 16 characters of `[A-Za-z0-9_-]`.
+ * - `shopify-token`: `shpat_`, `shpca_`, `shppa_` or `shpss_` followed by
+ *   at least 16 characters of `[A-Fa-f0-9]`.
+ * - `slack-token`: `xoxa-`, `xoxb-`, `xoxe-`, `xoxp-`, `xoxr-`, `xoxs-` or
+ *   `xapp-`, one or more ASCII digits, a `-`, then at least 16 characters
+ *   of `[A-Za-z0-9-]`.
+ * - `stripe-secret-key`: `sk_live_`, `sk_test_`, `rk_live_` or `rk_test_`
+ *   followed by at least 16 characters of `[A-Za-z0-9]`. Publishable keys
+ *   (`pk_live_`, `pk_test_`) are public and match no pattern.
+ * - `stripe-webhook-secret`: `whsec_` followed by at least 16 characters
+ *   of `[A-Za-z0-9]`.
  * - `generic-secret-assignment`: one of the words `token`, `secret`,
- *   `password` or `key` (case-insensitive, possibly the end of a longer
- *   identifier such as `api_key` or `GITHUB_TOKEN`), then optional spaces, a
- *   separator `:` or `=`, optional spaces, an optional `"` or `'`, then 32 or
- *   more consecutive base64 or base64url characters (`[A-Za-z0-9+/_-]`,
- *   optionally followed by `=` padding).
+ *   `password` or `key` (ASCII case-insensitive, possibly the end of a
+ *   longer identifier such as `api_key` or `GITHUB_TOKEN`), then optional
+ *   spaces, a separator `:` or `=`, optional spaces, an optional `"` or
+ *   `'`, then 32 or more consecutive base64 or base64url characters
+ *   (`[A-Za-z0-9+/_-]`, optionally followed by `=` padding).
+ *
+ * Every pattern from `anthropic-api-key` to `stripe-webhook-secret`
+ * matches only where its first character is not preceded by an ASCII
+ * letter or digit (a preceding `_`, `-`, `.`, `=`, `:`, quote, space or the
+ * start of the text is allowed), except `jwt`, whose `eyJ` must not be
+ * preceded by an ASCII letter, digit, `_` or `-` (its own alphabet, so a
+ * dot-less run cannot start a match at every `_` or `-` and the check
+ * stays linear). For both anchors, a letter or digit that ends a
+ * backslash escape (`\n`, `\r`, `\t`, `\b`, `\f`, judged on those two
+ * characters alone) or a percent-encoding (`%` and two hex digits) does
+ * not prevent a match. Every pattern is case-sensitive, and none throws on
+ * long input: open-ended minimums are written as a fixed count followed by
+ * a star, which V8 runs without a backtrack entry per character. Each "at least" is
+ * a minimum with no maximum: a longer run, or a run followed by other
+ * text, still matches. Twilio account and API key SIDs and unprefixed
+ * secrets match no provider pattern.
  */
 export const SECRET_PATTERN_NAMES = [
   'pem-private-key',
   'aws-access-key-id',
   'github-token',
+  'anthropic-api-key',
+  'digitalocean-token',
+  'docker-token',
+  'gitlab-token',
+  'google-api-key',
+  'huggingface-token',
+  'jwt',
+  'npm-token',
+  'openai-api-key',
+  'pypi-token',
+  'sendgrid-api-key',
+  'shopify-token',
+  'slack-token',
+  'stripe-secret-key',
+  'stripe-webhook-secret',
   'generic-secret-assignment',
 ] as const;
 
@@ -67,11 +137,72 @@ export function isActorName(name: string): boolean {
   return secretPatternsIn(name).length === 0 && ACTOR_FORM.test(name);
 }
 
-/** The expression of each pattern, as documented on `SECRET_PATTERN_NAMES`. */
+/**
+ * A provider pattern from `anthropic-api-key` to `stripe-webhook-secret`:
+ * `prefix` then `rest`, matched only where the prefix starts after a
+ * character that is not one of `blocking`, at the start of the text, or
+ * right after a backslash escape (`\\n`, `\\r`, `\\t`, `\\b`, `\\f`, judged
+ * on those two characters alone) or a percent-encoding (`%` and two
+ * hexadecimal digits) (secret-prefix-patterns design.md "Anchoring" and
+ * "Rulings from review round 1", R2). `blocking` is the ASCII letters and
+ * digits, and for `jwt` also `_` and `-`, its own alphabet.
+ *
+ * The prefix literal leads and the anchor is a lookbehind after it that
+ * re-reads the prefix, rather than a lookbehind before it: the engine then
+ * scans for the literal and evaluates the anchor only where the prefix
+ * occurs, which on Node 22 is 1/60th of the time of a leading lookbehind
+ * over a long text. Every lookbehind alternative has a fixed length, so the
+ * check stays linear.
+ */
+function anchored(blocking: string, prefix: string, rest: string): RegExp {
+  return new RegExp(
+    `${prefix}(?<=(?:^|[^${blocking}]|\\\\[nrtbf]|%[0-9A-Fa-f]{2})${prefix})${rest}`,
+  );
+}
+
+/** The characters that block the general anchor. */
+const ALNUM = '0-9A-Za-z';
+
+/**
+ * The expression of each pattern, as documented on `SECRET_PATTERN_NAMES`.
+ * Each is a literal prefix, a fixed character class and a count. A
+ * minimum with no maximum on a run that another character must follow
+ * (the `jwt` segments and the first `sendgrid-api-key` segment) is written
+ * as the fixed count followed by a star, which V8 runs without a backtrack
+ * entry per character, so a run of several MiB cannot overflow its stack
+ * (R1).
+ */
 const PATTERNS: Record<SecretPatternName, RegExp> = {
-  'pem-private-key': /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/,
+  'pem-private-key': /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/,
   'aws-access-key-id': /(?<![0-9A-Za-z])(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Za-z])/,
   'github-token': /gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22}/,
+  'anthropic-api-key': anchored(ALNUM, 'sk-ant-', '[A-Za-z0-9_-]{16}'),
+  'digitalocean-token': anchored(ALNUM, 'do[por]_v1_', '[a-f0-9]{16}'),
+  'docker-token': anchored(ALNUM, 'dckr_[po]at_', '[A-Za-z0-9_-]{16}'),
+  'gitlab-token': anchored(ALNUM, 'glpat-', '[A-Za-z0-9_-]{16}'),
+  'google-api-key': anchored(ALNUM, 'AIza', '[A-Za-z0-9_-]{32}'),
+  'huggingface-token': anchored(ALNUM, 'hf_', '[A-Za-z0-9]{32}'),
+  jwt: anchored(
+    `${ALNUM}_-`,
+    'eyJ',
+    '[A-Za-z0-9_-]{8}[A-Za-z0-9_-]*\\.eyJ[A-Za-z0-9_-]{8}[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]{16}',
+  ),
+  'npm-token': anchored(ALNUM, 'npm_', '[A-Za-z0-9]{32}'),
+  'openai-api-key': anchored(
+    ALNUM,
+    'sk-',
+    '(?:(?:proj|svcacct|admin|None)-[A-Za-z0-9_-]{16}|[A-Za-z0-9]{32})',
+  ),
+  'pypi-token': anchored(ALNUM, 'pypi-AgEIcHlwaS5vcmc', '[A-Za-z0-9_-]{16}'),
+  'sendgrid-api-key': anchored(
+    ALNUM,
+    'SG\\.',
+    '[A-Za-z0-9_-]{16}[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]{16}',
+  ),
+  'shopify-token': anchored(ALNUM, 'shp(?:at|ca|pa|ss)_', '[A-Fa-f0-9]{16}'),
+  'slack-token': anchored(ALNUM, 'x(?:ox[abeprs]|app)-', '[0-9]+-[A-Za-z0-9-]{16}'),
+  'stripe-secret-key': anchored(ALNUM, '[sr]k_(?:live|test)_', '[A-Za-z0-9]{16}'),
+  'stripe-webhook-secret': anchored(ALNUM, 'whsec_', '[A-Za-z0-9]{16}'),
   'generic-secret-assignment': /(?:token|secret|password|key) *[:=] *["']?[A-Za-z0-9+/_-]{32}/i,
 };
 

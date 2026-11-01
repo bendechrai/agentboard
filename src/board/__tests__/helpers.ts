@@ -8,6 +8,7 @@ import { afterEach, expect } from 'vitest';
 
 import type { Ticket } from '../../events/fold.js';
 import type { Status, TaskRef } from '../../events/schema.js';
+import { providerKey } from '../../__tests__/harness/provider-key-fixtures.js';
 import { openBoard, type Board } from '../../store/board.js';
 import { BoardError } from '../../store/errors.js';
 import { eventNames, makeBoardDir, tempDir } from '../../store/__tests__/helpers.js';
@@ -125,10 +126,29 @@ export function handoff(
 // Secret-looking samples are assembled at run time so the repository never
 // holds a string that looks like a real credential.
 export const B64 = 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0MjQyNDI0';
-/** One sample per secret pattern name. */
+/**
+ * One sample per secret pattern name, each matching exactly its own
+ * pattern; the provider keys of secret-prefix-patterns come from
+ * `src/__tests__/harness/provider-key-fixtures.ts`.
+ */
 export const SAMPLES = {
   'pem-private-key': ['-----BEGIN', 'PRIVATE KEY-----'].join(' '),
   'aws-access-key-id': ['AKIA', 'Z7EXAMPLEFAKE234'].join(''),
   'github-token': ['ghp', '_', 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'].join(''),
+  'anthropic-api-key': providerKey('anthropic sk-ant-api03- + 95').value,
+  'digitalocean-token': providerKey('digitalocean dop_v1_ + 64').value,
+  'docker-token': providerKey('docker dckr_pat_ + 27').value,
+  'gitlab-token': providerKey('gitlab glpat- + 20').value,
+  'google-api-key': providerKey('google AIza + 35').value,
+  'huggingface-token': providerKey('huggingface hf_ + 34 letters').value,
+  jwt: providerKey('jwt 20 . 24 . 43').value,
+  'npm-token': providerKey('npm npm_ + 36').value,
+  'openai-api-key': providerKey('openai sk-proj- + 156').value,
+  'pypi-token': providerKey('pypi + 150').value,
+  'sendgrid-api-key': providerKey('sendgrid SG. 22 . 43').value,
+  'shopify-token': providerKey('shopify shpat_ + 32').value,
+  'slack-token': providerKey('slack xoxb-').value,
+  'stripe-secret-key': providerKey('stripe sk_live_ + 24').value,
+  'stripe-webhook-secret': providerKey('stripe whsec_ + 32').value,
   'generic-secret-assignment': `password=${B64}`,
 } as const;

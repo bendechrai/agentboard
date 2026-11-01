@@ -36,6 +36,8 @@
 
 import { expect } from 'vitest';
 
+import { GLPAT_20, RK_LIVE_16, RK_LIVE_24, SK_TEST_24 } from './provider-key-fixtures.js';
+
 /** One token-shaped value. */
 export interface SecretFixture {
   /** A short name, reported when the fixture leaks. */
@@ -286,9 +288,9 @@ export const KELVIN = `${String.fromCharCode(0x212a)}ai`;
 
 /**
  * Names refused by a secret pattern. Every one is tested against the
- * patterns before the form, so the AWS-style key id (20 characters of the
- * form) and the 40-character GitHub token (outside the form) both get the
- * pattern message, never the form message.
+ * patterns before the form, so the AWS-style key id and the short
+ * Stripe and GitLab keys (of the form) and the 40-character GitHub token
+ * (outside the form) all get the pattern message, never the form message.
  */
 export const ACTORS_REFUSED_BY_PATTERN: readonly RefusedActor[] = [
   { name: 'github-token', value: GITHUB_TOKEN, secret: GITHUB_TOKEN, patterns: 'github-token' },
@@ -313,7 +315,42 @@ export const ACTORS_REFUSED_BY_PATTERN: readonly RefusedActor[] = [
     secret: `${AWS_KEY_ID} ${GITHUB_TOKEN}`,
     patterns: 'aws-access-key-id, github-token',
   },
+  // Provider keys of secret-prefix-patterns (board-cli scenario "Short
+  // prefixed key as the actor"). The first four have the actor form, so
+  // only a pattern refuses them; the last three are longer than 32
+  // characters and were refused for the form alone before that change.
+  {
+    name: 'stripe-rk-live-24',
+    value: RK_LIVE_24,
+    secret: RK_LIVE_24,
+    patterns: 'stripe-secret-key',
+  },
+  {
+    name: 'stripe-sk-test-24',
+    value: SK_TEST_24,
+    secret: SK_TEST_24,
+    patterns: 'stripe-secret-key',
+  },
+  { name: 'gitlab-20', value: GLPAT_20, secret: GLPAT_20, patterns: 'gitlab-token' },
+  {
+    name: 'stripe-rk-live-16',
+    value: RK_LIVE_16,
+    secret: RK_LIVE_16,
+    patterns: 'stripe-secret-key',
+  },
+  { name: 'jwt', value: JWT, secret: JWT, patterns: 'jwt' },
+  { name: 'slack-token', value: SLACK_TOKEN, secret: SLACK_TOKEN, patterns: 'slack-token' },
+  { name: 'openai-key', value: OPENAI_KEY, secret: OPENAI_KEY, patterns: 'openai-api-key' },
 ];
+
+/**
+ * The names of `ACTORS_REFUSED_BY_PATTERN` that have the actor form and
+ * match a provider pattern of secret-prefix-patterns: before that change
+ * they were accepted actor names.
+ */
+export const PREFIXED_ACTOR_KEYS: readonly RefusedActor[] = ACTORS_REFUSED_BY_PATTERN.filter((f) =>
+  ['stripe-rk-live-24', 'stripe-sk-test-24', 'gitlab-20', 'stripe-rk-live-16'].includes(f.name),
+);
 
 /**
  * Names that match no secret pattern and are refused for the form only:
@@ -327,9 +364,6 @@ export const ACTORS_REFUSED_BY_FORM: readonly RefusedActor[] = [
   { name: 'hex-64', value: HEX_64, secret: HEX_64, patterns: null },
   { name: 'hex-33', value: HEX_33, secret: HEX_33, patterns: null },
   { name: 'long-word', value: LONG_WORD, secret: LONG_WORD, patterns: null },
-  { name: 'jwt', value: JWT, secret: JWT, patterns: null },
-  { name: 'slack-token', value: SLACK_TOKEN, secret: SLACK_TOKEN, patterns: null },
-  { name: 'openai-key', value: OPENAI_KEY, secret: OPENAI_KEY, patterns: null },
   // Names outside the form.
   {
     name: '33-characters',

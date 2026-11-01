@@ -64,6 +64,7 @@ patterns of "Decision" below, on the bare value. `-` is no match.
 | Slack app-level `xapp-1-` | 97 | no | - | generic | slack-token |
 | OpenAI `sk-` + 48 (legacy) | 51 | no | - | generic | openai-api-key |
 | OpenAI `sk-proj-`, `sk-svcacct-`, `sk-admin-` | 159 to 167 | no | - | generic | openai-api-key |
+| OpenAI user key `sk-None-` + 48 | 56 | no | - | generic | openai-api-key |
 | Anthropic `sk-ant-api03-`, `sk-ant-admin01-`, `sk-ant-oat01-` | 108 to 110 | no | - | generic | anthropic-api-key |
 | npm `npm_` + 36 | 40 | no | - | generic | npm-token |
 | GitLab `glpat-` + 20 | 26 | fits | - | - | gitlab-token |
@@ -111,7 +112,7 @@ more consecutive characters of it, with no upper bound.
 | `huggingface-token` | `hf_` and at least 32 `[A-Za-z0-9]` |
 | `jwt` | `eyJ` and at least 8 `[A-Za-z0-9_-]`, `.`, `eyJ` and at least 8 `[A-Za-z0-9_-]`, `.`, at least 16 `[A-Za-z0-9_-]` |
 | `npm-token` | `npm_` and at least 32 `[A-Za-z0-9]` |
-| `openai-api-key` | `sk-proj-`, `sk-svcacct-` or `sk-admin-` and at least 16 `[A-Za-z0-9_-]`, or `sk-` and at least 32 `[A-Za-z0-9]` |
+| `openai-api-key` | `sk-proj-`, `sk-svcacct-`, `sk-admin-` or `sk-None-` and at least 16 `[A-Za-z0-9_-]`, or `sk-` and at least 32 `[A-Za-z0-9]` |
 | `pypi-token` | `pypi-AgEIcHlwaS5vcmc` and at least 16 `[A-Za-z0-9_-]` |
 | `sendgrid-api-key` | `SG.`, at least 16 `[A-Za-z0-9_-]`, `.`, at least 16 `[A-Za-z0-9_-]` |
 | `shopify-token` | `shpat_`, `shpca_`, `shppa_` or `shpss_` and at least 16 `[A-Fa-f0-9]` |
@@ -130,6 +131,21 @@ pattern has a right anchor: the length is a minimum, so a key with
 trailing text, or longer than documented, still matches. Patterns are
 case-sensitive, like the existing provider patterns, because every
 prefix is documented in one case.
+
+`jwt` is anchored more strictly (orchestrator ruling during group 1):
+its `eyJ` must not follow an ASCII letter, digit, `_` or `-`, the
+characters of its own segment alphabet. With the general anchor a JWT
+can start after any `_` or `-` inside a base64url run, and a dot-less
+run such as `eyJ_` repeated makes the engine retry the 8-or-more
+segment scan from every one of those starts: quadratic, measured at
+5.7 s for 64 KB and 23 s for 128 KB. Anchoring on the alphabet boundary
+leaves one start per run, which is linear. The cost is that a JWT glued
+to a preceding `_` or `-` (`token_eyJ...`) is not named `jwt`; real
+tokens are delimited by a space, quote, `=`, `:` or a header prefix
+such as `Bearer `, which all still match. Every other pattern keeps the
+general anchor, and a test runs every pattern over 64 KB adversarial
+inputs within a generous time bound so that a future quadratic pattern
+fails.
 
 ### Minimum lengths
 
@@ -239,6 +255,20 @@ character in its first 16 or 32 characters (none of the documented
 formats has one) would also pass. The board stays "not a secret
 store": the patterns catch the common accident, not every secret.
 
+Ordinary slugs after a hyphenated or underscored prefix are refused,
+an accepted false positive (orchestrator ruling, review round 1): the
+alphabets that contain `-` or `_` admit a slug as the key body, so
+`sk-proj-migration-to-new-api` and `sk-admin-dashboard-refactor-notes`
+(openai-api-key), `glpat-rotation-for-ci-runners` (gitlab-token),
+`sk-ant-api-key-rotation-procedure` (anthropic-api-key),
+`dckr_pat_rotation_script_v2_final` (docker-token) and
+`SG.marketing_campaign_2024.newsletter_template_final`
+(sendgrid-api-key) all match, as do actor names such as
+`glpat-rotation-bot-for-ci`. None occurs in the corpora measured. The
+remedy is `--allow-secret-like` for free text and a different actor
+name, since actor names have no override. Tests pin this behaviour so
+that it is a deliberate choice.
+
 ## Existing boards and compatibility
 
 Patterns are checked on writing only. Events already on a board are
@@ -274,3 +304,80 @@ imports fine. This change's own `tasks.md` is written that way.
   throwaway program that does not import `src/board/secrets.ts`, and
   reruns the false-positive count over the board and docs, printing
   counts only.
+
+### Test-author rulings (group 1)
+
+Where the spec does not spell a case out, the tests of group 1 read it
+as follows:
+
+- A key after `TOKEN=` (scenario "Prefixed key after a separator or
+  quote") is refused naming its pattern first; when the key's first 32
+  characters are all of `[A-Za-z0-9+/_-]` it is also a
+  `generic-secret-assignment` and that name follows, as the spec's
+  definition of the generic pattern implies. After `"`, `:`, a space or
+  `id=` (no keyword) only the provider pattern is named.
+- "Not preceded by an ASCII letter or digit" admits every other
+  character before a prefix, including `/`, `[`, `<` and a tab, not only
+  the ones the design lists. For `jwt` (orchestrator ruling) `_` and `-`
+  are excluded too: a JWT after either is not named `jwt`.
+- The time guard runs `secretPatternsIn` once per adversarial input of
+  64 KB (each pattern's prefix repeated, the prefix and a long run of
+  its alphabet with no terminator, and one character short of the
+  minimum repeated, as in the implementer's timing script) and requires
+  each call to finish within 1 s, about 1/100th of the slowest quadratic
+  case measured and well above a linear one.
+- ` BLOCK` is optional once: `-----BEGIN PGP PRIVATE KEY BLOCK
+  BLOCK-----` matches no pattern.
+- Case-sensitivity is pinned with upper-cased (or lower-cased) prefixes
+  of every new pattern, all accepted, and with a DigitalOcean token of
+  upper-case hex, accepted because its alphabet is `[a-f0-9]`.
+- The actor fixtures of actor-secret-check that a new pattern now names
+  (the JWT, the Slack token and the OpenAI project key, all longer than
+  32 characters) move from the table of names refused for the form to
+  the table refused by a pattern, so they get the pattern message
+  (patterns are tested first). The short Stripe and GitLab keys join the
+  pattern table, so every actor surface that loops over it (`--as`,
+  `AGENTBOARD_ACTOR`, `--to`, the MCP `as` and `to`, `serve --as`, the
+  web `to`) tests them, and the hook's actor resolution treats them as
+  no valid actor.
+- The test stub adds the fifteen names to `SECRET_PATTERN_NAMES` with
+  an expression that matches nothing, so that test code indexed by
+  pattern name typechecks; the implementer replaces each expression.
+
+### Rulings from review round 1
+
+Orchestrator rulings on the second review (reviewer-sp-2):
+
+- R1: no pattern may throw on long input. V8 keeps a backtrack entry
+  per character for an open-ended counted repeat such as `{8,}`, and a
+  single run of about 5.3 MiB after `eyJ` or `SG.` overflows its stack
+  (`RangeError`, refused as exit 5). The open minimums of `jwt` (both
+  segments) and of the first `sendgrid-api-key` segment are written as
+  a fixed count followed by a star (`[A-Za-z0-9_-]{8}[A-Za-z0-9_-]*`),
+  with the same meaning. Tests feed about 6 MiB after `eyJ` and `SG.`,
+  6 MiB of every pattern's alphabet after its prefix, an MCP actor
+  name of that size (refused for the form, not exit 5) and an
+  import-change task line of that size (imported).
+- R2: the left anchor admits a key right after a backslash escape or
+  a percent-encoding: "not after an ASCII letter or digit, unless that
+  letter or digit ends `\n`, `\r`, `\t`, `\b`, `\f` or `%XX`"
+  (`\"`, `\\` and `\/` end in a character that is not a letter or
+  digit, so the general anchor already admits them). `jwt` keeps its
+  own-alphabet anchor with the same exceptions. Each exception is a
+  lookbehind of fixed length (two or three characters), so the check
+  stays linear. Test-author ruling: the escape is judged on its own two
+  characters, without counting the backslashes before it, so in
+  `a\\n` followed by a key (an escaped backslash, then a literal `n`)
+  the key is matched; refusing is the safe side, and parity cannot be
+  judged by a lookbehind of fixed length. `aws-access-key-id` keeps the
+  two-sided anchor it had before this change.
+- R3: slugs after hyphenated prefixes are accepted residual risk (see
+  "Residual risk"), pinned by tests.
+- R4: OpenAI user keys `sk-None-` are covered by `openai-api-key` with
+  the minimum of `sk-proj-` (16 of `[A-Za-z0-9_-]`).
+- R5: tests kill the mutants that survived review: near-misses with
+  `_` at or past the minimum for `hf_`, `npm_`, the Stripe secret
+  prefixes and `whsec_`; the exact minimum of the second segments of
+  `jwt` and `sendgrid-api-key`; `SG` followed by a character other than
+  `.`; `xoxb--` (no digits); and the PyPI prefix with a different tail.
+
