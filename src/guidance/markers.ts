@@ -541,7 +541,11 @@ export function hookArrays(
  * after removing one leading byte order mark (EF BB BF): `null` when the
  * file does not exist, `invalid` when the bytes are not valid UTF-8 (a
  * Latin-1 byte, an overlong sequence, an encoded surrogate, a truncated
- * sequence), else the text without the mark and whether it had one. Used
+ * sequence) or when the text is nested more than `MAX_JSON_DEPTH` levels
+ * deep (`jsonDepth`), else the text without the mark and whether it had
+ * one. The depth is checked before anything parses or scans the text, so
+ * a file deep enough to exhaust the stack is refused like invalid JSON
+ * instead of failing the run. Used
  * for `.claude/settings.json` and `.mcp.json`, which agentboard rewrites,
  * so a byte it cannot read is never turned into U+FFFD and written back.
  * Permission errors propagate as from `readFileSync`.
@@ -558,10 +562,55 @@ export function readUtf8Json(
     const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
       bom ? bytes.subarray(3) : bytes,
     );
-    return { text, bom };
+    return jsonDepth(text) > MAX_JSON_DEPTH ? 'invalid' : { text, bom };
   } catch {
     return 'invalid';
   }
+}
+
+/**
+ * The deepest nesting `.claude/settings.json` and `.mcp.json` may have:
+ * a file nested deeper is read as `invalid` (`readUtf8Json`). Well below
+ * the depth at which `JSON.stringify` or any recursive walk exhausts the
+ * stack (about 5,000), and far above any real settings file.
+ */
+export const MAX_JSON_DEPTH = 512;
+
+/**
+ * The deepest nesting of arrays and objects in `text`: the largest number
+ * of `[` and `{` open at once, counting only brackets outside strings (a
+ * string runs from a `"` to the next `"` not escaped by a backslash, so
+ * `\"` and `\\` inside it are skipped as pairs). `0` for a scalar or
+ * empty text, `1` for `[]` or `{"a": 1}`, `3` for `{"a": [[]]}`. Text that
+ * is not valid JSON still gets a number (the most brackets open at any
+ * point, a closing bracket never taking the count below 0; `[[[` is 3).
+ * Iterative: never throws, whatever the depth (a million nested arrays
+ * give 1000000). Pure.
+ */
+export function jsonDepth(text: string): number {
+  let open = 0;
+  let deepest = 0;
+  let inString = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (inString) {
+      if (c === '\\') {
+        i += 1;
+      } else if (c === '"') {
+        inString = false;
+      }
+    } else if (c === '"') {
+      inString = true;
+    } else if (c === '[' || c === '{') {
+      open += 1;
+      if (open > deepest) {
+        deepest = open;
+      }
+    } else if ((c === ']' || c === '}') && open > 0) {
+      open -= 1;
+    }
+  }
+  return deepest;
 }
 
 /**
@@ -580,7 +629,9 @@ export function readUtf8Json(
  *   `"4294967294"`) are not all before its other keys in ascending
  *   numeric order, which JavaScript would reorder (`{"b":1,"10":2}`,
  *   `{"10":1,"2":2}`); `"01"`, `"-1"` and `"4294967295"` are ordinary keys.
- * Pure; never throws for valid JSON.
+ * Pure; never throws for valid JSON, at any depth: the scan keeps its own
+ * stack rather than recursing, so a document nested a hundred thousand
+ * levels deep gets an answer like any other.
  */
 export function jsonRewriteIsLossless(text: string): boolean {
   return new LosslessScan(text).value();
@@ -637,10 +688,25 @@ function numberRoundTrips(literal: string): boolean {
   );
 }
 
+/** An open object during a `LosslessScan`: its keys so far and their order. */
+interface ObjectFrame {
+  readonly kind: 'object';
+  readonly seen: Set<string>;
+  /** The last array-index key seen, -1 before any. */
+  lastIndex: number;
+  /** True once a key that is not an array index was seen. */
+  ordinarySeen: boolean;
+}
+
+/** A container open during a `LosslessScan`. */
+type Frame = ObjectFrame | { readonly kind: 'array' };
+
 /**
  * A scan of valid JSON text (`jsonRewriteIsLossless`): walks the values
  * once, checking every number literal (`numberRoundTrips`) and every
- * object's keys (duplicates; array-index keys first and ascending).
+ * object's keys (duplicates; array-index keys first and ascending). The
+ * open containers live on an explicit stack, so the scan never recurses
+ * and a document of any depth is scanned without touching the call stack.
  */
 class LosslessScan {
   private at = 0;
@@ -649,9 +715,62 @@ class LosslessScan {
 
   /** Scans the whole document; false at the first lossy construct. */
   value(): boolean {
-    this.space();
-    const ok = this.scanValue();
-    return ok;
+    const stack: Frame[] = [];
+    for (;;) {
+      // A value is expected here.
+      this.space();
+      const c = this.text[this.at] ?? '';
+      if (c === '{') {
+        this.at += 1;
+        this.space();
+        if (this.text[this.at] === '}') {
+          this.at += 1;
+        } else {
+          const frame: ObjectFrame = {
+            kind: 'object',
+            seen: new Set(),
+            lastIndex: -1,
+            ordinarySeen: false,
+          };
+          stack.push(frame);
+          if (!this.scanKey(frame)) {
+            return false;
+          }
+          continue;
+        }
+      } else if (c === '[') {
+        this.at += 1;
+        this.space();
+        if (this.text[this.at] === ']') {
+          this.at += 1;
+        } else {
+          stack.push({ kind: 'array' });
+          continue;
+        }
+      } else if (!this.scanScalar(c)) {
+        return false;
+      }
+      // A value is complete: close the containers it ends, or move to the next member.
+      for (;;) {
+        const top = stack.at(-1);
+        if (top === undefined) {
+          return true;
+        }
+        this.space();
+        const d = this.text[this.at];
+        this.at += 1;
+        if (d === ',') {
+          if (top.kind === 'object') {
+            this.space();
+            if (!this.scanKey(top)) {
+              return false;
+            }
+          }
+          break;
+        }
+        stack.pop(); // ']' or '}'
+      }
+    }
   }
 
   private space(): void {
@@ -660,14 +779,8 @@ class LosslessScan {
     }
   }
 
-  private scanValue(): boolean {
-    const c = this.text[this.at] ?? '';
-    if (c === '{') {
-      return this.scanObject();
-    }
-    if (c === '[') {
-      return this.scanArray();
-    }
+  /** Consumes a string, number or word starting with `c`; false for a number that does not round-trip. */
+  private scanScalar(c: string): boolean {
     if (c === '"') {
       this.scanString();
       return true;
@@ -693,64 +806,26 @@ class LosslessScan {
     return JSON.parse(this.text.slice(start, this.at)) as string;
   }
 
-  private scanArray(): boolean {
-    this.at += 1;
+  /**
+   * Consumes one member key of `frame` and its `:`; false when the key
+   * repeats an earlier one or breaks the array-index order.
+   */
+  private scanKey(frame: ObjectFrame): boolean {
+    const key = this.scanString();
+    if (frame.seen.has(key)) {
+      return false;
+    }
+    frame.seen.add(key);
+    if (ARRAY_INDEX_KEY.test(key) && Number(key) <= MAX_ARRAY_INDEX) {
+      if (frame.ordinarySeen || Number(key) <= frame.lastIndex) {
+        return false;
+      }
+      frame.lastIndex = Number(key);
+    } else {
+      frame.ordinarySeen = true;
+    }
     this.space();
-    if (this.text[this.at] === ']') {
-      this.at += 1;
-      return true;
-    }
-    for (;;) {
-      this.space();
-      if (!this.scanValue()) {
-        return false;
-      }
-      this.space();
-      const c = this.text[this.at];
-      this.at += 1;
-      if (c === ']') {
-        return true;
-      }
-    }
-  }
-
-  private scanObject(): boolean {
-    this.at += 1;
-    this.space();
-    const seen = new Set<string>();
-    let lastIndex = -1;
-    let ordinarySeen = false;
-    if (this.text[this.at] === '}') {
-      this.at += 1;
-      return true;
-    }
-    for (;;) {
-      this.space();
-      const key = this.scanString();
-      if (seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      if (ARRAY_INDEX_KEY.test(key) && Number(key) <= MAX_ARRAY_INDEX) {
-        if (ordinarySeen || Number(key) <= lastIndex) {
-          return false;
-        }
-        lastIndex = Number(key);
-      } else {
-        ordinarySeen = true;
-      }
-      this.space();
-      this.at += 1; // ':'
-      this.space();
-      if (!this.scanValue()) {
-        return false;
-      }
-      this.space();
-      const c = this.text[this.at];
-      this.at += 1;
-      if (c === '}') {
-        return true;
-      }
-    }
+    this.at += 1; // ':'
+    return true;
   }
 }

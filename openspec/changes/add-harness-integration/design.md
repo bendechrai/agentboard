@@ -576,6 +576,99 @@ where they change behaviour and pinned by the tests and the contracts in
   atomic replace); an empty settings.json refused as `malformed-settings`
   (the README in group 7 says so).
 
+## Rulings from the group 3 follow-ups
+
+Taken by the orchestrator on reviewer-hk3-2's round 2 findings on PR #136
+(approved, with findings 1-5 as follow-ups), refined by the test author
+(test-author-hk3f) where noted, posted as `DECISION:` comments on the
+follow-up ticket, written into the spec deltas where they change
+behaviour and pinned by the tests and the contracts in
+`src/guidance/install.ts` (`validateCommand`, `RefusalReason`,
+`lossyMessage`), `src/guidance/installed-text.ts` (`hookExecutable`,
+`SHELL_RESERVED_WORDS`, `SHELL_BUILTINS`) and `src/guidance/markers.ts`
+(`MAX_JSON_DEPTH`, `jsonDepth`, `readUtf8Json`, `jsonRewriteIsLossless`):
+
+- **F1 A leading `+` or `%`.** A `--command` (or `--mcp-command`) value
+  starting with `+` is a usage error, `--<flag> must not start with a plus
+  sign`: sh, bash and zsh read a leading `+` as options, as they do `-`,
+  and refusing is simpler and safer than quoting. A value starting with
+  `%` is a usage error, `--<flag> must not start with a percent sign`:
+  bash and zsh read it as a job reference, bash even when it is quoted.
+  Both come after the hyphen check and before the built-in checks, name
+  the flag and never the value; a `+` or `%` after the first character is
+  fine. `hookExecutable` single-quotes a value with a leading `+` or `%`
+  (it is never written, since the install refuses it).
+- **F2 Bare names of shell built-ins.** A shell runs a built-in before any
+  file on the PATH, quoted or not, so a `--command` value equal to a
+  regular built-in of the shells a hook command may run in is a usage
+  error, `--<flag> must not be a shell built-in; give the path of the
+  executable`, checked after the special built-ins (which keep their own
+  message). The list, `SHELL_BUILTINS`, is every built-in of dash 0.5.12
+  (`/bin/sh` on Debian and Ubuntu, from `type <name>`), bash 5.3
+  (`compgen -b`) and zsh 5.9 (`${(k)builtins}`, the same under `zsh -c`
+  and `zsh -f -c`), less the POSIX special built-ins: `[`, `alias`,
+  `autoload`, `bg`, `bind`, `bindkey`, `builtin`, `bye`, `caller`, `cd`,
+  `chdir`, `command`, `compadd`, `comparguments`, `compcall`, `compctl`,
+  `compdescribe`, `compfiles`, `compgen`, `compgroups`, `complete`,
+  `compopt`, `compquote`, `compset`, `comptags`, `comptry`, `compvalues`,
+  `declare`, `dirs`, `disable`, `disown`, `echo`, `echotc`, `echoti`,
+  `emulate`, `enable`, `false`, `fc`, `fg`, `float`, `functions`,
+  `getln`, `getopts`, `hash`, `help`, `history`, `integer`, `jobs`,
+  `kill`, `let`, `limit`, `local`, `log`, `logout`, `mapfile`, `noglob`,
+  `popd`, `print`, `printf`, `private`, `pushd`, `pushln`, `pwd`, `r`,
+  `read`, `readarray`, `rehash`, `sched`, `setopt`, `shopt`, `source`,
+  `suspend`, `test`, `true`, `ttyctl`, `type`, `typeset`, `ulimit`,
+  `umask`, `unalias`, `unfunction`, `unhash`, `unlimit`, `unsetopt`,
+  `vared`, `wait`, `whence`, `where`, `which`, `zcompile`, `zformat`,
+  `zle`, `zmodload`, `zparseopts`, `zregexparse`, `zstyle` (96 names).
+  Only the whole value is compared, so `/usr/local/bin/echo` installs,
+  and `agentboard`, `npx`, `node` and other ordinary names are unaffected.
+  Reserved words are different: a quoted word is never reserved, so
+  `coproc` (bash and zsh) and `end`, `foreach`, `nocorrect` and `repeat`
+  (zsh) join `SHELL_RESERVED_WORDS` and are single-quoted. The
+  orchestrator's list named `coproc` and `repeat` among the refusals; the
+  test author found that `'coproc'` and `'repeat'` (and the other three)
+  run the named file under dash, bash and zsh, while `noglob` (a zsh
+  built-in) does not, so the line is drawn where quoting stops working:
+  built-ins are refused, reserved words are quoted.
+- **F3 Deep nesting.** `.claude/settings.json` and `.mcp.json` nested more
+  than `MAX_JSON_DEPTH` (512) levels deep (`jsonDepth`: the most `[` and
+  `{` open at once outside strings) are read as `invalid` by
+  `readUtf8Json`, before anything parses, scans or serialises them, so
+  they get the same refusal as invalid JSON: `malformed-settings` for
+  settings.json (`--force` replaces the file by a fresh one, as for
+  invalid JSON) and `.mcp.json`'s `malformed-file` (also with `--force`).
+  The message says the file must be nested at most 512 levels deep and
+  repeats none of its content. `check` treats such a file as invalid JSON
+  (settings.json `modified`, version unknown, when its bytes hold `#
+  agentboard-hooks:`, else not found; `.mcp.json` not found). 512 is far
+  above any real settings file and well below the depth at which
+  `JSON.stringify` or a recursive walk exhausts the stack (about 5,000).
+  A run with other targets reports each of them as before: a deep
+  settings file never ends the run with an internal error (exit 5) after
+  other targets were written. `jsonDepth` and `jsonRewriteIsLossless` are
+  iterative, so neither throws at any depth (a hundred thousand levels is
+  tested).
+- **F4 Scanner tests.** `jsonRewriteIsLossless` is tested on strings and
+  keys holding `\"` and `\\` (alone, together and before a lossy value
+  later in the document), and through `claude-hooks` on a settings file
+  holding them that needs a rewrite; and at the array-index boundary:
+  `"4294967294"` (2^32 - 2) is the largest key JavaScript orders as an
+  array index, `"4294967295"` an ordinary key, both pinned against
+  `Object.keys` in node.
+- **F5 The `lossy-json` message** says what `--force` would discard,
+  without repeating the file's content: `<file> holds JSON that a rewrite
+  would not give back exactly, so it was left as it is; --force rewrites
+  it, writing each number beyond double precision as the nearest one (null
+  when out of range), dropping the sign of -0, keeping only the last of
+  each duplicate key and moving array-index keys first in ascending
+  order`.
+- **Accepted, no change:** the directory holding the replaced file is not
+  fsynced after the rename. The temporary file is flushed before the
+  rename, so a crash leaves either the old or the new file, never half of
+  one; only the rename itself may be lost on power failure, which costs a
+  rerun of an idempotent install.
+
 ## Risks / Trade-offs
 
 - **PreToolUse is intrusive and adds latency to every edit** -> warn-only

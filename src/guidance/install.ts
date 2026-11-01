@@ -44,6 +44,7 @@ import {
   OPENSPEC_CONFIG_PATH,
   OPENSPEC_GUIDANCE,
   OPENSPEC_OPERATIONS,
+  SHELL_BUILTINS,
   SHELL_SPECIAL_BUILTINS,
   SKILL_PATH,
   hookGroup,
@@ -56,6 +57,7 @@ import {
   type OpenSpecOperation,
 } from './installed-text.js';
 import {
+  MAX_JSON_DEPTH,
   PERMISSION_CODES,
   agentsMarkers,
   errorCode,
@@ -240,6 +242,13 @@ export type InstallAction = 'created' | 'updated' | 'unchanged' | 'refused';
  *   `--force` the whole file is replaced by a fresh settings file holding
  *   only the agentboard entries. The message names the file and never
  *   quotes its content or the JSON parser's error (which can).
+ *   A file nested more than `MAX_JSON_DEPTH` (512) levels deep (arrays
+ *   and objects, outside strings; `jsonDepth`) is refused the same way,
+ *   before it is parsed or scanned, so no depth makes the run fail with an
+ *   internal error; the message says it must be nested at most 512
+ *   levels deep. For `.mcp.json` the same depth is its `malformed-file`
+ *   refusal (even with `--force`), and `check` treats such a file as it
+ *   treats invalid JSON.
  * - `hooks-shape` (`claude-hooks`): the top-level `hooks` is present and
  *   not an object (`null` included), or one of `hooks.SessionStart`,
  *   `hooks.Stop`, `hooks.PreToolUse` is present and not an array. Other
@@ -265,7 +274,8 @@ export type InstallAction = 'created' | 'updated' | 'unchanged' | 'refused';
  *   nearest JS number, or `null` for a literal out of range), the sign of
  *   `-0`, every occurrence of a duplicate key but the last, and the order
  *   of array-index keys. A file that needs no write is never refused. The
- *   message names the file and never its content.
+ *   message names the file and never its content, and says what `--force`
+ *   would discard (`lossyMessage`).
  * - `outside-tree` (every target):
  *   the target path, with symlinks resolved (`realpathSync` of the file
  *   when it exists, else of its nearest existing ancestor, with the rest of
@@ -417,7 +427,11 @@ interface Handled {
   readonly manual: readonly string[];
 }
 
-/** The refusal reasons that `--force` overrides. */
+/**
+ * The refusal reasons that `--force` overrides. Their messages end with
+ * `; --force overwrites it`, except `lossy-json`, whose message says what
+ * `--force` does itself (`lossyMessage`).
+ */
 const FORCEABLE: readonly RefusalReason[] = [
   'foreign-file',
   'malformed-marker',
@@ -433,7 +447,8 @@ function done(action: Exclude<InstallAction, 'refused'>, message: string): Handl
 }
 
 function refuse(reason: RefusalReason, message: string, manual: readonly string[] = []): Handled {
-  const suffix = FORCEABLE.includes(reason) ? '; --force overwrites it' : '';
+  const suffix =
+    FORCEABLE.includes(reason) && reason !== 'lossy-json' ? '; --force overwrites it' : '';
   return { action: 'refused', refusal: reason, message: `${message}${suffix}`, manual };
 }
 
@@ -698,7 +713,7 @@ function installMcpJson(path: string, force: boolean, mcpCommand: string | undef
   if (read === 'invalid' || config === null || (servers !== undefined && !isJsonObject(servers))) {
     return refuse(
       'malformed-file',
-      `${MCP_JSON_PATH} cannot be edited: it is not UTF-8 text holding a JSON object with an mcpServers object`,
+      `${MCP_JSON_PATH} cannot be edited: it is not UTF-8 text holding a JSON object with an mcpServers object, nested at most ${MAX_JSON_DEPTH} levels deep`,
     );
   }
   const serialize = (value: unknown): string => settingsText(value, read.bom);
@@ -730,9 +745,17 @@ function settingsText(value: unknown, bom: boolean): string {
   return `${bom ? '\uFEFF' : ''}${JSON.stringify(value, null, 2)}\n`;
 }
 
-/** The `lossy-json` refusal message for the file at `rel`. */
+/**
+ * The `lossy-json` refusal message for the file at `rel`: it names the
+ * file and what `--force` would discard, never the file's content:
+ * `<rel> holds JSON that a rewrite would not give back exactly, so it was
+ * left as it is; --force rewrites it, writing each number beyond double
+ * precision as the nearest one (null when out of range), dropping the sign
+ * of -0, keeping only the last of each duplicate key and moving
+ * array-index keys first in ascending order`.
+ */
 function lossyMessage(rel: string): string {
-  return `${rel} holds JSON that a rewrite would not give back exactly (a number beyond double precision, -0, a duplicate key, or array-index keys JavaScript reorders), so it was left as it is`;
+  return `${rel} holds JSON that a rewrite would not give back exactly, so it was left as it is; --force rewrites it, writing each number beyond double precision as the nearest one (null when out of range), dropping the sign of -0, keeping only the last of each duplicate key and moving array-index keys first in ascending order`;
 }
 
 /**
@@ -865,7 +888,7 @@ function installClaudeHooks(path: string, version: number, run: RunOptions): Han
     if (!run.force) {
       return refuse(
         'malformed-settings',
-        `${CLAUDE_SETTINGS_PATH} is not UTF-8 text holding a JSON object (invalid JSON, or a top level that is not an object), so the agentboard hooks cannot be merged into it`,
+        `${CLAUDE_SETTINGS_PATH} is not UTF-8 text holding a JSON object nested at most ${MAX_JSON_DEPTH} levels deep (invalid JSON, a top level that is not an object, or deeper nesting), so the agentboard hooks cannot be merged into it`,
       );
     }
     replaceFile(path, fresh(bom));
@@ -998,10 +1021,17 @@ export const MCP_COMMAND_DEPRECATION =
  * the value came from it) was given, in this order of checks, an empty
  * value (`--<flag> must not be empty`), a line feed (`--<flag> must not
  * contain a newline`), a value starting with `-` (`--<flag> must not
- * start with a hyphen`), or a value equal to one of
- * `SHELL_SPECIAL_BUILTINS` (`--<flag> must not be a shell special
- * built-in; give the path of the executable`). The message names the
- * flag, never the value.
+ * start with a hyphen`), a value starting with `+` (`--<flag> must not
+ * start with a plus sign`: sh, bash and zsh read a leading `+` as
+ * options), a value starting with `%` (`--<flag> must not start with a
+ * percent sign`: bash and zsh read it as a job reference, bash even when
+ * quoted), a value equal to one of `SHELL_SPECIAL_BUILTINS` (`--<flag>
+ * must not be a shell special built-in; give the path of the
+ * executable`), or a value equal to one of `SHELL_BUILTINS` (`--<flag>
+ * must not be a shell built-in; give the path of the executable`). Only
+ * the whole value is compared: a path ending in such a name
+ * (`/usr/local/bin/echo`) and a `+` or `%` after the first character are
+ * fine. The message names the flag, never the value.
  */
 function validateCommand(command: string | undefined, flag: InstallOptions['commandFlag']): void {
   const name = flag ?? 'command';
@@ -1014,11 +1044,24 @@ function validateCommand(command: string | undefined, flag: InstallOptions['comm
   if (command?.startsWith('-') === true) {
     throw new BoardError(1, 'usage', `--${name} must not start with a hyphen`);
   }
+  if (command?.startsWith('+') === true) {
+    throw new BoardError(1, 'usage', `--${name} must not start with a plus sign`);
+  }
+  if (command?.startsWith('%') === true) {
+    throw new BoardError(1, 'usage', `--${name} must not start with a percent sign`);
+  }
   if (command !== undefined && SHELL_SPECIAL_BUILTINS.includes(command)) {
     throw new BoardError(
       1,
       'usage',
       `--${name} must not be a shell special built-in; give the path of the executable`,
+    );
+  }
+  if (command !== undefined && SHELL_BUILTINS.includes(command)) {
+    throw new BoardError(
+      1,
+      'usage',
+      `--${name} must not be a shell built-in; give the path of the executable`,
     );
   }
 }

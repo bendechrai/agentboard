@@ -81,9 +81,11 @@ usage error; giving both flags SHALL exit 1 with reason `usage`, repeating
 neither value, and write nothing. `--command` sets the executable for every MCP entry and for the
 hooks. An empty
 `--command` (or `--mcp-command`) value, one containing a newline, one
-starting with `-` or one equal to a POSIX special built-in SHALL
+starting with `-`, `+` or `%`, or one equal to a shell built-in (a POSIX
+special built-in, or a regular built-in of sh, bash or zsh, which the shell
+runs instead of any file of that name) SHALL
 exit 1 with reason `usage`, naming the flag but not the value, and write
-nothing. The command SHALL NOT require a board and
+nothing; a path ending in such a name is accepted. The command SHALL NOT require a board and
 SHALL NOT run git commands that modify anything. `init` SHALL end its
 output with a line suggesting `agentboard agents install` unless it ran the
 install (see board-cli "Init offers to install agent guidance").
@@ -168,12 +170,15 @@ are rewritten through a YAML or JSON serializer, every key, value, entry,
 comment and their order outside the owned entries SHALL be preserved, while
 insignificant formatting (indentation, quoting style) MAY be normalized. `.claude/settings.json` and `.mcp.json` SHALL be
 decoded as strict UTF-8 (after a byte order mark): other bytes are refused
-as for invalid JSON, never replaced. When rewriting either file would not
+as for invalid JSON, never replaced, and so is a file nested more than 512
+levels deep, which SHALL be refused without an internal error and without
+leaving another target of the run written but unreported. When rewriting either file would not
 give back every value and key order (a number literal the rewrite would
 write with another decimal value, `-0`, a duplicate key, array-index keys
 JavaScript would reorder), the target SHALL be refused as `lossy-json`
 without writing, unless `--force` is given, which rewrites it and discards
-exactly those differences; a file that needs no write is never refused. A `SKILL.md` or `agentboard.mdc` at the target path without the marker, a
+exactly those differences, and the refusal SHALL say what `--force` would
+discard without repeating the file's content; a file that needs no write is never refused. A `SKILL.md` or `agentboard.mdc` at the target path without the marker, a
 malformed marker pair in `AGENTS.md`, the copilot file or
 `config.toml`, a `[mcp_servers.agentboard]` table in `config.toml` outside
 the markers, a `.claude/settings.json` that is not valid JSON or whose

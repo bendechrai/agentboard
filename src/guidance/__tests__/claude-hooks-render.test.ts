@@ -97,7 +97,7 @@ describe('hookExecutable', () => {
   });
 });
 
-describe('shell words (review round 1, R3)', () => {
+describe('shell words (review round 1, R3; group 3 follow-ups, F2)', () => {
   it('pins the reserved words and the special built-ins', () => {
     expect(SHELL_RESERVED_WORDS).toEqual([
       '!',
@@ -121,6 +121,11 @@ describe('shell words (review round 1, R3)', () => {
       'function',
       'select',
       'time',
+      'coproc',
+      'end',
+      'foreach',
+      'nocorrect',
+      'repeat',
     ]);
     expect(SHELL_SPECIAL_BUILTINS).toEqual([
       'break',
@@ -158,6 +163,11 @@ describe('shell words (review round 1, R3)', () => {
     'function',
     'select',
     'time',
+    'coproc',
+    'end',
+    'foreach',
+    'nocorrect',
+    'repeat',
   ])('quotes the reserved word %s', (word) => {
     expect(hookExecutable(word)).toBe(`'${word}'`);
   });
