@@ -40,7 +40,8 @@ integrates its source tip, and SHALL never discard what the human
 resolved nor apply again a commit the human already resolved (the clones
 of one board share its history: the re-run replays only what reached the
 board since the worktree was made, and nothing when nothing did, so one
-re-run completes the move). Every event file present in the old `.board/events` at any
+re-run completes the move). Every event file present in the old
+`.board/events` at any
 point of the move (written by another writer or a standalone `sync`
 while the move ran, even between the verification and the moment the old
 repository is kept aside) SHALL end in the new worktree, carried over
@@ -63,7 +64,8 @@ SHALL record the tip it integrated, and the record SHALL follow it when
 it integrates more; the tip `refs/agentboard/migrating` holds, which the
 whole host shares, SHALL stand for that record only for a temporary made
 before the record existed and only when no other temporary worktree
-exists on the host, otherwise such a temporary SHALL NOT be adopted. A temporary left by a move of a board replaced since,
+exists on the host, otherwise such a temporary SHALL NOT be adopted. A
+temporary left by a move of a board replaced since,
 even one whose git directory has the same realpath, device and inode as
 the old one's and whose history holds that HEAD, or by a move that began
 before the board's history or its remote's was rewritten so that it no
@@ -96,7 +98,8 @@ has no readable, well formed record, the move SHALL write none. When the
 ref has another value at the swap (another writer moved it after the
 leftover pass) that is a descendant of, or equal to, the HEAD of any such
 temporary (the evidence or another), it still holds this board's
-unpublished commits, and the move SHALL write no record either. Writing none means a later run with another board
+unpublished commits, and the move SHALL write no record either. Writing
+none means a later run with another board
 refuses rather than resets or integrates. When several such temporaries
 exist, the evidence is the first in the byte order of their names whose
 HEAD equals the ref, or, when none does, the first in that order. A
@@ -132,7 +135,8 @@ removal to the next run; every dead temporary of another board whose HEAD
 was in the ref when the run began is named the same way, also one whose
 update a reset made for another temporary undid; when the recorded value
 equals that HEAD the ref SHALL be left as it is, with no line saying it
-was set back, and the temporary removed and named the same way; otherwise (no such record, as
+was set back, and the temporary removed and named the same way;
+otherwise (no such record, as
 from a version that did not write it, a recorded value that is not a
 commit of the host repository, or a ref that has moved past that HEAD) the
 move SHALL exit 3 with reason `sync-failed`, naming the ref, the
