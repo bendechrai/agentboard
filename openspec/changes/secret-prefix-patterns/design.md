@@ -269,6 +269,14 @@ remedy is `--allow-secret-like` for free text and a different actor
 name, since actor names have no override. Tests pin this behaviour so
 that it is a deliberate choice.
 
+A key right after a quote written as an escape that ends in a digit
+(`\x22`, or `\u0022`) is not caught: the anchor excuses only the five
+single-letter backslash escapes and percent-encodings (R2), so the
+digit that ends the escape blocks the match. Text that quotes a key
+through `JSON.stringify` has `\"` before it, and the quote is not a
+letter or digit, so that form is caught. The digit-ending escapes are
+accepted residual risk (reviewer's last nit, round 1).
+
 ## Existing boards and compatibility
 
 Patterns are checked on writing only. Events already on a board are

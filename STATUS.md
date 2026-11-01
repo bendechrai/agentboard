@@ -202,9 +202,6 @@ more harness targets; group 1, the hook command contract, is merged in
   lifecycle and `add-claim-leases` share, so the next change that adds
   guidance (`GUIDANCE_VERSION` 4) has to make room or raise the limit
   through its own spec delta.
-- The shared secret patterns miss short prefixed keys such as Stripe
-  restricted keys (`rk_live_`, `rk_test_`), which also fit the actor form:
-  ticket 01M69B8W53DGS7CF8XY4H951TC.
 - The proposal `add-harness-integration` (draft PR #67, not merged) was
   re-synced on 2026-10-31 with the main specs as of `a455011` (guidance
   version stays 3, ADR 0016; its design.md lists what the newer archives

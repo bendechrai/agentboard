@@ -2775,12 +2775,29 @@ as `entry-differs` unless `--force` is given, which replaces it.
 ## What the board is not
 
 - **Not a secret store.** `new`, `comment` and `handoff` refuse text that
-  looks like a secret (private key PEM headers, AWS access key ids, GitHub
-  tokens, long base64 strings after `token`, `secret`, `password` or
-  `key`), exiting 1 with the pattern name and never echoing the text.
-  `--allow-secret-like` overrides this for a false positive (on the CLI
-  and over MCP only; the web app has no override). Board events are synced
-  and kept forever; never put credentials in them.
+  looks like a secret, exiting 1 with the pattern name and never echoing
+  the text. What counts as secret-like: PEM and PGP private key headers;
+  AWS access key ids; the keys of Anthropic, DigitalOcean, Docker, GitHub,
+  GitLab, Google, Hugging Face, npm, OpenAI, PyPI, SendGrid, Shopify,
+  Slack and Stripe (secret and restricted keys and webhook secrets, each
+  recognised by its documented prefix and a minimum length); JWTs; and
+  long base64 strings after `token`, `secret`, `password` or `key`. Stripe
+  publishable keys are public and are not refused. Apart from GitHub
+  tokens and the PEM and PGP headers, which match anywhere, and AWS ids,
+  which need no letter or digit on either side, a prefix glued to a
+  preceding letter or digit is not a key, and a JWT is also not caught
+  when glued to a preceding `_` or `-`. A key after a `\n`-style
+  backslash escape or a percent-encoding is still caught; one after a
+  quote escape that ends in a digit (the hex and unicode forms) is not,
+  though the `\"` form is. A key shorter than the minimum, an unprefixed
+  secret or a provider not listed is accepted: the patterns catch the
+  common accident, not every secret. An ordinary slug after a hyphenated
+  or underscored prefix can be refused as a false positive. Actor names
+  are checked against the same patterns (see "The actor rule").
+  `--allow-secret-like` overrides this for a false positive in free text
+  (on the CLI and over MCP only; the web app has no override, and an actor
+  name has none). Board events are synced and kept forever; never put
+  credentials in them.
 - **Not the record of completion.** `tasks.md` checkboxes, ticked in the
   PR that does the work, record what was built. The board records who
   holds the work and its state in flight.
