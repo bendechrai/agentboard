@@ -317,7 +317,13 @@ describe('parsing', () => {
 
 describe('bounded rendering (review round 2)', () => {
   const DEEP = '> '.repeat(5000) + 'deep text';
+  // Past the depth cap by a wide margin, but cheap to parse: the parser's time
+  // is super-linear in nesting (about 8 ms at 100 levels, 600 ms at 5000 when
+  // idle, several seconds under heavy load), so a test that is not about
+  // unbounded recursion uses this instead of DEEP.
+  const PAST_CAP = '> '.repeat(MAX_MARKDOWN_DEPTH * 4) + 'deep text';
   // While the length cap is missing, the over-long text takes seconds to parse.
+  // The 5000-level description takes seconds too when the host is loaded.
   const SLOW_PARSE_MS = 60_000;
 
   it('renders a description nested far past the depth cap, capped', async () => {
@@ -326,10 +332,10 @@ describe('bounded rendering (review round 2)', () => {
     expect(s.firstElementChild?.textContent).toBe('Description');
     expect(all(s, 'blockquote')).toHaveLength(MAX_MARKDOWN_DEPTH);
     expect(s.textContent).toContain('deep text');
-  });
+  }, SLOW_PARSE_MS);
 
   it('replaces the previous ticket with one whose description is nested past the cap', async () => {
-    await open(T1, inputs('Plain words', DEEP));
+    await open(T1, inputs('Plain words', PAST_CAP));
     expect(section().textContent).toContain('Plain words');
     act(() => {
       setHash(`#/ticket/${T2}`);
@@ -342,7 +348,7 @@ describe('bounded rendering (review round 2)', () => {
     });
     expect(document.body.textContent).not.toContain('Plain words');
     expect(section().textContent).toContain('deep text');
-  });
+  }, SLOW_PARSE_MS);
 
   it(
     'shows a description longer than the length cap as plain text without parsing it',
