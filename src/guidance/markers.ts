@@ -14,6 +14,7 @@ import { isMap, isScalar, isSeq, parseDocument, type Document } from 'yaml';
 import {
   BLOCK_END,
   CLAUDE_HOOK_EVENTS,
+  CODEX_BLOCK_END,
   type ClaudeHookEvent,
   type ClaudeHookKey,
   HOOK_DEFAULT_EXECUTABLE,
@@ -110,6 +111,26 @@ export function targetPath(root: string, rel: string): TargetPath {
   if (resolved !== root && !resolved.startsWith(`${root}${sep}`)) {
     return { kind: 'outside-tree', resolved };
   }
+  return locatePath(resolved);
+}
+
+/**
+ * Where a global file is (design.md "Rulings from task group 4": a global
+ * file is outside the tree by design, so a symbolic link there is followed
+ * and kept): `path`, absolute, with symlinks resolved and checked as
+ * `targetPath` checks a target, except that it is never `outside-tree`.
+ * Reads only.
+ */
+export function globalPath(path: string): TargetPath {
+  const resolved = resolvePath(path);
+  if (resolved === null) {
+    return { kind: 'not-a-file', code: 'ELOOP', what: 'is caught in a symlink cycle' };
+  }
+  return locatePath(resolved);
+}
+
+/** `resolved` (symlinks already resolved) checked for being a file or a place one can be written. */
+function locatePath(resolved: string): TargetPath {
   try {
     const stat = statSync(resolved);
     if (stat.isFile()) {
@@ -149,9 +170,34 @@ export function targetPath(root: string, rel: string): TargetPath {
 /** Text a `SKILL.md` line contains when agentboard owns the file. */
 export const SKILL_MARKER_TEXT = '<!-- agentboard-guidance:';
 
-const START_TEXT = '<!-- agentboard:start';
-const END_TEXT = '<!-- agentboard:end';
-const WELL_FORMED_START = /^<!-- agentboard:start v(\d+) -->$/;
+/**
+ * The syntax of a managed block's markers: the texts a marker-like line
+ * contains, the well-formed start line (its version captured) and the
+ * well-formed end line.
+ */
+export interface MarkerSyntax {
+  readonly startText: string;
+  readonly endText: string;
+  readonly wellFormedStart: RegExp;
+  readonly end: string;
+}
+
+/** The `AGENTS.md` (and `.github/copilot-instructions.md`) markers. */
+export const AGENTS_MARKERS: MarkerSyntax = {
+  startText: '<!-- agentboard:start',
+  endText: '<!-- agentboard:end',
+  wellFormedStart: /^<!-- agentboard:start v(\d+) -->$/,
+  end: BLOCK_END,
+};
+
+/** The markers of the block in Codex's `config.toml` (TOML comments). */
+export const CODEX_MARKERS: MarkerSyntax = {
+  startText: '# agentboard:start',
+  endText: '# agentboard:end',
+  wellFormedStart: /^# agentboard:start v(\d+)$/,
+  end: CODEX_BLOCK_END,
+};
+
 const SKILL_MARKER_LINE = /^<!-- agentboard-guidance: v(0|[1-9]\d*) -->$/;
 const OPENSPEC_VERSION_COMMENT = /^agentboard-guidance: v(0|[1-9]\d*)$/;
 
@@ -208,9 +254,22 @@ function linesOf(text: string): Line[] {
   return lines;
 }
 
-/** A marker-like line without its trailing `\r` and surrounding spaces and tabs. */
+/**
+ * A marker-like line without its trailing `\r` and surrounding spaces and
+ * tabs. Trimmed by index, not by a regular expression: `[ \t]+$` tried at
+ * every position of a 200 KB line of blanks is quadratic (review round 1
+ * of task group 4, R5), and a marker-like line can be any length.
+ */
 function bare(line: string): string {
-  return line.replace(/\r$/, '').replace(/^[ \t]+|[ \t]+$/g, '');
+  let end = line.endsWith('\r') ? line.length - 1 : line.length;
+  while (end > 0 && (line[end - 1] === ' ' || line[end - 1] === '\t')) {
+    end -= 1;
+  }
+  let start = 0;
+  while (start < end && (line[start] === ' ' || line[start] === '\t')) {
+    start += 1;
+  }
+  return line.slice(start, end);
 }
 
 /**
@@ -241,17 +300,32 @@ export type AgentsMarkers =
 
 /** Finds the managed-block markers of an `AGENTS.md` text. */
 export function agentsMarkers(text: string): AgentsMarkers {
+  return blockMarkers(text, AGENTS_MARKERS);
+}
+
+/**
+ * Finds the managed-block markers of `text` for the marker `syntax`
+ * (`AGENTS_MARKERS` or `CODEX_MARKERS`): a marker-like line is one
+ * containing `syntax.startText` or `syntax.endText`, wherever it is (also
+ * inside a TOML multi-line string, so a doubtful file is refused rather
+ * than edited); it is well formed when, without a trailing `\r` and
+ * surrounding spaces and tabs, it matches `syntax.wellFormedStart` or is
+ * exactly `syntax.end`. See `AgentsMarkers` for the result.
+ */
+export function blockMarkers(text: string, syntax: MarkerSyntax): AgentsMarkers {
   const lines = linesOf(text);
-  const markerLines = lines.filter((l) => l.text.includes(START_TEXT) || l.text.includes(END_TEXT));
+  const markerLines = lines.filter(
+    (l) => l.text.includes(syntax.startText) || l.text.includes(syntax.endText),
+  );
   if (markerLines.length === 0) {
     return { kind: 'none' };
   }
-  const starts = markerLines.filter((l) => WELL_FORMED_START.test(bare(l.text)));
-  const ends = markerLines.filter((l) => bare(l.text) === BLOCK_END);
+  const starts = markerLines.filter((l) => syntax.wellFormedStart.test(bare(l.text)));
+  const ends = markerLines.filter((l) => bare(l.text) === syntax.end);
   const startLine = starts[0];
   const endLine = ends[0];
   const startDigits =
-    startLine === undefined ? undefined : WELL_FORMED_START.exec(bare(startLine.text))?.[1];
+    startLine === undefined ? undefined : syntax.wellFormedStart.exec(bare(startLine.text))?.[1];
   const version = starts.length === 1 && startDigits !== undefined ? toVersion(startDigits) : null;
   if (
     markerLines.length === 2 &&
@@ -265,7 +339,7 @@ export function agentsMarkers(text: string): AgentsMarkers {
     return {
       kind: 'pair',
       start: startLine.start,
-      end: endLine.start + endLine.text.indexOf(BLOCK_END) + BLOCK_END.length,
+      end: endLine.start + endLine.text.indexOf(syntax.end) + syntax.end.length,
       version,
     };
   }
@@ -553,6 +627,24 @@ export function hookArrays(
 export function readUtf8Json(
   path: string,
 ): { readonly text: string; readonly bom: boolean } | 'invalid' | null {
+  const read = readUtf8Text(path);
+  if (read === null || read === 'invalid') {
+    return read;
+  }
+  return jsonDepth(read.text) > MAX_JSON_DEPTH ? 'invalid' : read;
+}
+
+/**
+ * Reads `path` as strict UTF-8 after removing one leading byte order mark
+ * (as `readUtf8Json`, without the depth check): `null` when the file does
+ * not exist, `invalid` when the bytes are not valid UTF-8, else the text
+ * without the mark and whether it had one. Used for Codex's `config.toml`,
+ * whose text is edited by line and written back as UTF-8, so a byte that
+ * cannot be read is never turned into U+FFFD. Permission errors propagate.
+ */
+export function readUtf8Text(
+  path: string,
+): { readonly text: string; readonly bom: boolean } | 'invalid' | null {
   if (!existsSync(path)) {
     return null;
   }
@@ -562,7 +654,7 @@ export function readUtf8Json(
     const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
       bom ? bytes.subarray(3) : bytes,
     );
-    return jsonDepth(text) > MAX_JSON_DEPTH ? 'invalid' : { text, bom };
+    return { text, bom };
   } catch {
     return 'invalid';
   }

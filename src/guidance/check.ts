@@ -12,13 +12,27 @@
  * known for the running version: a target recorded with another version is
  * `stale` whatever its text (installing rewrites it), and a target recorded
  * with the running version whose managed text differs from
- * `renderSkill`/`renderAgentsBlock`/`OPENSPEC_GUIDANCE` is `modified`. A
- * managed region whose version cannot be read at all is `modified`.
+ * `renderSkill`/`renderAgentsBlock`/`renderCursorRule`/`renderCodexBlock`/
+ * `OPENSPEC_GUIDANCE` is `modified`. A managed region whose version cannot
+ * be read at all is `modified`. The global files of `codex` and
+ * `antigravity` are read only with `--global` (board-agent-guidance:
+ * "Global harness config is never edited by default").
  */
 
+import { statSync } from 'node:fs';
+
 import type { CommandOutput, Env } from '../cli/types.js';
-import { GUIDANCE_TARGETS, TARGET_FILES, workingTreeRoot, type GuidanceTarget } from './install.js';
 import {
+  GUIDANCE_TARGETS,
+  TARGET_FILES,
+  globalConfigPath,
+  workingTreeRoot,
+  type GuidanceTarget,
+} from './install.js';
+import {
+  AGENTS_MD_PATH,
+  ANTIGRAVITY_RULES_FILE_LIMIT,
+  CURSOR_MCP_PATH,
   GUIDANCE_VERSION,
   HOOKS_MARKER_TEXT,
   MCP_SERVER_NAME,
@@ -27,12 +41,15 @@ import {
   OPENSPEC_PREFIX,
   hookGroup,
   renderAgentsBlock,
+  renderCursorRule,
   renderSkill,
 } from './installed-text.js';
 import {
+  CODEX_MARKERS,
   PERMISSION_CODES,
   agentsMarkers,
   errorCode,
+  globalPath,
   groupHandlers,
   hasHooksShape,
   hasSkillMarker,
@@ -50,9 +67,18 @@ import {
   readBytes,
   readText,
   readUtf8Json,
+  readUtf8Text,
   skillVersion,
   targetPath,
+  type TargetPath,
 } from './markers.js';
+import {
+  codexMarkers,
+  hasNonCommentMarkerLine,
+  managedCodexCommand,
+  scanToml,
+  serverDefinitions,
+} from './toml.js';
 
 /**
  * - `current`: the target is exactly what `agents install` would write now.
@@ -90,6 +116,13 @@ export interface CheckOptions {
    * pass it, to simulate a newer CLI.
    */
   readonly version?: number;
+  /**
+   * `agents check --global`: also inspect the global files of `codex` and
+   * `antigravity` (`globalConfigPath(target, env)`, which throws its usage
+   * error when `HOME` or `CODEX_HOME` is unusable). Without it no global
+   * file is read.
+   */
+  readonly global?: boolean;
 }
 
 /**
@@ -144,6 +177,25 @@ export interface CheckOptions {
  *   duplicated entry, another timeout or matcher, an extra key, mixed
  *   modes or executables, an owned handler sharing a group with a user
  *   handler).
+ * - `codex` and `antigravity` are never reported for `AGENTS.md`: the
+ *   shared block is reported once, as `agents-md`. With `global` only:
+ *   `codex` for `config.toml` (path `globalConfigPath('codex', env)`),
+ *   found when it has a marker-like line (`# agentboard:start` or `#
+ *   agentboard:end`, also in a file that is not strict UTF-8 or ends
+ *   inside a multi-line construct, which is then `modified` with version
+ *   null). Malformed markers: `modified` (version as for `agents-md`). A
+ *   pair recorded as N: N != v `stale`; `current` when the region is
+ *   exactly `renderCodexBlock(v, c)` for no `c` or the non-empty `c` it
+ *   records and no `foreign-table` or `toml-shape` definition of the
+ *   server exists outside the markers (Codex would then read two
+ *   definitions); else `modified`. `antigravity` for `mcp_config.json`,
+ *   exactly as `mcp-json` (`installedVersion` null).
+ * - `cursor`: up to two entries, in this order: `.cursor/rules/agentboard.mdc`
+ *   exactly as `claude` with `renderCursorRule(v)`, and `.cursor/mcp.json`
+ *   exactly as `mcp-json` (`installedVersion` null), each reported with
+ *   target `cursor` and its own path when found.
+ * - `copilot`: `.github/copilot-instructions.md` exactly as `agents-md`
+ *   with `renderAgentsBlock(v)`.
  *
  * Paths `agents install` would refuse, for every target:
  * - outside the tree (see `RefusalReason` `outside-tree`: the path with
@@ -155,7 +207,9 @@ export interface CheckOptions {
  * - unreadable (`EACCES` or `EPERM` on read): reported as `modified` with
  *   `installedVersion` null, since whether it holds guidance cannot be
  *   known, so the command exits 1; `checkCommand` adds a warning naming it.
- * Never throws for these (no exit 5).
+ * Never throws for these (no exit 5). A global file follows the same
+ * rules except that it is outside the tree by design: a symbolic link
+ * there is followed.
  */
 export function checkGuidance(options: CheckOptions): GuidanceCheckEntry[] {
   return inspect(options).entries;
@@ -172,59 +226,108 @@ function inspect(options: CheckOptions): {
   entries: GuidanceCheckEntry[];
   unreadable: Unreadable[];
 } {
-  const root = workingTreeRoot(options.cwd, options.env ?? process.env);
+  const env = options.env ?? process.env;
+  const globals =
+    options.global === true
+      ? { codex: globalConfigPath('codex', env), antigravity: globalConfigPath('antigravity', env) }
+      : null;
+  const root = workingTreeRoot(options.cwd, env);
   const v = options.version ?? GUIDANCE_VERSION;
   const entries: GuidanceCheckEntry[] = [];
   const unreadable: Unreadable[] = [];
   for (const target of GUIDANCE_TARGETS) {
-    const rel = TARGET_FILES[target];
-    const where = targetPath(root, rel);
-    if (where.kind !== 'ok') {
-      continue;
-    }
-    let found: Found | null;
-    try {
-      found = checkTarget(target, where.path, v);
-    } catch (error) {
-      const code = errorCode(error);
-      if (code === null || !PERMISSION_CODES.includes(code)) {
-        throw error;
+    for (const probe of probesOf(target, root, v, globals)) {
+      const { where } = probe;
+      if (where.kind !== 'ok') {
+        continue;
       }
-      unreadable.push({ path: rel, code });
-      found = { target, state: 'modified', installedVersion: null };
-    }
-    if (found !== null) {
-      entries.push({
-        target,
-        path: rel,
-        state: found.state,
-        installedVersion: found.installedVersion,
-        currentVersion: v,
-      });
+      let found: Found | null;
+      try {
+        found = probe.check(where.path);
+      } catch (error) {
+        const code = errorCode(error);
+        if (code === null || !PERMISSION_CODES.includes(code)) {
+          throw error;
+        }
+        unreadable.push({ path: probe.path, code });
+        found = { state: 'modified', installedVersion: null };
+      }
+      if (found !== null) {
+        entries.push({
+          target,
+          path: probe.path,
+          state: found.state,
+          installedVersion: found.installedVersion,
+          currentVersion: v,
+        });
+      }
     }
   }
   return { entries, unreadable };
 }
 
-/** Runs the check of `target` on its resolved file `path`. */
-function checkTarget(target: GuidanceTarget, path: string, v: number): Found | null {
+/** One file of a target to inspect: its reported path, where it is, and its check. */
+interface Probe {
+  readonly path: string;
+  readonly where: TargetPath;
+  readonly check: (resolved: string) => Found | null;
+}
+
+/** The files of `target` to inspect, in reporting order (see `checkGuidance`). */
+function probesOf(
+  target: GuidanceTarget,
+  root: string,
+  v: number,
+  globals: { readonly codex: string; readonly antigravity: string } | null,
+): Probe[] {
+  const rel = TARGET_FILES[target];
+  const project = (path: string, check: Probe['check']): Probe => ({
+    path,
+    where: targetPath(root, path),
+    check,
+  });
   switch (target) {
     case 'claude':
-      return checkSkill(path, v);
+      return [project(rel, (path) => checkWholeFile(path, v, renderSkill))];
     case 'agents-md':
-      return checkAgentsMd(path, v);
+    case 'copilot':
+      return [project(rel, (path) => checkBlock(path, v))];
     case 'openspec':
-      return checkOpenSpec(path, v);
+      return [project(rel, (path) => checkOpenSpec(path, v))];
     case 'mcp-json':
-      return checkMcpJson(path);
+      return [project(rel, checkMcpFile)];
     case 'claude-hooks':
-      return checkClaudeHooks(path, v);
+      return [project(rel, (path) => checkClaudeHooks(path, v))];
+    case 'codex':
+      return globals === null
+        ? []
+        : [
+            {
+              path: globals.codex,
+              where: globalPath(globals.codex),
+              check: (p) => checkCodexToml(p, v),
+            },
+          ];
+    case 'antigravity':
+      return globals === null
+        ? []
+        : [
+            {
+              path: globals.antigravity,
+              where: globalPath(globals.antigravity),
+              check: checkMcpFile,
+            },
+          ];
+    case 'cursor':
+      return [
+        project(rel, (path) => checkWholeFile(path, v, renderCursorRule)),
+        project(CURSOR_MCP_PATH, checkMcpFile),
+      ];
   }
 }
 
 /** A target found by one of the checks below. */
 interface Found {
-  readonly target: GuidanceTarget;
   readonly state: GuidanceState;
   readonly installedVersion: number | null;
 }
@@ -248,20 +351,25 @@ function versionedState(
   return matches() ? 'current' : 'modified';
 }
 
-function checkSkill(path: string, v: number): Found | null {
+/** A file owned whole when it carries the skill marker: `SKILL.md` (`renderSkill`) and the Cursor rule (`renderCursorRule`). */
+function checkWholeFile(
+  path: string,
+  v: number,
+  render: (version: number) => string,
+): Found | null {
   const text = readBytes(path);
   if (text === null || !hasSkillMarker(text)) {
     return null;
   }
   const installed = skillVersion(text);
   return {
-    target: 'claude',
     installedVersion: installed,
-    state: versionedState(installed, v, () => text === renderSkill(v)),
+    state: versionedState(installed, v, () => text === render(v)),
   };
 }
 
-function checkAgentsMd(path: string, v: number): Found | null {
+/** The managed `AGENTS.md` block in `AGENTS.md` or `.github/copilot-instructions.md`. */
+function checkBlock(path: string, v: number): Found | null {
   const text = readBytes(path);
   if (text === null) {
     return null;
@@ -271,10 +379,9 @@ function checkAgentsMd(path: string, v: number): Found | null {
     case 'none':
       return null;
     case 'malformed':
-      return { target: 'agents-md', state: 'modified', installedVersion: markers.version };
+      return { state: 'modified', installedVersion: markers.version };
     case 'pair':
       return {
-        target: 'agents-md',
         installedVersion: markers.version,
         state: versionedState(
           markers.version,
@@ -285,6 +392,44 @@ function checkAgentsMd(path: string, v: number): Found | null {
   }
 }
 
+/** The `codex` global `config.toml` (see `checkGuidance`). */
+function checkCodexToml(path: string, v: number): Found | null {
+  const raw = readBytes(path);
+  if (
+    raw === null ||
+    !raw
+      .split('\n')
+      .some((l) => l.includes(CODEX_MARKERS.startText) || l.includes(CODEX_MARKERS.endText))
+  ) {
+    return null;
+  }
+  const read = readUtf8Text(path);
+  if (read === null || read === 'invalid') {
+    return { state: 'modified', installedVersion: null };
+  }
+  const scan = scanToml(read.text);
+  if (scan.unterminated || scan.unreadable || hasNonCommentMarkerLine(scan)) {
+    // Unreadable (R4), or marker text inside a value (R1): never the block.
+    return { state: 'modified', installedVersion: null };
+  }
+  const markers = codexMarkers(read.text);
+  if (markers.kind === 'none') {
+    return null;
+  }
+  if (markers.kind === 'malformed') {
+    return { state: 'modified', installedVersion: markers.version };
+  }
+  return {
+    installedVersion: markers.version,
+    state: versionedState(markers.version, v, () => {
+      const region = read.text.slice(markers.start, markers.end);
+      const managed = managedCodexCommand(region, v);
+      const { foreign, shape } = serverDefinitions(scan, read.text.length);
+      return managed !== null && region.includes('\r') === false && foreign.length === 0 && !shape;
+    }),
+  };
+}
+
 function checkOpenSpec(path: string, v: number): Found | null {
   const text = readText(path);
   if (text === null) {
@@ -292,9 +437,7 @@ function checkOpenSpec(path: string, v: number): Found | null {
   }
   const parsed = parseConfig(text);
   if (!parsed.ok) {
-    return text.includes(OPENSPEC_PREFIX)
-      ? { target: 'openspec', state: 'modified', installedVersion: null }
-      : null;
+    return text.includes(OPENSPEC_PREFIX) ? { state: 'modified', installedVersion: null } : null;
   }
   const items = openSpecItems(parsed.doc);
   const all = OPENSPEC_OPERATIONS.flatMap((op) => items[op]);
@@ -305,7 +448,6 @@ function checkOpenSpec(path: string, v: number): Found | null {
   const [only] = versions;
   const installed = versions.size === 1 && only !== undefined ? only : null;
   return {
-    target: 'openspec',
     installedVersion: installed,
     state: versionedState(installed, v, () =>
       OPENSPEC_OPERATIONS.every((op) => {
@@ -317,7 +459,8 @@ function checkOpenSpec(path: string, v: number): Found | null {
   };
 }
 
-function checkMcpJson(path: string): Found | null {
+/** The `mcpServers.agentboard` entry of `.mcp.json`, `.cursor/mcp.json` or Antigravity's `mcp_config.json`. */
+function checkMcpFile(path: string): Found | null {
   const read = readUtf8Json(path);
   const config = read === null || read === 'invalid' ? null : parseMcpJson(read.text);
   const servers = config?.mcpServers;
@@ -325,7 +468,6 @@ function checkMcpJson(path: string): Found | null {
     return null;
   }
   return {
-    target: 'mcp-json',
     installedVersion: null,
     state: isManagedMcpEntry(servers[MCP_SERVER_NAME]) ? 'current' : 'modified',
   };
@@ -340,7 +482,7 @@ function checkClaudeHooks(path: string, v: number): Found | null {
   const settings = read === 'invalid' ? null : parseMcpJson(read.text);
   if (settings === null || !hasHooksShape(settings)) {
     return (readBytes(path) ?? '').includes(HOOKS_MARKER_TEXT)
-      ? { target: 'claude-hooks', state: 'modified', installedVersion: null }
+      ? { state: 'modified', installedVersion: null }
       : null;
   }
   const arrays = hookArrays(settings);
@@ -358,7 +500,6 @@ function checkClaudeHooks(path: string, v: number): Found | null {
   const [only] = versions;
   const installed = versions.size === 1 && only !== undefined ? only : null;
   return {
-    target: 'claude-hooks',
     installedVersion: installed,
     state: versionedState(installed, v, () => {
       const commands = owned.map((h) => ({ event: h.event, parsed: parseHookCommand(h.command) }));
@@ -417,23 +558,60 @@ export function renderGuidanceCheck(entries: readonly GuidanceCheckEntry[], root
  * then one line, `<k> of <n> guidance target(s) are not current; run
  * agentboard agents install to rewrite them`. Otherwise exit 0 (also when
  * nothing was found).
+ *
+ * Whatever the states, when `AGENTS.md` at the working tree root (with
+ * symbolic links resolved inside the tree, as for the targets) is larger
+ * than `ANTIGRAVITY_RULES_FILE_LIMIT` (24576) bytes, `warnings` ends with
+ * one line `AGENTS.md is <n> bytes; the Antigravity CLI reads at most 24
+ * KB (24576 bytes) of a rules file, so it ignores the rest` and the exit
+ * code is unchanged (board-agent-guidance: "Antigravity rules stay within
+ * size limits"). `options.global` is `agents check --global`.
  */
-export function checkCommand(cwd: string, env: Env): CommandOutput {
-  const { entries, unreadable } = inspect({ cwd, env });
+export function checkCommand(
+  cwd: string,
+  env: Env,
+  options: { readonly global?: boolean } = {},
+): CommandOutput {
+  const { entries, unreadable } = inspect({ cwd, env, global: options.global ?? false });
+  const root = workingTreeRoot(cwd, env);
   const output: CommandOutput = {
     json: entries,
-    text: renderGuidanceCheck(entries, workingTreeRoot(cwd, env)),
+    text: renderGuidanceCheck(entries, root),
   };
   const notCurrent = entries.filter((e) => e.state !== 'current').length;
-  if (notCurrent === 0) {
-    return output;
+  const warnings =
+    notCurrent === 0
+      ? []
+      : [
+          ...unreadable.map((u) => `cannot read ${u.path} (${u.code}); reported as modified`),
+          `${String(notCurrent)} of ${String(entries.length)} guidance target(s) are not current; run agentboard agents install to rewrite them`,
+        ];
+  const size = rulesFileSize(root);
+  if (size > ANTIGRAVITY_RULES_FILE_LIMIT) {
+    warnings.push(
+      `${AGENTS_MD_PATH} is ${String(size)} bytes; the Antigravity CLI reads at most 24 KB (${String(ANTIGRAVITY_RULES_FILE_LIMIT)} bytes) of a rules file, so it ignores the rest`,
+    );
   }
   return {
     ...output,
-    exitCode: 1,
-    warnings: [
-      ...unreadable.map((u) => `cannot read ${u.path} (${u.code}); reported as modified`),
-      `${String(notCurrent)} of ${String(entries.length)} guidance target(s) are not current; run agentboard agents install to rewrite them`,
-    ],
+    ...(notCurrent === 0 ? {} : { exitCode: 1 }),
+    ...(warnings.length === 0 ? {} : { warnings }),
   };
+}
+
+/**
+ * The size in bytes of `AGENTS.md` at the working tree `root` (symbolic
+ * links resolved inside the tree, as for the targets), or 0 when there is
+ * no such file or it cannot be measured.
+ */
+function rulesFileSize(root: string): number {
+  const where = targetPath(root, AGENTS_MD_PATH);
+  if (where.kind !== 'ok') {
+    return 0;
+  }
+  try {
+    return statSync(where.path).size;
+  } catch {
+    return 0;
+  }
 }

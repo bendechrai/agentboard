@@ -123,7 +123,7 @@ const CASES: readonly Case[] = [
     name: 'unknown target (row 8)',
     argv: (t) => ['agents', 'install', '--target', t],
     expected: usage(
-      'unknown target given with --target; expected one of claude, agents-md, openspec, mcp-json, claude-hooks',
+      'unknown target given with --target; expected one of claude, agents-md, openspec, mcp-json, claude-hooks, codex, cursor, antigravity, copilot',
       argsHint('agents install'),
     ),
   },

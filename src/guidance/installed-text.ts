@@ -637,3 +637,184 @@ export function hookGroup(key: ClaudeHookKey, options: ClaudeHookOptions = {}): 
     ? { matcher: PRE_TOOL_USE_MATCHER, hooks: [handler] }
     : { hooks: [handler] };
 }
+
+/**
+ * Relative path (POSIX separators) of the Cursor rule the `cursor` target
+ * writes in the working tree (board-agent-guidance: "Installing guidance
+ * into a host project").
+ */
+export const CURSOR_RULE_PATH = '.cursor/rules/agentboard.mdc';
+
+/** Relative path of the Cursor project MCP config, holding `mcpServers.agentboard`. */
+export const CURSOR_MCP_PATH = '.cursor/mcp.json';
+
+/** Relative path of the Copilot instructions file holding the managed block. */
+export const COPILOT_PATH = '.github/copilot-instructions.md';
+
+/**
+ * Path of Codex's global config file relative to `$CODEX_HOME` (default
+ * `$HOME/.codex`), written only with `--global`.
+ */
+export const CODEX_CONFIG_FILE = 'config.toml';
+
+/**
+ * Path of the Antigravity CLI's global MCP config relative to `$HOME`,
+ * written only with `--global`.
+ */
+export const ANTIGRAVITY_CONFIG_PATH = '.gemini/config/mcp_config.json';
+
+/**
+ * The most bytes the `AGENTS.md` block may have (board-agent-guidance:
+ * "Antigravity rules stay within size limits"): the Antigravity CLI reads
+ * at most 24 KB per rules file and 20000 tokens in aggregate.
+ */
+export const AGENTS_BLOCK_BYTE_LIMIT = 4096;
+
+/**
+ * The size above which `agents check` warns about an `AGENTS.md` at the
+ * working tree root: 24 KB, that is 24576 bytes, the most the Antigravity
+ * CLI reads of one rules file. A file of exactly this size does not warn.
+ */
+export const ANTIGRAVITY_RULES_FILE_LIMIT = 24 * 1024;
+
+/**
+ * The `description` of the Cursor rule's frontmatter: one line of plain
+ * ASCII that is a YAML plain scalar (no `: `, no ` #`, no leading
+ * indicator), so the frontmatter parses as YAML to exactly this string.
+ */
+export const CURSOR_RULE_DESCRIPTION =
+  "Coordinates this project's coding agents on the agentboard ticket board; always applied";
+
+/**
+ * The whole of `.cursor/rules/agentboard.mdc` for guidance version
+ * `version` (default `GUIDANCE_VERSION`), an always-applied Cursor rule:
+ *
+ * ```
+ * ---
+ * description: <CURSOR_RULE_DESCRIPTION>
+ * alwaysApply: true
+ * ---
+ * <skillMarker(version)>
+ * <the lines of renderAgentsBlock(version) between its start and end markers>
+ * ```
+ *
+ * lines joined by `\n`, ending with one `\n`. So the body after the
+ * frontmatter is the ownership marker (the one `SKILL.md` carries) and
+ * the `AGENTS.md` block's text: the intro, the six rules, the `Mutex
+ * tickets:` paragraph and the pointer to `agentboard help agents`
+ * (board-agent-guidance: "Mutex ticket recipe"). At most 45 lines,
+ * frontmatter included. Plain ASCII. Pure.
+ */
+export function renderCursorRule(version: number = GUIDANCE_VERSION): string {
+  const block = renderAgentsBlock(version).split('\n');
+  return `${[
+    '---',
+    `description: ${CURSOR_RULE_DESCRIPTION}`,
+    'alwaysApply: true',
+    '---',
+    skillMarker(version),
+    ...block.slice(1, -1),
+  ].join('\n')}\n`;
+}
+
+/** The start marker of the Codex `config.toml` block: exactly `# agentboard:start v<version>`. */
+export function codexBlockStart(version: number): string {
+  return `# agentboard:start v${String(version)}`;
+}
+
+/** The end marker of the Codex `config.toml` block. */
+export const CODEX_BLOCK_END = '# agentboard:end';
+
+/**
+ * `value` as a TOML basic string (TOML 1.0): `"`, then each character,
+ * then `"`. `"` is written `\"` and `\` is written `\\`; U+0008 `\b`, tab
+ * `\t`, line feed `\n`, U+000C `\f` and carriage return `\r`; every other
+ * character in U+0000 to U+001F, and U+007F, as `\u00XX` with upper-case
+ * hex digits; every other character as it is (non-ASCII text included,
+ * written as UTF-8 by the caller). A TOML parser reads it back as exactly
+ * `value`. Pure.
+ */
+export function tomlBasicString(value: string): string {
+  let out = '"';
+  for (const c of value) {
+    const code = c.codePointAt(0) ?? 0;
+    if (c === '"') {
+      out += '\\"';
+    } else if (c === '\\') {
+      out += '\\\\';
+    } else if (c === '\b') {
+      out += '\\b';
+    } else if (c === '\t') {
+      out += '\\t';
+    } else if (c === '\n') {
+      out += '\\n';
+    } else if (c === '\f') {
+      out += '\\f';
+    } else if (c === '\r') {
+      out += '\\r';
+    } else if (code < 0x20 || code === 0x7f) {
+      out += `\\u${code.toString(16).toUpperCase().padStart(4, '0')}`;
+    } else {
+      out += c;
+    }
+  }
+  return `${out}"`;
+}
+
+/**
+ * The marked block agentboard owns in Codex's global `config.toml` for
+ * guidance version `version` (design.md decision 5), from the first byte
+ * of the start marker to the last byte of the end marker, lines joined by
+ * `\n`, with NO trailing newline:
+ *
+ * ```
+ * # agentboard:start v<version>
+ * [mcp_servers.agentboard]
+ * command = <tomlBasicString(command)>
+ * args = <args>
+ * # agentboard:end
+ * ```
+ *
+ * The command and args are those of `mcpEntry(command)`: without
+ * `command`, `command = "npx"` and `args = ["-y", "@bendechrai/agentboard",
+ * "mcp"]`; with it, `command = <tomlBasicString(command)>` and `args =
+ * ["mcp"]`. Each array element is a TOML basic string, elements separated
+ * by `, `. Pure.
+ */
+export function renderCodexBlock(version: number = GUIDANCE_VERSION, command?: string): string {
+  const entry = mcpEntry(command);
+  return [
+    codexBlockStart(version),
+    `[${CODEX_TABLE}]`,
+    `command = ${tomlBasicString(entry.command)}`,
+    `args = [${entry.args.map(tomlBasicString).join(', ')}]`,
+    CODEX_BLOCK_END,
+  ].join('\n');
+}
+
+/** The dotted key of the table the Codex block defines: `mcp_servers.agentboard`. */
+export const CODEX_TABLE = `mcp_servers.${MCP_SERVER_NAME}`;
+
+/**
+ * The command `agents install` prints for the `codex` target without
+ * `--global` (board-agent-guidance: "Global harness config is never
+ * edited by default"): exactly `codex mcp add agentboard -- npx -y
+ * @bendechrai/agentboard mcp` without `command`, else `codex mcp add
+ * agentboard -- <hookExecutable(command)> mcp`, so the executable is one
+ * shell word (single-quoted where needed, `'` as `'\''`) and a POSIX shell
+ * passes it to `codex` exactly as given, with no expansion. Pure.
+ */
+export function codexMcpAddCommand(command?: string): string {
+  return `codex mcp add ${MCP_SERVER_NAME} -- ${hookExecutable(command)} ${MCP_LOCAL_ARGS.join(' ')}`;
+}
+
+/**
+ * The command `agents install` prints for the `antigravity` target
+ * without `--global`: exactly `agy mcp add agentboard npx -y
+ * @bendechrai/agentboard mcp` without `command`, else `agy mcp add
+ * agentboard <hookExecutable(command)> mcp`, quoted as for
+ * `codexMcpAddCommand`. Pure.
+ */
+export function agyMcpAddCommand(command?: string): string {
+  return `agy mcp add ${MCP_SERVER_NAME} ${hookExecutable(command)} ${MCP_LOCAL_ARGS.join(' ')}`;
+}

@@ -669,6 +669,190 @@ behaviour and pinned by the tests and the contracts in
   one; only the rename itself may be lost on power failure, which costs a
   rerun of an idempotent install.
 
+## Rulings from task group 4 (test author)
+
+Taken while writing the group 4 tests, posted as `DECISION:` comments on
+the group's ticket and pinned by the tests and the contracts in
+`src/guidance/install.ts` (`GuidanceTarget`, `TARGET_FILES`,
+`RefusalReason`, `InstallResult.registerCommands`, `globalConfigPath`,
+`installGuidance`), `src/guidance/check.ts` (`checkGuidance`,
+`checkCommand`) and `src/guidance/installed-text.ts` (`renderCursorRule`,
+`renderCodexBlock`, `tomlBasicString`, `codexMcpAddCommand`,
+`agyMcpAddCommand`). Group 3's principle carries over: user data is never
+changed silently; what cannot be edited exactly is refused, with or
+without `--force` as below.
+
+- **One outcome per file.** `cursor` reports two outcomes
+  (`.cursor/rules/agentboard.mdc`, then `.cursor/mcp.json`), and `codex`
+  and `antigravity` with `--global` two (`AGENTS.md`, then the global
+  file, reported by its absolute path); each is processed and refused on
+  its own, and the summary counts outcomes. `agents check` likewise
+  reports `cursor` twice, with its own path each time, so the documented
+  `{target, path, state, installedVersion, currentVersion}` shape is
+  unchanged. The target order is `claude`, `agents-md`, `openspec`,
+  `mcp-json`, `claude-hooks`, `codex`, `cursor`, `antigravity`,
+  `copilot`.
+- **The shared `AGENTS.md` block.** `codex` and `antigravity` process
+  `AGENTS.md` exactly as `agents-md`, under their own name; when several
+  of the three are selected the first writes and the others find it up to
+  date. `agents check` reports the block once, as `agents-md`, never as
+  `codex` or `antigravity`, which appear in `check` only with `--global`.
+- **Registration commands.** The install result gains
+  `registerCommands`, `[{target, command}]` (always present, empty
+  without `codex` or `antigravity` or with `--global`), whether or not the
+  target's `AGENTS.md` outcome was refused. The text output prints one
+  introducing line naming `--global`, then each command alone on its line
+  indented by four spaces, after the outcomes and before the summary. The
+  commands use `--command` or the default `npx` words, never an executable
+  kept in a project file, and quote the executable with `hookExecutable`
+  (one shell word, single-quoted where needed), so `/bin/sh` passes it as
+  given; tests run them against fake `codex` and `agy` executables.
+- **`--global`.** It applies only to `codex` and `antigravity` given with
+  `--target`; with neither given (auto-detection, the prompt, or
+  `--command` alone do not count) it is the usage error `--global edits a
+  harness's global MCP config and needs --target codex or --target
+  antigravity`. The paths come from the environment only: Codex's from
+  `CODEX_HOME` when set and non-empty, else `HOME/.codex`; Antigravity's
+  from `HOME`. An unset, empty or relative variable is a usage error
+  (`--global needs CODEX_HOME or HOME set to an absolute path`, `--global
+  needs HOME set to an absolute path`) that repeats no value, raised
+  before anything is read or written; `agents check --global` raises the
+  same. Without `--global` nothing under `HOME` or `CODEX_HOME` is read:
+  the tests make those files unreadable and expect no refusal.
+- **Global files.** No `outside-tree` check (they are outside by design);
+  a symbolic link there is followed and kept, since dotfile managers link
+  these files; `not-a-file` and `unwritable` apply. An existing file is
+  replaced atomically keeping its mode (a 0600 `config.toml` holding
+  tokens stays 0600), as `.claude/settings.json` is; so is
+  `.cursor/mcp.json`. A missing parent directory is created.
+- **The Codex block** is `# agentboard:start v<N>`,
+  `[mcp_servers.agentboard]`, `command = <string>`, `args = [...]`,
+  `# agentboard:end`, with the command and args of `mcpEntry`. Strings are
+  TOML basic strings: `"` and `\` escaped, the short escapes for `\b \t
+  \n \f \r`, other controls and DEL as `\u00XX`, everything else as it is.
+  The block is appended as the `AGENTS.md` block is, and the rest of the
+  file is never parsed or rewritten, so comments, CRLF lines, a byte order
+  mark and odd formatting survive byte for byte. A managed block (the
+  rendering for its own version with no command or some command, CRLF
+  read as LF) is upgraded or switched by `--command` without `--force`
+  and keeps a local command otherwise; any other text between the markers
+  is `entry-differs`.
+- **The TOML line scan.** Headers and keys are found by a scan that skips
+  multi-line basic and literal strings (escapes included), comments and
+  arrays and inline tables spanning lines, and compares keys after
+  decoding bare, basic-quoted and literal-quoted parts (whitespace around
+  dots, indentation, trailing comments ignored; case kept). A file that is
+  not strict UTF-8 after a byte order mark, or that ends inside a
+  multi-line string or an unclosed array or inline table (appending would
+  land inside it), is `malformed-file`, even with `--force`.
+- **`foreign-table` and `toml-shape`.** A `[mcp_servers.agentboard]`
+  table outside the markers, or a sub-table of it, is `foreign-table`
+  (the spec's refusal); `--force` removes each such table (its header to
+  the line before the next header) and puts the block where the marked
+  block is, else where the first was. A definition no line edit can
+  replace, or that a `[mcp_servers.agentboard]` header would make invalid
+  TOML, is the new refusal `toml-shape`, refused even with `--force`:
+  `[[mcp_servers]]` or an array of tables at or below the server, a dotted
+  key or inline table at or below `mcp_servers.agentboard`, a value given
+  to `mcp_servers` itself, and a key/value line below the end marker and
+  above the next header, which TOML reads into the block's table (a
+  setting appended below the block). `check` reports a block with any of
+  these outside its markers `modified`, since Codex would read two
+  definitions or reject the file.
+- **Codex markers** are matched as the `AGENTS.md` ones (a marker-like
+  line contains `# agentboard:start` or `# agentboard:end`), also inside a
+  multi-line string, so a doubtful file is refused rather than edited;
+  `--force` removes the marker-like lines and nothing else.
+- **The Cursor rule** is the frontmatter `description` (a constant that
+  is a YAML plain scalar) and `alwaysApply: true`, the ownership marker
+  `<!-- agentboard-guidance: v<N> -->`, then the lines of the `AGENTS.md`
+  block between its markers: 39 lines at version 3. It is owned whole
+  when a line holds the marker, like `SKILL.md`.
+- **The 24 KB warning** is printed by `agents check` (a `warnings` line,
+  so on stderr, after any other warning) when `AGENTS.md` at the working
+  tree root is larger than 24576 bytes, whether or not it holds the block
+  and whatever the states; a file of exactly 24576 bytes, one below the
+  root and one linked outside the tree do not warn. The exit code is
+  unchanged.
+- **0.3.0 fixtures.** `SKILL.md` and the `AGENTS.md` block as 0.3.0
+  rendered them are frozen in `src/guidance/__tests__/fixtures/`
+  (generated from the `v0.3.0` tag); the tests require the running CLI to
+  render them byte for byte and report them `current`.
+- **Existing tests updated:** the unknown-target message lists the nine
+  targets (the agents-cli test now uses `windsurf`), the synopsis of
+  `agents install` gains `[--global]`, the `--json` install result
+  carries `registerCommands`, and the check test that installs every
+  target expects the shared block once.
+
+## Rulings from review round 1 of task group 4
+
+Taken by the orchestrator on the two reviews of PR #142 (reviewer-hk4
+approved with nits; reviewer-hk4-2 requested changes), posted as
+`DECISION:` comments on the group's ticket, written into the spec delta
+where they change behaviour and pinned by the tests and the contracts in
+`src/guidance/install.ts` (`RefusalReason`, `validateCommand`):
+
+- **R1 A marker that is not a comment line is never the block.** In
+  `config.toml` a marker-like line that the scan does not classify as a
+  comment line (inside a multi-line string, inside an array or inline
+  table spanning lines, or after a key) makes the markers malformed, also
+  when the lines look like a well-formed pair: install refuses it as
+  `malformed-marker` (repeating none of it; a `--command` switch is
+  refused the same way), and `check` reports `modified`. Refined by the
+  test author: `--force` does not override this case. The text is part
+  of the user's value, so removing it would change user data, and leaving
+  it would make every later install need `--force` again; the message
+  does not offer `--force`. Markdown targets (`AGENTS.md`, the Copilot
+  file, the Cursor rule and `SKILL.md`) are out of scope: Markdown has no
+  unambiguous comment position (a fence can be opened by an indented or
+  unclosed line, inside lists and quotes), so detecting "inside a fenced
+  code block" needs a CommonMark block parser, and any approximation can
+  turn an existing 0.3.0 install from `current` into `modified` (for
+  example a block that 0.3.0 appended after an unclosed fence), against
+  "Existing installs stay current". There, the worst case is agentboard
+  editing text between its own markers inside a code example, not
+  changing a configuration value.
+- **R2 Marker text in `--command`.** A `--command` (or `--mcp-command`)
+  value containing the text of any agentboard marker (`<!--
+  agentboard:start`, `<!-- agentboard:end`, `# agentboard:start`, `#
+  agentboard:end`, `<!-- agentboard-guidance:`, `# agentboard-hooks:`) is
+  a usage error, `--<flag> must not contain agentboard marker text`,
+  checked last among the `--command` checks, naming the flag and never
+  the value.
+- **R3 `--force` keeps what belongs to the next table.** Replacing a
+  foreign `[mcp_servers.agentboard]` table removes only its own header
+  and key lines (key/value and continuation lines, with the comment and
+  blank lines between them); the run of comment and blank lines directly
+  above the next header, marker line or the end of the file stays.
+- **R4 A line the scan cannot read is `malformed-file`.** A statement
+  that is neither a header nor a key/value line, a header or key that
+  does not parse, and an escape in any basic string, key or value, other
+  than `\b \t \n \f \r \e \" \\`, a valid `\uXXXX` or `\UXXXXXXXX` and a
+  multi-line string's line-ending backslash, make `config.toml`
+  `malformed-file`, even with `--force` (`\x41` included), instead of
+  being skipped. `check` treats such a file as it treats invalid UTF-8.
+- **R5 Linear trimming.** `bare()` trims marker-like lines without a
+  backtracking regular expression; a 200 KB marker-like line in
+  `config.toml`, `AGENTS.md` or the Copilot file is refused within a
+  second (tested through the built CLI in a child killed after 10 s).
+  The other marker expressions (`wellFormedStart`, the skill and OpenSpec
+  version lines, matched on trimmed or anchored text without nested
+  quantifiers) are linear.
+- **R6 Mutant tests and hygiene.** Tests for a foreign table directly
+  above the marked block under `--force` (M20), `command = ""` between
+  the markers (`entry-differs`, M24), multi-line strings closed by four
+  or five quotes inside an array (M2), and the atomic replace of
+  `.cursor/mcp.json` (a new inode, M19). Tests that use a relative or
+  empty HOME or CODEX_HOME run with the process in a fresh temporary
+  directory, which must stay empty, so a regression cannot write into the
+  repository.
+- **R7** The spec's strict UTF-8 and `lossy-json` sentences name
+  `.cursor/mcp.json` and Antigravity's `mcp_config.json` too.
+- **Accepted, no change:** a block rewritten into a CRLF `config.toml`
+  is written with line feeds, so the file has mixed line ends; this is
+  the 0.3.0 behaviour of the `AGENTS.md` block, and changing it would
+  change existing installs.
+
 ## Risks / Trade-offs
 
 - **PreToolUse is intrusive and adds latency to every edit** -> warn-only

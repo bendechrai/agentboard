@@ -128,12 +128,22 @@ describe('what is found', () => {
     ]);
   });
 
-  it('reports every target in GUIDANCE_TARGETS current after installing them all, claude-hooks last', () => {
+  it('reports every target in GUIDANCE_TARGETS current after installing them all, the shared AGENTS.md block once', () => {
     const root = plainProject();
     writeRel(root, CONFIG, OPENSPEC_FIXTURE);
+    // No --global, so codex and antigravity read and write nothing outside the project.
     installGuidance({ cwd: root, env: ENV, targets: [...GUIDANCE_TARGETS] });
     const entries = check(root);
-    expect(entries.map((e) => e.target)).toEqual([...GUIDANCE_TARGETS]);
+    expect(entries.map((e) => [e.target, e.path])).toEqual([
+      ['claude', SKILL],
+      ['agents-md', 'AGENTS.md'],
+      ['openspec', CONFIG],
+      ['mcp-json', '.mcp.json'],
+      ['claude-hooks', '.claude/settings.json'],
+      ['cursor', '.cursor/rules/agentboard.mdc'],
+      ['cursor', '.cursor/mcp.json'],
+      ['copilot', '.github/copilot-instructions.md'],
+    ]);
     expect(entries.every((e) => e.state === 'current')).toBe(true);
     expect(entry(entries, 'claude-hooks')).toEqual({
       target: 'claude-hooks',

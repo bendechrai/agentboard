@@ -457,7 +457,7 @@ describe('the drift guard: every example parses to its own command', () => {
     expect(usage?.meaning).toContain('--command');
     expect(usage?.meaning).toContain('--mcp-command');
     expect(synopsis(command('agents install'))).toBe(
-      'agentboard agents install [--target <target>]... [--hooks-strict] [--force] [--command <command> | --mcp-command <mcp-command>] [--json]',
+      'agentboard agents install [--target <target>]... [--hooks-strict] [--global] [--force] [--command <command> | --mcp-command <mcp-command>] [--json]',
     );
   });
 
