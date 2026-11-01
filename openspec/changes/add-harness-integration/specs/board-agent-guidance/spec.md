@@ -63,12 +63,18 @@ direct the agent to `agentboard help agents` for everything else. With no
 auto-select `mcp-json` or `claude-hooks` (hooks are opt-in with `--target
 claude-hooks`), and SHALL report each selected target and the
 reason. When nothing is selected and stdin and stdout are both terminals
-(and `--json` is not given), it SHALL list the targets numbered and ask
-which to create, as a comma-separated list of numbers or names; an empty
-answer or an unknown token SHALL exit 1 listing the targets and write
-nothing, without repeating the answer (board-cli "Refusals never repeat
-the refused input"), and each chosen target is reported as selected by
-the prompt.
+(and `--json` is not given), after every usage check has passed, it SHALL
+list, numbered from 1, the targets auto-detection can select except
+`openspec` (which needs an `openspec/config.yaml`): `claude`,
+`agents-md`, `codex`, `cursor`, `antigravity` and `copilot`, and ask
+which to create, as a comma-separated list of those numbers or names
+(spaces around items, empty items and repeats ignored); an empty answer,
+the end of input before a line end, or an answer with any item that
+names no listed target (an unknown token, a number out of range, an
+unlisted target) or longer than 4096 bytes SHALL exit 1 listing the
+targets and write nothing, without repeating the answer (board-cli
+"Refusals never repeat the refused input"), and each chosen target is
+reported as selected by the prompt (`chosen at the prompt`).
 When nothing is selected and the session is not interactive it SHALL exit 1
 listing the targets, as before. `--hooks-strict` SHALL write the hooks in
 strict mode (see board-harness-hooks) and has no effect without
@@ -123,6 +129,14 @@ with version 3 markers.
 #### Scenario: Unknown answer is not repeated
 - **WHEN** the bare-project prompt is answered with a token-shaped word that names no target
 - **THEN** it exits 1 listing the targets, writes nothing, and the word appears nowhere in stdout or stderr
+
+#### Scenario: One unknown item refuses the whole answer
+- **WHEN** the bare-project prompt is answered `1,<token>` where the token names no listed target
+- **THEN** it exits 1, writes nothing (not even the first target), and the token appears nowhere in stdout or stderr
+
+#### Scenario: Usage errors come before the prompt
+- **WHEN** `agentboard agents install --global` runs on a terminal in a bare project
+- **THEN** it exits 1 with reason `usage` without asking anything
 
 #### Scenario: Hooks are opt-in
 - **WHEN** `agentboard agents install` runs in a project that has `.claude/`

@@ -187,6 +187,72 @@ export const TARGET_FILES: Readonly<Record<GuidanceTarget, string>> = {
 export const INIT_SUGGESTION =
   "Next: run 'agentboard agents install' so this project's coding agents learn to use the board.";
 
+/**
+ * The reason of a target chosen at the bare-project prompt; `renderInstall`
+ * prints `selected <target>: chosen at the prompt` for each such target,
+ * as it does for `COMMAND_REASON`.
+ */
+export const PROMPT_REASON = 'chosen at the prompt';
+
+/**
+ * The targets the bare-project prompt lists, numbered from 1 in this order
+ * (add-harness-integration design.md "Rulings from task group 5 (test
+ * author)"): the targets auto-detection can select, in `GUIDANCE_TARGETS`
+ * order, except `openspec`, which needs an `openspec/config.yaml` that a
+ * bare project does not have (it would be refused `missing-file`).
+ * `mcp-json` and `claude-hooks` are never offered: they stay opt-in with
+ * `--target` (and `--command` for `mcp-json`), as design.md decision 6
+ * and "Installing guidance into a host project" require.
+ */
+export const PROMPT_TARGETS: readonly GuidanceTarget[] = [
+  'claude',
+  'agents-md',
+  'codex',
+  'cursor',
+  'antigravity',
+  'copilot',
+];
+
+/**
+ * The text of the bare-project prompt, written before the answer is read:
+ * a line saying that no agent tool was detected in `root`, then one line
+ * per `PROMPT_TARGETS` entry, `  <n>. <target>` (two spaces, the number
+ * from 1, a full stop, one space, the target name), optionally followed
+ * by a space and a short description of what it writes, then the question,
+ * which asks for a comma-separated list of numbers or names and says that
+ * an empty answer installs nothing, and ends with a space and no line end.
+ * Plain ASCII. Pure.
+ */
+export function renderTargetPrompt(root: string): string {
+  void root;
+  throw new Error('not implemented: renderTargetPrompt (task 5.2)');
+}
+
+/**
+ * The targets an answer to the bare-project prompt chooses, in
+ * `GUIDANCE_TARGETS` order, each once. The answer is split at commas
+ * (only commas separate), and spaces and tabs around each item are
+ * removed; empty items are ignored (`1,,3` and `1,3,` are `1,3`). An item
+ * is either the number of a listed target exactly as listed (`1` to
+ * `PROMPT_TARGETS.length`, decimal digits, no sign, no leading zero) or
+ * the exact name of a listed target (case matters, as with `--target`).
+ * Repeats, by number or name, count once. Pure.
+ *
+ * @throws BoardError(1, 'no-targets') when no item is left (an empty
+ *   answer, or only commas and spaces): nothing is chosen; the message
+ *   lists every `PROMPT_TARGETS` name.
+ * @throws BoardError(1, 'usage') when any item names no listed target (an
+ *   unknown word, a number out of range, an unlisted target such as
+ *   `openspec` or `mcp-json`), even when other items are valid: nothing is
+ *   chosen. The message says the answer names no listed target and lists
+ *   the numbers and names; it never contains any part of the answer
+ *   (board-cli "Refusals never repeat the refused input").
+ */
+export function parsePromptAnswer(answer: string): readonly GuidanceTarget[] {
+  void answer;
+  throw new Error('not implemented: parsePromptAnswer (task 5.2)');
+}
+
 /** Options of `installGuidance`. */
 export interface InstallOptions {
   /** Directory the command runs in; the working tree root is resolved from it. */
@@ -244,6 +310,14 @@ export interface InstallOptions {
    * instead.
    */
   readonly global?: boolean;
+  /**
+   * The targets chosen at the bare-project prompt (`parsePromptAnswer`),
+   * used only when `targets` is empty: they replace auto-detection, each
+   * with reason `PROMPT_REASON`, and `autoDetected` is false. `command`
+   * still adds `mcp-json`, and the `--global` checks still count only
+   * targets given with `--target`. Absent or empty: auto-detection.
+   */
+  readonly chosen?: readonly GuidanceTarget[];
   /**
    * The guidance version to install; default `GUIDANCE_VERSION`. Only tests
    * pass it, to simulate an older or newer CLI.

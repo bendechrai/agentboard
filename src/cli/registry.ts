@@ -879,7 +879,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'init',
     summary: 'Create the board for this project',
     description:
-      'Creates the board for the project containing the current directory: a .board directory that is a git repository of its own, ignored by the host project. Running it again on an existing board changes nothing. With --remote <url> the board is a standalone board shared through the repository at <url>, kept out of the host repository (for a public project, or a git host that refuses custom refs): an existing board there is cloned, an empty repository receives the new board on the first sync, a missing local path is created as a bare repository first, and a standalone board without a remote gets <url> as origin and is synced. With --into-host an existing standalone board is moved into the host repository (its history becomes refs/agentboard/board and .board a worktree of the host), keeping every commit; it refuses while the board has events that are not committed or not pushed, keeps the old repository under the host .git directory, runs sync, and can be run again after an interruption. --remote and --into-host are mutually exclusive. Needs git; needs no actor.',
+      'Creates the board for the project containing the current directory: a .board directory that is a git repository of its own, ignored by the host project. Running it again on an existing board changes nothing. With --remote <url> the board is a standalone board shared through the repository at <url>, kept out of the host repository (for a public project, or a git host that refuses custom refs): an existing board there is cloned, an empty repository receives the new board on the first sync, a missing local path is created as a bare repository first, and a standalone board without a remote gets <url> as origin and is synced. With --into-host an existing standalone board is moved into the host repository (its history becomes refs/agentboard/board and .board a worktree of the host), keeping every commit; it refuses while the board has events that are not committed or not pushed, keeps the old repository under the host .git directory, runs sync, and can be run again after an interruption. --remote and --into-host are mutually exclusive. After the board is created, joined or found, on an interactive terminal (standard input and output both terminals, no --json) it asks Install agent guidance now? [Y/n] and runs agentboard agents install on y, yes or Enter, which may ask which targets to install in a project where none is detected; --agents runs the install without asking and --no-agents skips it without asking; --agents and --no-agents are mutually exclusive. When the install is not run, the output ends with a line suggesting agentboard agents install. A failed install keeps the board and exits with the exit code of the install. Needs git; needs no actor.',
     group: 'setup',
     examples: [
       { command: 'agentboard init', summary: 'Create the board for this project' },
@@ -900,6 +900,17 @@ export const COMMANDS: readonly CommandSpec[] = [
       { code: 0, meaning: 'The board was created, already existed, or was moved into the host repository' },
       EXIT_USAGE,
       EXIT_INVALID_ACTOR,
+      {
+        code: 1,
+        meaning:
+          'The board is ready, but the agent guidance install refused a target, or the answer at the prompt was not understood or never came (input ended); nothing was installed for that answer',
+      },
+      {
+        code: 1,
+        reason: 'no-targets',
+        meaning:
+          'The board is ready, but the agent guidance install found no target to install (with --agents, or yes at the prompt, in a project with no detected agent tool and no target chosen)',
+      },
       { code: 1, reason: 'git-missing', meaning: 'git could not be run' },
       {
         code: 1,
@@ -992,6 +1003,12 @@ export const COMMANDS: readonly CommandSpec[] = [
         'boolean',
         'Move the existing standalone board into the host repository, keeping its history',
       ),
+      flag(
+        'agents',
+        'boolean',
+        'Run agentboard agents install after the board is ready, without asking',
+      ),
+      flag('no-agents', 'boolean', 'Do not install agent guidance, and do not ask'),
     ],
     exclusive: [
       {
@@ -1000,10 +1017,19 @@ export const COMMANDS: readonly CommandSpec[] = [
         reason: 'usage',
         message: 'init takes --remote <url> or --into-host, not both',
       },
+      {
+        alternatives: [['agents'], ['no-agents']],
+        required: false,
+        reason: 'usage',
+        message: 'init takes --agents or --no-agents, not both',
+      },
     ],
     writes: false,
     operation: 'initBoard',
     run: (ctx, values) => {
+      if (bool(values, 'agents') || bool(values, 'no-agents')) {
+        throw new Error('not implemented: init --agents and --no-agents (task 5.2)');
+      }
       const url = str(values, 'remote');
       const result = bool(values, 'into-host')
         ? moveBoardIntoHost({ cwd: ctx.cwd, env: ctx.env })
