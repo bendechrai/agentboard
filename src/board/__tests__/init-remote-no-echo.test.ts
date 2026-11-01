@@ -29,6 +29,7 @@ import {
   localEnv,
   printingSshShim,
   startAuthServer,
+  tokenUserPromptLines,
   type AuthServer,
 } from './no-echo-remote-helpers.js';
 import { sshShim, standaloneBoard } from './sharing-helpers.js';
@@ -114,6 +115,12 @@ describe('sanitizeGitLine: the value given becomes <url>, credentials become <re
     ).toBe(
       `fatal: could not read Password for 'http://<redacted>@127.0.0.1:4242': terminal prompts disabled`,
     );
+  });
+
+  it('leaves the could not read Username line unchanged: git quotes no user information in it', () => {
+    const given = `http://${GH_TOKEN}@127.0.0.1:4242/x.git`;
+    const line = `fatal: could not read Username for 'http://127.0.0.1:4242': terminal prompts disabled`;
+    expect(sanitizeGitLine(line, given)).toBe(line);
   });
 
   it('redacts the percent-decoded user information git prints for an encoded one', () => {
@@ -408,7 +415,7 @@ describe('an auth failure (HTTP 401 from a server on 127.0.0.1)', () => {
     expectNoLeak(err.message);
   });
 
-  it('a token as the user name: could not read Password quoted with <redacted>', () => {
+  it('a token as the user name: could not read Password quoted with <redacted>, or could not read Username without it', () => {
     const url = `http://${GH_TOKEN}@127.0.0.1:${server.port}/me/x.git`;
     const root = plainProject();
     const err = expectBoardError(
@@ -416,9 +423,11 @@ describe('an auth failure (HTTP 401 from a server on 127.0.0.1)', () => {
       3,
       'remote-unreachable',
     );
-    expect(err.message).toBe(
-      `the repository given with --remote cannot be read (fatal: could not read Password for 'http://<redacted>@127.0.0.1:${server.port}': terminal prompts disabled${UNREACHABLE_TAIL}`,
-    );
+    expect(
+      tokenUserPromptLines(server.port).map(
+        (line) => `the repository given with --remote cannot be read (${line}${UNREACHABLE_TAIL}`,
+      ),
+    ).toContain(err.message);
     expectNoLeak(err.message);
   });
 });

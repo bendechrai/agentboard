@@ -4,13 +4,17 @@
  * `--remote` values, an environment that keeps git off every proxy, an
  * HTTP server on 127.0.0.1 that refuses every request with 401 (an auth
  * failure without leaving the machine), and a `GIT_SSH_COMMAND` shim that
- * prints a chosen line on stderr and connects nowhere. Nothing here
+ * prints a chosen line on stderr and connects nowhere, and the two lines
+ * git may print when that server refuses a token given as the user name
+ * (which one depends on the git build and its libcurl). Nothing here
  * contacts a host other than 127.0.0.1 and ::1.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+
+import { expect } from 'vitest';
 
 import { secretFixture, SECRET_FIXTURES, URL_TOKEN as URL_FIXTURE_TOKEN } from '../../__tests__/harness/secret-fixtures.js';
 import { git, tempDir } from './helpers.js';
@@ -87,6 +91,44 @@ export async function startAuthServer(): Promise<AuthServer> {
     "server.listen(0, '127.0.0.1', () => { process.stdout.write(server.address().port + '\\n'); });",
   ].join('\n');
   return startChildServer(source);
+}
+
+/**
+ * The two lines, sanitised, that git prints when `AuthServer` on `port`
+ * answers 401 for a URL whose user name is a token and the terminal prompt
+ * is off. Which one a machine gets depends on the git build and the
+ * libcurl it runs with, not on any configuration the tests could isolate:
+ * most builds ask for the password of the user the URL names (the token,
+ * which the sanitiser shows as `<redacted>`), while git 2.55.0 of the
+ * git-core PPA with Ubuntu 24.04's libcurl 8.5.0-2ubuntu10.16 drops the
+ * user name after the first 401 and asks for one, quoting the scheme and
+ * host only. Neither repeats the token.
+ */
+export function tokenUserPromptLines(port: number): readonly [password: string, username: string] {
+  return [
+    `fatal: could not read Password for 'http://<redacted>@127.0.0.1:${String(port)}': terminal prompts disabled`,
+    `fatal: could not read Username for 'http://127.0.0.1:${String(port)}': terminal prompts disabled`,
+  ];
+}
+
+/** `text` with every character a regular expression gives a meaning escaped. */
+export function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** A regular expression source matching exactly one of `tokenUserPromptLines(port)`. */
+export function tokenUserPromptPattern(port: number): string {
+  return `(?:${tokenUserPromptLines(port).map(escapeRegExp).join('|')})`;
+}
+
+/**
+ * Asserts that `text` quotes one of `tokenUserPromptLines(port)` and not
+ * the other: one git run asks in one form only, so both at once would
+ * mean a line was built rather than quoted from git.
+ */
+export function expectOneTokenUserPrompt(text: string, port: number): void {
+  const found = tokenUserPromptLines(port).filter((line) => text.includes(line));
+  expect(found, text).toHaveLength(1);
 }
 
 /** Runs `source` with node as a child process and resolves with the port it prints on its first stdout line. */

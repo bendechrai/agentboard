@@ -27,9 +27,11 @@ import {
   CLOSED_PORT,
   GH_TOKEN,
   URL_TOKEN,
+  expectOneTokenUserPrompt,
   localEnv,
   printingSshShim,
   startAuthServer,
+  tokenUserPromptPattern,
   type AuthServer,
   withoutTiming,
 } from '../../board/__tests__/no-echo-remote-helpers.js';
@@ -113,15 +115,11 @@ describe('scenario: Sync with a token in the configured remote URL (standalone b
     server.stop();
   });
 
-  it('a token as the user name, 401: could not read Password quoted with <redacted>', () => {
+  it('a token as the user name, 401: could not read Password quoted with <redacted>, or could not read Username without it', () => {
     const url = `http://${GH_TOKEN}@127.0.0.1:${server.port}/me/x.git`;
     const { root } = standaloneWithOrigin(url);
     const message = expectSanitisedRefusal(['sync'], root, localEnv(), 3, 'sync-failed', SYNC_FAILED);
-    expect(message).toMatch(
-      new RegExp(
-        `failed: fatal: could not read Password for 'http://<redacted>@127\\.0\\.0\\.1:${String(server.port)}': terminal prompts disabled$`,
-      ),
-    );
+    expect(message).toMatch(new RegExp(`failed: ${tokenUserPromptPattern(server.port)}$`));
   });
 
   it('user:pass@ with a token in the path, 401: Authentication failed quoted with <url>', () => {
@@ -164,7 +162,7 @@ describe('scenario: Sync with a token in the configured remote URL (standalone b
     const { root, dir } = standaloneWithOrigin(remote);
     git(dir, 'config', 'remote.origin.pushurl', `http://${GH_TOKEN}@127.0.0.1:${server.port}/x.git`);
     const message = expectSanitisedRefusal(['sync'], root, localEnv(), 3, 'sync-failed', SYNC_FAILED);
-    expect(message).toContain(`'http://<redacted>@127.0.0.1:${String(server.port)}'`);
+    expect(message).toMatch(new RegExp(`^pushing to origin failed: ${tokenUserPromptPattern(server.port)}$`));
   });
 
   it('a token in the URL a url.<base>.insteadOf rewrite produces', () => {
@@ -223,7 +221,7 @@ describe('scenario: The sync init --remote runs after attaching a remote', () =>
       expect(out.code, out.stderr).toBe(3);
       const message = json ? errorOf(out).message : (out.stderr.split('\n')[0] ?? '');
       expect(message).toMatch(SYNC_FAILED_ANY);
-      expect(message).toContain(`'http://<redacted>@127.0.0.1:${String(server.port)}'`);
+      expectOneTokenUserPrompt(message, server.port);
       expect(json ? errorOf(out).reason : 'sync-failed').toBe('sync-failed');
       // The remote stays (board-cli: a failing sync keeps the remote it set).
       expect(git(dir, 'remote')).toBe('origin\n');
@@ -240,15 +238,16 @@ describe('the host-model init join and init --into-host quote the host remote sa
     server.stop();
   });
 
-  it('init in a host whose origin answers 401 for a token user: the warning quotes <redacted>', () => {
+  it('init in a host whose origin answers 401 for a token user: the warning quotes <redacted>, or no user', () => {
     const root = hostRepo();
     git(root, 'remote', 'add', 'origin', `http://${GH_TOKEN}@127.0.0.1:${server.port}/me/x.git`);
     const plain = spawnCli(['init'], root, localEnv());
     expectNoLeak(plain.stdout + plain.stderr);
     expect(plain.code, plain.stderr).toBe(0);
-    expect(plain.stdout + plain.stderr).toContain(
-      `the remote origin could not be reached (fatal: could not read Password for 'http://<redacted>@127.0.0.1:${String(server.port)}': terminal prompts disabled)`,
+    expect(plain.stdout + plain.stderr).toMatch(
+      new RegExp(`the remote origin could not be reached \\(${tokenUserPromptPattern(server.port)}\\)`),
     );
+    expectOneTokenUserPrompt(plain.stdout + plain.stderr, server.port);
   });
 
   it('init with a host origin of user:pass@ and a token in the path, 401: no leak, <url> quoted', () => {
@@ -266,7 +265,7 @@ describe('the host-model init join and init --into-host quote the host remote sa
     git(root, 'remote', 'set-url', 'origin', `http://${GH_TOKEN}@127.0.0.1:${server.port}/me/x.git`);
     const plain = spawnCli(['init', '--into-host'], root, env);
     expectNoLeak(plain.stdout + plain.stderr);
-    expect(plain.stdout + plain.stderr).toContain(`http://<redacted>@127.0.0.1:${String(server.port)}`);
+    expectOneTokenUserPrompt(plain.stdout + plain.stderr, server.port);
     const json = spawnCli(['init', '--into-host', '--json'], root, env);
     expectNoLeak(json.stdout + json.stderr);
   });

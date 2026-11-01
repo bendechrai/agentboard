@@ -153,6 +153,11 @@ describe('sanitizeRemoteLine', () => {
     );
   });
 
+  it('a token as the user name of a configured URL (could not read Username, no user information quoted): unchanged', () => {
+    const line = `fatal: could not read Username for 'http://127.0.0.1:4242': terminal prompts disabled`;
+    expect(sanitizeRemoteLine(line, [tokenUser])).toBe(line);
+  });
+
   it('user:pass@ with a token in the path: the stripped form git prints becomes <url>', () => {
     expect(
       sanitizeRemoteLine(
