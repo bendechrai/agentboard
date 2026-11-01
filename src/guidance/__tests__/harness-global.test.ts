@@ -27,6 +27,7 @@ import {
   statSync,
   symlinkSync,
 } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -35,6 +36,7 @@ import { TOKEN_FIXTURES, expectNoLeak } from '../../__tests__/harness/secret-fix
 import { expectBoardError } from '../../board/__tests__/helpers.js';
 import { tempDir } from '../../store/__tests__/helpers.js';
 import type { Env } from '../../cli/types.js';
+import { BUILT_CLI } from '../../cli/__tests__/cli-helpers.js';
 import { checkCommand, checkGuidance } from '../check.js';
 import { globalConfigPath, renderInstall, type InstallResult } from '../install.js';
 import {
@@ -73,6 +75,24 @@ const GLOBAL_TARGET_USAGE =
 const CODEX_HOME_USAGE = '--global needs CODEX_HOME or HOME set to an absolute path';
 const HOME_USAGE = '--global needs HOME set to an absolute path';
 const BLOCK = codexBlock();
+
+/**
+ * Runs `fn` with the process in a fresh temporary directory, which must
+ * still be empty afterwards: a relative HOME or CODEX_HOME resolves
+ * against the process directory, so a regression that used one would
+ * write there, never into the repository.
+ */
+function inScratchCwd(fn: () => void): void {
+  const cwd = tempDir();
+  const before = process.cwd();
+  process.chdir(cwd);
+  try {
+    fn();
+  } finally {
+    process.chdir(before);
+  }
+  expect(fileList(cwd)).toEqual([]);
+}
 
 function setup(opts: { codexHome?: 'unset' | 'empty' } = {}): {
   root: string;
@@ -164,42 +184,54 @@ describe('--global usage errors', () => {
     const root = plainProject();
     const scratch = scratchHome({ codexHome: 'unset' });
     const env: Env = { ...scratch.env, HOME: `rel/${f.value}` };
-    const codex = expectBoardError(
-      () => installIn(root, { ...scratch, env }, { targets: ['codex'], global: true }),
-      1,
-      'usage',
-    );
-    expect(codex.message).toBe(CODEX_HOME_USAGE);
-    const agy = expectBoardError(
-      () => installIn(root, { ...scratch, env }, { targets: ['antigravity'], global: true }),
-      1,
-      'usage',
-    );
-    expect(agy.message).toBe(HOME_USAGE);
-    expectNoLeak('relative HOME', [codex.message, agy.message], [f]);
+    inScratchCwd(() => {
+      const codex = expectBoardError(
+        () => installIn(root, { ...scratch, env }, { targets: ['codex'], global: true }),
+        1,
+        'usage',
+      );
+      expect(codex.message).toBe(CODEX_HOME_USAGE);
+      const agy = expectBoardError(
+        () => installIn(root, { ...scratch, env }, { targets: ['antigravity'], global: true }),
+        1,
+        'usage',
+      );
+      expect(agy.message).toBe(HOME_USAGE);
+      const check = expectBoardError(
+        () => checkGuidance({ cwd: root, env, global: true }),
+        1,
+        'usage',
+      );
+      expectNoLeak('relative HOME', [codex.message, agy.message, check.message], [f]);
+    });
     expect(fileList(root)).toEqual([]);
   });
 
   it('refuses a relative CODEX_HOME even with a usable HOME', () => {
     const { root, scratch } = setup();
     const env: Env = { ...scratch.env, CODEX_HOME: 'codex' };
-    const error = expectBoardError(
-      () => installIn(root, { ...scratch, env }, { targets: ['codex'], global: true }),
-      1,
-      'usage',
-    );
-    expect(error.message).toBe(CODEX_HOME_USAGE);
+    inScratchCwd(() => {
+      const error = expectBoardError(
+        () => installIn(root, { ...scratch, env }, { targets: ['codex'], global: true }),
+        1,
+        'usage',
+      );
+      expect(error.message).toBe(CODEX_HOME_USAGE);
+    });
+    expect(fileList(root)).toEqual([]);
   });
 
   it('refuses antigravity --global with an empty HOME, before writing AGENTS.md', () => {
     const { root, scratch } = setup();
     const env: Env = { ...scratch.env, HOME: '' };
-    const error = expectBoardError(
-      () => installIn(root, { ...scratch, env }, { targets: ['antigravity'], global: true }),
-      1,
-      'usage',
-    );
-    expect(error.message).toBe(HOME_USAGE);
+    inScratchCwd(() => {
+      const error = expectBoardError(
+        () => installIn(root, { ...scratch, env }, { targets: ['antigravity'], global: true }),
+        1,
+        'usage',
+      );
+      expect(error.message).toBe(HOME_USAGE);
+    });
     expect(fileList(root)).toEqual([]);
   });
 });
@@ -500,7 +532,8 @@ describe('codex --global: the foreign-table refusal', () => {
     );
     const { action } = codexGlobal(root, scratch, { force: true });
     expect(action).toBe('updated');
-    expect(toml(scratch)).toBe(`model = "o3"\n\n${BLOCK}\n[profiles.a]\nk = 1\n`);
+    // R3: the blank line above the next header belongs to that table and stays.
+    expect(toml(scratch)).toBe(`model = "o3"\n\n${BLOCK}\n\n[profiles.a]\nk = 1\n`);
   });
 
   it('with --force removes the foreign sub-tables too', () => {
@@ -838,5 +871,255 @@ describe('agents check --global', () => {
     delete env.HOME;
     delete env.CODEX_HOME;
     expectBoardError(() => checkGuidance({ cwd: root, env, global: true }), 1, 'usage');
+  });
+});
+
+describe('review round 1 of task group 4', () => {
+  describe('R1: a marker line that is not a TOML comment line is never the managed block', () => {
+    const IN_STRING = [
+      ['a multi-line basic string', `model = "o3"\nnotes = """\n${BLOCK}\n"""\n`],
+      ['a multi-line literal string', `model = "o3"\nnotes = '''\n${BLOCK}\n'''\n`],
+      ['an array across lines', `args = [\n# agentboard:start v3\n  "x",\n# agentboard:end\n]\n`],
+    ] as const;
+
+    it.each(IN_STRING)(
+      'install refuses a well-formed pair inside %s as malformed-marker',
+      (_name, text) => {
+        const { root, scratch } = setup();
+        writeToml(scratch, text);
+        for (const extra of [{}, { command: '/opt/ab' }]) {
+          const { refusal, message, result } = codexGlobal(root, scratch, extra);
+          expect(refusal).toBe('malformed-marker');
+          expect(message).toContain(scratch.codexConfig);
+          expect(renderInstall(result)).not.toContain('notes');
+          expect(toml(scratch)).toBe(text);
+        }
+      },
+    );
+
+    it.each(IN_STRING)('check reports a pair inside %s modified', (_name, text) => {
+      const { root, scratch } = setup();
+      writeToml(scratch, text);
+      const entries = checkGuidance({ cwd: root, env: scratch.env, global: true });
+      expect(entries.map((e) => [e.target, e.state])).toEqual([['codex', 'modified']]);
+    });
+
+    it.each([
+      ['a lone end marker in a string', `notes = """\n# agentboard:end\n"""\n`],
+      ['a pair in a string', `notes = '''\n${BLOCK}\n'''\n`],
+      ['marker text after a key', `x = 1 # agentboard:end\n${BLOCK}\n`],
+    ])(
+      '--force does not remove marker text that is not a comment line (%s): refused, unchanged',
+      (_name, text) => {
+        const { root, scratch } = setup();
+        writeToml(scratch, text);
+        const { refusal, message } = codexGlobal(root, scratch, { force: true });
+        expect(refusal).toBe('malformed-marker');
+        expect(message).not.toContain('--force overwrites');
+        expect(toml(scratch)).toBe(text);
+      },
+    );
+
+    it('--force removes nothing, not even a marker comment line, while marker text sits in a value', () => {
+      const { root, scratch } = setup();
+      writeToml(scratch, `x = "# agentboard:end"\n# agentboard:start v3\n`);
+      expect(codexGlobal(root, scratch, { force: true }).refusal).toBe('malformed-marker');
+      expect(toml(scratch)).toBe(`x = "# agentboard:end"\n# agentboard:start v3\n`);
+    });
+
+    it('still takes an indented marker comment pair as the markers', () => {
+      const { root, scratch } = setup();
+      const indented = BLOCK.split('\n')
+        .map((l) => (l.startsWith('#') ? `  ${l}` : l))
+        .join('\n');
+      writeToml(scratch, `${indented}\n`);
+      // Comment lines, so a pair: compared as a block (indented, so a hand edit), never malformed.
+      expect(codexGlobal(root, scratch).refusal).toBe('entry-differs');
+    });
+  });
+
+  describe('R3: --force keeps the comment and blank lines above the next header', () => {
+    it('replaces only the foreign header and key lines', () => {
+      const { root, scratch } = setup();
+      writeToml(
+        scratch,
+        [
+          'model = "o3"',
+          '',
+          '[mcp_servers.agentboard]',
+          'command = "mine"',
+          '# interior comment',
+          'args = ["x"]',
+          '',
+          '# GitHub server: token rotated monthly',
+          '[mcp_servers.github]',
+          'command = "gh"',
+          '',
+        ].join('\n'),
+      );
+      expect(codexGlobal(root, scratch, { force: true }).action).toBe('updated');
+      expect(toml(scratch)).toBe(
+        `model = "o3"\n\n${BLOCK}\n\n# GitHub server: token rotated monthly\n[mcp_servers.github]\ncommand = "gh"\n`,
+      );
+    });
+
+    it('keeps trailing comment and blank lines at the end of the file too', () => {
+      const { root, scratch } = setup();
+      writeToml(scratch, '[mcp_servers.agentboard]\ncommand = "mine"\n\n# end notes\n');
+      codexGlobal(root, scratch, { force: true });
+      expect(toml(scratch)).toBe(`${BLOCK}\n\n# end notes\n`);
+    });
+
+    it('counts the continuation lines of a multi-line value as key lines', () => {
+      const { root, scratch } = setup();
+      writeToml(
+        scratch,
+        '[mcp_servers.agentboard]\nargs = [\n  "a", # one\n  "b",\n]\n\n[x]\nk = 1\n',
+      );
+      codexGlobal(root, scratch, { force: true });
+      expect(toml(scratch)).toBe(`${BLOCK}\n\n[x]\nk = 1\n`);
+    });
+
+    it('M20: a foreign table directly above the marked block is removed and the block kept', () => {
+      const { root, scratch } = setup();
+      writeToml(
+        scratch,
+        `[mcp_servers.agentboard]\ncommand = "mine"\n${codexBlock({ version: 2 })}\n[x]\nk = 1\n`,
+      );
+      expect(codexGlobal(root, scratch).refusal).toBe('foreign-table');
+      expect(codexGlobal(root, scratch, { force: true }).action).toBe('updated');
+      expect(toml(scratch)).toBe(`${BLOCK}\n[x]\nk = 1\n`);
+    });
+  });
+
+  describe('R4: a line the scan cannot fully decode is malformed-file', () => {
+    it.each([
+      ['a \\x escape in a quoted key', '["mcp\\x5fservers".agentboard]\ncommand = "mine"\n'],
+      ['a \\x escape in a value', 'name = "\\x41"\n'],
+      ['an unknown escape in a multi-line basic string', 'name = """\n\\q\n"""\n'],
+      ['a bad \\u escape in a value', 'name = "\\u12"\n'],
+      ['a header that does not parse', '[not a valid key\ncommand = "mine"\n'],
+      ['a line that is no statement', 'just some words\n'],
+      ['a key with no value', 'model\n'],
+    ])('refuses %s, even with --force, leaving every byte', (_name, text) => {
+      const { root, scratch } = setup();
+      writeToml(scratch, text);
+      for (const force of [false, true]) {
+        const { refusal } = codexGlobal(root, scratch, { force });
+        expect(refusal).toBe('malformed-file');
+        expect(toml(scratch)).toBe(text);
+      }
+    });
+
+    it.each([
+      ['an escape TOML knows', 'name = "a\\tb\\u00e9\\U0001F600\\"\\\\"\n'],
+      ['a line-ending backslash in a multi-line basic string', 'name = """a \\\n  b"""\n'],
+      ['backslashes in a literal string', "path = 'C:\\x\\q'\n"],
+    ])('accepts %s', (_name, text) => {
+      const { root, scratch } = setup();
+      writeToml(scratch, text);
+      expect(codexGlobal(root, scratch).action).toBe('updated');
+      expect(toml(scratch)).toBe(`${text}\n${BLOCK}\n`);
+    });
+
+    it('check reports such a file modified when it holds a marker, and not at all otherwise', () => {
+      const { root, scratch } = setup();
+      writeToml(scratch, `name = "\\x41"\n${BLOCK}\n`);
+      expect(
+        checkGuidance({ cwd: root, env: scratch.env, global: true }).map((e) => [
+          e.target,
+          e.state,
+          e.installedVersion,
+        ]),
+      ).toEqual([['codex', 'modified', null]]);
+      writeToml(scratch, 'name = "\\x41"\n');
+      expect(checkGuidance({ cwd: root, env: scratch.env, global: true })).toEqual([]);
+    });
+  });
+
+  describe('R5: marker lines are trimmed in linear time', () => {
+    /** One second for the work plus Node's start-up in the child. */
+    const LINEAR_BUDGET_MS = 2500;
+
+    // Through the built CLI, in a child killed after 10 s, so a quadratic
+    // trim fails the test instead of blocking the worker for minutes.
+    function timed(
+      argv: readonly string[],
+      cwd: string,
+      env: Env,
+    ): { ms: number; code: number | null } {
+      const started = performance.now();
+      const child = spawnSync(process.execPath, [BUILT_CLI, ...argv], {
+        cwd,
+        env: Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined)) as Record<
+          string,
+          string
+        >,
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+      return { ms: performance.now() - started, code: child.status };
+    }
+
+    it('refuses a 200 KB marker-like comment line in config.toml within a second (install and check)', () => {
+      const { root, scratch } = setup();
+      writeToml(scratch, `# agentboard:start${' '.repeat(200_000)}x\n`);
+      const install = timed(
+        ['agents', 'install', '--target', 'codex', '--global'],
+        root,
+        scratch.env,
+      );
+      expect(install.code).toBe(1);
+      expect(install.ms).toBeLessThan(LINEAR_BUDGET_MS);
+      const check = timed(['agents', 'check', '--global'], root, scratch.env);
+      expect(check.code).toBe(1);
+      expect(check.ms).toBeLessThan(LINEAR_BUDGET_MS);
+    });
+
+    it('refuses a 200 KB marker-like line in AGENTS.md and the Copilot file within a second', () => {
+      const { root, scratch } = setup();
+      const line = `<!-- agentboard:start${' '.repeat(200_000)}x\n`;
+      writeAbs(join(root, AGENTS), line);
+      writeAbs(join(root, COPILOT), line);
+      const install = timed(
+        ['agents', 'install', '--target', 'agents-md', '--target', 'copilot'],
+        root,
+        scratch.env,
+      );
+      expect(install.code).toBe(1);
+      expect(install.ms).toBeLessThan(LINEAR_BUDGET_MS);
+    });
+  });
+
+  describe('R6: further cases', () => {
+    it('M24: an empty command between the markers is a hand edit (entry-differs, check modified)', () => {
+      const { root, scratch } = setup();
+      writeToml(scratch, `${codexBlock({ command: '""' })}\n`);
+      expect(codexGlobal(root, scratch).refusal).toBe('entry-differs');
+      expect(
+        checkGuidance({ cwd: root, env: scratch.env, global: true }).map((e) => [
+          e.target,
+          e.state,
+        ]),
+      ).toEqual([
+        ['agents-md', 'current'],
+        ['codex', 'modified'],
+      ]);
+    });
+
+    it.each([
+      ['four', 'a = ["""x""""]'],
+      ['five', 'a = ["""x"""""]'],
+      ['four, literal', "a = ['''x'''']"],
+    ])(
+      'M2: a multi-line string closed by %s quotes inside an array ends the array',
+      (_name, line) => {
+        const { root, scratch } = setup();
+        const text = `${line}\n[mcp_servers.agentboard]\ncommand = "mine"\n`;
+        writeToml(scratch, text);
+        expect(codexGlobal(root, scratch).refusal).toBe('foreign-table');
+        expect(toml(scratch)).toBe(text);
+      },
+    );
   });
 });

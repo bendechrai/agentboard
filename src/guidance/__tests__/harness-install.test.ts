@@ -18,6 +18,7 @@
 import {
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   readdirSync,
@@ -523,6 +524,17 @@ describe('cursor', () => {
     expect(readRel(root, CURSOR_MCP)).toBe(mcpFile());
   });
 
+  it('M19: replaces .cursor/mcp.json atomically (a new inode, a hard link elsewhere left as it was)', () => {
+    const { root, scratch } = setup();
+    writeRel(root, CURSOR_MCP, '{"mcpServers": {}}\n');
+    linkSync(join(root, CURSOR_MCP), join(root, 'hard-link.json'));
+    const inode = statSync(join(root, CURSOR_MCP)).ino;
+    installIn(root, scratch, { targets: ['cursor'] });
+    expect(statSync(join(root, CURSOR_MCP)).ino).not.toBe(inode);
+    expect(readRel(root, CURSOR_MCP)).toBe(mcpFile());
+    expect(readRel(root, 'hard-link.json')).toBe('{"mcpServers": {}}\n');
+  });
+
   it('follows a symbolic link inside the tree and keeps the link', () => {
     const { root, scratch } = setup();
     writeRel(root, 'config/cursor-mcp.json', '{"mcpServers": {}}\n');
@@ -706,6 +718,45 @@ describe('--command reaches every MCP entry', () => {
     expect(contents(root)).toEqual(before);
     expectHomeUntouched(scratch);
   });
+
+  it.each([
+    '# agentboard:end',
+    'x # agentboard:start',
+    '/opt/<!-- agentboard:start v3 -->/agentboard',
+    '<!-- agentboard:end -->',
+    '/x/<!-- agentboard-guidance: v3 -->',
+    '/x/ab # agentboard-hooks: v3',
+  ])(
+    'R2: refuses --command %j holding agentboard marker text as usage, naming the flag',
+    (value) => {
+      const { root, scratch } = setup();
+      for (const commandFlag of ['command', 'mcp-command'] as const) {
+        const error = expectBoardError(
+          () =>
+            installIn(root, scratch, {
+              targets: ['codex', 'cursor', 'claude-hooks'],
+              command: value,
+              commandFlag,
+            }),
+          1,
+          'usage',
+        );
+        expect(error.message).toBe(`--${commandFlag} must not contain agentboard marker text`);
+      }
+      expect(fileList(root)).toEqual([]);
+      expectHomeUntouched(scratch);
+    },
+  );
+
+  it.each(['/opt/agentboard:start/agentboard', '/x/#agentboard:end', '/x/agentboard-hooks'])(
+    'R2: accepts --command %j, which holds no marker text',
+    (value) => {
+      const { root, scratch } = setup();
+      const result = installIn(root, scratch, { targets: ['cursor'], command: value });
+      expect(result.refused).toBe(0);
+      expect(readRel(root, CURSOR_MCP)).toBe(mcpFile(local(value)));
+    },
+  );
 
   it.each(TOKEN_FIXTURES)(
     'a multi-line --command holding $name is refused without repeating it',
