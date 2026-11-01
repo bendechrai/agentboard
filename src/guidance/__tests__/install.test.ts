@@ -196,11 +196,11 @@ describe('selection', () => {
   it('refuses an unknown target as a usage error before writing anything', () => {
     const root = plainProject();
     const err = expectBoardError(
-      () => install(root, { targets: ['claude', 'cursor'] }),
+      () => install(root, { targets: ['claude', 'windsurf'] }),
       1,
       'usage',
     );
-    expect(err.message).not.toContain('cursor');
+    expect(err.message).not.toContain('windsurf');
     for (const target of GUIDANCE_TARGETS) {
       expect(err.message).toContain(target);
     }
@@ -821,14 +821,23 @@ describe('a refusal does not stop the other targets', () => {
     writeRel(root, CONFIG, 'schema: spec-driven\noperations:\n  apply:\n    guidance: x\n');
     writeRel(root, MCP, mcpFile({ mcpServers: { agentboard: { command: 'x' } } }));
     writeRel(root, '.claude/settings.json', '{"hooks": {,}\n');
+    writeRel(root, '.cursor/rules/agentboard.mdc', 'my rule\n');
+    writeRel(root, '.cursor/mcp.json', mcpFile({ mcpServers: { agentboard: { command: 'x' } } }));
+    writeRel(root, '.github/copilot-instructions.md', `${blockStart(1)}\n`);
+    // No --global: codex and antigravity touch only AGENTS.md, which agents-md already fixed.
     const result = install(root, { targets: [...GUIDANCE_TARGETS], force: true });
     expect(result.refused).toBe(0);
-    expect(result.targets.map((t) => t.action)).toEqual([
-      'updated',
-      'updated',
-      'updated',
-      'updated',
-      'updated',
+    expect(result.targets.map((t) => [t.target, t.action])).toEqual([
+      ['claude', 'updated'],
+      ['agents-md', 'updated'],
+      ['openspec', 'updated'],
+      ['mcp-json', 'updated'],
+      ['claude-hooks', 'updated'],
+      ['codex', 'unchanged'],
+      ['cursor', 'updated'],
+      ['cursor', 'updated'],
+      ['antigravity', 'unchanged'],
+      ['copilot', 'updated'],
     ]);
   });
 });
