@@ -13,10 +13,11 @@ import { BoardError } from '../store/errors.js';
  *
  * - `pem-private-key`: `-----BEGIN ` then any run of upper-case ASCII
  *   letters, digits and spaces ending in `PRIVATE KEY`, optionally
- *   followed by ` BLOCK`, then `-----` (PEM private key headers such as
- *   `-----BEGIN PRIVATE KEY-----`, `-----BEGIN RSA PRIVATE KEY-----` and
- *   `-----BEGIN OPENSSH PRIVATE KEY-----`, and the PGP private key block
- *   header `-----BEGIN PGP PRIVATE KEY BLOCK-----`).
+ *   followed by ` BLOCK`, then `-----`: the PEM private key headers
+ *   (`PRIVATE KEY`, `RSA PRIVATE KEY`, `OPENSSH PRIVATE KEY`, `ENCRYPTED
+ *   PRIVATE KEY` and the like between `-----BEGIN ` and `-----`) and the
+ *   PGP private key block header (`PGP PRIVATE KEY BLOCK`). Public key
+ *   and certificate headers do not match.
  * - `aws-access-key-id`: `AKIA` or `ASIA` followed by exactly 16
  *   characters of `[0-9A-Z]`, not preceded or followed by another
  *   ASCII letter or digit.
@@ -129,32 +130,31 @@ export function isActorName(name: string): boolean {
 }
 
 /**
- * Matches no text: the stub expression of each provider pattern added by
- * secret-prefix-patterns until task 1.1 replaces it with the expression
- * documented on `SECRET_PATTERN_NAMES`.
+ * The expression of each pattern, as documented on `SECRET_PATTERN_NAMES`.
+ * The lookbehind `(?<![0-9A-Za-z])` is the left anchor of every provider
+ * pattern from `anthropic-api-key` to `stripe-webhook-secret`. Each
+ * expression is a literal prefix, a fixed character class and a minimum
+ * count, with no alternation inside a repeat and no nested quantifier.
  */
-const NOT_IMPLEMENTED = /(?!)/;
-
-/** The expression of each pattern, as documented on `SECRET_PATTERN_NAMES`. */
 const PATTERNS: Record<SecretPatternName, RegExp> = {
-  'pem-private-key': /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/,
+  'pem-private-key': /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/,
   'aws-access-key-id': /(?<![0-9A-Za-z])(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Za-z])/,
   'github-token': /gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22}/,
-  'anthropic-api-key': NOT_IMPLEMENTED,
-  'digitalocean-token': NOT_IMPLEMENTED,
-  'docker-token': NOT_IMPLEMENTED,
-  'gitlab-token': NOT_IMPLEMENTED,
-  'google-api-key': NOT_IMPLEMENTED,
-  'huggingface-token': NOT_IMPLEMENTED,
-  jwt: NOT_IMPLEMENTED,
-  'npm-token': NOT_IMPLEMENTED,
-  'openai-api-key': NOT_IMPLEMENTED,
-  'pypi-token': NOT_IMPLEMENTED,
-  'sendgrid-api-key': NOT_IMPLEMENTED,
-  'shopify-token': NOT_IMPLEMENTED,
-  'slack-token': NOT_IMPLEMENTED,
-  'stripe-secret-key': NOT_IMPLEMENTED,
-  'stripe-webhook-secret': NOT_IMPLEMENTED,
+  'anthropic-api-key': /(?<![0-9A-Za-z])sk-ant-[A-Za-z0-9_-]{16}/,
+  'digitalocean-token': /(?<![0-9A-Za-z])do[por]_v1_[a-f0-9]{16}/,
+  'docker-token': /(?<![0-9A-Za-z])dckr_[po]at_[A-Za-z0-9_-]{16}/,
+  'gitlab-token': /(?<![0-9A-Za-z])glpat-[A-Za-z0-9_-]{16}/,
+  'google-api-key': /(?<![0-9A-Za-z])AIza[A-Za-z0-9_-]{32}/,
+  'huggingface-token': /(?<![0-9A-Za-z])hf_[A-Za-z0-9]{32}/,
+  jwt: /(?<![0-9A-Za-z])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16}/,
+  'npm-token': /(?<![0-9A-Za-z])npm_[A-Za-z0-9]{32}/,
+  'openai-api-key': /(?<![0-9A-Za-z])sk-(?:(?:proj|svcacct|admin)-[A-Za-z0-9_-]{16}|[A-Za-z0-9]{32})/,
+  'pypi-token': /(?<![0-9A-Za-z])pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{16}/,
+  'sendgrid-api-key': /(?<![0-9A-Za-z])SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16}/,
+  'shopify-token': /(?<![0-9A-Za-z])shp(?:at|ca|pa|ss)_[A-Fa-f0-9]{16}/,
+  'slack-token': /(?<![0-9A-Za-z])x(?:ox[abeprs]|app)-[0-9]+-[A-Za-z0-9-]{16}/,
+  'stripe-secret-key': /(?<![0-9A-Za-z])[sr]k_(?:live|test)_[A-Za-z0-9]{16}/,
+  'stripe-webhook-secret': /(?<![0-9A-Za-z])whsec_[A-Za-z0-9]{16}/,
   'generic-secret-assignment': /(?:token|secret|password|key) *[:=] *["']?[A-Za-z0-9+/_-]{32}/i,
 };
 
