@@ -319,3 +319,69 @@ describe('the written hook commands run in a real shell', SPAWNS, () => {
     }
   });
 });
+
+describe('values a shell would misread (review round 1, R3)', SPAWNS, () => {
+  /** A directory of fake executables, each recording its arguments in `<log>`. */
+  function fakeBin(names: readonly string[], log: string): string {
+    const dir = join(tempDir(), 'bin');
+    mkdirSync(dir, { recursive: true });
+    for (const name of names) {
+      const path = join(dir, name);
+      writeFileSync(path, `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a"; done > '${log}'\n`);
+      chmodSync(path, 0o755);
+    }
+    return dir;
+  }
+
+  const NAMES = ['FOO=bar', 'if', 'time', 'function', '!', '{', 'case', 'select', '[['];
+  const SHELLS = ['/bin/sh', ...(existsSync('/bin/bash') ? ['/bin/bash'] : [])];
+
+  it.each(NAMES)('runs an executable named %s found on the PATH', (name) => {
+    const root = plainProject();
+    const log = join(tempDir(), 'args.log');
+    const bin = fakeBin([name], log);
+    const out = cli(['agents', 'install', '--target', 'claude-hooks', '--command', name], root);
+    expect(out.code, out.stderr).toBe(0);
+    const [command] = commandsOf(root).Stop ?? [];
+    for (const shell of SHELLS) {
+      writeFileSync(log, '');
+      const ran = spawnSync(shell, ['-c', command ?? ''], {
+        cwd: root,
+        input: '{}',
+        encoding: 'utf8',
+        env: { PATH: `${bin}:/usr/bin:/bin`, HOME: root },
+        timeout: 10_000,
+      });
+      expect(ran.status, `${shell}: ${ran.stderr}`).toBe(0);
+      expect(readFileSync(log, 'utf8'), shell).toBe('hook\nstop\n');
+    }
+  });
+
+  it.each([
+    ['-rf', 'must not start with a hyphen'],
+    ['exec', 'must not be a shell special built-in; give the path of the executable'],
+    ['set', 'must not be a shell special built-in; give the path of the executable'],
+  ])('refuses --command %s as usage naming the flag, writing nothing', (value, why) => {
+    const root = plainProject();
+    const out = cli(
+      ['agents', 'install', '--target', 'claude-hooks', `--command=${value}`, '--json'],
+      root,
+    );
+    expect(out.code).toBe(1);
+    expect(errorOf(out)).toMatchObject({
+      exitCode: 1,
+      reason: 'usage',
+      message: `--command ${why}`,
+    });
+    expect(snapshot(root).size).toBe(0);
+  });
+
+  it('repeats no part of a refused value with a leading hyphen', () => {
+    for (const f of TOKEN_FIXTURES.slice(0, 3)) {
+      const root = plainProject();
+      const out = cli(['agents', 'install', `--command=-${f.value}`, '--json'], root);
+      expect(out.code).toBe(1);
+      expectNoLeak(f.name, [out.stdout, out.stderr], [f]);
+    }
+  });
+});
