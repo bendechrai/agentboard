@@ -9,7 +9,7 @@ import { asciiText } from '../board/text.js';
 import type { ConfigResult } from '../board/config.js';
 import { assigneeToken, formatDuration, isoTime } from '../board/leases.js';
 import type { ImportAction, ImportResult, ImportedTicket } from '../board/import.js';
-import type { InboxEntry } from '../board/inbox.js';
+import { renderInboxLine } from '../board/inbox.js';
 import type { ShowResult } from '../board/tickets.js';
 import { CACHE_SCHEMA_VERSION } from '../store/cache.js';
 import type { CheckResult, RebuildReport } from '../store/rebuild.js';
@@ -17,8 +17,8 @@ import type { Card } from '../view/columns.js';
 import type { HealthReport } from '../view/health.js';
 import { relativeTime } from '../view/time.js';
 
-/** Re-exported from `src/board/text.ts` (defined there for layering). */
-export { asciiText };
+/** Re-exported from `src/board/text.ts` and `src/board/inbox.ts` (defined there for layering). */
+export { asciiText, renderInboxLine };
 
 /**
  * The `list` line of a ticket, without a newline:
@@ -348,45 +348,6 @@ function closedText(t: Ticket): string {
   return 'decision' in t.disposition
     ? `yes (decision: ${asciiText(t.disposition.decision)})`
     : 'yes (no decision)';
-}
-
-/**
- * The human line of one inbox entry (`inbox` and `watch`), without a
- * newline: fields separated by two spaces,
- * `<ticket id or ->  <kind>  <from>`, then `to <to>`, `status <status>` and
- * `note <note>`, each only when the entry's field is not null, in that
- * order; `from`, `to` and `note` pass through `asciiText`. Example:
- * `01ARYZ6S41TSV4RRFFQ69G5FAV  ticket.handoff  impl  to reviewer  status review  note done`.
- *
- * `reader` is the actor reading the inbox (`inbox` and `watch` pass their
- * actor). The line begins with `GRANTED: ` when the entry is a
- * `ticket.grant` whose `to` equals `reader`, and with `LOST: ` when its
- * `affects` equals `reader` (board-cli: "Lease and queue events in the
- * inbox"); with `reader` omitted there is no prefix. Examples:
- * `GRANTED: 01ARYZ6S41TSV4RRFFQ69G5FAV  ticket.grant  agentboard  to merger-2`,
- * `LOST: 01ARYZ6S41TSV4RRFFQ69G5FAV  ticket.release.force  orchestrator  note stalled`.
- * Pure.
- */
-export function renderInboxLine(entry: InboxEntry, reader?: string): string {
-  const prefix =
-    reader === undefined
-      ? ''
-      : entry.kind === 'ticket.grant' && entry.to === reader
-        ? 'GRANTED: '
-        : entry.affects === reader
-          ? 'LOST: '
-          : '';
-  const fields = [`${prefix}${entry.ticket ?? '-'}`, entry.kind, asciiText(entry.from)];
-  if (entry.to !== null) {
-    fields.push(`to ${asciiText(entry.to)}`);
-  }
-  if (entry.status !== null) {
-    fields.push(`status ${entry.status}`);
-  }
-  if (entry.note !== null) {
-    fields.push(`note ${asciiText(entry.note)}`);
-  }
-  return fields.join('  ');
 }
 
 /**

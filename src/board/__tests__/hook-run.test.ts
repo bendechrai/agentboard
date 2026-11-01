@@ -50,7 +50,11 @@ function hookEnv(
   });
 }
 
-/** Runs a hook with `argv` (after `hook`) in `cwd`. */
+/**
+ * Runs a hook with `argv` (after `hook`) in `cwd`. The pre-tool-use
+ * warning state goes to a fresh directory per call (never the real
+ * temporary directory), so no run is rate limited by another.
+ */
 function hook(
   argv: readonly string[],
   cwd: string,
@@ -61,6 +65,7 @@ function hook(
     cwd,
     payload: options.payload ?? '',
     env: options.env ?? hookEnv(),
+    stateDir: options.stateDir ?? tempDir(),
     ...options,
   });
 }
@@ -390,6 +395,46 @@ describe('scenario: unresolvable actor at session start', () => {
     noActorContext(
       hook(['session-start', '--as', 'agentboard'], root, { payload: startPayload(root) }),
     );
+  });
+
+  it('R9 scenario: invalid actor at session start: its own line, distinct from no actor, never repeating the name', () => {
+    const { root } = claimedBoard();
+    const unset = noActorContext(hook(['session-start'], root, { payload: startPayload(root) }));
+    expect(unset).not.toMatch(/not a valid actor name/i);
+    const outs: [string, HookOutcome][] = [];
+    for (const name of [...NOT_ACTORS, 'agentboard', 'has space', 'bad/actor']) {
+      outs.push([
+        `--as ${name.slice(0, 4)}`,
+        hook(['session-start', '--as', name], root, { payload: startPayload(root) }),
+      ]);
+      outs.push([
+        `AGENTBOARD_ACTOR ${name.slice(0, 4)}`,
+        hook(['session-start'], root, {
+          payload: startPayload(root),
+          env: hookEnv({ AGENTBOARD_ACTOR: name }),
+        }),
+      ]);
+      for (const [label, out] of outs.slice(-2)) {
+        const line = noActorContext(out);
+        expect(line, label).toMatch(/not a valid actor name/i);
+        expect(line, label).not.toBe(unset);
+        if (name !== 'agentboard') {
+          expect(out.stdout, label).not.toContain(name);
+        }
+      }
+    }
+    for (const [label, out] of outs) {
+      expectNoLeak(`session-start, ${label}`, [out.stdout, out.stderr]);
+    }
+    // An empty --as falls back to AGENTBOARD_ACTOR; both empty is no actor at all.
+    expect(
+      noActorContext(
+        hook(['session-start', '--as', ''], root, {
+          payload: startPayload(root),
+          env: hookEnv({ AGENTBOARD_ACTOR: '' }),
+        }),
+      ),
+    ).toBe(unset);
   });
 });
 

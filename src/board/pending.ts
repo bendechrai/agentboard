@@ -36,7 +36,7 @@ export function pendingPositions(db: DatabaseSync, cursor: Cursor): CursorPositi
  * `read`) into an entry.
  */
 export function toEntries(
-  board: Board,
+  board: Pick<Board, 'eventsDir'>,
   positions: CursorPosition[],
   read: EventReader,
 ): InboxEntry[] {
@@ -44,7 +44,7 @@ export function toEntries(
 }
 
 /** The inbox entry of the effective event `hash`, read from its file. */
-function toEntry(board: Board, hash: string, read: EventReader): InboxEntry {
+function toEntry(board: Pick<Board, 'eventsDir'>, hash: string, read: EventReader): InboxEntry {
   const outcome = read(board.eventsDir, `${hash}.json`);
   if (outcome.status !== 'ok' || !isKnownEvent(outcome.input.event)) {
     throw new BoardError(

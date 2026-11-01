@@ -232,6 +232,187 @@ the group's ticket and pinned by the tests and the stub contracts in
   and recorded in the spec delta rather than fixed in this change;
   `rebuild --check` has the same property.
 
+## Rulings from task group 2 (test author)
+
+Taken while writing the group 2 tests, posted as `DECISION:` comments on
+the group's ticket and pinned by the tests and the contracts in
+`src/board/hook.ts` (`runHook` step 6, `warnStatePath`):
+
+- **Answer shapes.** `session-start` always answers with the
+  `SessionStart` `additionalContext` document for a resolved actor on a
+  readable board. `stop` warns with `{"systemMessage": ...}` and nothing
+  else (never `decision`); strict blocks with exit 2, stdout empty and
+  the same text on stderr, which may span lines. `pre-tool-use` warns with
+  the `PreToolUse` `additionalContext` document and never a
+  `permissionDecision`: `allow` would skip the user's permission prompt
+  and `deny` or `ask` would stop the agent in warn mode; strict blocks
+  with exit 2 and the text on stderr.
+- **Held-ticket line.** Each held ticket is written `<id> <token>`, the
+  full id and the `list` assignee token at the hook's clock, in id order;
+  the line is cut at a ticket boundary to 2000 characters, ending with
+  `and <n> more`, so the inbox always has room.
+- **Truncation advances the cursor over the delivered entries only.**
+  The truncation line sends the agent to `agentboard inbox`, which would
+  show nothing if the cursor had passed the omitted entries; so the cursor
+  advances to the last entry shown and the next `inbox` lists exactly the
+  omitted ones. Inbox lines are the `inbox` text lines, `GRANTED:` and
+  `LOST:` prefixes included. With no entry delivered nothing is written
+  (the cache is byte-identical). An event file not folded into the cache
+  is neither delivered nor skipped, since the hook does not catch up.
+- **Stop.** A comment is a `ticket.comment` or a hand-off note by the
+  actor, after the event that last made the actor the assignee (claim,
+  takeover, grant, hand-off or assignment to it); every such ticket is
+  named, in id order. `release` is named, first, only for a ticket with a
+  lease. Strict mode with `stop_hook_active` exactly `true` answers as
+  warn mode (a `systemMessage`, exit 0), so the user still sees the
+  reminder and one stop blocks at most once. (Narrowed in review round 1
+  below: strict blocks only when the field is exactly `false`.)
+- **Pre-tool-use target and project.** The target is
+  `tool_input.file_path`, or `notebook_path` (then `file_path`) for
+  `NotebookEdit`, resolved against the discovery directory when relative;
+  a missing or non-string target passes silently. The project is the
+  board directory's parent plus the nearest directory at or above the
+  discovery directory holding a `.git` entry, so an edit in a linked
+  worktree (outside the main checkout) is checked, with no extra `git`
+  child. Inside is decided component by component, so a sibling sharing a
+  name prefix is outside; a target in the board directory, or with a
+  `.board` component below the project, is exempt. Tool names match
+  exactly, case included.
+- **Rate-limit state.** One file per session in the OS temporary
+  directory (`os.tmpdir()`, which honours `TMPDIR`; `HookRequest.stateDir`
+  in process), named `agentboard-hook-<sha256 of session_id>` so it never
+  repeats the id; it holds the time of the last warning in milliseconds.
+  Garbage, a missing file or a time later than now counts as no warning.
+  It is written only when a warn-mode warning is printed, replaced
+  atomically through a temporary file and a rename (a symbolic link at
+  the name is replaced, never followed), and a failure to read or write
+  it never stops the warning. Strict mode neither reads nor writes it. No
+  `session_id` means a warning every time and no file. The spec's
+  read-only sentence now says "the only board state", since this file is
+  outside the board.
+- **No loop, no lock work.** No hook text names `renew`, a queue,
+  `--wait`, `--ttl`, `watch`, or waiting, polling, sleeping or retrying;
+  every `agentboard <command>` a hook names is a registry command.
+
+## Rulings from review round 1 of task group 2
+
+Taken by the orchestrator on the two reviews of PR #133 (reviewer-hk2-1
+F1; reviewer-hk2-2 F1 to F10), posted as `DECISION:` comments on the
+group's ticket, written into the spec delta where they change behaviour
+and pinned by the tests and the contracts in `src/board/hook.ts`:
+
+- **R1 The budget covers the whole event.** The 2 second budget from the
+  process start covers the event's own work, not only the steps before
+  it. Every event checks the deadline while it works (after the cache
+  read, between event-file reads, before its one write); a run that
+  finds the budget spent ends in exit 0 with nothing on stdout and at
+  most the out-of-time line, never a strict exit 2 and never a cursor
+  write. In-process tests pin it with an injected clock: once any reading
+  of `HookRequest.now` is past the deadline, the answer is fail-open, and
+  no event file is opened after the clock has passed it.
+  `session-start` reads the event files of only the entries it can
+  deliver (at most one more than it shows), takes the omitted count from
+  the cache, and holds the write lock only for the cursor update: one
+  attempt bounded by the time left, never retried past the deadline
+  (`beginImmediate`'s second attempt is not used). The lock not had in
+  time means a run out of time: nothing delivered, nothing written. When
+  the cursor has moved since the entries were chosen, nothing is
+  delivered or written and the answer is the held-ticket line alone, so
+  two runs never deliver one entry twice. `stop` derives "became
+  assignee" and "commented since" from the cache or bounded reads and in
+  any case honours the deadline. A 24 000-event board timing test runs
+  locally only (`AGENTBOARD_HOOK_TIMING=1`), like the 500-ticket one of
+  task 2.2.
+- **R2 Strict stop blocks only on `stop_hook_active` exactly `false`.**
+  Missing, `true`, any other value, an empty or invalid payload and an
+  oversized one (R8) answer as warn mode: the hook cannot see the field,
+  so blocking would make "one block per stop" depend on something it
+  cannot check (ADR 0016, fail open). Claude Code always sends the
+  boolean.
+- **R3 The strict pre-tool-use denial does not say "carry on".** The
+  edit is denied every time, so "carry on" invites retrying the same
+  edit into the same denial. Strict text: the edit is refused because the
+  actor holds no ticket; claim the ticket it belongs to (the same `inbox`
+  and `claim` commands); if the work is not ticketed, stop and ask the
+  user rather than retrying the edit. No waiting or retry wording. The
+  warn text keeps "carry on".
+- **R4 The stop text is bounded.** Tickets are named in id order, each
+  with its commands, as many as fit in 2000 characters (`STOP_TEXT_LIMIT`,
+  the `HELD_LINE_LIMIT` style), cut at a ticket boundary, ending with
+  `and <n> more` when any are left out. `release` stays first for a
+  leased ticket among those shown.
+- **R5 A hand-off note to oneself counts.** The note event at or after
+  the event that made the actor assignee counts (`>=`, not `>`), so the
+  hook's own suggested `handoff <id> --to <actor> ... --note` satisfies
+  it when `<actor>` is the holder. Only the actor's own notes count, so a
+  hand-off to the actor by someone else is unaffected.
+- **R6 pre-tool-use compares real paths.** The target (or, for a new
+  file, its nearest existing ancestor with the rest appended), the board
+  directory and the project roots are resolved through symbolic links
+  before containment, so `/tmp` against `/private/tmp` and a session
+  working through a link are checked like the real path; a link inside
+  the project that leads outside it is outside.
+- **R7 The rate-limit read never follows a link and never blocks.** Opened
+  `O_RDONLY | O_NOFOLLOW | O_NONBLOCK`, required to be a regular file
+  (`fstat`), at most 64 bytes read; anything else counts as no earlier
+  warning. The write is unchanged (temporary file and rename).
+- **R8 stdin is capped at 1 MiB** (`HOOK_STDIN_LIMIT`, 1048576 bytes). A
+  payload over the cap is not read further and is treated as an
+  unreadable payload (`{}`): silent exit 0 for `pre-tool-use`, and strict
+  `stop` answers as warn mode (R2). Exactly the cap is read and parsed.
+- **R9 An invalid actor has its own line.** An actor that is set but not
+  usable (the reserved actor, a secret pattern, outside the actor form)
+  gets a `session-start` line saying the actor is not a valid actor name,
+  naming `AGENTBOARD_ACTOR` and `--as`, distinct from the no-actor line
+  and never repeating the value.
+- **R10 Tests for the surviving mutants.** The board-directory exemption
+  (a board directory not named `.board`, through `AGENTBOARD_DIR`); the
+  cursor write really persisted and re-checked under the write lock;
+  `ticket.grant` and `ticket.assign` in the became-assignee scan (a
+  comment from an earlier hold does not count after the ticket comes
+  back by grant or assignment); `effectiveOnly` (a rejected assigning
+  event after the actor's comment is ignored); both character limits at
+  exactly the limit and one over; the deadline check after the cache
+  read.
+- **No change:** the per-session warning files in the OS temporary
+  directory are not cleaned up (one small file per session, outside the
+  board); a warn-mode `stop` `systemMessage` reaches only the user, not
+  the model, as the spec intends (group 7's README says so).
+
+## Rulings from review round 2 of task group 2
+
+Taken by the orchestrator on reviewer-hk2-2's round 2 report on PR #133
+(reviewer-hk2-1 approved 52d1947), posted as `DECISION:` comments on the
+group's ticket:
+
+- **R11 stop reads no more than it needs** (finding 2). (a) A ticket
+  whose cache `updated_at` is not later than the actor's last comment on
+  it is decided with no read: nothing can have reassigned it since.
+  `updated_at` is `encodeHlc(Ticket.updatedAt)`, the `ts` of the last
+  applied event on the ticket in fold order, and positions compare by
+  `compareHlc` first, so the two are comparable (an event whose `ts`
+  equals `updated_at` counts as at or before it). (b) For the rest, only
+  applied events after the actor's last comment and at or before the
+  ticket's `updated_at` can be the assigning event; only those are read
+  (known comments still skipped), in fold order, and the reading stops as
+  soon as every ticket in question is decided. (c) Known limit, also in
+  ADR 0016: a ticket updated long after the actor's comment, with many
+  unrelated events between, may still run out of budget; `stop` then
+  fails open (out-of-time line, exit 0). No cache schema change in this
+  group (an index of the ticket per folded event would remove the
+  limit).
+- **Tests for round 2 findings 1, 3 and 4.** Finding 1 (major): the
+  deadline checks in the stop read loop and before the stop answer, and
+  the check before the pre-tool-use block, each have a test that fails
+  when the check is removed or reads `Date.now()` instead of the run's
+  clock: a holder that commented and got the ticket back after many
+  non-comment events, with slow reads crossing the deadline mid-loop and
+  at the last read. Finding 3: the 2000-character stop text at exactly
+  the limit and one over, for the uncut and the cut text. Finding 4:
+  with the budget spent from the start, the outcome is exactly the
+  out-of-time line (a discovery that swallowed the signal would answer
+  silently).
+
 ## Risks / Trade-offs
 
 - **PreToolUse is intrusive and adds latency to every edit** -> warn-only
@@ -239,7 +420,8 @@ the group's ticket and pinned by the tests and the stub contracts in
   matcher limited to file-writing tools, 2 second deadline, read-only cache
   lookup, local executable recommended over `npx`, and `AGENTBOARD_HOOKS=off`.
 - **Stop blocking can loop** -> strict mode blocks at most once per stop
-  (`stop_hook_active` true always allows); warn mode never blocks.
+  (it blocks only when `stop_hook_active` is exactly `false`; true,
+  missing or unreadable always allows); warn mode never blocks.
 - **Actor identity must be resolvable** -> `AGENTBOARD_ACTOR`/`--as` only;
   unresolved means silent allow (one explanatory line at session start).
   Never inferred from the OS user, matching board-cli.

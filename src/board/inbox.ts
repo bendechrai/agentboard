@@ -29,6 +29,7 @@ import { BoardError } from '../store/errors.js';
 import { readEventFile } from '../store/eventfile.js';
 import { recordedPosition, recordedPositions } from '../store/folded.js';
 import { pendingPositions, toEntries } from './pending.js';
+import { asciiText } from './text.js';
 
 /**
  * One inbox entry: an effective event, with the fields an orchestrator
@@ -209,4 +210,45 @@ function result(
   advanced: boolean,
 ): InboxResult {
   return { actor, entries, cursor: cursor.position?.hash ?? null, advanced };
+}
+
+/**
+ * The human line of one inbox entry (`inbox` and `watch`), without a
+ * newline: fields separated by two spaces,
+ * `<ticket id or ->  <kind>  <from>`, then `to <to>`, `status <status>` and
+ * `note <note>`, each only when the entry's field is not null, in that
+ * order; `from`, `to` and `note` pass through `asciiText`. Example:
+ * `01ARYZ6S41TSV4RRFFQ69G5FAV  ticket.handoff  impl  to reviewer  status review  note done`.
+ *
+ * `reader` is the actor reading the inbox (`inbox` and `watch` pass their
+ * actor). The line begins with `GRANTED: ` when the entry is a
+ * `ticket.grant` whose `to` equals `reader`, and with `LOST: ` when its
+ * `affects` equals `reader` (board-cli: "Lease and queue events in the
+ * inbox"); with `reader` omitted there is no prefix. Examples:
+ * `GRANTED: 01ARYZ6S41TSV4RRFFQ69G5FAV  ticket.grant  agentboard  to merger-2`,
+ * `LOST: 01ARYZ6S41TSV4RRFFQ69G5FAV  ticket.release.force  orchestrator  note stalled`.
+ * Pure.
+ *
+ * Re-exported unchanged from `src/cli/render.ts`.
+ */
+export function renderInboxLine(entry: InboxEntry, reader?: string): string {
+  const prefix =
+    reader === undefined
+      ? ''
+      : entry.kind === 'ticket.grant' && entry.to === reader
+        ? 'GRANTED: '
+        : entry.affects === reader
+          ? 'LOST: '
+          : '';
+  const fields = [`${prefix}${entry.ticket ?? '-'}`, entry.kind, asciiText(entry.from)];
+  if (entry.to !== null) {
+    fields.push(`to ${asciiText(entry.to)}`);
+  }
+  if (entry.status !== null) {
+    fields.push(`status ${entry.status}`);
+  }
+  if (entry.note !== null) {
+    fields.push(`note ${asciiText(entry.note)}`);
+  }
+  return fields.join('  ');
 }
