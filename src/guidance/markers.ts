@@ -12,6 +12,7 @@ import { isMap, isScalar, isSeq, parseDocument, type Document } from 'yaml';
 
 import {
   BLOCK_END,
+  type ClaudeHookEvent,
   MCP_ENTRY,
   MCP_LOCAL_ARGS,
   OPENSPEC_OPERATIONS,
@@ -400,4 +401,45 @@ export function isManagedMcpEntry(value: unknown): boolean {
     value.command !== '' &&
     jsonEqual(value.args, MCP_LOCAL_ARGS)
   );
+}
+
+/**
+ * The guidance version of an agentboard hook command: N when `command` is
+ * a string whose last characters are exactly `# agentboard-hooks: v<N>`
+ * (`hooksMarker(N)`, N written without leading zeros, nothing after it, not
+ * even a space or a line break); else null, and the command is not
+ * agentboard's (board-agent-guidance "Installed guidance never clobbers
+ * user content": a hook entry is owned only when its command ends with the
+ * marker). So `#agentboard-hooks: v3`, `# agentboard-hooks: v03`,
+ * `# agentboard-hooks: v3 ` and a marker followed by more shell text all
+ * give null. Pure.
+ */
+export function hookMarkerVersion(command: unknown): number | null {
+  void command;
+  throw new Error('not implemented');
+}
+
+/** An agentboard hook command taken apart (see `parseHookCommand`). */
+export interface ParsedHookCommand {
+  /**
+   * The `--command` executable the command was rendered for (unquoted), or
+   * null when it runs `HOOK_DEFAULT_EXECUTABLE`.
+   */
+  readonly executable: string | null;
+  readonly event: ClaudeHookEvent;
+  readonly strict: boolean;
+  readonly version: number;
+}
+
+/**
+ * Takes apart a command that `hookCommand` could have rendered: the
+ * result is non-null exactly when `hookCommand(event, { version, strict,
+ * command: executable ?? undefined })` is `command` itself, character for
+ * character (so a command with `--as`, two spaces, another event, an
+ * executable text that `hookExecutable` would not produce, such as
+ * `bunx agentboard` or a badly quoted word, gives null). Pure.
+ */
+export function parseHookCommand(command: string): ParsedHookCommand | null {
+  void command;
+  throw new Error('not implemented');
 }

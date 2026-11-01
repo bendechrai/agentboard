@@ -114,6 +114,26 @@ export interface CheckOptions {
  *   (`isManagedMcpEntry`: the default `npx` entry, or exactly `{command:
  *   <non-empty string>, args: ["mcp"]}`), else `modified` (extra keys such
  *   as `env`, other arguments). Never `stale`.
+ * - `claude-hooks`: found when `.claude/settings.json` parses (a leading
+ *   UTF-8 byte order mark skipped) as an object with an owned handler
+ *   (see `installGuidance`, `claude-hooks`: a handler under
+ *   `hooks.SessionStart`, `hooks.Stop` or `hooks.PreToolUse` whose command
+ *   has a marker, `hookMarkerVersion`). A file that is not valid JSON, has
+ *   a top level that is not an object, or whose `hooks` has an unexpected
+ *   shape (`hooks-shape`) is found (state `modified`, version null) when
+ *   its raw text contains `HOOKS_MARKER_TEXT`, else not found. A file with
+ *   only user hooks, including ones that look like agentboard's but have
+ *   no marker, is not found. `installedVersion` is N when every owned
+ *   handler records the same N, else null. State: null version
+ *   `modified`; N != v `stale`; `current` when each of the three keys
+ *   holds exactly one owned group, every owned command parses
+ *   (`parseHookCommand`) with the event of its key, the three name one
+ *   executable and one mode, and each group is deep-equal to
+ *   `hookGroup(key, { version: v, strict, command: executable })`; else
+ *   `modified` (a hand-edited command that keeps its marker, a missing or
+ *   duplicated entry, another timeout or matcher, an extra key, mixed
+ *   modes or executables, an owned handler sharing a group with a user
+ *   handler).
  *
  * Paths `agents install` would refuse, for every target:
  * - outside the tree (see `RefusalReason` `outside-tree`: the path with
@@ -187,6 +207,8 @@ function checkTarget(target: GuidanceTarget, path: string, v: number): Found | n
       return checkOpenSpec(path, v);
     case 'mcp-json':
       return checkMcpJson(path);
+    case 'claude-hooks':
+      return checkClaudeHooks(path, v);
   }
 }
 
@@ -297,6 +319,19 @@ function checkMcpJson(path: string): Found | null {
     installedVersion: null,
     state: isManagedMcpEntry(servers[MCP_SERVER_NAME]) ? 'current' : 'modified',
   };
+}
+
+/**
+ * The `claude-hooks` check (see `checkGuidance`). A missing file is not
+ * found; the rest is not implemented yet.
+ */
+function checkClaudeHooks(path: string, v: number): Found | null {
+  const text = readText(path);
+  if (text === null) {
+    return null;
+  }
+  void v;
+  throw new Error('not implemented');
 }
 
 /**

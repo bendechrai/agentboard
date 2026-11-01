@@ -197,6 +197,14 @@ const LIST_TASK_GROUP: ExclusiveGroup = {
   message: 'list takes at most one of --task and --change',
 };
 
+/** `agents install` takes `--command` or its deprecated alias `--mcp-command`, not both. */
+const INSTALL_COMMAND_GROUP: ExclusiveGroup = {
+  alternatives: [['command'], ['mcp-command']],
+  required: false,
+  reason: 'usage',
+  message: 'agents install takes at most one of --command and --mcp-command',
+};
+
 /** `serve` opens the browser, never opens it, or decides by itself. */
 const SERVE_OPEN_GROUP: ExclusiveGroup = {
   alternatives: [['open'], ['no-open']],
@@ -889,7 +897,10 @@ export const COMMANDS: readonly CommandSpec[] = [
       },
     ],
     exitCodes: [
-      { code: 0, meaning: 'The board was created, already existed, or was moved into the host repository' },
+      {
+        code: 0,
+        meaning: 'The board was created, already existed, or was moved into the host repository',
+      },
       EXIT_USAGE,
       EXIT_INVALID_ACTOR,
       { code: 1, reason: 'git-missing', meaning: 'git could not be run' },
@@ -920,7 +931,8 @@ export const COMMANDS: readonly CommandSpec[] = [
       {
         code: 1,
         reason: 'remote-mismatch',
-        meaning: 'The existing standalone board already has a remote with another URL; nothing changed',
+        meaning:
+          'The existing standalone board already has a remote with another URL; nothing changed',
       },
       {
         code: 1,
@@ -1113,7 +1125,14 @@ export const COMMANDS: readonly CommandSpec[] = [
         summary: 'List the tickets of the OpenSpec change add-parser as JSON',
       },
     ],
-    exitCodes: [EXIT_OK, EXIT_USAGE, EXIT_INVALID_ACTOR, EXIT_TASK_REF, EXIT_NO_BOARD, EXIT_INTEGRITY],
+    exitCodes: [
+      EXIT_OK,
+      EXIT_USAGE,
+      EXIT_INVALID_ACTOR,
+      EXIT_TASK_REF,
+      EXIT_NO_BOARD,
+      EXIT_INTEGRITY,
+    ],
     positionals: [],
     flags: [
       flag('status', 'string', 'Only tickets in this status'),
@@ -1374,13 +1393,12 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'release',
     summary: 'Give up a ticket you hold',
     description:
-      'Clears the assignment of a ticket the actor holds, leaving its status unchanged, so another actor (or the next waiter) can have it. Only the current assignee can release a ticket, except with --force and a --reason, which breaks another actor\'s hold and records who did it and why; reserve it for the orchestrator or a human, after checking the holder is gone.',
+      "Clears the assignment of a ticket the actor holds, leaving its status unchanged, so another actor (or the next waiter) can have it. Only the current assignee can release a ticket, except with --force and a --reason, which breaks another actor's hold and records who did it and why; reserve it for the orchestrator or a human, after checking the holder is gone.",
     group: 'lifecycle',
     examples: [
       { command: 'agentboard release 01J9K3 --as impl', summary: 'Give up ticket 01J9K3' },
       {
-        command:
-          'agentboard release 01J9K3 --force --reason "merger-1 crashed" --as orchestrator',
+        command: 'agentboard release 01J9K3 --force --reason "merger-1 crashed" --as orchestrator',
         summary: 'Break the hold of a crashed holder on ticket 01J9K3',
       },
     ],
@@ -1728,7 +1746,8 @@ export const COMMANDS: readonly CommandSpec[] = [
         summary: 'Close ticket 01J9K3, which made no decision',
       },
       {
-        command: 'agentboard close 01J9K3 --no-decision --unplanned "abandoned: superseded" --as orch',
+        command:
+          'agentboard close 01J9K3 --no-decision --unplanned "abandoned: superseded" --as orch',
         summary: 'Close a blocked ad hoc ticket, recording why its work was never planned',
       },
       {
@@ -1849,9 +1868,7 @@ export const COMMANDS: readonly CommandSpec[] = [
       });
       return {
         json: result,
-        text: result.entries
-          .map((entry) => `${renderInboxLine(entry, actorOf(ctx))}\n`)
-          .join(''),
+        text: result.entries.map((entry) => `${renderInboxLine(entry, actorOf(ctx))}\n`).join(''),
       };
     },
   },
@@ -2534,23 +2551,32 @@ export const COMMANDS: readonly CommandSpec[] = [
         { repeatable: true },
       ),
       flag(
+        'command',
+        'string',
+        'Executable the .mcp.json server runs with the argument mcp, instead of npx (selects mcp-json)',
+      ),
+      flag(
         'mcp-command',
         'string',
         'Executable the .mcp.json server runs with the argument mcp, instead of npx (selects mcp-json)',
       ),
+      flag('hooks-strict', 'boolean', 'Write the claude-hooks entries in strict mode'),
       flag('force', 'boolean', 'Overwrite a file or entry that agentboard does not own'),
     ],
-    exclusive: [],
+    exclusive: [INSTALL_COMMAND_GROUP],
     writes: false,
     operation: 'installGuidance',
-    run: (ctx, values) =>
-      installCommand(
-        ctx.cwd,
-        ctx.env,
-        list(values, 'target'),
-        bool(values, 'force'),
-        str(values, 'mcp-command'),
-      ),
+    run: (ctx, values) => {
+      const command = str(values, 'command');
+      const mcpCommand = str(values, 'mcp-command');
+      return installCommand(ctx.cwd, ctx.env, {
+        targets: list(values, 'target'),
+        force: bool(values, 'force'),
+        hooksStrict: bool(values, 'hooks-strict'),
+        ...(command === undefined ? {} : { command }),
+        ...(mcpCommand === undefined ? {} : { mcpCommand }),
+      });
+    },
   },
   {
     name: 'agents check',

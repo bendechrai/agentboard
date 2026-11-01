@@ -64,11 +64,18 @@ function entry(entries: readonly GuidanceCheckEntry[], target: GuidanceTarget): 
   return found;
 }
 
-/** A project with every target installed at guidance version `version`. */
+/**
+ * The targets of the original four-target installs. `claude-hooks` is
+ * checked in claude-hooks-check.test.ts, and with these in the test below
+ * that installs every target.
+ */
+const BASE_TARGETS: readonly GuidanceTarget[] = ['claude', 'agents-md', 'openspec', 'mcp-json'];
+
+/** A project with the four base targets installed at guidance version `version`. */
 function installedProject(version = V): string {
   const root = plainProject();
   writeRel(root, CONFIG, OPENSPEC_FIXTURE);
-  installGuidance({ cwd: root, env: ENV, targets: [...GUIDANCE_TARGETS], version });
+  installGuidance({ cwd: root, env: ENV, targets: [...BASE_TARGETS], version });
   return root;
 }
 
@@ -121,6 +128,22 @@ describe('what is found', () => {
     ]);
   });
 
+  it('reports every target in GUIDANCE_TARGETS current after installing them all, claude-hooks last', () => {
+    const root = plainProject();
+    writeRel(root, CONFIG, OPENSPEC_FIXTURE);
+    installGuidance({ cwd: root, env: ENV, targets: [...GUIDANCE_TARGETS] });
+    const entries = check(root);
+    expect(entries.map((e) => e.target)).toEqual([...GUIDANCE_TARGETS]);
+    expect(entries.every((e) => e.state === 'current')).toBe(true);
+    expect(entry(entries, 'claude-hooks')).toEqual({
+      target: 'claude-hooks',
+      path: '.claude/settings.json',
+      state: 'current',
+      installedVersion: V,
+      currentVersion: V,
+    });
+  });
+
   it('checks the working tree root from a subdirectory of a linked worktree', () => {
     const { main, worktree } = linkedWorktree();
     installGuidance({ cwd: worktree, env: ENV, targets: ['agents-md'] });
@@ -165,7 +188,9 @@ describe('stale', () => {
     // No version override: the running GUIDANCE_VERSION is compared.
     expect(V).toBeGreaterThan(1);
     const root = installedProject(1);
-    expect(check(root).map((e) => [e.target, e.state, e.installedVersion, e.currentVersion])).toEqual([
+    expect(
+      check(root).map((e) => [e.target, e.state, e.installedVersion, e.currentVersion]),
+    ).toEqual([
       ['claude', 'stale', 1, V],
       ['agents-md', 'stale', 1, V],
       ['openspec', 'stale', 1, V],
@@ -530,14 +555,14 @@ describe('mcp-json managed shapes', () => {
     ]);
   });
 
-  it('reports a local entry installed with --mcp-command current, next to the other targets', () => {
+  it('reports a local entry installed with --command current, next to the other targets', () => {
     const root = plainProject();
     writeRel(root, CONFIG, OPENSPEC_FIXTURE);
     installGuidance({
       cwd: root,
       env: ENV,
       targets: ['claude', 'agents-md', 'openspec'],
-      mcpCommand: 'agentboard',
+      command: 'agentboard',
     });
     expect(check(root).map((e) => [e.target, e.state])).toEqual([
       ['claude', 'current'],

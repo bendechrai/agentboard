@@ -41,7 +41,7 @@ const AGENTS = 'AGENTS.md';
 const CONFIG = 'openspec/config.yaml';
 const MCP = '.mcp.json';
 const V = GUIDANCE_VERSION;
-const TARGETS = ['claude', 'agents-md', 'openspec', 'mcp-json'];
+const TARGETS = ['claude', 'agents-md', 'openspec', 'mcp-json', 'claude-hooks'];
 
 // Most tests here start the built CLI as several Node child processes in a
 // row, which on a loaded machine has taken longer than vitest's 5 second
@@ -122,7 +122,7 @@ describe('agents install through the built CLI', SPAWNS, () => {
     expect(out.code).toBe(1);
     expect(errorOf(out)).toMatchObject({ exitCode: 1, reason: 'usage' });
     expect(errorOf(out).message).toBe(
-      'unknown target given with --target; expected one of claude, agents-md, openspec, mcp-json',
+      'unknown target given with --target; expected one of claude, agents-md, openspec, mcp-json, claude-hooks',
     );
     expect(out.stdout + out.stderr).not.toContain('cursor');
   });
@@ -250,6 +250,7 @@ describe('agents check through the built CLI', SPAWNS, () => {
       ['agents-md', AGENTS, 'current'],
       ['openspec', CONFIG, 'current'],
       ['mcp-json', MCP, 'current'],
+      ['claude-hooks', '.claude/settings.json', 'current'],
     ]);
   });
 
@@ -383,17 +384,17 @@ describe('symlink cycles through the built CLI', SPAWNS, () => {
   });
 });
 
-describe('agents install --mcp-command through the built CLI', SPAWNS, () => {
+describe('agents install --command through the built CLI', SPAWNS, () => {
   function mcpWith(entry: unknown): string {
     return `${JSON.stringify({ mcpServers: { agentboard: entry } }, null, 2)}\n`;
   }
 
-  it('scenario: writes the local entry and names mcp-json as selected by --mcp-command', () => {
+  it('scenario: writes the local entry and names mcp-json as selected by --command', () => {
     const root = plainProject();
-    const out = cli(['agents', 'install', '--mcp-command', 'agentboard'], root);
+    const out = cli(['agents', 'install', '--command', 'agentboard'], root);
     expect(out.code, out.stderr).toBe(0);
     expect(out.stderr).toBe('');
-    expect(out.stdout).toContain('selected mcp-json: requested with --mcp-command\n');
+    expect(out.stdout).toContain('selected mcp-json: requested with --command\n');
     expect(out.stdout).toContain(`created mcp-json ${MCP}\n`);
     expect(readRel(root, MCP)).toBe(mcpWith({ command: 'agentboard', args: ['mcp'] }));
     expect(existsSync(join(root, '.board'))).toBe(false);
@@ -402,7 +403,7 @@ describe('agents install --mcp-command through the built CLI', SPAWNS, () => {
   it('prints the result as one JSON document with --json', () => {
     const root = plainProject();
     mkdirSync(join(root, '.claude'));
-    const out = cli(['agents', 'install', '--mcp-command', 'agentboard', '--json'], root);
+    const out = cli(['agents', 'install', '--command', 'agentboard', '--json'], root);
     expect(out.code, out.stderr).toBe(0);
     expect(oneJson(out)).toEqual({
       root,
@@ -422,7 +423,7 @@ describe('agents install --mcp-command through the built CLI', SPAWNS, () => {
         {
           target: 'mcp-json',
           path: MCP,
-          reason: 'requested with --mcp-command',
+          reason: 'requested with --command',
           action: 'created',
           refusal: null,
           message: expect.any(String) as unknown,
@@ -434,12 +435,9 @@ describe('agents install --mcp-command through the built CLI', SPAWNS, () => {
 
   it('selects both with --target claude', () => {
     const root = plainProject();
-    const out = cli(
-      ['agents', 'install', '--target', 'claude', '--mcp-command', 'agentboard'],
-      root,
-    );
+    const out = cli(['agents', 'install', '--target', 'claude', '--command', 'agentboard'], root);
     expect(out.code, out.stderr).toBe(0);
-    expect(out.stdout).toContain('selected mcp-json: requested with --mcp-command\n');
+    expect(out.stdout).toContain('selected mcp-json: requested with --command\n');
     expect(out.stdout).toContain(`created claude ${SKILL}\n`);
     expect(out.stdout).toContain(`created mcp-json ${MCP}\n`);
     expect(readRel(root, SKILL)).toBe(renderSkill());
@@ -449,15 +447,15 @@ describe('agents install --mcp-command through the built CLI', SPAWNS, () => {
   it('writes a path with spaces as one command string', () => {
     const root = plainProject();
     const command = '/opt/My Tools/agent board/bin/agentboard';
-    const out = cli(['agents', 'install', '--mcp-command', command], root);
+    const out = cli(['agents', 'install', '--command', command], root);
     expect(out.code, out.stderr).toBe(0);
     expect(readRel(root, MCP)).toBe(mcpWith({ command, args: ['mcp'] }));
   });
 
   it.each([
-    ['an empty value', ['--mcp-command', '']],
-    ['an empty value with =', ['--mcp-command=']],
-    ['a value with a newline', ['--mcp-command', 'agent\nboard']],
+    ['an empty value', ['--command', '']],
+    ['an empty value with =', ['--command=']],
+    ['a value with a newline', ['--command', 'agent\nboard']],
   ])('exits 1 with reason usage for %s, writing nothing', (_label, args) => {
     const root = plainProject();
     mkdirSync(join(root, '.claude'));
@@ -465,15 +463,15 @@ describe('agents install --mcp-command through the built CLI', SPAWNS, () => {
     const out = cli(['agents', 'install', ...args], root);
     expect(out.code).toBe(1);
     expect(out.stdout).toBe('');
-    expect(out.stderr).toContain('--mcp-command');
+    expect(out.stderr).toContain('--command');
     const json = cli(['agents', 'install', ...args, '--json'], root);
     expect(json.code).toBe(1);
     expect(errorOf(json)).toMatchObject({ exitCode: 1, reason: 'usage' });
-    expect(errorOf(json).message).toContain('--mcp-command');
+    expect(errorOf(json).message).toContain('--command');
     expect(snapshot(root)).toEqual(before);
   });
 
-  it('scenario: reinstall without --mcp-command keeps a local command, and check reports it current', () => {
+  it('scenario: reinstall without --command keeps a local command, and check reports it current', () => {
     const root = plainProject();
     const content = mcpWith({ command: 'agentboard', args: ['mcp'] });
     writeRel(root, MCP, content);
@@ -490,7 +488,7 @@ describe('agents install --mcp-command through the built CLI', SPAWNS, () => {
   it('scenario: switching from the npx entry updates it without --force', () => {
     const root = plainProject();
     writeRel(root, MCP, mcpWith({ command: 'npx', args: ['-y', '@bendechrai/agentboard', 'mcp'] }));
-    const out = cli(['agents', 'install', '--mcp-command', '/opt/agentboard/bin/agentboard'], root);
+    const out = cli(['agents', 'install', '--command', '/opt/agentboard/bin/agentboard'], root);
     expect(out.code, out.stderr).toBe(0);
     expect(out.stdout).toContain(`updated mcp-json ${MCP}\n`);
     expect(readRel(root, MCP)).toBe(
@@ -503,12 +501,12 @@ describe('agents install --mcp-command through the built CLI', SPAWNS, () => {
     const root = plainProject();
     const content = mcpWith({ command: 'agentboard', args: ['mcp'], env: { X: '1' } });
     writeRel(root, MCP, content);
-    const out = cli(['agents', 'install', '--mcp-command', 'agentboard'], root);
+    const out = cli(['agents', 'install', '--command', 'agentboard'], root);
     expect(out.code).toBe(1);
     expect(out.stderr).toMatch(/^agentboard: refused mcp-json: /m);
     expect(out.stderr).toContain(MCP);
     expect(readRel(root, MCP)).toBe(content);
-    const json = cli(['agents', 'install', '--mcp-command', 'agentboard', '--json'], root);
+    const json = cli(['agents', 'install', '--command', 'agentboard', '--json'], root);
     expect(json.code).toBe(1);
     expect(oneJson(json)).toMatchObject({
       refused: 1,
@@ -517,18 +515,22 @@ describe('agents install --mcp-command through the built CLI', SPAWNS, () => {
     const check = cli(['agents', 'check'], root);
     expect(check.code).toBe(1);
     expect(check.stdout).toMatch(/^modified mcp-json \.mcp\.json /m);
-    const forced = cli(['agents', 'install', '--mcp-command', 'agentboard', '--force'], root);
+    const forced = cli(['agents', 'install', '--command', 'agentboard', '--force'], root);
     expect(forced.code, forced.stderr).toBe(0);
     expect(readRel(root, MCP)).toBe(mcpWith({ command: 'agentboard', args: ['mcp'] }));
     expect(cli(['agents', 'check'], root).code).toBe(0);
   });
 
-  it('lists --mcp-command and its example in the help', () => {
+  it('lists --command, --mcp-command, --hooks-strict and the --command example in the help', () => {
     const out = run(['help', 'agents', 'install'], plainProject(), cliEnv());
     expect(out.code, out.stderr).toBe(0);
     expect(out.stdout).toMatch(
-      /^Usage: agentboard agents install \[--target <target>\]\.\.\. \[--mcp-command <mcp-command>\] \[--force\] \[--json\]$/m,
+      /^Usage: agentboard agents install \[--target <target>\]\.\.\. \[--hooks-strict\] \[--force\] \[--command <command> \| --mcp-command <mcp-command>\] \[--json\]$/m,
     );
-    expect(out.stdout).toContain('agentboard agents install --mcp-command agentboard');
+    expect(out.stdout).toContain('agentboard agents install --command agentboard');
+    expect(out.stdout).not.toContain('agentboard agents install --mcp-command');
+    expect(out.stdout).toContain('agentboard agents install --target claude-hooks');
+    expect(out.stdout).toContain('At most one of: --command | --mcp-command');
+    expect(out.stdout).toMatch(/^ {2}--mcp-command .*[Dd]eprecated alias of --command/m);
   });
 });

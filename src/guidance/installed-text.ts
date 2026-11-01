@@ -320,3 +320,121 @@ export function mcpEntry(command?: string): McpServerEntry {
     ? { command: MCP_ENTRY.command, args: [...MCP_ENTRY.args] }
     : { command, args: [...MCP_LOCAL_ARGS] };
 }
+
+/** Relative path of the Claude Code project settings in the working tree. */
+export const CLAUDE_SETTINGS_PATH = '.claude/settings.json';
+
+/**
+ * The text that starts the ownership comment of an agentboard hook command
+ * (board-harness-hooks "Hooks installed in Claude settings"; design.md
+ * decision 4): the whole comment is `hooksMarker(N)`.
+ */
+export const HOOKS_MARKER_TEXT = '# agentboard-hooks:';
+
+/**
+ * The ownership comment at the end of every agentboard hook command for
+ * guidance version `version`: exactly `# agentboard-hooks: v<version>`.
+ * Pure.
+ */
+export function hooksMarker(version: number): string {
+  void version;
+  throw new Error('not implemented');
+}
+
+/** The executable a hook command runs when `--command` is not given. */
+export const HOOK_DEFAULT_EXECUTABLE = 'npx -y @bendechrai/agentboard';
+
+/** The `timeout` of every agentboard hook handler, in seconds (at most 5 by the spec). */
+export const HOOK_TIMEOUT_SECONDS = 5;
+
+/** The `matcher` of the agentboard `PreToolUse` entry: the file-writing tools. */
+export const PRE_TOOL_USE_MATCHER = 'Edit|Write|MultiEdit|NotebookEdit';
+
+/** A Claude Code settings event key agentboard writes an entry under. */
+export type ClaudeHookKey = 'SessionStart' | 'Stop' | 'PreToolUse';
+
+/** A `hook` event, as `agentboard hook <event>` names it. */
+export type ClaudeHookEvent = 'session-start' | 'stop' | 'pre-tool-use';
+
+/**
+ * The three settings keys and the `hook` event each runs, in the order the
+ * keys are added to a `hooks` object that lacks them.
+ */
+export const CLAUDE_HOOK_EVENTS: readonly {
+  readonly key: ClaudeHookKey;
+  readonly event: ClaudeHookEvent;
+}[] = [
+  { key: 'SessionStart', event: 'session-start' },
+  { key: 'Stop', event: 'stop' },
+  { key: 'PreToolUse', event: 'pre-tool-use' },
+];
+
+/** What the hook entries are rendered for. */
+export interface ClaudeHookOptions {
+  /** Guidance version recorded in the marker; default `GUIDANCE_VERSION`. */
+  readonly version?: number;
+  /** `--hooks-strict`: each command gains ` --strict`. Default false. */
+  readonly strict?: boolean;
+  /**
+   * The `--command` executable, exactly as given; undefined for
+   * `HOOK_DEFAULT_EXECUTABLE`.
+   */
+  readonly command?: string;
+}
+
+/** One Claude Code hook handler as agentboard writes it. */
+export interface ClaudeHookHandler {
+  readonly type: 'command';
+  readonly command: string;
+  readonly timeout: number;
+}
+
+/** One Claude Code matcher group (an element of `hooks.<key>`) as agentboard writes it. */
+export interface ClaudeHookGroup {
+  readonly matcher?: string;
+  readonly hooks: readonly ClaudeHookHandler[];
+}
+
+/**
+ * The executable text at the start of a hook command:
+ * - `command` undefined: `HOOK_DEFAULT_EXECUTABLE`;
+ * - `command` made only of the characters `A-Z a-z 0-9 _ . / @ % + = : , -`
+ *   (non-empty): written as given;
+ * - anything else (a space, `$`, `~`, `#`, a quote, a backslash, a
+ *   carriage return, ...): one POSIX shell word in single quotes, each `'`
+ *   written as `'\''`, so the shell runs exactly that path, with no
+ *   variable or `~` expansion (the value is an executable, like the
+ *   `.mcp.json` `command`, not a command line).
+ * Never trimmed, resolved or checked for existence. Pure.
+ */
+export function hookExecutable(command?: string): string {
+  void command;
+  throw new Error('not implemented');
+}
+
+/**
+ * The command string of one agentboard hook: `hookExecutable(command)`,
+ * then ` hook <event>`, then ` --strict` when `strict`, then a space and
+ * `hooksMarker(version)`. For example
+ * `npx -y @bendechrai/agentboard hook stop # agentboard-hooks: v3`. Pure.
+ */
+export function hookCommand(event: ClaudeHookEvent, options: ClaudeHookOptions = {}): string {
+  void event;
+  void options;
+  throw new Error('not implemented');
+}
+
+/**
+ * The matcher group agentboard owns under `hooks.<key>`: for
+ * `PreToolUse`, `{"matcher": PRE_TOOL_USE_MATCHER, "hooks": [handler]}`;
+ * for `SessionStart` and `Stop`, `{"hooks": [handler]}` with no matcher;
+ * the handler is exactly `{"type": "command", "command":
+ * hookCommand(<event of key>, options), "timeout": HOOK_TIMEOUT_SECONDS}`.
+ * Keys in exactly that order (`matcher`, `hooks`; `type`, `command`,
+ * `timeout`), no other key. A new object every call. Pure.
+ */
+export function hookGroup(key: ClaudeHookKey, options: ClaudeHookOptions = {}): ClaudeHookGroup {
+  void key;
+  void options;
+  throw new Error('not implemented');
+}

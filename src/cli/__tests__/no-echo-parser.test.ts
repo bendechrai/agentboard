@@ -123,9 +123,24 @@ const CASES: readonly Case[] = [
     name: 'unknown target (row 8)',
     argv: (t) => ['agents', 'install', '--target', t],
     expected: usage(
-      'unknown target given with --target; expected one of claude, agents-md, openspec, mcp-json',
+      'unknown target given with --target; expected one of claude, agents-md, openspec, mcp-json, claude-hooks',
       argsHint('agents install'),
     ),
+  },
+  {
+    name: 'a --command value with a newline (add-harness-integration)',
+    argv: (t) => ['agents', 'install', '--target', 'claude-hooks', '--command', `${t}\nx`],
+    expected: usage('--command must not contain a newline', argsHint('agents install')),
+  },
+  {
+    name: 'a --mcp-command value with a newline (add-harness-integration)',
+    argv: (t) => ['agents', 'install', '--mcp-command', `x\n${t}`],
+    expected: usage('--mcp-command must not contain a newline', argsHint('agents install')),
+  },
+  {
+    name: '--command with --mcp-command (add-harness-integration)',
+    argv: (t) => ['agents', 'install', '--command', t, '--mcp-command', t],
+    expected: usage('give only one of --command, --mcp-command', argsHint('agents install')),
   },
 ];
 

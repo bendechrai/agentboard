@@ -3,7 +3,7 @@
  * into a host project", "Installed guidance never clobbers user content";
  * add-agent-guidance design.md: "Ownership markers", "Where files are
  * written", "Auto-detection"; board-agent-guidance: "Managed MCP entry" and
- * `--mcp-command`).
+ * `--command`; board-harness-hooks: "Hooks installed in Claude settings").
  *
  * Writes the text of `./installed-text.ts` into the root of the current
  * working tree. Each target owns only its marked region of its file, and
@@ -22,6 +22,7 @@ import type { CommandOutput, Env } from '../cli/types.js';
 import { BoardError } from '../store/errors.js';
 import {
   AGENTS_MD_PATH,
+  CLAUDE_SETTINGS_PATH,
   GUIDANCE_VERSION,
   MCP_JSON_PATH,
   MCP_SERVER_NAME,
@@ -61,9 +62,12 @@ import {
  * - `agents-md`: the managed block in `AGENTS.md`;
  * - `openspec`: the `agentboard:` guidance entries under
  *   `operations.apply` and `operations.archive` in `openspec/config.yaml`;
- * - `mcp-json`: the `mcpServers.agentboard` key in `.mcp.json`.
+ * - `mcp-json`: the `mcpServers.agentboard` key in `.mcp.json`;
+ * - `claude-hooks`: the three agentboard hook entries in
+ *   `.claude/settings.json` (`CLAUDE_SETTINGS_PATH`), each owned when its
+ *   command ends with `hooksMarker(N)`. Never auto-detected.
  */
-export type GuidanceTarget = 'claude' | 'agents-md' | 'openspec' | 'mcp-json';
+export type GuidanceTarget = 'claude' | 'agents-md' | 'openspec' | 'mcp-json' | 'claude-hooks';
 
 /** Every `GuidanceTarget`, in processing order. */
 export const GUIDANCE_TARGETS: readonly GuidanceTarget[] = [
@@ -71,18 +75,20 @@ export const GUIDANCE_TARGETS: readonly GuidanceTarget[] = [
   'agents-md',
   'openspec',
   'mcp-json',
+  'claude-hooks',
 ];
 
 /**
  * The file of each target, relative to the working tree root, with POSIX
  * separators (`SKILL_PATH`, `AGENTS_MD_PATH`, `OPENSPEC_CONFIG_PATH`,
- * `MCP_JSON_PATH`). Results report paths in this form.
+ * `MCP_JSON_PATH`, `CLAUDE_SETTINGS_PATH`). Results report paths in this form.
  */
 export const TARGET_FILES: Readonly<Record<GuidanceTarget, string>> = {
   claude: SKILL_PATH,
   'agents-md': AGENTS_MD_PATH,
   openspec: OPENSPEC_CONFIG_PATH,
   'mcp-json': MCP_JSON_PATH,
+  'claude-hooks': CLAUDE_SETTINGS_PATH,
 };
 
 /**
@@ -108,21 +114,36 @@ export interface InstallOptions {
   /** `--force`: overwrite content agentboard does not own (see `RefusalReason`). */
   readonly force?: boolean;
   /**
-   * `--mcp-command <executable>`: the executable the
-   * `mcp-json` target runs, written as `mcpEntry(mcpCommand)`, that is
-   * `{"command": <executable>, "args": ["mcp"]}`, instead of the default
-   * `npx` entry. Giving it (any value, even one that is then refused)
-   * selects `mcp-json` in addition to the `--target` or auto-detected
-   * targets, with reason `requested with --mcp-command`. It must be
-   * non-empty and must not contain a line feed (`\n`), else
-   * `installGuidance` throws `BoardError(1, 'usage', <message naming
-   * --mcp-command>)` before anything is read or written. Otherwise it is
-   * used exactly as given (never trimmed, resolved or checked for
-   * existence); absolute paths and paths with spaces are fine. Absent: no
-   * executable was requested (see `installGuidance`, `mcp-json`, for what
-   * that means for an existing entry).
+   * `--command <executable>` (or its deprecated alias `--mcp-command`): the
+   * executable the `mcp-json` target runs, written as `mcpEntry(command)`,
+   * that is `{"command": <executable>, "args": ["mcp"]}`, instead of the
+   * default `npx` entry, and the executable of the `claude-hooks` commands
+   * (`hookExecutable(command)`). Giving it (any value, even one that is
+   * then refused) selects `mcp-json` in addition to the `--target` or
+   * auto-detected targets, with reason `requested with --command`
+   * (`COMMAND_REASON`), whichever flag was used. It must be non-empty and
+   * must not contain a line feed (`\n`), else `installGuidance` throws
+   * `BoardError(1, 'usage', <message>)` before anything is read or
+   * written; the message names the flag given (`commandFlag`) and never
+   * the value. Otherwise it is used exactly as given (never trimmed,
+   * resolved or checked for existence); absolute paths and paths with
+   * spaces are fine. Absent: no executable was requested (see
+   * `installGuidance`, `mcp-json` and `claude-hooks`, for what that means
+   * for an existing entry).
    */
-  readonly mcpCommand?: string;
+  readonly command?: string;
+  /**
+   * The flag `command` came from, used only to name it in the usage
+   * error: `command` (default) or `mcp-command`.
+   */
+  readonly commandFlag?: 'command' | 'mcp-command';
+  /**
+   * `--hooks-strict`: the `claude-hooks` commands end in ` --strict`
+   * before their marker. Without it they are written in warn mode, also
+   * over a strict install. No effect on any other target, and no output
+   * of its own when `claude-hooks` is not selected.
+   */
+  readonly hooksStrict?: boolean;
   /**
    * The guidance version to install; default `GUIDANCE_VERSION`. Only tests
    * pass it, to simulate an older or newer CLI.
@@ -137,9 +158,9 @@ export interface TargetSelection {
    * With `--target`: exactly `requested with --target`. Auto-detected:
    * exactly `.claude/ exists`, `AGENTS.md exists` or
    * `openspec/config.yaml exists`. The `mcp-json` target when
-   * `--mcp-command` is given: exactly `requested with --mcp-command`, also
-   * when `--target mcp-json` is given too (the output names
-   * `--mcp-command` as the reason).
+   * `--command` (or `--mcp-command`) is given: exactly `requested with
+   * --command`, also when `--target mcp-json` is given too (the output
+   * names `--command` as the reason).
    */
   readonly reason: string;
 }
@@ -156,7 +177,8 @@ export interface TargetSelection {
 export type InstallAction = 'created' | 'updated' | 'unchanged' | 'refused';
 
 /**
- * Why a target was refused. The first four are overridden by `--force`;
+ * Why a target was refused. The first four and the two `claude-hooks`
+ * reasons are overridden by `--force`;
  * the others are refused even with `--force`, because forcing would
  * destroy user content outside the owned region, write outside the working
  * tree, or cannot succeed.
@@ -176,15 +198,30 @@ export type InstallAction = 'created' | 'updated' | 'unchanged' | 'refused';
  *   a managed entry (`isManagedMcpEntry`: neither the default `npx` entry
  *   nor exactly `{command: <non-empty string>, args: ["mcp"]}`; extra keys,
  *   such as `env`, or other arguments make it unrecognised). Refused
- *   whether or not `--mcp-command` is given. With `--force` it is replaced
+ *   whether or not `--command` is given. With `--force` it is replaced
  *   in place (same key position) by the requested entry,
- *   `mcpEntry(mcpCommand)`.
+ *   `mcpEntry(command)`.
  * - `malformed-file` (`openspec`, `mcp-json`): the file cannot be parsed
  *   (YAML errors; invalid JSON), its top level is not a map/object, or (for
  *   `.mcp.json`) `mcpServers` exists and is not an object.
  * - `missing-file` (`openspec`): `openspec/config.yaml` does not exist; the
  *   message says to run `openspec init` first. agentboard never creates an
  *   OpenSpec config.
+ * - `malformed-settings` (`claude-hooks`): `.claude/settings.json` is not
+ *   valid JSON (comments, trailing commas, an empty file, a truncated
+ *   file) or its top level is not an object (an array, `null`, a string,
+ *   a number). A leading UTF-8 byte order mark is not a reason: it is
+ *   skipped for parsing and kept when the file is rewritten. With
+ *   `--force` the whole file is replaced by a fresh settings file holding
+ *   only the agentboard entries. The message names the file and never
+ *   quotes its content or the JSON parser's error (which can).
+ * - `hooks-shape` (`claude-hooks`): the top-level `hooks` is present and
+ *   not an object (`null` included), or one of `hooks.SessionStart`,
+ *   `hooks.Stop`, `hooks.PreToolUse` is present and not an array. Other
+ *   keys of `hooks`, and elements of those arrays of any shape, are user
+ *   content and never a reason. With `--force` each offending value is
+ *   replaced, at its key position, by an object or array holding only
+ *   the agentboard entries; every other key is kept.
  * - `outside-tree` (every target):
  *   the target path, with symlinks resolved (`realpathSync` of the file
  *   when it exists, else of its nearest existing ancestor, with the rest of
@@ -218,6 +255,8 @@ export type RefusalReason =
   | 'malformed-marker'
   | 'not-a-list'
   | 'entry-differs'
+  | 'malformed-settings'
+  | 'hooks-shape'
   | 'malformed-file'
   | 'missing-file'
   | 'outside-tree'
@@ -332,12 +371,14 @@ interface Handled {
   readonly manual: readonly string[];
 }
 
-/** The four refusal reasons that `--force` overrides. */
+/** The refusal reasons that `--force` overrides. */
 const FORCEABLE: readonly RefusalReason[] = [
   'foreign-file',
   'malformed-marker',
   'not-a-list',
   'entry-differs',
+  'malformed-settings',
+  'hooks-shape',
 ];
 
 function done(action: Exclude<InstallAction, 'refused'>, message: string): Handled {
@@ -596,7 +637,7 @@ function installOpenSpec(path: string, version: number, force: boolean): Handled
 
 /**
  * The `mcp-json` target: the `mcpServers.agentboard` key of `.mcp.json`.
- * `mcpCommand` is the `--mcp-command` executable, undefined when not given.
+ * `mcpCommand` is the `--command` executable, undefined when not given.
  */
 function installMcpJson(path: string, force: boolean, mcpCommand: string | undefined): Handled {
   const text = readText(path);
@@ -634,23 +675,44 @@ function installMcpJson(path: string, force: boolean, mcpCommand: string | undef
   return done('updated', `wrote the agentboard MCP server into ${MCP_JSON_PATH}`);
 }
 
+/**
+ * The `claude-hooks` target: the three agentboard entries of
+ * `.claude/settings.json` (see `installGuidance`, `claude-hooks`).
+ */
+function installClaudeHooks(path: string, version: number, run: RunOptions): Handled {
+  void path;
+  void version;
+  void run;
+  throw new Error('not implemented');
+}
+
+/** What every target handler may need besides its path and version. */
+interface RunOptions {
+  readonly force: boolean;
+  /** The `--command` executable, undefined when not given. */
+  readonly command: string | undefined;
+  /** `--hooks-strict`. */
+  readonly hooksStrict: boolean;
+}
+
 /** Runs the handler of `target` on its resolved file `path`. */
 function runHandler(
   target: GuidanceTarget,
   path: string,
   version: number,
-  force: boolean,
-  mcpCommand: string | undefined,
+  run: RunOptions,
 ): Handled {
   switch (target) {
     case 'claude':
-      return installSkill(path, version, force);
+      return installSkill(path, version, run.force);
     case 'agents-md':
-      return installAgentsMd(path, version, force);
+      return installAgentsMd(path, version, run.force);
     case 'openspec':
-      return installOpenSpec(path, version, force);
+      return installOpenSpec(path, version, run.force);
     case 'mcp-json':
-      return installMcpJson(path, force, mcpCommand);
+      return installMcpJson(path, run.force, run.command);
+    case 'claude-hooks':
+      return installClaudeHooks(path, version, run);
   }
 }
 
@@ -664,8 +726,7 @@ function installTarget(
   target: GuidanceTarget,
   root: string,
   version: number,
-  force: boolean,
-  mcpCommand: string | undefined,
+  run: RunOptions,
 ): Handled {
   const rel = TARGET_FILES[target];
   const where = targetPath(root, rel);
@@ -679,7 +740,7 @@ function installTarget(
     return refuse('not-a-file', `${rel} ${where.what} (${where.code}); nothing was written`);
   }
   try {
-    return runHandler(target, where.path, version, force, mcpCommand);
+    return runHandler(target, where.path, version, run);
   } catch (error) {
     const code = errorCode(error);
     if (code !== null && PERMISSION_CODES.includes(code)) {
@@ -695,8 +756,23 @@ function installTarget(
   }
 }
 
-/** The reason `mcp-json` is selected when `--mcp-command` is given. */
+/**
+ * The reason `mcp-json` is selected when `--command` (or its deprecated
+ * alias `--mcp-command`) is given.
+ */
+export const COMMAND_REASON = 'requested with --command';
+
+/** The reason the stubbed selection still gives; replaced by `COMMAND_REASON`. */
 const MCP_COMMAND_REASON = 'requested with --mcp-command';
+
+/**
+ * The one stderr line (without the `agentboard: ` prefix) that `agents
+ * install --mcp-command` prints first, on every run that returns
+ * (installed or refused targets, text or `--json`), and that `--command`
+ * never prints. It names both flags and never the value.
+ */
+export const MCP_COMMAND_DEPRECATION =
+  '--mcp-command is deprecated; use --command, which does the same';
 
 /** Throws `usage` when `--mcp-command` was given an empty value or a line feed. */
 function validateMcpCommand(mcpCommand: string | undefined): void {
@@ -717,7 +793,11 @@ function selectTargets(
   const all = GUIDANCE_TARGETS.join(', ');
   for (const t of given) {
     if (!(GUIDANCE_TARGETS as readonly string[]).includes(t)) {
-      throw new BoardError(1, 'usage', `unknown target given with --target; expected one of ${all}`);
+      throw new BoardError(
+        1,
+        'usage',
+        `unknown target given with --target; expected one of ${all}`,
+      );
     }
   }
   const autoDetected = given.length === 0;
@@ -751,23 +831,25 @@ function selectTargets(
  *
  * 1. `root = workingTreeRoot(cwd, env)`; `version = options.version ??
  *    GUIDANCE_VERSION`.
- * 2. Selection. `mcpCommand`, when given, must be non-empty and contain no
- *    `\n`, else `BoardError(1, 'usage', <message>)` naming `--mcp-command`
- *    and saying why (empty, or contains a newline), before anything else is
- *    checked and before anything is written. Every `--target` value must
- *    be one of `GUIDANCE_TARGETS`, else `BoardError(1, 'usage', 'unknown
- *    target given with --target; expected one of claude, agents-md,
- *    openspec, mcp-json')`, which does not repeat the target, before
- *    anything is written. Given targets are de-duplicated, each with
- *    reason `requested with --target`. With none given, `detectTargets(root)`
- *    (`autoDetected` true). When `mcpCommand` is given, `mcp-json` is
- *    selected as well, in its `GUIDANCE_TARGETS` position, with reason
- *    `requested with --mcp-command` (replacing `requested with --target`
- *    when `--target mcp-json` is also given). When, after that, nothing is
+ * 2. Selection. `command`, when given, must be non-empty and contain no
+ *    `\n`, else `BoardError(1, 'usage', <message>)` naming the flag given
+ *    (`--command`, or `--mcp-command` when `commandFlag` is `mcp-command`)
+ *    and saying why (empty, or contains a newline), never the value, before
+ *    anything else is checked and before anything is written. Every
+ *    `--target` value must be one of `GUIDANCE_TARGETS`, else
+ *    `BoardError(1, 'usage', 'unknown target given with --target; expected
+ *    one of claude, agents-md, openspec, mcp-json, claude-hooks')`, which
+ *    does not repeat the target, before anything is written. Given targets
+ *    are de-duplicated, each with reason `requested with --target`. With
+ *    none given, `detectTargets(root)` (`autoDetected` true), which never
+ *    selects `claude-hooks`, even where it is installed. When `command` is
+ *    given, `mcp-json` is selected as well, in its `GUIDANCE_TARGETS`
+ *    position, with reason `COMMAND_REASON` (replacing `requested with
+ *    --target` when `--target mcp-json` is also given), also when only
+ *    `--target claude-hooks` is given. When, after that, nothing is
  *    selected, `BoardError(1, 'no-targets', <message>)` whose message names
- *    `root`, says nothing was detected, and lists all four targets
- *    (`claude, agents-md, openspec, mcp-json`) with `--target`. Nothing is
- *    written.
+ *    `root`, says nothing was detected, and lists every target in
+ *    `GUIDANCE_TARGETS` with `--target`. Nothing is written.
  * 3. Each selected target is processed in `GUIDANCE_TARGETS` order. A
  *    refused target writes nothing and does not stop the others. A target
  *    either writes its whole change or nothing. Before the per-target steps
@@ -828,8 +910,8 @@ function selectTargets(
  *   order.
  *
  * `mcp-json` (`.mcp.json`), requested entry `wanted =
- * mcpEntry(options.mcpCommand)` (the default `npx` entry without
- * `--mcp-command`), rules of add-mcp-command design.md "Reinstall rules":
+ * mcpEntry(options.command)` (the default `npx` entry without
+ * `--command`), rules of add-mcp-command design.md "Reinstall rules":
  * - absent: written as `JSON.stringify({ mcpServers: { agentboard:
  *   wanted } }, null, 2)` plus `\n`: `created`.
  * - invalid JSON, a top level that is not an object, or an `mcpServers`
@@ -841,38 +923,85 @@ function selectTargets(
  *   keeping every other key, value and key order: `updated`. (A file
  *   already in that format therefore changes only by the added entry.)
  * - present and a managed entry (`isManagedMcpEntry`):
- *   - without `mcpCommand`: `unchanged`, not written, whichever managed
+ *   - without `command`: `unchanged`, not written, whichever managed
  *     shape it is (a local command is never reverted to `npx`);
- *   - with `mcpCommand`: `unchanged` (not written) when it is deep-equal
+ *   - with `command`: `unchanged` (not written) when it is deep-equal
  *     to `wanted`, else replaced in place by `wanted` and rewritten as
  *     above, without needing `force`: `updated`. Deep-equal means the
  *     local shape with exactly that command: the default `npx` entry is
- *     replaced even by `--mcp-command npx` (which asks for `npx mcp`).
+ *     replaced even by `--command npx` (which asks for `npx mcp`).
  * - present and not a managed entry: `refused` `entry-differs` (with or
- *   without `mcpCommand`), unless `force`, which replaces it in place by
+ *   without `command`), unless `force`, which replaces it in place by
  *   `wanted` (rewritten as above): `updated`.
  *
- * @throws BoardError exit 1 `usage` (an `mcpCommand` that is empty or
+ * `claude-hooks` (`.claude/settings.json`; board-harness-hooks "Hooks
+ * installed in Claude settings"; design.md "Rulings from task group 3"):
+ * - The wanted entries: `hookGroup(key, { version, strict:
+ *   options.hooksStrict, command: <executable> })` for each key of
+ *   `CLAUDE_HOOK_EVENTS`. `<executable>` is `options.command` when given;
+ *   otherwise the executable of the installed entries when every owned
+ *   handler's command parses (`parseHookCommand`) with the event of its key
+ *   and all name one executable (any version, either mode), so a reinstall
+ *   never reverts a local executable to `npx`; otherwise the default. The
+ *   mode is never kept: it is strict exactly when `hooksStrict` is true.
+ * - Owned: a handler (an object in the `hooks` array of an element of
+ *   `hooks.SessionStart`, `hooks.Stop` or `hooks.PreToolUse`) whose
+ *   `command` has a marker (`hookMarkerVersion` not null); an owned group
+ *   is an element holding at least one owned handler. Keys of `hooks`
+ *   other than those three are never inspected or changed, whatever they
+ *   hold.
+ * - absent file: written as `JSON.stringify({ hooks: { SessionStart: [..],
+ *   Stop: [..], PreToolUse: [..] } }, null, 2)` plus `\n`, each array
+ *   holding its one wanted group, parent directories created: `created`.
+ * - `malformed-settings` and `hooks-shape` refusals: see `RefusalReason`.
+ * - Per key: up to date when it holds exactly one owned group and that
+ *   group is deep-equal (`jsonEqual`) to the wanted group. Otherwise every
+ *   owned handler is removed from its group, a group left with no handler
+ *   is removed, a group that still holds user handlers stays where it was,
+ *   and the wanted group is inserted where the first owned group was
+ *   (right after it when it stayed), or appended when there was none. A
+ *   missing key is added after the existing keys of `hooks`, in
+ *   `CLAUDE_HOOK_EVENTS` order; a missing `hooks` is added as the last
+ *   top-level key. User groups and handlers, including ones whose command
+ *   looks like an agentboard command but has no marker, keep their values
+ *   and order.
+ * - All three keys up to date: `unchanged`, the file is not written (its
+ *   bytes, mode and mtime stay). Otherwise the parsed object is written as
+ *   `JSON.stringify(<object>, null, 2)` plus `\n` (a leading byte order
+ *   mark kept, line breaks `\n`): `updated`. Every key, value and their
+ *   order outside the owned groups is kept, odd key names such as
+ *   `__proto__` included.
+ * - The write replaces the file atomically: a temporary file in the same
+ *   directory, given the mode of the file it replaces, renamed over the
+ *   file the path resolves to (so a symbolic link inside the tree stays a
+ *   link to the updated file); no temporary file is left behind on
+ *   success or failure. A file the process may not write (`EACCES` on an
+ *   access check for writing) is refused `unwritable` and not replaced,
+ *   although a rename could replace it.
+ * - `.claude/settings.local.json` is never read or written.
+ *
+ * @throws BoardError exit 1 `usage` (a `command` that is empty or
  * contains `\n`, checked first, then an unknown target, exactly `unknown
  * target given with --target; expected one of claude, agents-md,
- * openspec, mcp-json`, which does not repeat the target) or `no-targets`
- * (no `--target`, nothing detected and no `mcpCommand`).
+ * openspec, mcp-json, claude-hooks`, which does not repeat the target) or
+ * `no-targets` (no `--target`, nothing detected and no `command`).
  */
 export function installGuidance(options: InstallOptions): InstallResult {
-  validateMcpCommand(options.mcpCommand);
+  validateMcpCommand(options.command);
   const root = workingTreeRoot(options.cwd, options.env ?? process.env);
   const version = options.version ?? GUIDANCE_VERSION;
   const force = options.force ?? false;
-  const { selections, autoDetected } = selectTargets(
-    root,
-    options.targets ?? [],
-    options.mcpCommand,
-  );
+  const { selections, autoDetected } = selectTargets(root, options.targets ?? [], options.command);
+  const run: RunOptions = {
+    force,
+    command: options.command,
+    hooksStrict: options.hooksStrict ?? false,
+  };
   const targets: TargetOutcome[] = selections.map(({ target, reason }) => ({
     target,
     path: TARGET_FILES[target],
     reason,
-    ...installTarget(target, root, version, force, options.mcpCommand),
+    ...installTarget(target, root, version, run),
   }));
   return {
     root,
@@ -887,9 +1016,9 @@ export function installGuidance(options: InstallOptions): InstallResult {
  * The human output of `agents install`, plain ASCII, one line each, ending
  * with a newline:
  * 1. When `result.autoDetected`: `selected <target>: <reason>` per target.
- *    Otherwise one such line for each target whose reason is `requested
- *    with --mcp-command` (so `selected mcp-json: requested with
- *    --mcp-command` whenever `--mcp-command` was given), and none for the
+ *    Otherwise one such line for each target whose reason is
+ *    `COMMAND_REASON` (so `selected mcp-json: requested with --command`
+ *    whenever `--command` or `--mcp-command` was given), and none for the
  *    targets requested with `--target`.
  * 2. Per outcome: `<action> <target> <path>`, followed by ` (up to date)`
  *    for `unchanged`, and for `refused` by `: <message>` and then each
@@ -923,31 +1052,50 @@ export function renderInstall(result: InstallResult): string {
   return `${lines.join('\n')}\n`;
 }
 
+/** The parsed flags of `agents install`, as the registry passes them. */
+export interface InstallFlags {
+  /** The `--target` values as given. */
+  readonly targets: readonly string[];
+  readonly force: boolean;
+  /** The `--command` value, undefined when the flag is absent. */
+  readonly command?: string;
+  /**
+   * The `--mcp-command` value, undefined when the flag is absent. The
+   * parser refuses both flags together (`give only one of --command,
+   * --mcp-command`), so at most one of the two is set.
+   */
+  readonly mcpCommand?: string;
+  /** `--hooks-strict`. */
+  readonly hooksStrict: boolean;
+}
+
 /**
  * The `agents install` command (called by the registry): `installGuidance`
- * with `cwd`, `env`, `targets`, `force` and `mcpCommand` (the
- * `--mcp-command` value, undefined when the flag is absent; an empty string
- * is passed through as given, so it is refused as `usage`); `json` is the
- * `InstallResult`,
- * `text` is `renderInstall`. When any target was refused, `exitCode` is 1
- * and `warnings` holds one line per refused target, `refused <target>:
- * <message>`, so the other targets' outcomes are still printed in full.
+ * with `cwd`, `env`, `targets`, `force`, `hooksStrict` and `command` (the
+ * `--command` value, or else the `--mcp-command` value with `commandFlag`
+ * `mcp-command`; undefined when neither flag is given; an empty string is
+ * passed through as given, so it is refused as `usage`); `json` is the
+ * `InstallResult`, `text` is `renderInstall`. When `--mcp-command` was
+ * given, `warnings` starts with `MCP_COMMAND_DEPRECATION`; apart from that
+ * line, the output is exactly that of `--command` with the same value.
+ * When any target was refused, `exitCode` is 1 and `warnings` holds (after
+ * the deprecation line, if any) one line per refused target, `refused
+ * <target>: <message>`, so the other targets' outcomes are still printed
+ * in full.
  *
- * @throws BoardError as `installGuidance`.
+ * @throws BoardError as `installGuidance` (no deprecation line is printed
+ * then: a thrown error prints only its own message).
  */
-export function installCommand(
-  cwd: string,
-  env: Env,
-  targets: readonly string[],
-  force: boolean,
-  mcpCommand?: string,
-): CommandOutput {
+export function installCommand(cwd: string, env: Env, flags: InstallFlags): CommandOutput {
+  const command = flags.command ?? flags.mcpCommand;
   const result = installGuidance({
     cwd,
     env,
-    targets,
-    force,
-    ...(mcpCommand === undefined ? {} : { mcpCommand }),
+    targets: flags.targets,
+    force: flags.force,
+    hooksStrict: flags.hooksStrict,
+    ...(command === undefined ? {} : { command }),
+    ...(flags.mcpCommand === undefined ? {} : { commandFlag: 'mcp-command' as const }),
   });
   const refused = result.targets.filter((t) => t.action === 'refused');
   const output: CommandOutput = { json: result, text: renderInstall(result) };
