@@ -1569,6 +1569,51 @@ board's history. One that is not adopted is removed and named:
 removed /path/to/project/.git/agentboard/migrating/4242, left by a move of another board (not the one at /path/to/project/.board, or one whose history no longer holds where that move began), so nothing of it was adopted
 ```
 
+A move killed (or refused at its last check) after it updated
+`refs/agentboard/board` and before the `sync` that publishes it leaves that
+board's commits in the ref. If `.board` is then replaced by another board
+and the move is run again, it sets the ref back before it moves the new
+board, so none of the old board's events reach the new one or the project's
+remote. It does so only when the ref still holds exactly what that move
+put there; it records the ref's value before its update for this and
+resets the ref only if the ref still equals the temporary's HEAD. The run
+adds one line, then removes and names the worktree as above:
+
+```
+set refs/agentboard/board in the host repository back to its value before the interrupted move at /path/to/project/.git/agentboard/migrating/4242, which had updated it for another board and not published it
+```
+
+When that move had created the ref, the line is instead `deleted
+refs/agentboard/board in the host repository, as before the interrupted
+move at <path>, which had created it for another board and not published
+it`. A move of this board resumed after a kill never resets the ref, and
+a ref fetched by hand beside a worktree that does not hold it is
+integrated, not reset.
+
+When the ref cannot be set back, the run exits 3 `sync-failed` and
+changes nothing, naming the interrupted move's worktree and the remedy:
+`the interrupted move at <path> put commits of another board (not the one
+at <dir>, or one whose history no longer holds where that move began) into
+refs/agentboard/board in the host repository without publishing them, and
+<why>, so the move cannot set the ref back by itself; nothing was changed;
+set it back by hand with git update-ref -d refs/agentboard/board when the
+host's remote holds the board or the ref did not exist before that move,
+else with git update-ref refs/agentboard/board <its earlier commit>, then
+run agentboard init --into-host again`. `<why>` is one of: `that move left
+no record of the ref's value before it` (a move by 0.3.0 or earlier, or a
+record that is missing or unreadable), `the ref has moved on past what
+that move put into it` (someone committed or fetched on top), or `the
+value that move recorded for the ref is not a commit in the host
+repository`. After a reset made earlier in the same run, "nothing was
+changed" reads `refs/agentboard/board was set back for the interrupted
+move at <paths> earlier in this run, and nothing else was changed`. If
+the ref changes while the run resets it, the run exits 3 `sync-failed`
+saying something else moved it meanwhile, with the worktree kept; run it
+again. A worktree of another board whose process is still alive (a move
+that may still be running) is never touched: exit 3 `sync-in-progress`
+naming it, `nothing was changed`, and to run `agentboard init
+--into-host` again once that move has finished.
+
 When a rebase or cherry-pick is stopped in such a worktree, the
 `sync-in-progress` refusal says so instead (same exit code, reason and
 hint), with `(that worktree was left by a move of another board, not the
