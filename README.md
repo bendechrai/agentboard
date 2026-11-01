@@ -2782,8 +2782,14 @@ as `entry-differs` unless `--force` is given, which replaces it.
   Slack and Stripe (secret and restricted keys and webhook secrets, each
   recognised by its documented prefix and a minimum length); JWTs; and
   long base64 strings after `token`, `secret`, `password` or `key`. Stripe
-  publishable keys are public and are not refused. A prefix inside a longer
-  word is not a key, and a key shorter than the minimum, an unprefixed
+  publishable keys are public and are not refused. Apart from GitHub
+  tokens and the PEM and PGP headers, which match anywhere, and AWS ids,
+  which need no letter or digit on either side, a prefix glued to a
+  preceding letter or digit is not a key, and a JWT is also not caught
+  when glued to a preceding `_` or `-`. A key after a `\n`-style
+  backslash escape or a percent-encoding is still caught; one after a
+  quote escape that ends in a digit (the hex and unicode forms) is not,
+  though the `\"` form is. A key shorter than the minimum, an unprefixed
   secret or a provider not listed is accepted: the patterns catch the
   common accident, not every secret. An ordinary slug after a hyphenated
   or underscored prefix can be refused as a false positive. Actor names
