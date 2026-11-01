@@ -161,11 +161,14 @@ describe('auto-detection', () => {
     const { root, scratch } = setup();
     mkdirSync(join(root, '.codex'));
     mkdirSync(join(root, '.agents'));
-    mkdirSync(join(scratch.home, '.gemini'), { recursive: true });
+    // Only files are made unreadable: a file of mode 0 is still removed with
+    // its temporary directory, which runs before onTestFinished restores modes.
+    mkdirSync(join(scratch.home, '.gemini', 'config'), { recursive: true });
     mkdirSync(scratch.codexHome);
-    writeFileSync(join(scratch.codexHome, 'config.toml'), '# agentboard:start v3\n');
-    chmodForTest(join(scratch.codexHome, 'config.toml'), 0o000);
-    chmodForTest(join(scratch.home, '.gemini'), 0o000);
+    writeFileSync(scratch.codexConfig, '# agentboard:start v3\n');
+    writeFileSync(scratch.agyConfig, '{"mcpServers": {"agentboard": {"command": "x"}}}\n');
+    chmodForTest(scratch.codexConfig, 0o000);
+    chmodForTest(scratch.agyConfig, 0o000);
     const result = installIn(root, scratch);
     expect(result.refused).toBe(0);
     expect(result.targets.map((t) => t.path)).toEqual([AGENTS, AGENTS]);
