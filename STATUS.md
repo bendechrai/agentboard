@@ -124,6 +124,18 @@ them on it (see "Known gaps").
   (ticket 01M5XPHX2V5DHQY0RB6M5JWRD6) and documented in README "Moving a
   board into the host repository" (PR #111); the change is archived as
   `openspec/changes/archive/2026-10-27-guard-stale-temporary`.
+- **Reset of a host ref left by another board's move** (`board-concurrency`,
+  `into-host-replaced-after-step-4`): `init --into-host` records the
+  ref's value before its step 4 update (`agentboard-board-before` in the
+  temporary's git directory); a re-run with another board at `.board`
+  sets `refs/agentboard/board` back (or deletes it) for a dead temporary
+  of another board whose HEAD the ref still equals, with a compare-and-swap,
+  and moves the new board without the old one's events, or exits 3
+  `sync-failed` naming the temporary and the `git update-ref` remedy
+  (no record, ref moved past, the recorded value not a commit of the
+  host, lost race); a live temporary of another
+  board is `sync-in-progress`. README "Moving a board into the host
+  repository". Ticket 01M5XYG0VT09DBAW7PZJK1CZ5Y is closed by it.
 - **Inbox positions survive a cache schema upgrade** (`board-cache`):
   when the cache was written by an earlier schema version, the recreate
   carries each actor's cursor and seen set and the old cache's applied
@@ -175,7 +187,8 @@ them on it (see "Known gaps").
 0.3.0 is released (tag `v0.3.0`, npm `@bendechrai/agentboard@0.3.0`).
 In progress for the next release: `add-harness-integration` (hooks and
 more harness targets; group 1, the hook command contract, is merged in
-#127) and `into-host-replaced-after-step-4` (in review).
+#127) and `into-host-replaced-after-step-4` (code merged; documentation in
+review).
 
 ## Known gaps
 
@@ -191,11 +204,6 @@ more harness targets; group 1, the hook command contract, is merged in
 - The shared secret patterns miss short prefixed keys such as Stripe
   restricted keys (`rk_live_`, `rk_test_`), which also fit the actor form:
   ticket 01M69B8W53DGS7CF8XY4H951TC.
-- `init --into-host` killed after its step 4 (the local
-  `refs/agentboard/board` updated) leaves the first board's events in
-  that ref if `.board` is then replaced by a different board before the
-  move is re-run; whether the re-run must detect and refuse this is open:
-  ticket 01M5XYG0VT09DBAW7PZJK1CZ5Y.
 - The proposal `add-harness-integration` (draft PR #67, not merged) was
   re-synced on 2026-10-31 with the main specs as of `a455011` (guidance
   version stays 3, ADR 0016; its design.md lists what the newer archives
