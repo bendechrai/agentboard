@@ -24,6 +24,7 @@ import {
 } from './parse.js';
 import { COMMANDS, findCommand } from './registry.js';
 import type { TerminalIo } from '../tui/terminal.js';
+import type { PromptTerminal } from './prompt.js';
 import type { BoardOpenOptions, CommandSpec, Env, RunContext } from './types.js';
 
 /** The process surroundings `runCli` uses; nothing else is read or written. */
@@ -58,6 +59,15 @@ export interface AsyncCliIo extends CliIo {
    * the terminal.
    */
   terminal?(): Promise<TerminalIo>;
+  /**
+   * Returns the terminal a question is asked on (`processPromptTerminal()`
+   * for `src/cli.ts`, whose creation reads nothing). Called at most once,
+   * only for a command with `CommandSpec.prompting` (`init`, `agents
+   * install`), after parsing and the actor checks, and then that command
+   * runs through `prompting` with it. When absent, such a command runs
+   * through `run`, exactly as in `runCli`, and asks nothing.
+   */
+  promptTerminal?(): PromptTerminal;
 }
 
 /**

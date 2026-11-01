@@ -8,6 +8,7 @@
 import type { Board } from '../store/board.js';
 import type { ExitCode } from '../store/errors.js';
 import type { TerminalIo } from '../tui/terminal.js';
+import type { PromptTerminal } from './prompt.js';
 
 /** The environment a command runs with; defined in `src/board/text.ts` (layering). */
 import type { Env } from '../board/text.js';
@@ -208,6 +209,31 @@ export interface StreamIo {
 }
 
 /**
+ * What a command that may ask a question (`CommandSpec.prompting`) writes
+ * to and reads from (add-harness-integration design.md "Rulings from task
+ * group 5 (test author)").
+ */
+export interface PromptIo {
+  /** True when `--json` was given: then nothing is asked. */
+  readonly json: boolean;
+  /**
+   * Writes stdout text at once, before the command returns: what must be
+   * on the screen before a question (the board message of `init`). Text
+   * written here is followed by the returned `CommandOutput.text`.
+   */
+  stdout(text: string): void;
+  /** Writes stderr text at once (whole lines). */
+  stderr(text: string): void;
+  /**
+   * The terminal questions are asked on (`askLine`). A command asks only
+   * when `terminal.stdinIsTTY` and `terminal.stdoutIsTTY` are both true
+   * and `json` is false; otherwise it never calls `onData` or `onEnd`, so
+   * standard input is never read.
+   */
+  readonly terminal: PromptTerminal;
+}
+
+/**
  * The overview section a command is listed under (board-agent-guidance:
  * "Generated help"), in overview order:
  * - `lifecycle`: "Ticket lifecycle" (creating, finding and moving tickets);
@@ -336,6 +362,21 @@ export interface CommandSpec {
    * `BoardError` on failure.
    */
   run(ctx: RunContext, values: ArgValues): CommandOutput;
+  /**
+   * Present only for `init` and `agents install`, the commands that may ask
+   * a question on an interactive terminal (board-cli "Init offers to
+   * install agent guidance"; board-agent-guidance, the bare-project
+   * prompt). `runCliAsync` calls it instead of `run` when its `io` has
+   * `promptTerminal` (the executable always has), after parsing and the
+   * actor checks, with the terminal `promptTerminal()` returned; it prints
+   * the returned output exactly as `runCli` prints the output of `run`
+   * (`warnings` on stderr, then `text`, or with `--json` the `json`
+   * document) and returns its `exitCode`, and reports a thrown error as
+   * `runCli` does. Its behaviour without a question (stdin or stdout not a
+   * terminal, or `--json`) is exactly that of `run`, which the in-process
+   * `runCli` and every other caller keep using, so they never ask.
+   */
+  prompting?(ctx: RunContext, values: ArgValues, io: PromptIo): Promise<CommandOutput>;
   /**
    * True only for `top`, the one command that drives the terminal: it is
    * the only command to which `runCliAsync` passes a terminal
