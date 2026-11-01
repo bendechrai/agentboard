@@ -970,3 +970,120 @@ describe('every target installs at the current version', () => {
     ]);
   });
 });
+
+describe('review round 1 of group 3 (R3, R4)', () => {
+  it('keeps a mode the umask would change (0666) on the replaced file', () => {
+    const root = plainProject();
+    writeRel(root, SETTINGS, json({ model: 'opus' }));
+    chmodSync(join(root, SETTINGS), 0o666);
+    expect(hooks(root).action).toBe('updated');
+    expect(statSync(join(root, SETTINGS)).mode & 0o777).toBe(0o666);
+  });
+
+  it('keeps no executable when an installed command sits under the wrong key', () => {
+    const root = plainProject();
+    writeRel(
+      root,
+      SETTINGS,
+      json({
+        hooks: {
+          SessionStart: [group('SessionStart', { exe: 'agentboard' })],
+          Stop: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command: cmd('session-start', { exe: 'agentboard' }),
+                  timeout: 5,
+                },
+              ],
+            },
+          ],
+          PreToolUse: [group('PreToolUse', { exe: 'agentboard' })],
+        },
+      }),
+    );
+    expect(hooks(root).action).toBe('updated');
+    expect(readRel(root, SETTINGS)).toBe(json({ hooks: freshHooks() }));
+  });
+
+  it('with --force keeps the byte order mark of an unparseable file it replaces', () => {
+    const root = plainProject();
+    writeRel(root, SETTINGS, '\uFEFF{ "model": "opus", }');
+    expect(hooks(root, { force: true }).action).toBe('updated');
+    expect(readRel(root, SETTINGS)).toBe(`\uFEFF${json({ hooks: freshHooks() })}`);
+  });
+
+  it('keeps user hooks with the documented non-markers and adds its own entry', () => {
+    const root = plainProject();
+    const users = [
+      `${NPX} hook stop #agentboard-hooks: v3`,
+      `${NPX} hook stop # agentboard-hooks: 3`,
+      `${NPX} hook stop #  agentboard-hooks: v3`,
+    ].map((command) => ({ hooks: [{ type: 'command', command, timeout: 5 }] }));
+    writeRel(root, SETTINGS, json({ hooks: { Stop: users } }));
+    hooks(root);
+    expect(settingsOf(root)).toEqual({
+      hooks: {
+        Stop: [...users, group('Stop')],
+        SessionStart: [group('SessionStart')],
+        PreToolUse: [group('PreToolUse')],
+      },
+    });
+    expect(checkGuidance({ cwd: root, env: ENV }).map((e) => e.state)).toEqual(['current']);
+  });
+
+  it.each([
+    ['command', '-rf', 'must not start with a hyphen'],
+    ['command', '--strict', 'must not start with a hyphen'],
+    ['mcp-command', '-x', 'must not start with a hyphen'],
+    ['command', 'exec', 'must not be a shell special built-in; give the path of the executable'],
+    ['command', 'eval', 'must not be a shell special built-in; give the path of the executable'],
+    ['mcp-command', ':', 'must not be a shell special built-in; give the path of the executable'],
+  ])('refuses --%s %j as usage naming the flag', (flag, value, why) => {
+    const root = plainProject();
+    const err = expectBoardError(
+      () =>
+        install(root, {
+          targets: ['claude-hooks'],
+          command: value,
+          ...(flag === 'mcp-command' ? { commandFlag: 'mcp-command' as const } : {}),
+        }),
+      1,
+      'usage',
+    );
+    expect(err.message).toBe(`--${flag} ${why}`);
+    expect(fileList(root)).toEqual([]);
+  });
+
+  it.each([
+    'break',
+    ':',
+    'continue',
+    '.',
+    'eval',
+    'exec',
+    'exit',
+    'export',
+    'readonly',
+    'return',
+    'set',
+    'shift',
+    'times',
+    'trap',
+    'unset',
+  ])('refuses the special built-in %s, but accepts a path ending in it', (word) => {
+    const root = plainProject();
+    expectBoardError(() => install(root, { targets: ['claude-hooks'], command: word }), 1, 'usage');
+    expect(fileList(root)).toEqual([]);
+    expect(hooks(root, { command: `/usr/local/bin/${word}` }).action).toBe('created');
+  });
+
+  it('accepts values with = and reserved words, quoting them', () => {
+    const root = plainProject();
+    hooks(root, { command: 'FOO=bar' });
+    expect(readRel(root, SETTINGS)).toBe(json({ hooks: freshHooks({ exe: "'FOO=bar'" }) }));
+    hooks(root, { command: 'if' });
+    expect(readRel(root, SETTINGS)).toBe(json({ hooks: freshHooks({ exe: "'if'" }) }));
+  });
+});

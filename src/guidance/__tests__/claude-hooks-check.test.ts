@@ -310,6 +310,25 @@ describe('modified', () => {
     expect(stateOf(root)).toEqual([['modified', 3]]);
   });
 
+  it('reports mixed versions modified with the version unknown when the first is older', () => {
+    const root = plainProject();
+    writeRel(
+      root,
+      SETTINGS,
+      json(settingsWith(cmd('session-start', NPX, false, 2), cmd('stop'), cmd('pre-tool-use'))),
+    );
+    expect(stateOf(root)).toEqual([['modified', null]]);
+  });
+
+  it('reports v2 and v3 entries under one key modified with the version unknown', () => {
+    const root = plainProject();
+    installHooks(root);
+    const settings = JSON.parse(readRel(root, SETTINGS)) as { hooks: Hooks };
+    settings.hooks.Stop.unshift({ hooks: [handler(cmd('stop', NPX, false, 2))] } as Group);
+    writeRel(root, SETTINGS, json(settings));
+    expect(stateOf(root)).toEqual([['modified', null]]);
+  });
+
   it('reports mixed versions modified with the version unknown', () => {
     const root = plainProject();
     writeRel(

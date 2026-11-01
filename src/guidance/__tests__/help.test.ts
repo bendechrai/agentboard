@@ -429,6 +429,18 @@ describe('the drift guard: every example parses to its own command', () => {
     expect(help(serve)).toContain('At most one of: --open | --no-open');
   });
 
+  it('says the --command value is quoted where needed in the hooks (review round 1, R5)', () => {
+    const install = command('agents install');
+    const text = install.description.replace(/\s+/g, ' ');
+    expect(text).not.toContain('is written as given');
+    expect(text).toMatch(
+      /hooks?[^.]*quoted where (?:needed|necessary)|quoted where (?:needed|necessary)[^.]*hooks?/i,
+    );
+    const usage = install.exitCodes.find((e) => e.code === 1 && e.reason === 'usage');
+    expect(usage?.meaning).toMatch(/hyphen/);
+    expect(usage?.meaning).toMatch(/special built-in/);
+  });
+
   it('lists the --command usage errors among the agents install exit codes', () => {
     const usage = command('agents install').exitCodes.find(
       (e) => e.code === 1 && e.reason === 'usage',

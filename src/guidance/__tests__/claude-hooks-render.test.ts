@@ -24,6 +24,8 @@ import {
   hookExecutable,
   hookGroup,
   hooksMarker,
+  SHELL_RESERVED_WORDS,
+  SHELL_SPECIAL_BUILTINS,
   type ClaudeHookEvent,
 } from '../installed-text.js';
 import { hookMarkerVersion, parseHookCommand } from '../markers.js';
@@ -67,7 +69,9 @@ describe('hookExecutable', () => {
     ['a name', 'agentboard'],
     ['an absolute path', '/usr/local/bin/agentboard'],
     ['a relative path', './node_modules/.bin/agentboard'],
-    ['every safe character', 'Az09_./@%+=:,-'],
+    ['every safe character', 'Az09_./@%+:,-'],
+    ['a hyphen after the first character', 'agent-board'],
+    ['a reserved word inside a path', '/opt/if/agentboard'],
   ])('writes %s as given', (_label, command) => {
     expect(hookExecutable(command)).toBe(command);
   });
@@ -81,12 +85,85 @@ describe('hookExecutable', () => {
     ['a double quote', '/opt/"x"/agentboard', '\'/opt/"x"/agentboard\''],
     ['a backslash', 'C:\\Tools\\agentboard.cmd', "'C:\\Tools\\agentboard.cmd'"],
     ['a semicolon', 'agentboard;rm', "'agentboard;rm'"],
+    ['an equals sign, read as an assignment', 'FOO=bar', "'FOO=bar'"],
+    ['an equals sign in a path', '/opt/a=b/agentboard', "'/opt/a=b/agentboard'"],
+    ['a leading hyphen', '-rf', "'-rf'"],
     ['a backtick', 'a`b`', "'a`b`'"],
     ['a carriage return', 'agentboard\r', "'agentboard\r'"],
     ['surrounding spaces', ' agentboard ', "' agentboard '"],
     ['a command line', NPX, `'${NPX}'`],
   ])('quotes a value with %s as one shell word', (_label, command, expected) => {
     expect(hookExecutable(command)).toBe(expected);
+  });
+});
+
+describe('shell words (review round 1, R3)', () => {
+  it('pins the reserved words and the special built-ins', () => {
+    expect(SHELL_RESERVED_WORDS).toEqual([
+      '!',
+      '{',
+      '}',
+      'case',
+      'do',
+      'done',
+      'elif',
+      'else',
+      'esac',
+      'fi',
+      'for',
+      'if',
+      'in',
+      'then',
+      'until',
+      'while',
+      '[[',
+      ']]',
+      'function',
+      'select',
+      'time',
+    ]);
+    expect(SHELL_SPECIAL_BUILTINS).toEqual([
+      'break',
+      ':',
+      'continue',
+      '.',
+      'eval',
+      'exec',
+      'exit',
+      'export',
+      'readonly',
+      'return',
+      'set',
+      'shift',
+      'times',
+      'trap',
+      'unset',
+    ]);
+  });
+
+  it.each([
+    'case',
+    'do',
+    'done',
+    'elif',
+    'else',
+    'esac',
+    'fi',
+    'for',
+    'if',
+    'in',
+    'then',
+    'until',
+    'while',
+    'function',
+    'select',
+    'time',
+  ])('quotes the reserved word %s', (word) => {
+    expect(hookExecutable(word)).toBe(`'${word}'`);
+  });
+
+  it.each(['!', '{', '}', '[[', ']]'])('quotes the reserved word %s', (word) => {
+    expect(hookExecutable(word)).toBe(`'${word}'`);
   });
 });
 
@@ -203,6 +280,8 @@ describe('hookMarkerVersion', () => {
     ['a trailing carriage return', `${NPX} hook stop # agentboard-hooks: v3\r`],
     ['text after the marker', `${NPX} hook stop # agentboard-hooks: v3 && rm -rf x`],
     ['no digits', `${NPX} hook stop # agentboard-hooks: v`],
+    ['no v', `${NPX} hook stop # agentboard-hooks: 3`],
+    ['two spaces after the hash', `${NPX} hook stop #  agentboard-hooks: v3`],
     ['a word for a version', `${NPX} hook stop # agentboard-hooks: vX`],
     ['another case', `${NPX} hook stop # Agentboard-Hooks: v3`],
     ['a version beyond a safe integer', `x # agentboard-hooks: v${'9'.repeat(20)}`],
@@ -223,6 +302,10 @@ describe('hookMarkerVersion', () => {
 
 describe('parseHookCommand', () => {
   const commands: readonly (string | undefined)[] = [
+    'if',
+    'FOO=bar',
+    '/opt/a=b/agentboard',
+    'time',
     undefined,
     'agentboard',
     '/opt/My Tools/agentboard',
