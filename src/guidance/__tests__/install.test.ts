@@ -9,7 +9,7 @@
  * The CLI surface (exit codes, stdout and stderr) is in
  * src/cli/__tests__/agents-cli.test.ts.
  *
- * `--mcp-command` (board-agent-guidance: "Managed MCP entry"): the flag
+ * `--command` (board-agent-guidance: "Managed MCP entry"): the flag
  * selecting `mcp-json` next to explicit or detected targets, usage errors, the
  * local entry written as given, and the reinstall rules for both managed shapes
  * and for unrecognised entries.
@@ -221,7 +221,15 @@ describe('selection', () => {
       'agents-md': AGENTS,
       openspec: CONFIG,
       'mcp-json': MCP,
+      'claude-hooks': '.claude/settings.json',
     });
+    expect(GUIDANCE_TARGETS).toEqual([
+      'claude',
+      'agents-md',
+      'openspec',
+      'mcp-json',
+      'claude-hooks',
+    ]);
   });
 
   it('writes nothing but the selected targets and runs no git command that changes state', () => {
@@ -804,9 +812,11 @@ describe('a refusal does not stop the other targets', () => {
     writeRel(root, AGENTS, `${blockStart(1)}\n`);
     writeRel(root, CONFIG, 'schema: spec-driven\noperations:\n  apply:\n    guidance: x\n');
     writeRel(root, MCP, mcpFile({ mcpServers: { agentboard: { command: 'x' } } }));
+    writeRel(root, '.claude/settings.json', '{"hooks": {,}\n');
     const result = install(root, { targets: [...GUIDANCE_TARGETS], force: true });
     expect(result.refused).toBe(0);
     expect(result.targets.map((t) => t.action)).toEqual([
+      'updated',
       'updated',
       'updated',
       'updated',
@@ -1092,7 +1102,7 @@ describe('symlink cycles are refused as not-a-file', () => {
   });
 });
 
-/** The local managed entry `--mcp-command <command>` writes. */
+/** The local managed entry `--command <command>` writes. */
 function local(command: string): { command: string; args: string[] } {
   return { command, args: ['mcp'] };
 }
@@ -1102,17 +1112,17 @@ function mcpWith(entry: unknown): string {
   return mcpFile({ mcpServers: { agentboard: entry } });
 }
 
-describe('--mcp-command: target selection', () => {
-  it('scenario: writes the local entry in a project with no .mcp.json and names --mcp-command as the reason', () => {
+describe('--command: target selection', () => {
+  it('scenario: writes the local entry in a project with no .mcp.json and names --command as the reason', () => {
     const root = plainProject();
-    const result = install(root, { mcpCommand: 'agentboard' });
+    const result = install(root, { command: 'agentboard' });
     expect(result.autoDetected).toBe(true);
     expect(result.refused).toBe(0);
     expect(result.targets).toEqual([
       {
         target: 'mcp-json',
         path: MCP,
-        reason: 'requested with --mcp-command',
+        reason: 'requested with --command',
         action: 'created',
         refusal: null,
         message: expect.any(String) as unknown,
@@ -1125,7 +1135,7 @@ describe('--mcp-command: target selection', () => {
     });
     expect(fileList(root)).toEqual([MCP]);
     const text = renderInstall(result);
-    expect(text).toContain('selected mcp-json: requested with --mcp-command\n');
+    expect(text).toContain('selected mcp-json: requested with --command\n');
     expect(text).toContain(`created mcp-json ${MCP}\n`);
   });
 
@@ -1133,37 +1143,37 @@ describe('--mcp-command: target selection', () => {
     const root = plainProject();
     mkdirSync(join(root, '.claude'));
     writeRel(root, CONFIG, OPENSPEC_FIXTURE);
-    const result = install(root, { mcpCommand: 'agentboard' });
+    const result = install(root, { command: 'agentboard' });
     expect(result.autoDetected).toBe(true);
     expect(result.targets.map((t) => [t.target, t.reason, t.action])).toEqual([
       ['claude', '.claude/ exists', 'created'],
       ['openspec', 'openspec/config.yaml exists', 'updated'],
-      ['mcp-json', 'requested with --mcp-command', 'created'],
+      ['mcp-json', 'requested with --command', 'created'],
     ]);
     expect(existsSync(join(root, AGENTS))).toBe(false);
     expect(readRel(root, MCP)).toBe(mcpWith(local('agentboard')));
     const text = renderInstall(result);
     expect(text).toContain('selected claude: .claude/ exists\n');
     expect(text).toContain('selected openspec: openspec/config.yaml exists\n');
-    expect(text).toContain('selected mcp-json: requested with --mcp-command\n');
+    expect(text).toContain('selected mcp-json: requested with --command\n');
   });
 
   it('adds mcp-json to an explicit --target claude, selecting both', () => {
     const root = plainProject();
-    const result = install(root, { targets: ['claude'], mcpCommand: 'agentboard' });
+    const result = install(root, { targets: ['claude'], command: 'agentboard' });
     expect(result.autoDetected).toBe(false);
     expect(result.targets.map((t) => [t.target, t.reason, t.action])).toEqual([
       ['claude', 'requested with --target', 'created'],
-      ['mcp-json', 'requested with --mcp-command', 'created'],
+      ['mcp-json', 'requested with --command', 'created'],
     ]);
     expect(readRel(root, SKILL)).toBe(renderSkill());
     expect(readRel(root, MCP)).toBe(mcpWith(local('agentboard')));
     const text = renderInstall(result);
-    expect(text).toContain('selected mcp-json: requested with --mcp-command\n');
+    expect(text).toContain('selected mcp-json: requested with --command\n');
     expect(text).not.toContain('selected claude');
     expect(text).toBe(
       [
-        'selected mcp-json: requested with --mcp-command',
+        'selected mcp-json: requested with --command',
         `created claude ${SKILL}`,
         `created mcp-json ${MCP}`,
         `agents install: 2 created, 0 updated, 0 unchanged, 0 refused (guidance v${String(V)}) in ${root}`,
@@ -1172,20 +1182,20 @@ describe('--mcp-command: target selection', () => {
     );
   });
 
-  it('processes mcp-json once when --target mcp-json is given too, naming --mcp-command', () => {
+  it('processes mcp-json once when --target mcp-json is given too, naming --command', () => {
     const root = plainProject();
     const result = install(root, {
       targets: ['mcp-json', 'claude', 'mcp-json'],
-      mcpCommand: 'agentboard',
+      command: 'agentboard',
     });
     expect(result.targets.map((t) => [t.target, t.reason])).toEqual([
       ['claude', 'requested with --target'],
-      ['mcp-json', 'requested with --mcp-command'],
+      ['mcp-json', 'requested with --command'],
     ]);
     expect(readRel(root, MCP)).toBe(mcpWith(local('agentboard')));
   });
 
-  it('leaves the output of runs without --mcp-command unchanged', () => {
+  it('leaves the output of runs without --command unchanged', () => {
     const root = plainProject();
     const result = install(root, { targets: ['mcp-json'] });
     expect(result.targets.map((t) => t.reason)).toEqual(['requested with --target']);
@@ -1201,8 +1211,8 @@ describe('--mcp-command: target selection', () => {
     ['a CRLF line break', 'agentboard\r\n'],
   ])('refuses a value that is %s as a usage error, writing nothing', (_label, value) => {
     const root = plainProject();
-    const err = expectBoardError(() => install(root, { mcpCommand: value }), 1, 'usage');
-    expect(err.message).toContain('--mcp-command');
+    const err = expectBoardError(() => install(root, { command: value }), 1, 'usage');
+    expect(err.message).toContain('--command');
     expect(fileList(root)).toEqual([]);
   });
 
@@ -1212,9 +1222,9 @@ describe('--mcp-command: target selection', () => {
     writeRel(root, AGENTS, '# Agents\n');
     writeRel(root, MCP, mcpWith(MCP_ENTRY));
     const before = snapshot(root);
-    expectBoardError(() => install(root, { mcpCommand: '' }), 1, 'usage');
+    expectBoardError(() => install(root, { command: '' }), 1, 'usage');
     expectBoardError(
-      () => install(root, { targets: [...GUIDANCE_TARGETS], mcpCommand: 'a\nb', force: true }),
+      () => install(root, { targets: [...GUIDANCE_TARGETS], command: 'a\nb', force: true }),
       1,
       'usage',
     );
@@ -1229,7 +1239,7 @@ describe('--mcp-command: target selection', () => {
     ['a value with surrounding spaces', ' agentboard '],
   ])('writes %s exactly as given', (_label, command) => {
     const root = plainProject();
-    expect(only(root, 'mcp-json', { mcpCommand: command }).action).toBe('created');
+    expect(only(root, 'mcp-json', { command: command }).action).toBe('created');
     expect(readRel(root, MCP)).toBe(mcpWith(local(command)));
     const parsed = JSON.parse(readRel(root, MCP)) as {
       mcpServers: { agentboard: { command: string; args: string[] } };
@@ -1246,7 +1256,7 @@ describe('--mcp-command: target selection', () => {
       after: [1, { b: null }],
     };
     writeRel(root, MCP, mcpFile(original));
-    expect(only(root, 'mcp-json', { mcpCommand: 'agentboard' }).action).toBe('updated');
+    expect(only(root, 'mcp-json', { command: 'agentboard' }).action).toBe('updated');
     expect(readRel(root, MCP)).toBe(
       mcpFile({
         before: true,
@@ -1262,7 +1272,7 @@ describe('--mcp-command: target selection', () => {
     for (const root of [withFlag, without]) {
       writeRel(root, CONFIG, OPENSPEC_FIXTURE);
     }
-    install(withFlag, { targets: ['claude', 'agents-md', 'openspec'], mcpCommand: 'agentboard' });
+    install(withFlag, { targets: ['claude', 'agents-md', 'openspec'], command: 'agentboard' });
     install(without, { targets: ['claude', 'agents-md', 'openspec'] });
     for (const rel of [SKILL, AGENTS, CONFIG]) {
       expect(readRel(withFlag, rel)).toBe(readRel(without, rel));
@@ -1270,8 +1280,8 @@ describe('--mcp-command: target selection', () => {
   });
 });
 
-describe('--mcp-command: managed entries on reinstall', () => {
-  it('scenario: reinstall without --mcp-command keeps a local command, and check reports it current', () => {
+describe('--command: managed entries on reinstall', () => {
+  it('scenario: reinstall without --command keeps a local command, and check reports it current', () => {
     const root = plainProject();
     writeRel(root, MCP, mcpWith(local('agentboard')));
     const before = snapshot(root);
@@ -1292,7 +1302,7 @@ describe('--mcp-command: managed entries on reinstall', () => {
     ]);
   });
 
-  it('reinstall without --mcp-command keeps a local command whatever its executable', () => {
+  it('reinstall without --command keeps a local command whatever its executable', () => {
     const root = plainProject();
     writeRel(root, MCP, mcpWith(local('/opt/My Tools/agentboard')));
     const before = snapshot(root);
@@ -1305,11 +1315,11 @@ describe('--mcp-command: managed entries on reinstall', () => {
     const text = '{"mcpServers":{"agentboard":{"args":["mcp"],"command":"agentboard"}}}';
     writeRel(root, MCP, text);
     expect(only(root, 'mcp-json').action).toBe('unchanged');
-    expect(only(root, 'mcp-json', { mcpCommand: 'agentboard' }).action).toBe('unchanged');
+    expect(only(root, 'mcp-json', { command: 'agentboard' }).action).toBe('unchanged');
     expect(readRel(root, MCP)).toBe(text);
   });
 
-  it('reinstall without --mcp-command keeps the npx entry', () => {
+  it('reinstall without --command keeps the npx entry', () => {
     const root = plainProject();
     writeRel(root, MCP, mcpWith(MCP_ENTRY));
     const before = snapshot(root);
@@ -1317,7 +1327,7 @@ describe('--mcp-command: managed entries on reinstall', () => {
     expect(snapshot(root)).toEqual(before);
   });
 
-  it('leaves the file unchanged when --mcp-command names the executable already present', () => {
+  it('leaves the file unchanged when --command names the executable already present', () => {
     const root = plainProject();
     const content = mcpFile({
       mcpServers: { other: { command: 'o' }, agentboard: local('agentboard') },
@@ -1325,7 +1335,7 @@ describe('--mcp-command: managed entries on reinstall', () => {
     });
     writeRel(root, MCP, content);
     const before = snapshot(root);
-    const result = install(root, { mcpCommand: 'agentboard' });
+    const result = install(root, { command: 'agentboard' });
     expect(result.targets.map((t) => [t.target, t.action, t.refusal])).toEqual([
       ['mcp-json', 'unchanged', null],
     ]);
@@ -1340,7 +1350,7 @@ describe('--mcp-command: managed entries on reinstall', () => {
       MCP,
       mcpFile({ mcpServers: { agentboard: MCP_ENTRY, other: { command: 'o' } }, z: [1] }),
     );
-    const out = only(root, 'mcp-json', { mcpCommand: '/opt/agentboard/bin/agentboard' });
+    const out = only(root, 'mcp-json', { command: '/opt/agentboard/bin/agentboard' });
     expect(out).toMatchObject({ action: 'updated', refusal: null });
     expect(readRel(root, MCP)).toBe(
       mcpFile({
@@ -1360,9 +1370,7 @@ describe('--mcp-command: managed entries on reinstall', () => {
       MCP,
       mcpFile({ mcpServers: { first: { command: 'f' }, agentboard: local('agentboard') } }),
     );
-    expect(only(root, 'mcp-json', { mcpCommand: '/usr/local/bin/agentboard' }).action).toBe(
-      'updated',
-    );
+    expect(only(root, 'mcp-json', { command: '/usr/local/bin/agentboard' }).action).toBe('updated');
     expect(readRel(root, MCP)).toBe(
       mcpFile({
         mcpServers: { first: { command: 'f' }, agentboard: local('/usr/local/bin/agentboard') },
@@ -1370,18 +1378,18 @@ describe('--mcp-command: managed entries on reinstall', () => {
     );
   });
 
-  it('replaces the npx entry when --mcp-command npx asks for npx mcp', () => {
+  it('replaces the npx entry when --command npx asks for npx mcp', () => {
     const root = plainProject();
     writeRel(root, MCP, mcpWith(MCP_ENTRY));
-    expect(only(root, 'mcp-json', { mcpCommand: 'npx' }).action).toBe('updated');
+    expect(only(root, 'mcp-json', { command: 'npx' }).action).toBe('updated');
     expect(readRel(root, MCP)).toBe(mcpWith(local('npx')));
   });
 
-  it('scenario: an entry with an extra key is still refused with --mcp-command, leaving the file unchanged', () => {
+  it('scenario: an entry with an extra key is still refused with --command, leaving the file unchanged', () => {
     const root = plainProject();
     const content = mcpWith({ command: 'agentboard', args: ['mcp'], env: { X: '1' } });
     writeRel(root, MCP, content);
-    const result = install(root, { mcpCommand: 'agentboard' });
+    const result = install(root, { command: 'agentboard' });
     expect(result.refused).toBe(1);
     const out = outcome(result, 'mcp-json');
     expect(out).toMatchObject({ action: 'refused', refusal: 'entry-differs' });
@@ -1402,15 +1410,13 @@ describe('--mcp-command: managed entries on reinstall', () => {
         },
       }),
     );
-    expect(only(root, 'mcp-json', { mcpCommand: 'agentboard', force: true }).action).toBe(
-      'updated',
-    );
+    expect(only(root, 'mcp-json', { command: 'agentboard', force: true }).action).toBe('updated');
     expect(readRel(root, MCP)).toBe(
       mcpFile({ mcpServers: { agentboard: local('agentboard'), other: { command: 'o' } } }),
     );
   });
 
-  it('with --force and no --mcp-command replaces an unrecognised entry by the npx entry', () => {
+  it('with --force and no --command replaces an unrecognised entry by the npx entry', () => {
     const root = plainProject();
     writeRel(root, MCP, mcpWith({ command: 'agentboard', args: ['mcp', '--as', 'impl'] }));
     expect(only(root, 'mcp-json', { force: true }).action).toBe('updated');
@@ -1433,30 +1439,25 @@ describe('--mcp-command: managed entries on reinstall', () => {
     ['a string', 'agentboard mcp'],
     ['null', null],
     ['an array', ['agentboard', 'mcp']],
-  ])(
-    'refuses an entry with %s as entry-differs, with or without --mcp-command',
-    (_label, entry) => {
-      const root = plainProject();
-      const content = mcpWith(entry);
-      writeRel(root, MCP, content);
-      expect(only(root, 'mcp-json')).toMatchObject({ action: 'refused', refusal: 'entry-differs' });
-      expect(only(root, 'mcp-json', { mcpCommand: 'agentboard' })).toMatchObject({
-        action: 'refused',
-        refusal: 'entry-differs',
-      });
-      expect(readRel(root, MCP)).toBe(content);
-      expect(only(root, 'mcp-json', { mcpCommand: 'agentboard', force: true }).action).toBe(
-        'updated',
-      );
-      expect(readRel(root, MCP)).toBe(mcpWith(local('agentboard')));
-    },
-  );
+  ])('refuses an entry with %s as entry-differs, with or without --command', (_label, entry) => {
+    const root = plainProject();
+    const content = mcpWith(entry);
+    writeRel(root, MCP, content);
+    expect(only(root, 'mcp-json')).toMatchObject({ action: 'refused', refusal: 'entry-differs' });
+    expect(only(root, 'mcp-json', { command: 'agentboard' })).toMatchObject({
+      action: 'refused',
+      refusal: 'entry-differs',
+    });
+    expect(readRel(root, MCP)).toBe(content);
+    expect(only(root, 'mcp-json', { command: 'agentboard', force: true }).action).toBe('updated');
+    expect(readRel(root, MCP)).toBe(mcpWith(local('agentboard')));
+  });
 
   it('a refused entry does not stop the other targets selected with it', () => {
     const root = plainProject();
     mkdirSync(join(root, '.claude'));
     writeRel(root, MCP, mcpWith({ command: 'agentboard', args: ['mcp'], env: { X: '1' } }));
-    const result = install(root, { mcpCommand: 'agentboard' });
+    const result = install(root, { command: 'agentboard' });
     expect(result.targets.map((t) => [t.target, t.action])).toEqual([
       ['claude', 'created'],
       ['mcp-json', 'refused'],
@@ -1464,10 +1465,10 @@ describe('--mcp-command: managed entries on reinstall', () => {
     expect(result.refused).toBe(1);
   });
 
-  it('still refuses a malformed .mcp.json with --mcp-command, even with --force', () => {
+  it('still refuses a malformed .mcp.json with --command, even with --force', () => {
     const root = plainProject();
     writeRel(root, MCP, '{"mcpServers": []}\n');
-    expect(only(root, 'mcp-json', { mcpCommand: 'agentboard', force: true })).toMatchObject({
+    expect(only(root, 'mcp-json', { command: 'agentboard', force: true })).toMatchObject({
       action: 'refused',
       refusal: 'malformed-file',
     });

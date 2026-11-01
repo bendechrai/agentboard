@@ -413,6 +413,169 @@ group's ticket:
   out-of-time line (a discovery that swallowed the signal would answer
   silently).
 
+## Rulings from task group 3 (test author)
+
+Taken while writing the group 3 tests, posted as `DECISION:` comments on
+the group's ticket and pinned by the tests and the contracts in
+`src/guidance/install.ts` (`installGuidance`, `claude-hooks`;
+`RefusalReason`; `installCommand`), `src/guidance/check.ts`,
+`src/guidance/installed-text.ts` (`hookExecutable`, `hookCommand`,
+`hookGroup`) and `src/guidance/markers.ts` (`hookMarkerVersion`,
+`parseHookCommand`):
+
+- **Entry shape.** Each key (`SessionStart`, `Stop`, `PreToolUse`) gets
+  one matcher group holding one handler, `{"type": "command", "command":
+  ..., "timeout": 5}`; `PreToolUse` has `"matcher":
+  "Edit|Write|MultiEdit|NotebookEdit"` first, the other two no matcher.
+  The timeout is exactly 5. The command is `<executable> hook <event>[
+  --strict] # agentboard-hooks: v<N>`; no `--as` (the actor comes from the
+  environment). A fresh file is `JSON.stringify(..., null, 2)` plus a
+  line feed, keys in that order.
+- **The executable is one shell word.** `--command` names an executable,
+  as for `.mcp.json`, so in a hook command it is written as given when it
+  holds only `A-Z a-z 0-9 _ . / @ % + = : , -`, and otherwise single-quoted
+  (`'` as `'\''`): a path with spaces runs, and `$VAR` or `~` is not
+  expanded. Without `--command` it is `npx -y @bendechrai/agentboard`.
+- **Ownership.** A handler is agentboard's when its `command` ends exactly
+  with `# agentboard-hooks: v<N>` (no leading zero, nothing after it, not
+  even a space). Only the three keys are inspected; other keys of `hooks`
+  and elements of any shape in the three arrays are user content. A user
+  hook that looks like agentboard's but lacks the exact marker is kept
+  and agentboard's own entry is added beside it.
+- **Merge.** Per key: up to date when it holds exactly one owned group,
+  deep-equal to the wanted group (so an up-to-date file in another
+  formatting, key order or line ending is not written at all). Otherwise
+  every owned handler is removed, a group left empty goes, a group that
+  still holds user handlers stays, and the wanted group takes the place
+  of the first owned group (right after it when it stayed), or is
+  appended. Missing keys are appended in the order above, a missing
+  `hooks` as the last top-level key. Duplicates therefore collapse to
+  one, at the first position.
+- **The executable is kept, the mode is not.** Without `--command`, a
+  reinstall keeps the executable the installed commands share (when every
+  owned command parses and they agree), as the `.mcp.json` entry keeps a
+  local command; otherwise it uses `npx`. The mode follows
+  `--hooks-strict` on every run, as the spec says.
+- **Refusals.** `malformed-settings`: not valid JSON (comments, trailing
+  commas, an empty or truncated file) or a top level that is not an
+  object; `--force` replaces the whole file by a fresh one, as `--force`
+  replaces a foreign `SKILL.md`. `hooks-shape`: `hooks` present and not an
+  object (`null` included) or one of the three keys present and not an
+  array; `--force` replaces each offending value in place. Both are named
+  in the spec's list of refusals `--force` overrides. Neither message
+  quotes the file or the JSON parser's error, which can quote it.
+- **File handling.** A leading UTF-8 byte order mark is accepted and kept;
+  a rewrite uses line feeds (insignificant formatting). No size limit. A
+  symbolic link inside the tree is followed and kept; one leading outside
+  (a `.claude` linked to a home directory, say) is refused
+  `outside-tree`, like every target. The file is replaced atomically (a
+  temporary file beside it, given its mode, renamed over it), so Claude
+  Code never reads half a file; a file the process may not write is
+  refused `unwritable` rather than replaced by the rename, and a
+  directory where the temporary file cannot be created is `unwritable`
+  too. `.claude/settings.local.json` is never read or written.
+- **Check.** Found when an owned handler is under one of the three keys,
+  or, for a file that cannot be read as settings, when its text contains
+  `# agentboard-hooks:` (then `modified`, version unknown). Version: the
+  one every owned handler records, else unknown (`modified`); another
+  version is `stale` whatever the text. `current` needs one owned group
+  per key, every command parsing with its key's event, one executable and
+  one mode across the three, and each group deep-equal to its rendering.
+- **Selection.** Auto-detection never selects `claude-hooks`, also where
+  it is installed (an old install is not upgraded by a bare `agents
+  install`). `--command` selects `mcp-json` as the spec says, also next to
+  `--target claude-hooks` alone. `--hooks-strict` without `claude-hooks`
+  changes nothing and prints nothing. `claude-hooks` follows `mcp-json`
+  in the target order.
+- **The alias.** `--command` and `--mcp-command` together are a usage
+  error from the parser (`give only one of --command, --mcp-command`, an
+  exclusive group), repeating neither value. The reason is `requested
+  with --command` for either flag. `--mcp-command` prints `agentboard:
+  --mcp-command is deprecated; use --command, which does the same` as the
+  first stderr line of every run that returns (also `--json`, also with a
+  refused target); a usage error prints only itself and names the flag
+  that was given (`--mcp-command must not be empty`).
+
+## Rulings from review round 1 of task group 3
+
+Taken by the orchestrator on the two reviews of PR #136 (reviewer-hk3
+approved with nits; reviewer-hk3-2 requested changes), posted as
+`DECISION:` comments on the group's ticket, written into the spec deltas
+where they change behaviour and pinned by the tests and the contracts in
+`src/guidance/install.ts` (`RefusalReason`, `validateCommand`),
+`src/guidance/markers.ts` (`readUtf8Json`, `jsonRewriteIsLossless`) and
+`src/guidance/installed-text.ts` (`hookExecutable`,
+`SHELL_RESERVED_WORDS`, `SHELL_SPECIAL_BUILTINS`):
+
+- **R1 Strict UTF-8 (blocking).** `.claude/settings.json` and `.mcp.json`
+  are decoded strictly (`readUtf8Json`): after one leading byte order mark,
+  bytes that are not valid UTF-8 (a Latin-1 byte, an overlong sequence, an
+  encoded surrogate, a truncated sequence) are refused, never turned into
+  U+FFFD and written back. For settings.json that is `malformed-settings`
+  (`--force` replaces the file as for invalid JSON, keeping a leading byte
+  order mark); for `.mcp.json` it is its `malformed-file` refusal (refused
+  even with `--force`, as for invalid JSON). `check` treats such a file
+  like invalid JSON: settings.json is `modified` (version unknown) when its
+  raw bytes contain `# agentboard-hooks:`, else not found; `.mcp.json` is
+  not found. No refusal repeats the file's content.
+- **R2 Never silently change user data.** When settings.json or `.mcp.json`
+  must be rewritten and `JSON.stringify(JSON.parse(text))` would not give
+  back every value and key order (`jsonRewriteIsLossless`), the target is
+  refused as `lossy-json` and nothing changes. The cases: a number literal
+  whose exact decimal value differs from that of the literal the rewrite
+  writes (`1e400`, `12345678901234567890`, `0.10000000000000000001`,
+  `18446744073709551616`); `-0` in any spelling; a duplicate key in any
+  object (escapes decoded); array-index keys (canonical `"0"` to
+  `"4294967294"`) not all before the other keys in ascending order.
+  Spellings of the same value (`1.0`, `1e2`, an escaped key) are
+  formatting and are normalised as before. A file that needs no write is
+  never refused. `--force` rewrites anyway, discarding exactly those
+  differences: the nearest JS number (or `null` for a literal out of
+  range), the sign of `-0`, every occurrence of a duplicate key but the
+  last, and the order of array-index keys. The check runs after
+  `malformed-settings` and `hooks-shape`. It applies to `.mcp.json` as well,
+  since that file is rewritten the same way and one pure function serves
+  both.
+- **R3 Shell words.** A `--command` (or `--mcp-command`) value starting
+  with `-` is a usage error, `--<flag> must not start with a hyphen` (a
+  hook command beginning with `-` is read as shell options). A value equal
+  to a POSIX special built-in is a usage error, `--<flag> must not be a
+  shell special built-in; give the path of the executable`, since the
+  shell finds the built-in before any file, quoted or not: `break`, `:`,
+  `continue`, `.`, `eval`, `exec`, `exit`, `export`, `readonly`, `return`,
+  `set`, `shift`, `times`, `trap`, `unset` (a path such as
+  `/usr/local/bin/exec` is fine). Both checks come after the empty and
+  newline checks and name the flag, never the value. A value containing
+  `=` (read as an assignment) or equal to a reserved word is single-quoted:
+  `!`, `{`, `}`, `case`, `do`, `done`, `elif`, `else`, `esac`, `fi`, `for`,
+  `if`, `in`, `then`, `until`, `while` (POSIX), and `[[`, `]]`,
+  `function`, `select`, `time` (reserved in bash and other shells). The
+  unquoted set is now `A-Z a-z 0-9 _ . / @ % + : , -` without a leading
+  `-`. Tests run the rendered command in `/bin/sh` (and bash when present)
+  against fake executables of those names on the PATH.
+- **R4 Tests for the surviving mutants:** the temporary file's mode set
+  explicitly (a 0666 file under the usual umask), the temporary file
+  removed when the rename or the fsync fails, a command under the wrong
+  key stopping the executable from being kept, `--force` keeping the byte
+  order mark of an unparseable file (ruled: kept), the non-markers
+  `#agentboard-hooks: v3`, `# agentboard-hooks: 3` and `#  agentboard-hooks:
+  v3` as user hooks, and mixed v2 and v3 entries in check (`modified`,
+  version unknown, whichever comes first).
+- **R5 Durability and help.** The temporary file is opened with `openSync`
+  and flushed with `fsyncSync` on that descriptor before `renameSync`
+  (tested through a `node:fs` wrapper). The `agents install` help says the
+  `--command` value is quoted where needed in the hooks, not "written as
+  given", and its usage exit code names the hyphen and special built-in
+  refusals. The unrelated prettier reflows in `src/cli/registry.ts` are
+  reverted (implementer).
+- **Accepted, no change:** a temporary file left by a run killed between
+  writing and renaming it (`.claude/.settings.json.<pid>.<random>.tmp`,
+  never read by Claude Code; a user removes it); the rename replacing a
+  hard-linked file by a new inode and dropping ACLs, extended attributes
+  and, when another user runs the install, the owner (the trade-off of an
+  atomic replace); an empty settings.json refused as `malformed-settings`
+  (the README in group 7 says so).
+
 ## Risks / Trade-offs
 
 - **PreToolUse is intrusive and adds latency to every edit** -> warn-only

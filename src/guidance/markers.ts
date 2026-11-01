@@ -6,16 +6,22 @@
  */
 
 import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import { TextDecoder } from 'node:util';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 
 import { isMap, isScalar, isSeq, parseDocument, type Document } from 'yaml';
 
 import {
   BLOCK_END,
+  CLAUDE_HOOK_EVENTS,
+  type ClaudeHookEvent,
+  type ClaudeHookKey,
+  HOOK_DEFAULT_EXECUTABLE,
   MCP_ENTRY,
   MCP_LOCAL_ARGS,
   OPENSPEC_OPERATIONS,
   OPENSPEC_PREFIX,
+  hookExecutable,
 } from './installed-text.js';
 
 /** The `code` of a Node.js system error, or null. */
@@ -400,4 +406,351 @@ export function isManagedMcpEntry(value: unknown): boolean {
     value.command !== '' &&
     jsonEqual(value.args, MCP_LOCAL_ARGS)
   );
+}
+
+/**
+ * The guidance version of an agentboard hook command: N when `command` is
+ * a string whose last characters are exactly `# agentboard-hooks: v<N>`
+ * (`hooksMarker(N)`, N written without leading zeros, nothing after it, not
+ * even a space or a line break); else null, and the command is not
+ * agentboard's (board-agent-guidance "Installed guidance never clobbers
+ * user content": a hook entry is owned only when its command ends with the
+ * marker). So `#agentboard-hooks: v3`, `# agentboard-hooks: v03`,
+ * `# agentboard-hooks: v3 ` and a marker followed by more shell text all
+ * give null. Pure.
+ */
+export function hookMarkerVersion(command: unknown): number | null {
+  if (typeof command !== 'string') {
+    return null;
+  }
+  const match = HOOK_MARKER_AT_END.exec(command);
+  return match?.[1] === undefined ? null : toVersion(match[1]);
+}
+
+/** The marker at the very end of a hook command, capturing its version. */
+const HOOK_MARKER_AT_END = /# agentboard-hooks: v(0|[1-9]\d*)$/;
+
+/**
+ * A whole hook command as `hookCommand` renders it: the executable (the
+ * default command line, one unquoted shell-safe word, or one single-quoted
+ * word), ` hook `, the event, an optional ` --strict`, a space and the
+ * marker. Groups: executable text, event, `--strict`, version.
+ */
+const HOOK_COMMAND = new RegExp(
+  `^(${HOOK_DEFAULT_EXECUTABLE.replaceAll(/[.+@/-]/g, '\\$&')}|[A-Za-z0-9_./@%+:,][A-Za-z0-9_./@%+:,-]*|'(?:[^']|'\\\\'')*')` +
+    ` hook (${CLAUDE_HOOK_EVENTS.map((e) => e.event).join('|')})( --strict)? # agentboard-hooks: v(0|[1-9]\\d*)$`,
+);
+
+/** An agentboard hook command taken apart (see `parseHookCommand`). */
+export interface ParsedHookCommand {
+  /**
+   * The `--command` executable the command was rendered for (unquoted), or
+   * null when it runs `HOOK_DEFAULT_EXECUTABLE`.
+   */
+  readonly executable: string | null;
+  readonly event: ClaudeHookEvent;
+  readonly strict: boolean;
+  readonly version: number;
+}
+
+/**
+ * Takes apart a command that `hookCommand` could have rendered: the
+ * result is non-null exactly when `hookCommand(event, { version, strict,
+ * command: executable ?? undefined })` is `command` itself, character for
+ * character (so a command with `--as`, two spaces, another event, an
+ * executable text that `hookExecutable` would not produce, such as
+ * `bunx agentboard` or a badly quoted word, gives null). Pure.
+ */
+export function parseHookCommand(command: string): ParsedHookCommand | null {
+  const match = HOOK_COMMAND.exec(command);
+  if (match === null) {
+    return null;
+  }
+  const [, text = '', event = '', strict, digits = ''] = match;
+  const version = toVersion(digits);
+  if (version === null || !isHookEvent(event)) {
+    return null;
+  }
+  let executable: string | null;
+  if (text === HOOK_DEFAULT_EXECUTABLE) {
+    executable = null;
+  } else {
+    executable = text.startsWith("'") ? text.slice(1, -1).replaceAll("'\\''", "'") : text;
+    if (hookExecutable(executable) !== text) {
+      return null;
+    }
+  }
+  return { executable, event, strict: strict !== undefined, version };
+}
+
+function isHookEvent(value: string): value is ClaudeHookEvent {
+  return CLAUDE_HOOK_EVENTS.some((e) => e.event === value);
+}
+
+/**
+ * True when the `hooks` of a parsed settings object has the shape
+ * agentboard can merge into: absent, or an object whose `SessionStart`,
+ * `Stop` and `PreToolUse`, where present, are arrays (`hooks-shape`
+ * otherwise; other keys of `hooks` may hold anything).
+ */
+export function hasHooksShape(settings: Record<string, unknown>): boolean {
+  if (!Object.hasOwn(settings, 'hooks')) {
+    return true;
+  }
+  const hooks = settings.hooks;
+  return (
+    isJsonObject(hooks) &&
+    CLAUDE_HOOK_EVENTS.every(({ key }) => !Object.hasOwn(hooks, key) || Array.isArray(hooks[key]))
+  );
+}
+
+/**
+ * The handlers of one element of a `hooks.<key>` array: the elements of
+ * its `hooks` array when it is an object holding one, else none (an
+ * element of any other shape is user content with no handler).
+ */
+export function groupHandlers(group: unknown): readonly unknown[] {
+  return isJsonObject(group) && Array.isArray(group.hooks) ? (group.hooks as unknown[]) : [];
+}
+
+/** True when `handler` is an object whose `command` ends with the marker (`hookMarkerVersion`). */
+export function isOwnedHandler(handler: unknown): handler is Record<string, unknown> {
+  return isJsonObject(handler) && hookMarkerVersion(handler.command) !== null;
+}
+
+/**
+ * The `hooks.<key>` arrays of a settings object whose hooks have the
+ * expected shape (`hasHooksShape`), for the keys present, in
+ * `CLAUDE_HOOK_EVENTS` order.
+ */
+export function hookArrays(
+  settings: Record<string, unknown>,
+): { key: ClaudeHookKey; event: ClaudeHookEvent; groups: unknown[] }[] {
+  const hooks = settings.hooks;
+  if (!isJsonObject(hooks)) {
+    return [];
+  }
+  return CLAUDE_HOOK_EVENTS.flatMap(({ key, event }) => {
+    const groups = hooks[key];
+    return Array.isArray(groups) ? [{ key, event, groups: groups as unknown[] }] : [];
+  });
+}
+
+/**
+ * Reads `path` as strict UTF-8 (`TextDecoder('utf-8', { fatal: true })`)
+ * after removing one leading byte order mark (EF BB BF): `null` when the
+ * file does not exist, `invalid` when the bytes are not valid UTF-8 (a
+ * Latin-1 byte, an overlong sequence, an encoded surrogate, a truncated
+ * sequence), else the text without the mark and whether it had one. Used
+ * for `.claude/settings.json` and `.mcp.json`, which agentboard rewrites,
+ * so a byte it cannot read is never turned into U+FFFD and written back.
+ * Permission errors propagate as from `readFileSync`.
+ */
+export function readUtf8Json(
+  path: string,
+): { readonly text: string; readonly bom: boolean } | 'invalid' | null {
+  if (!existsSync(path)) {
+    return null;
+  }
+  const bytes = readFileSync(path);
+  const bom = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+      bom ? bytes.subarray(3) : bytes,
+    );
+    return { text, bom };
+  } catch {
+    return 'invalid';
+  }
+}
+
+/**
+ * True when `JSON.stringify(JSON.parse(text))` would give back every
+ * value and the key order of `text` (valid JSON, without a byte order
+ * mark), that is when `text` has none of:
+ * - a number literal whose exact decimal value differs from that of the
+ *   literal `JSON.stringify` writes for it (`1e400` and `-1e400`, which
+ *   become `null`; `12345678901234567890`; `0.10000000000000000001`;
+ *   `18446744073709551616`, written `18446744073709552000`); literals that
+ *   only spell the same value differently (`1.0`, `1e2`, `2.5E-3`, `-5`)
+ *   are fine;
+ * - `-0` in any spelling (`-0`, `-0.0`, `-0e5`);
+ * - a key that appears twice in one object, at any depth;
+ * - an object whose array-index keys (canonical decimal strings `"0"` to
+ *   `"4294967294"`) are not all before its other keys in ascending
+ *   numeric order, which JavaScript would reorder (`{"b":1,"10":2}`,
+ *   `{"10":1,"2":2}`); `"01"`, `"-1"` and `"4294967295"` are ordinary keys.
+ * Pure; never throws for valid JSON.
+ */
+export function jsonRewriteIsLossless(text: string): boolean {
+  return new LosslessScan(text).value();
+}
+
+/** The largest array index: an object key that is a canonical decimal up to it is reordered by JavaScript. */
+const MAX_ARRAY_INDEX = 4294967294;
+const ARRAY_INDEX_KEY = /^(?:0|[1-9]\d*)$/;
+const NUMBER_LITERAL = /^-?(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?/;
+
+/**
+ * A decimal value in normal form, for comparing a JSON number literal with
+ * what `JSON.stringify` writes for it: the significant digits without
+ * leading or trailing zeros, and the power of ten of the last digit. Zero
+ * has no digits and exponent 0. Null for `null` (a literal out of range)
+ * or for text that is not a number literal.
+ */
+function decimalOf(
+  literal: string,
+): { negative: boolean; digits: string; exponent: number } | null {
+  const match = NUMBER_LITERAL.exec(literal);
+  if (match === null) {
+    return null;
+  }
+  const [, whole = '', fraction = '', exp = '0'] = match;
+  let digits = `${whole}${fraction}`;
+  let exponent = Number(exp) - fraction.length;
+  digits = digits.replace(/^0+/, '');
+  const trailing = /0+$/.exec(digits)?.[0].length ?? 0;
+  if (trailing > 0) {
+    digits = digits.slice(0, -trailing);
+    exponent += trailing;
+  }
+  if (digits === '') {
+    exponent = 0;
+  }
+  return { negative: literal.startsWith('-'), digits, exponent };
+}
+
+/** True when the number literal `literal` is written back by `JSON.stringify` with the same value and sign. */
+function numberRoundTrips(literal: string): boolean {
+  const value = Number(literal);
+  if (Object.is(value, -0)) {
+    return false;
+  }
+  const written = decimalOf(JSON.stringify(value));
+  const given = decimalOf(literal);
+  return (
+    written !== null &&
+    given !== null &&
+    written.digits === given.digits &&
+    written.exponent === given.exponent &&
+    (written.digits === '' || written.negative === given.negative)
+  );
+}
+
+/**
+ * A scan of valid JSON text (`jsonRewriteIsLossless`): walks the values
+ * once, checking every number literal (`numberRoundTrips`) and every
+ * object's keys (duplicates; array-index keys first and ascending).
+ */
+class LosslessScan {
+  private at = 0;
+
+  constructor(private readonly text: string) {}
+
+  /** Scans the whole document; false at the first lossy construct. */
+  value(): boolean {
+    this.space();
+    const ok = this.scanValue();
+    return ok;
+  }
+
+  private space(): void {
+    while (this.at < this.text.length && ' \t\n\r'.includes(this.text[this.at] ?? '')) {
+      this.at += 1;
+    }
+  }
+
+  private scanValue(): boolean {
+    const c = this.text[this.at] ?? '';
+    if (c === '{') {
+      return this.scanObject();
+    }
+    if (c === '[') {
+      return this.scanArray();
+    }
+    if (c === '"') {
+      this.scanString();
+      return true;
+    }
+    if (c === '-' || (c >= '0' && c <= '9')) {
+      const literal = /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(this.text.slice(this.at))?.[0] ?? '';
+      this.at += literal.length;
+      return numberRoundTrips(literal);
+    }
+    const word = /^(?:true|false|null)/.exec(this.text.slice(this.at))?.[0] ?? '';
+    this.at += word.length;
+    return true;
+  }
+
+  /** Consumes a string token, returning its decoded value. */
+  private scanString(): string {
+    const start = this.at;
+    this.at += 1;
+    while (this.at < this.text.length && this.text[this.at] !== '"') {
+      this.at += this.text[this.at] === '\\' ? 2 : 1;
+    }
+    this.at += 1;
+    return JSON.parse(this.text.slice(start, this.at)) as string;
+  }
+
+  private scanArray(): boolean {
+    this.at += 1;
+    this.space();
+    if (this.text[this.at] === ']') {
+      this.at += 1;
+      return true;
+    }
+    for (;;) {
+      this.space();
+      if (!this.scanValue()) {
+        return false;
+      }
+      this.space();
+      const c = this.text[this.at];
+      this.at += 1;
+      if (c === ']') {
+        return true;
+      }
+    }
+  }
+
+  private scanObject(): boolean {
+    this.at += 1;
+    this.space();
+    const seen = new Set<string>();
+    let lastIndex = -1;
+    let ordinarySeen = false;
+    if (this.text[this.at] === '}') {
+      this.at += 1;
+      return true;
+    }
+    for (;;) {
+      this.space();
+      const key = this.scanString();
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      if (ARRAY_INDEX_KEY.test(key) && Number(key) <= MAX_ARRAY_INDEX) {
+        if (ordinarySeen || Number(key) <= lastIndex) {
+          return false;
+        }
+        lastIndex = Number(key);
+      } else {
+        ordinarySeen = true;
+      }
+      this.space();
+      this.at += 1; // ':'
+      this.space();
+      if (!this.scanValue()) {
+        return false;
+      }
+      this.space();
+      const c = this.text[this.at];
+      this.at += 1;
+      if (c === '}') {
+        return true;
+      }
+    }
+  }
 }

@@ -108,7 +108,8 @@ const BUILDER =
 const SANITISED =
   'git output about the board, sanitised before escaping: every configured remote, proxy or given URL ' +
   'becomes <url> and URL credentials <redacted> (sanitizeRemoteLine; pinned by the no-echo tests of group 2)';
-const REMOTE_SHOWN = 'configuration: the chosen remote, shown without its user information (withoutUserinfo)';
+const REMOTE_SHOWN =
+  'configuration: the chosen remote, shown without its user information (withoutUserinfo)';
 
 /** Every allowed interpolated value, by file. */
 const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
@@ -197,9 +198,17 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
       why: 'configuration: the key that chose the remote, agentboard.remote or branch.<b>.remote with the board branch, escaped',
     },
     { fn: 'existingBoard', value: 'dir', why: CONFIG },
-    { fn: 'existingBoard', value: 'asciiText(chosen.name)', why: 'configuration: the name of an existing remote (git refuses a URL as a remote name)' },
+    {
+      fn: 'existingBoard',
+      value: 'asciiText(chosen.name)',
+      why: 'configuration: the name of an existing remote (git refuses a URL as a remote name)',
+    },
     { fn: 'existingBoard', value: 'asciiText(withoutUserinfo(chosen.name))', why: REMOTE_SHOWN },
-    { fn: 'existingBoard', value: 'asciiText(withoutUserinfo(chosen.url))', why: 'configuration: the configured URL, shown without its user information (withoutUserinfo)' },
+    {
+      fn: 'existingBoard',
+      value: 'asciiText(withoutUserinfo(chosen.url))',
+      why: 'configuration: the configured URL, shown without its user information (withoutUserinfo)',
+    },
     { fn: 'initBoardWithRemote', callee: 'quote', why: SANITISED },
     { fn: 'usage', value: 'why', why: 'a fixed phrase: the value given is never named' },
   ],
@@ -423,6 +432,11 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
     { fn: 'helpOutput', callee: 'unknownCommandMessage', why: BUILDER },
   ],
   'src/guidance/install.ts': [
+    {
+      fn: 'validateCommand',
+      value: 'name',
+      why: `${REGISTRY} (the flag the value was given with: command or mcp-command, never the value)`,
+    },
     { fn: 'selectTargets', value: 'all', why: REGISTRY },
     { fn: 'selectTargets', value: 'AGENTS_MD_PATH', why: REGISTRY },
     { fn: 'selectTargets', value: 'OPENSPEC_CONFIG_PATH', why: REGISTRY },

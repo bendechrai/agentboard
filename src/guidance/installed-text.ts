@@ -320,3 +320,201 @@ export function mcpEntry(command?: string): McpServerEntry {
     ? { command: MCP_ENTRY.command, args: [...MCP_ENTRY.args] }
     : { command, args: [...MCP_LOCAL_ARGS] };
 }
+
+/** Relative path of the Claude Code project settings in the working tree. */
+export const CLAUDE_SETTINGS_PATH = '.claude/settings.json';
+
+/**
+ * The text that starts the ownership comment of an agentboard hook command
+ * (board-harness-hooks "Hooks installed in Claude settings"; design.md
+ * decision 4): the whole comment is `hooksMarker(N)`.
+ */
+export const HOOKS_MARKER_TEXT = '# agentboard-hooks:';
+
+/**
+ * The ownership comment at the end of every agentboard hook command for
+ * guidance version `version`: exactly `# agentboard-hooks: v<version>`.
+ * Pure.
+ */
+export function hooksMarker(version: number): string {
+  return `${HOOKS_MARKER_TEXT} v${String(version)}`;
+}
+
+/** The executable a hook command runs when `--command` is not given. */
+export const HOOK_DEFAULT_EXECUTABLE = 'npx -y @bendechrai/agentboard';
+
+/** The `timeout` of every agentboard hook handler, in seconds (at most 5 by the spec). */
+export const HOOK_TIMEOUT_SECONDS = 5;
+
+/** The `matcher` of the agentboard `PreToolUse` entry: the file-writing tools. */
+export const PRE_TOOL_USE_MATCHER = 'Edit|Write|MultiEdit|NotebookEdit';
+
+/** A Claude Code settings event key agentboard writes an entry under. */
+export type ClaudeHookKey = 'SessionStart' | 'Stop' | 'PreToolUse';
+
+/** A `hook` event, as `agentboard hook <event>` names it. */
+export type ClaudeHookEvent = 'session-start' | 'stop' | 'pre-tool-use';
+
+/**
+ * The three settings keys and the `hook` event each runs, in the order the
+ * keys are added to a `hooks` object that lacks them.
+ */
+export const CLAUDE_HOOK_EVENTS: readonly {
+  readonly key: ClaudeHookKey;
+  readonly event: ClaudeHookEvent;
+}[] = [
+  { key: 'SessionStart', event: 'session-start' },
+  { key: 'Stop', event: 'stop' },
+  { key: 'PreToolUse', event: 'pre-tool-use' },
+];
+
+/** The `hook` event of each settings key (`CLAUDE_HOOK_EVENTS` as a lookup). */
+const EVENT_OF_KEY: Readonly<Record<ClaudeHookKey, ClaudeHookEvent>> = {
+  SessionStart: 'session-start',
+  Stop: 'stop',
+  PreToolUse: 'pre-tool-use',
+};
+
+/** What the hook entries are rendered for. */
+export interface ClaudeHookOptions {
+  /** Guidance version recorded in the marker; default `GUIDANCE_VERSION`. */
+  readonly version?: number;
+  /** `--hooks-strict`: each command gains ` --strict`. Default false. */
+  readonly strict?: boolean;
+  /**
+   * The `--command` executable, exactly as given; undefined for
+   * `HOOK_DEFAULT_EXECUTABLE`.
+   */
+  readonly command?: string;
+}
+
+/** One Claude Code hook handler as agentboard writes it. */
+export interface ClaudeHookHandler {
+  readonly type: 'command';
+  readonly command: string;
+  readonly timeout: number;
+}
+
+/** One Claude Code matcher group (an element of `hooks.<key>`) as agentboard writes it. */
+export interface ClaudeHookGroup {
+  readonly matcher?: string;
+  readonly hooks: readonly ClaudeHookHandler[];
+}
+
+/**
+ * The executable text at the start of a hook command:
+ * - `command` undefined: `HOOK_DEFAULT_EXECUTABLE`;
+ * - `command` made only of the characters `A-Z a-z 0-9 _ . / @ % + : , -`
+ *   (non-empty), not starting with `-` and not one of
+ *   `SHELL_RESERVED_WORDS`: written as given;
+ * - a value with `=` (which the shell would read as an assignment), a
+ *   leading `-` (which `installGuidance` refuses anyway) or equal to a
+ *   reserved word: single-quoted like the next case;
+ * - anything else (a space, `$`, `~`, `#`, a quote, a backslash, a
+ *   carriage return, ...): one POSIX shell word in single quotes, each `'`
+ *   written as `'\''`, so the shell runs exactly that path, with no
+ *   variable or `~` expansion (the value is an executable, like the
+ *   `.mcp.json` `command`, not a command line).
+ * Never trimmed, resolved or checked for existence. Pure.
+ */
+export function hookExecutable(command?: string): string {
+  if (command === undefined) {
+    return HOOK_DEFAULT_EXECUTABLE;
+  }
+  if (SHELL_SAFE_WORD.test(command) && !SHELL_RESERVED_WORDS.includes(command)) {
+    return command;
+  }
+  return `'${command.replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * Words a POSIX shell (or bash) may read as reserved at the start of a
+ * command; a `--command` value equal to one is single-quoted so it names
+ * an executable (POSIX reserved words, plus `[[`, `]]`, `function`,
+ * `select` and `time`).
+ */
+export const SHELL_RESERVED_WORDS: readonly string[] = [
+  '!',
+  '{',
+  '}',
+  'case',
+  'do',
+  'done',
+  'elif',
+  'else',
+  'esac',
+  'fi',
+  'for',
+  'if',
+  'in',
+  'then',
+  'until',
+  'while',
+  '[[',
+  ']]',
+  'function',
+  'select',
+  'time',
+];
+
+/**
+ * The POSIX special built-ins. A shell finds these before any file on the
+ * PATH, quoted or not, so a `--command` value equal to one (with no `/`)
+ * is refused as a usage error: no rendering could run an executable of
+ * that name.
+ */
+export const SHELL_SPECIAL_BUILTINS: readonly string[] = [
+  'break',
+  ':',
+  'continue',
+  '.',
+  'eval',
+  'exec',
+  'exit',
+  'export',
+  'readonly',
+  'return',
+  'set',
+  'shift',
+  'times',
+  'trap',
+  'unset',
+];
+
+/**
+ * A non-empty executable text that needs no quoting in a POSIX shell: the
+ * safe characters, not starting with `-` (shell options) and without `=`
+ * (an assignment). Reserved words are checked apart.
+ */
+const SHELL_SAFE_WORD = /^[A-Za-z0-9_./@%+:,][A-Za-z0-9_./@%+:,-]*$/;
+
+/**
+ * The command string of one agentboard hook: `hookExecutable(command)`,
+ * then ` hook <event>`, then ` --strict` when `strict`, then a space and
+ * `hooksMarker(version)`. For example
+ * `npx -y @bendechrai/agentboard hook stop # agentboard-hooks: v3`. Pure.
+ */
+export function hookCommand(event: ClaudeHookEvent, options: ClaudeHookOptions = {}): string {
+  const strict = options.strict === true ? ' --strict' : '';
+  return `${hookExecutable(options.command)} hook ${event}${strict} ${hooksMarker(options.version ?? GUIDANCE_VERSION)}`;
+}
+
+/**
+ * The matcher group agentboard owns under `hooks.<key>`: for
+ * `PreToolUse`, `{"matcher": PRE_TOOL_USE_MATCHER, "hooks": [handler]}`;
+ * for `SessionStart` and `Stop`, `{"hooks": [handler]}` with no matcher;
+ * the handler is exactly `{"type": "command", "command":
+ * hookCommand(<event of key>, options), "timeout": HOOK_TIMEOUT_SECONDS}`.
+ * Keys in exactly that order (`matcher`, `hooks`; `type`, `command`,
+ * `timeout`), no other key. A new object every call. Pure.
+ */
+export function hookGroup(key: ClaudeHookKey, options: ClaudeHookOptions = {}): ClaudeHookGroup {
+  const handler: ClaudeHookHandler = {
+    type: 'command',
+    command: hookCommand(EVENT_OF_KEY[key], options),
+    timeout: HOOK_TIMEOUT_SECONDS,
+  };
+  return key === 'PreToolUse'
+    ? { matcher: PRE_TOOL_USE_MATCHER, hooks: [handler] }
+    : { hooks: [handler] };
+}

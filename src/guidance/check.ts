@@ -20,10 +20,12 @@ import type { CommandOutput, Env } from '../cli/types.js';
 import { GUIDANCE_TARGETS, TARGET_FILES, workingTreeRoot, type GuidanceTarget } from './install.js';
 import {
   GUIDANCE_VERSION,
+  HOOKS_MARKER_TEXT,
   MCP_SERVER_NAME,
   OPENSPEC_GUIDANCE,
   OPENSPEC_OPERATIONS,
   OPENSPEC_PREFIX,
+  hookGroup,
   renderAgentsBlock,
   renderSkill,
 } from './installed-text.js';
@@ -31,15 +33,23 @@ import {
   PERMISSION_CODES,
   agentsMarkers,
   errorCode,
+  groupHandlers,
+  hasHooksShape,
   hasSkillMarker,
+  hookArrays,
+  hookMarkerVersion,
   isJsonObject,
   isManagedMcpEntry,
+  isOwnedHandler,
+  jsonEqual,
   openSpecCommentVersion,
   openSpecItems,
   parseConfig,
+  parseHookCommand,
   parseMcpJson,
   readBytes,
   readText,
+  readUtf8Json,
   skillVersion,
   targetPath,
 } from './markers.js';
@@ -114,6 +124,26 @@ export interface CheckOptions {
  *   (`isManagedMcpEntry`: the default `npx` entry, or exactly `{command:
  *   <non-empty string>, args: ["mcp"]}`), else `modified` (extra keys such
  *   as `env`, other arguments). Never `stale`.
+ * - `claude-hooks`: found when `.claude/settings.json` parses (a leading
+ *   UTF-8 byte order mark skipped) as an object with an owned handler
+ *   (see `installGuidance`, `claude-hooks`: a handler under
+ *   `hooks.SessionStart`, `hooks.Stop` or `hooks.PreToolUse` whose command
+ *   has a marker, `hookMarkerVersion`). A file that is not valid JSON, has
+ *   a top level that is not an object, or whose `hooks` has an unexpected
+ *   shape (`hooks-shape`) is found (state `modified`, version null) when
+ *   its raw text contains `HOOKS_MARKER_TEXT`, else not found. A file with
+ *   only user hooks, including ones that look like agentboard's but have
+ *   no marker, is not found. `installedVersion` is N when every owned
+ *   handler records the same N, else null. State: null version
+ *   `modified`; N != v `stale`; `current` when each of the three keys
+ *   holds exactly one owned group, every owned command parses
+ *   (`parseHookCommand`) with the event of its key, the three name one
+ *   executable and one mode, and each group is deep-equal to
+ *   `hookGroup(key, { version: v, strict, command: executable })`; else
+ *   `modified` (a hand-edited command that keeps its marker, a missing or
+ *   duplicated entry, another timeout or matcher, an extra key, mixed
+ *   modes or executables, an owned handler sharing a group with a user
+ *   handler).
  *
  * Paths `agents install` would refuse, for every target:
  * - outside the tree (see `RefusalReason` `outside-tree`: the path with
@@ -187,6 +217,8 @@ function checkTarget(target: GuidanceTarget, path: string, v: number): Found | n
       return checkOpenSpec(path, v);
     case 'mcp-json':
       return checkMcpJson(path);
+    case 'claude-hooks':
+      return checkClaudeHooks(path, v);
   }
 }
 
@@ -286,8 +318,8 @@ function checkOpenSpec(path: string, v: number): Found | null {
 }
 
 function checkMcpJson(path: string): Found | null {
-  const text = readText(path);
-  const config = text === null ? null : parseMcpJson(text);
+  const read = readUtf8Json(path);
+  const config = read === null || read === 'invalid' ? null : parseMcpJson(read.text);
   const servers = config?.mcpServers;
   if (!isJsonObject(servers) || !Object.hasOwn(servers, MCP_SERVER_NAME)) {
     return null;
@@ -296,6 +328,65 @@ function checkMcpJson(path: string): Found | null {
     target: 'mcp-json',
     installedVersion: null,
     state: isManagedMcpEntry(servers[MCP_SERVER_NAME]) ? 'current' : 'modified',
+  };
+}
+
+/** The `claude-hooks` check (see `checkGuidance`). */
+function checkClaudeHooks(path: string, v: number): Found | null {
+  const read = readUtf8Json(path);
+  if (read === null) {
+    return null;
+  }
+  const settings = read === 'invalid' ? null : parseMcpJson(read.text);
+  if (settings === null || !hasHooksShape(settings)) {
+    return (readBytes(path) ?? '').includes(HOOKS_MARKER_TEXT)
+      ? { target: 'claude-hooks', state: 'modified', installedVersion: null }
+      : null;
+  }
+  const arrays = hookArrays(settings);
+  const owned = arrays.flatMap(({ event, groups }) =>
+    groups.flatMap((group) =>
+      groupHandlers(group)
+        .filter(isOwnedHandler)
+        .map((handler) => ({ event, command: String(handler.command) })),
+    ),
+  );
+  if (owned.length === 0) {
+    return null;
+  }
+  const versions = new Set(owned.map((h) => hookMarkerVersion(h.command)));
+  const [only] = versions;
+  const installed = versions.size === 1 && only !== undefined ? only : null;
+  return {
+    target: 'claude-hooks',
+    installedVersion: installed,
+    state: versionedState(installed, v, () => {
+      const commands = owned.map((h) => ({ event: h.event, parsed: parseHookCommand(h.command) }));
+      const executables = new Set(commands.map((c) => c.parsed?.executable));
+      const modes = new Set(commands.map((c) => c.parsed?.strict));
+      const [executable] = executables;
+      const [strict] = modes;
+      if (
+        commands.some((c) => c.parsed === null || c.parsed.event !== c.event) ||
+        executables.size !== 1 ||
+        modes.size !== 1 ||
+        strict === undefined
+      ) {
+        return false;
+      }
+      const options = {
+        version: v,
+        strict,
+        ...(executable === null || executable === undefined ? {} : { command: executable }),
+      };
+      return (
+        arrays.length === 3 &&
+        arrays.every(({ key, groups }) => {
+          const ownedGroups = groups.filter((group) => groupHandlers(group).some(isOwnedHandler));
+          return ownedGroups.length === 1 && jsonEqual(ownedGroups[0], hookGroup(key, options));
+        })
+      );
+    }),
   };
 }
 

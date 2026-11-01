@@ -76,9 +76,12 @@ strict mode (see board-harness-hooks) and has no effect without
 `mcp-json` target in addition to the explicit or auto-detected ones, and
 the output SHALL name `--command` as the reason. `--mcp-command <executable>` SHALL remain a deprecated alias of
 `--command`, behaving identically and printing a one-line deprecation notice
-on stderr. `--command` sets the executable for every MCP entry and for the
+on stderr as the first stderr line of every run that does not end in a
+usage error; giving both flags SHALL exit 1 with reason `usage`, repeating
+neither value, and write nothing. `--command` sets the executable for every MCP entry and for the
 hooks. An empty
-`--command` (or `--mcp-command`) value or one containing a newline SHALL
+`--command` (or `--mcp-command`) value, one containing a newline, one
+starting with `-` or one equal to a POSIX special built-in SHALL
 exit 1 with reason `usage`, naming the flag but not the value, and write
 nothing. The command SHALL NOT require a board and
 SHALL NOT run git commands that modify anything. `init` SHALL end its
@@ -163,7 +166,14 @@ In every markdown, TOML and text file, everything outside the owned region SHALL
 preserved byte for byte. In `openspec/config.yaml` and every JSON file, which
 are rewritten through a YAML or JSON serializer, every key, value, entry,
 comment and their order outside the owned entries SHALL be preserved, while
-insignificant formatting (indentation, quoting style) MAY be normalized. A `SKILL.md` or `agentboard.mdc` at the target path without the marker, a
+insignificant formatting (indentation, quoting style) MAY be normalized. `.claude/settings.json` and `.mcp.json` SHALL be
+decoded as strict UTF-8 (after a byte order mark): other bytes are refused
+as for invalid JSON, never replaced. When rewriting either file would not
+give back every value and key order (a number literal the rewrite would
+write with another decimal value, `-0`, a duplicate key, array-index keys
+JavaScript would reorder), the target SHALL be refused as `lossy-json`
+without writing, unless `--force` is given, which rewrites it and discards
+exactly those differences; a file that needs no write is never refused. A `SKILL.md` or `agentboard.mdc` at the target path without the marker, a
 malformed marker pair in `AGENTS.md`, the copilot file or
 `config.toml`, a `[mcp_servers.agentboard]` table in `config.toml` outside
 the markers, a `.claude/settings.json` that is not valid JSON or whose
