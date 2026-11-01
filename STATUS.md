@@ -135,7 +135,9 @@ them on it (see "Known gaps").
   (no record, ref moved past, the recorded value not a commit of the
   host, lost race); a live temporary of another
   board is `sync-in-progress`. README "Moving a board into the host
-  repository". Ticket 01M5XYG0VT09DBAW7PZJK1CZ5Y is closed by it.
+  repository" (PR #134). Delivered in PR #130; ticket
+  01M5XYG0VT09DBAW7PZJK1CZ5Y is closed by it. The change is archived as
+  `openspec/changes/archive/2026-11-01-into-host-replaced-after-step-4`.
 - **Inbox positions survive a cache schema upgrade** (`board-cache`):
   when the cache was written by an earlier schema version, the recreate
   carries each actor's cursor and seen set and the old cache's applied
@@ -187,8 +189,7 @@ them on it (see "Known gaps").
 0.3.0 is released (tag `v0.3.0`, npm `@bendechrai/agentboard@0.3.0`).
 In progress for the next release: `add-harness-integration` (hooks and
 more harness targets; group 1, the hook command contract, is merged in
-#127) and `into-host-replaced-after-step-4` (code merged; documentation in
-review).
+#127 and group 2, the hook events, in #133).
 
 ## Known gaps
 
