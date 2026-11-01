@@ -7,8 +7,9 @@
  * In process, through `runHook` with an injected clock (`HookRequest.now`,
  * `startedAt`, `budgetMs`), so the deadline is exact and independent of
  * the machine's load. Event-file reads are observed through a
- * pass-through mock of `node:fs` (`readFileSync` and `openSync` see every
- * path they are given, then do the real thing), which is how the tests
+ * pass-through mock of `node:fs` (`readFileSync`, `openSync`, `existsSync`
+ * and `realpathSync` see every path they are given, then do the real
+ * thing), which is how the tests
  * tell when the hook opens an event file relative to its clock and to the
  * cache write lock. The built CLI under a write lock held by another
  * process is pinned by src/__tests__/hook-events-processes.test.ts.
@@ -16,6 +17,7 @@
 
 import type * as Fs from 'node:fs';
 import { join } from 'node:path';
+import { mkdirSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -52,6 +54,17 @@ vi.mock('node:fs', async (importOriginal) => {
       seen(args[0]);
       return Reflect.apply(actual.openSync, actual, args) as unknown;
     },
+    existsSync: (...args: unknown[]): unknown => {
+      seen(args[0]);
+      return Reflect.apply(actual.existsSync, actual, args) as unknown;
+    },
+    realpathSync: Object.assign(
+      (...args: unknown[]): unknown => {
+        seen(args[0]);
+        return Reflect.apply(actual.realpathSync, actual, args) as unknown;
+      },
+      { native: actual.realpathSync.native },
+    ),
   };
 });
 
@@ -598,5 +611,265 @@ describe('R8: the payload read is capped at HOOK_STDIN_LIMIT bytes', () => {
     );
     expect(text).toBe('');
     expect(performance.now() - started).toBeLessThan(1000);
+  });
+});
+
+/** The `i`th of a run of distinct ticket ids, increasing with `i` (< 1024). */
+function rid(i: number): string {
+  const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  return `01ARYZ6S41TSV4RRFFQ69G${alphabet[Math.floor(i / 32) % 32] ?? '0'}${alphabet[i % 32] ?? '0'}AV`;
+}
+
+/**
+ * One step of a `storyBoard` on ticket T0 (`rid(0)`), or `creates`: `n`
+ * tickets created by orch, their event hashes kept under `label`.
+ */
+type Step =
+  | 'claim' // impl claims T0
+  | 'comment' // impl comments on T0
+  | 'handoff' // impl hands T0 to reviewer, with a note
+  | 'handback' // reviewer hands T0 back to impl, with a note
+  | 'assign' // orch assigns T0 to impl (not a comment)
+  | 'touch' // orch comments on T0 (reassigns nothing)
+  | { creates: number; label: string };
+
+/**
+ * A board built from event files in the order of `steps`, 10 ms apart,
+ * then folded by `list`. Returns the root and, per `creates` label, the
+ * hashes of the events written under it.
+ */
+function storyBoard(steps: readonly Step[]): { root: string; groups: Map<string, Set<string>> } {
+  const { root, boardDir } = project();
+  const events = join(boardDir, 'events');
+  const groups = new Map<string, Set<string>>();
+  const t0 = rid(0);
+  let wall = Date.now() - 3_600_000;
+  let next = 1;
+  const put = (proposed: Parameters<typeof ev>[0], actor: string): string => {
+    wall += 10;
+    return putEvent(events, ev(proposed, actor, wall));
+  };
+  put(P.create(t0, 'Held work'), 'orch');
+  for (const step of steps) {
+    if (step === 'claim') {
+      put(P.claim(t0), 'impl');
+    } else if (step === 'comment') {
+      put(P.comment(t0, 'parser done, tests next'), 'impl');
+    } else if (step === 'handoff') {
+      put(P.handoff(t0, 'reviewer', 'todo', 'please look'), 'impl');
+    } else if (step === 'handback') {
+      put(P.handoff(t0, 'impl', 'todo', 'fix the nits'), 'reviewer');
+    } else if (step === 'assign') {
+      put({ kind: 'ticket.assign', ticket: t0, body: { to: 'impl' } }, 'orch');
+    } else if (step === 'touch') {
+      put(P.comment(t0, 'any news?'), 'orch');
+    } else {
+      const hashes = new Set<string>();
+      for (let i = 0; i < step.creates; i += 1) {
+        hashes.add(put(P.create(rid(next), `Other ${String(next)}`), 'orch'));
+        next += 1;
+      }
+      groups.set(step.label, hashes);
+    }
+  }
+  cli(['list'], root);
+  return { root, groups };
+}
+
+/** Records the hashes of the event files opened from now on (until `watch.onRead` is reset). */
+function recordOpens(clock?: TestClock, stepMs = 0): { hashes: string[]; afterDeadline: number } {
+  const seen = { hashes: [] as string[], afterDeadline: 0 };
+  watch.onRead = (path) => {
+    const match = /([0-9a-f]{64})\.json$/.exec(path);
+    if (!EVENT_FILE.test(path) || match === null) {
+      return;
+    }
+    seen.hashes.push(match[1] ?? '');
+    if (clock !== undefined) {
+      if (clock.t > clock.deadline) {
+        seen.afterDeadline += 1;
+      }
+      clock.advance(stepMs);
+    }
+  };
+  return seen;
+}
+
+const T0 = rid(0);
+
+describe('round 2 finding 1: the stop read loop and answer, and the pre-tool-use block, check the deadline', () => {
+  /** impl commented on T0, then 40 other tickets were created, then orch assigned T0 back to impl. */
+  const shape: readonly Step[] = ['claim', 'comment', { creates: 40, label: 'between' }, 'assign'];
+
+  it.each([
+    ['stop --strict', ['stop', '--strict', '--as', 'impl']],
+    ['stop', ['stop', '--as', 'impl']],
+  ] as const)(
+    '%s: slow reads that spend the budget mid-loop or at the last read end out of time, never blocking',
+    (label, argv) => {
+      const { root } = storyBoard(shape);
+      // Without slow reads: T0 is named, after reading every event in its window.
+      const clean = testClock(60_000);
+      const opens = recordOpens();
+      const answer = hookOn(clean, argv, root, stopPayload(root));
+      watch.onRead = null;
+      if (argv.includes('--strict')) {
+        expect(answer.exitCode, answer.stderr).toBe(2);
+        expect(answer.stderr).toContain(T0);
+      } else {
+        expect(answer.stdout).toContain(T0);
+      }
+      const reads = opens.hashes.length;
+      expect(reads, 'the events between the comment and the assignment are read').toBeGreaterThan(
+        40,
+      );
+      for (const budget of [10 * Math.floor(reads / 2), 10 * reads - 5]) {
+        const clock = testClock(budget);
+        const slow = recordOpens(clock, 10);
+        const out = hookOn(clock, argv, root, stopPayload(root));
+        watch.onRead = null;
+        const what = `${label}, budget ${String(budget)} ms for ${String(reads)} reads of 10 ms`;
+        expect(clock.t > clock.deadline, `${what}: the reads spent the budget`).toBe(true);
+        expect(slow.afterDeadline, `${what}: event files opened after the deadline`).toBe(0);
+        expect(out.exitCode, what).toBe(0);
+        expect(out.stdout, what).toBe('');
+        expect(out.stderr, what).toMatch(OUT_OF_TIME);
+      }
+    },
+    120_000,
+  );
+
+  it('pre-tool-use --strict: time spent resolving the target past the deadline ends out of time, not in a block', () => {
+    const { root } = claimedBoard(0);
+    mkdirSync(join(root, 'src'));
+    const target = join(root, 'src', 'deep', 'new.ts');
+    const payload = JSON.stringify({
+      session_id: 's-1',
+      cwd: root,
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: target, content: 'x' },
+    });
+    // Sanity: with time to spare the edit is denied.
+    expect(
+      hookOn(testClock(60_000), ['pre-tool-use', '--strict', '--as', 'nobody'], root, payload)
+        .exitCode,
+    ).toBe(2);
+    const clock = testClock(60_000);
+    const src = join(root, 'src');
+    watch.onRead = (path) => {
+      if (path === src || path.startsWith(`${src}/`)) {
+        clock.t = Math.max(clock.t, clock.deadline + 1);
+      }
+    };
+    const out = hookOn(clock, ['pre-tool-use', '--strict', '--as', 'nobody'], root, payload);
+    watch.onRead = null;
+    expect(clock.t > clock.deadline, 'the target was resolved').toBe(true);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toBe('');
+    expect(out.stderr).toMatch(OUT_OF_TIME);
+  });
+});
+
+describe('round 2 finding 4: a budget spent from the start is reported, not swallowed', () => {
+  it.each([
+    ['session-start with no actor', ['session-start'], startPayload],
+    ['session-start', ['session-start', '--as', 'impl'], startPayload],
+    ['stop --strict', ['stop', '--strict', '--as', 'impl'], stopPayload],
+    ['pre-tool-use --strict', ['pre-tool-use', '--strict', '--as', 'nobody'], editPayload],
+  ] as const)('%s: exactly the out-of-time answer', (_label, argv, payload) => {
+    const { root } = claimedBoard();
+    const clock = testClock(0);
+    clock.advance(1);
+    const out = hookOn(clock, argv, root, payload(root));
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toBe('');
+    expect(out.stderr).toMatch(OUT_OF_TIME);
+  });
+});
+
+describe('R11: stop reads no more than it needs', () => {
+  it("scenario: comment is the ticket's last update: decided with no read at all", () => {
+    const { root } = storyBoard(['claim', 'comment', { creates: 60, label: 'after' }]);
+    const opens = recordOpens();
+    const out = hookOn(
+      testClock(60_000),
+      ['stop', '--strict', '--as', 'impl'],
+      root,
+      stopPayload(root),
+    );
+    watch.onRead = null;
+    expect(out).toEqual({ exitCode: 0, stdout: '', stderr: '' });
+    expect(opens.hashes).toEqual([]);
+  });
+
+  it('scenario: handed back, then a busy board: T0 is named without reading any event after its last update', () => {
+    const { root, groups } = storyBoard([
+      'claim',
+      'comment',
+      'handoff',
+      'handback',
+      { creates: 300, label: 'after' },
+    ]);
+    const after = groups.get('after') ?? new Set<string>();
+    const opens = recordOpens();
+    const out = hookOn(
+      testClock(60_000),
+      ['stop', '--strict', '--as', 'impl'],
+      root,
+      stopPayload(root),
+    );
+    watch.onRead = null;
+    expect(out.exitCode, out.stderr).toBe(2);
+    expect(out.stderr).toContain(T0);
+    expect(opens.hashes.filter((h) => after.has(h))).toEqual([]);
+    expect(opens.hashes.length).toBeLessThanOrEqual(2);
+  });
+
+  it('stops reading as soon as the ticket is decided: nothing after the hand-back is read, even inside the window', () => {
+    const { root, groups } = storyBoard([
+      'claim',
+      'comment',
+      'handoff',
+      'handback',
+      { creates: 300, label: 'between' },
+      'touch',
+    ]);
+    const between = groups.get('between') ?? new Set<string>();
+    const opens = recordOpens();
+    const out = hookOn(
+      testClock(60_000),
+      ['stop', '--strict', '--as', 'impl'],
+      root,
+      stopPayload(root),
+    );
+    watch.onRead = null;
+    expect(out.exitCode, out.stderr).toBe(2);
+    expect(out.stderr).toContain(T0);
+    expect(opens.hashes.filter((h) => between.has(h))).toEqual([]);
+  });
+
+  it('a ticket not reassigned is read only up to its last update, and then counts as commented', () => {
+    const { root, groups } = storyBoard([
+      'claim',
+      'comment',
+      { creates: 30, label: 'between' },
+      'touch',
+      { creates: 200, label: 'after' },
+    ]);
+    const between = groups.get('between') ?? new Set<string>();
+    const after = groups.get('after') ?? new Set<string>();
+    const opens = recordOpens();
+    const out = hookOn(
+      testClock(60_000),
+      ['stop', '--strict', '--as', 'impl'],
+      root,
+      stopPayload(root),
+    );
+    watch.onRead = null;
+    expect(out).toEqual({ exitCode: 0, stdout: '', stderr: '' });
+    expect(opens.hashes.filter((h) => after.has(h))).toEqual([]);
+    // The events in the window may each be the assigning one, so they are read.
+    expect(opens.hashes.filter((h) => between.has(h)).length).toBe(30);
   });
 });
