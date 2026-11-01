@@ -2565,6 +2565,11 @@ export const COMMANDS: readonly CommandSpec[] = [
         'boolean',
         'Write the claude-hooks entries in strict mode, where stop and pre-tool-use block (no effect without --target claude-hooks)',
       ),
+      flag(
+        'global',
+        'boolean',
+        "Also edit the global MCP config of codex ($CODEX_HOME/config.toml) and antigravity (~/.gemini/config/mcp_config.json); needs --target codex or --target antigravity",
+      ),
       flag('force', 'boolean', 'Overwrite a file or entry that agentboard does not own'),
     ],
     exclusive: [INSTALL_COMMAND_GROUP],
@@ -2577,6 +2582,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         targets: list(values, 'target'),
         force: bool(values, 'force'),
         hooksStrict: bool(values, 'hooks-strict'),
+        global: bool(values, 'global'),
         ...(command === undefined ? {} : { command }),
         ...(mcpCommand === undefined ? {} : { mcpCommand }),
       });
@@ -2602,11 +2608,17 @@ export const COMMANDS: readonly CommandSpec[] = [
       EXIT_INVALID_ACTOR,
     ],
     positionals: [],
-    flags: [],
+    flags: [
+      flag(
+        'global',
+        'boolean',
+        "Also check the global MCP config of codex and antigravity, which is read only with this flag",
+      ),
+    ],
     exclusive: [],
     writes: false,
     operation: 'checkGuidance',
-    run: (ctx) => checkCommand(ctx.cwd, ctx.env),
+    run: (ctx, values) => checkCommand(ctx.cwd, ctx.env, { global: bool(values, 'global') }),
   },
   {
     name: 'version',

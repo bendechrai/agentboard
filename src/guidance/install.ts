@@ -38,6 +38,8 @@ import {
   AGENTS_MD_PATH,
   CLAUDE_HOOK_EVENTS,
   CLAUDE_SETTINGS_PATH,
+  COPILOT_PATH,
+  CURSOR_RULE_PATH,
   GUIDANCE_VERSION,
   MCP_JSON_PATH,
   MCP_SERVER_NAME,
@@ -93,8 +95,29 @@ import {
  * - `claude-hooks`: the three agentboard hook entries in
  *   `.claude/settings.json` (`CLAUDE_SETTINGS_PATH`), each owned when its
  *   command ends with `hooksMarker(N)`. Never auto-detected.
+ * - `codex`: the `AGENTS.md` block (shared with `agents-md`), the printed
+ *   `codexMcpAddCommand`, and with `--global` the marked block in Codex's
+ *   global `config.toml` (`globalConfigPath('codex', env)`).
+ * - `cursor`: the Cursor rule `.cursor/rules/agentboard.mdc`
+ *   (`CURSOR_RULE_PATH`), owned whole when it carries the marker, and the
+ *   `mcpServers.agentboard` key of `.cursor/mcp.json` (`CURSOR_MCP_PATH`).
+ * - `antigravity`: the `AGENTS.md` block (shared with `agents-md`), the
+ *   printed `agyMcpAddCommand`, and with `--global` the
+ *   `mcpServers.agentboard` key of `~/.gemini/config/mcp_config.json`
+ *   (`globalConfigPath('antigravity', env)`).
+ * - `copilot`: the managed block (the `AGENTS.md` block, same markers) in
+ *   `.github/copilot-instructions.md` (`COPILOT_PATH`).
  */
-export type GuidanceTarget = 'claude' | 'agents-md' | 'openspec' | 'mcp-json' | 'claude-hooks';
+export type GuidanceTarget =
+  | 'claude'
+  | 'agents-md'
+  | 'openspec'
+  | 'mcp-json'
+  | 'claude-hooks'
+  | 'codex'
+  | 'cursor'
+  | 'antigravity'
+  | 'copilot';
 
 /** Every `GuidanceTarget`, in processing order. */
 export const GUIDANCE_TARGETS: readonly GuidanceTarget[] = [
@@ -103,12 +126,21 @@ export const GUIDANCE_TARGETS: readonly GuidanceTarget[] = [
   'openspec',
   'mcp-json',
   'claude-hooks',
+  'codex',
+  'cursor',
+  'antigravity',
+  'copilot',
 ];
 
 /**
- * The file of each target, relative to the working tree root, with POSIX
- * separators (`SKILL_PATH`, `AGENTS_MD_PATH`, `OPENSPEC_CONFIG_PATH`,
- * `MCP_JSON_PATH`, `CLAUDE_SETTINGS_PATH`). Results report paths in this form.
+ * The (first) project file of each target, relative to the working tree
+ * root, with POSIX separators (`SKILL_PATH`, `AGENTS_MD_PATH`,
+ * `OPENSPEC_CONFIG_PATH`, `MCP_JSON_PATH`, `CLAUDE_SETTINGS_PATH`;
+ * `AGENTS_MD_PATH` for `codex` and `antigravity`, whose project file is the
+ * shared `AGENTS.md` block; `CURSOR_RULE_PATH` for `cursor`, whose second
+ * file is `CURSOR_MCP_PATH`; `COPILOT_PATH`). Results report project paths
+ * in this form; a global file (`--global`) is reported by its absolute
+ * path, `globalConfigPath(target, env)`.
  */
 export const TARGET_FILES: Readonly<Record<GuidanceTarget, string>> = {
   claude: SKILL_PATH,
@@ -116,6 +148,10 @@ export const TARGET_FILES: Readonly<Record<GuidanceTarget, string>> = {
   openspec: OPENSPEC_CONFIG_PATH,
   'mcp-json': MCP_JSON_PATH,
   'claude-hooks': CLAUDE_SETTINGS_PATH,
+  codex: AGENTS_MD_PATH,
+  cursor: CURSOR_RULE_PATH,
+  antigravity: AGENTS_MD_PATH,
+  copilot: COPILOT_PATH,
 };
 
 /**
@@ -172,6 +208,15 @@ export interface InstallOptions {
    */
   readonly hooksStrict?: boolean;
   /**
+   * `--global`: also edit the global MCP config of `codex` and
+   * `antigravity` (`globalConfigPath`), and only of a target given with
+   * `--target` (see `installGuidance`, step 2, for the usage errors).
+   * Without it no global file is read or written, and those targets put
+   * their registration command in `InstallResult.registerCommands`
+   * instead.
+   */
+  readonly global?: boolean;
+  /**
    * The guidance version to install; default `GUIDANCE_VERSION`. Only tests
    * pass it, to simulate an older or newer CLI.
    */
@@ -183,8 +228,9 @@ export interface TargetSelection {
   readonly target: GuidanceTarget;
   /**
    * With `--target`: exactly `requested with --target`. Auto-detected:
-   * exactly `.claude/ exists`, `AGENTS.md exists` or
-   * `openspec/config.yaml exists`. The `mcp-json` target when
+   * exactly `.claude/ exists`, `AGENTS.md exists`,
+   * `openspec/config.yaml exists`, `.codex/ exists`, `.cursor/ exists`,
+   * `.agents/ exists` or `.github/copilot-instructions.md exists`. The `mcp-json` target when
    * `--command` (or `--mcp-command`) is given: exactly `requested with
    * --command`, also when `--target mcp-json` is given too (the output
    * names `--command` as the reason).
@@ -302,7 +348,55 @@ export type InstallAction = 'created' | 'updated' | 'unchanged' | 'refused';
  *   target that needs no write (`unchanged`) is not refused for a
  *   read-only file.
  *
- * Filesystem errors other than those above still propagate (exit 5).
+ *
+ * The targets of design.md "Rulings from task group 4 (test author)":
+ * - `foreign-file` also covers `.cursor/rules/agentboard.mdc` without a
+ *   line containing `<!-- agentboard-guidance:` (`--force` overwrites it
+ *   whole).
+ * - `malformed-marker` also covers `.github/copilot-instructions.md` (the
+ *   `AGENTS.md` markers and rules, `--force` likewise) and Codex's
+ *   `config.toml` (the markers `codexBlockStart(N)` and
+ *   `CODEX_BLOCK_END`, matched as the `AGENTS.md` ones: a marker-like line
+ *   contains `# agentboard:start` or `# agentboard:end`; `--force`
+ *   removes every marker-like line and nothing else, then installs as
+ *   into a file without markers).
+ * - `entry-differs` also covers `mcpServers.agentboard` in
+ *   `.cursor/mcp.json` and in Antigravity's `mcp_config.json` (the
+ *   `.mcp.json` rules), and a Codex block whose text between the markers
+ *   is not a managed block (`renderCodexBlock(N, c)` for its own version
+ *   N and no `c` or some non-empty `c`, line ends `\r\n` read as `\n`):
+ *   a hand-added `env` table, other `args`. `--force` replaces the block.
+ * - `malformed-file` and `lossy-json` also cover `.cursor/mcp.json` and
+ *   `mcp_config.json` (the `.mcp.json` rules: strict UTF-8, at most
+ *   `MAX_JSON_DEPTH` levels, `malformed-file` even with `--force`).
+ *   `malformed-file` also covers a `config.toml` that is not strict UTF-8
+ *   after a leading byte order mark, or that ends inside a multi-line
+ *   string or an unclosed array or inline table (appending the block
+ *   would land inside it), even with `--force`.
+ * - `foreign-table` (`codex`, `--global`): `config.toml` has, outside the
+ *   markers, a table header `[k]` whose key `k` is `mcp_servers.agentboard`
+ *   or below it (`mcp_servers.agentboard.env`). Keys compare after
+ *   decoding: bare, basic-quoted (escapes decoded) and literal-quoted
+ *   parts, whitespace around the dots and the brackets, an indented header
+ *   and a trailing comment are all the same key; case matters. A header
+ *   inside a multi-line string or array is not a header. With `--force`
+ *   each such table (from its header line to the line before the next
+ *   header, or the end of the file) is removed, and the block goes where
+ *   the marked block is, else where the first removed table was. Overridden
+ *   by `--force`.
+ * - `toml-shape` (`codex`, `--global`): `config.toml` defines the server,
+ *   outside the markers, in a way a line edit cannot replace or that a
+ *   `[mcp_servers.agentboard]` header would make invalid TOML: an array of
+ *   tables `[[mcp_servers]]` or `[[k]]` with `k` at or below
+ *   `mcp_servers.agentboard`; a key/value line whose full key (the current
+ *   table plus the dotted key) is `mcp_servers` (an inline table or other
+ *   value) or is at or below `mcp_servers.agentboard` outside a foreign
+ *   table (a dotted key, or `agentboard = { ... }` under `[mcp_servers]`).
+ *   Refused even with `--force`; the message says to remove the
+ *   definition by hand.
+ * - `outside-tree` does not apply to a global file, which is outside the
+ *   tree by design: a symbolic link there is followed and kept (dotfile
+ *   managers link these files); `not-a-file` and `unwritable` apply.
  */
 export type RefusalReason =
   | 'foreign-file'
@@ -312,16 +406,27 @@ export type RefusalReason =
   | 'malformed-settings'
   | 'hooks-shape'
   | 'lossy-json'
+  | 'foreign-table'
+  | 'toml-shape'
   | 'malformed-file'
   | 'missing-file'
   | 'outside-tree'
   | 'not-a-file'
   | 'unwritable';
 
-/** The outcome of one target. */
+/**
+ * The outcome of one file of one target. Most targets have one; `cursor`
+ * has two (`CURSOR_RULE_PATH`, then `CURSOR_MCP_PATH`), and `codex` and
+ * `antigravity` with `--global` have two (`AGENTS.md`, then the global
+ * file), each processed and reported on its own.
+ */
 export interface TargetOutcome {
   readonly target: GuidanceTarget;
-  /** `TARGET_FILES[target]`: relative to the root, POSIX separators. */
+  /**
+   * The file: `TARGET_FILES[target]` or `CURSOR_MCP_PATH`, relative to the
+   * root with POSIX separators, or, for a global file, the absolute
+   * `globalConfigPath(target, env)` (not passed through `realpathSync`).
+   */
   readonly path: string;
   /** `TargetSelection.reason` of the target. */
   readonly reason: string;
@@ -353,10 +458,49 @@ export interface InstallResult {
   readonly version: number;
   /** True when no `--target` was given and the targets were auto-detected. */
   readonly autoDetected: boolean;
-  /** One outcome per selected target, in `GUIDANCE_TARGETS` order. */
+  /**
+   * The outcomes of the selected targets, in `GUIDANCE_TARGETS` order
+   * (several per target, see `TargetOutcome`).
+   */
   readonly targets: readonly TargetOutcome[];
   /** Number of outcomes with action `refused`. */
   readonly refused: number;
+  /**
+   * The commands that register the MCP server in a harness's global
+   * config, for the user to run (board-agent-guidance: "Global harness
+   * config is never edited by default"): one per selected `codex`
+   * (`codexMcpAddCommand(command)`) and `antigravity`
+   * (`agyMcpAddCommand(command)`) target when `--global` is not given, in
+   * that order, whether or not the target's `AGENTS.md` outcome was
+   * refused; `command` is the `--command` value, or none (the default
+   * `npx` executable). Empty otherwise, and always present.
+   */
+  readonly registerCommands: readonly RegisterCommand[];
+}
+
+/** One command of `InstallResult.registerCommands`. */
+export interface RegisterCommand {
+  readonly target: 'codex' | 'antigravity';
+  readonly command: string;
+}
+
+/**
+ * The global MCP config file of `target` (design.md decision 5),
+ * absolute, from `env` only (never `os.homedir()`): for `codex`,
+ * `<CODEX_HOME>/config.toml` when `CODEX_HOME` is set and non-empty, else
+ * `<HOME>/.codex/config.toml`; for `antigravity`,
+ * `<HOME>/.gemini/config/mcp_config.json`. Neither is resolved through
+ * symbolic links.
+ *
+ * @throws BoardError(1, 'usage') when the variable used is unset, empty
+ * or not an absolute path: `--global needs CODEX_HOME or HOME set to an
+ * absolute path` (`codex`) or `--global needs HOME set to an absolute
+ * path` (`antigravity`); the message never repeats the value.
+ */
+export function globalConfigPath(target: 'codex' | 'antigravity', env: Env): string {
+  void target;
+  void env;
+  throw new Error('not implemented: globalConfigPath (task 4.2)');
 }
 
 /**
@@ -399,7 +543,12 @@ function kindOf(path: string): 'dir' | 'file' | null {
  * "Auto-detection"), in `GUIDANCE_TARGETS` order: `claude` when `.claude`
  * exists and is a directory (reason `.claude/ exists`), `agents-md` when
  * `AGENTS.md` exists (reason `AGENTS.md exists`), `openspec` when
- * `openspec/config.yaml` exists (reason `openspec/config.yaml exists`).
+ * `openspec/config.yaml` exists (reason `openspec/config.yaml exists`),
+ * `codex` when `.codex` is a directory (reason `.codex/ exists`), `cursor`
+ * when `.cursor` is a directory (reason `.cursor/ exists`), `antigravity`
+ * when `.agents` is a directory (reason `.agents/ exists`) and `copilot`
+ * when `.github/copilot-instructions.md` exists (reason
+ * `.github/copilot-instructions.md exists`).
  * `mcp-json` is never selected, because registering a server changes what
  * every session in the project loads, and neither is `claude-hooks`, even
  * where it is installed, because hooks change what the agent may do. Reads
@@ -440,6 +589,7 @@ const FORCEABLE: readonly RefusalReason[] = [
   'malformed-settings',
   'hooks-shape',
   'lossy-json',
+  'foreign-table',
 ];
 
 function done(action: Exclude<InstallAction, 'refused'>, message: string): Handled {
@@ -958,6 +1108,11 @@ function runHandler(
       return installMcpJson(path, run.force, run.command);
     case 'claude-hooks':
       return installClaudeHooks(path, version, run);
+    case 'codex':
+    case 'cursor':
+    case 'antigravity':
+    case 'copilot':
+      throw new Error(`not implemented: the ${target} target (task 4.2)`);
   }
 }
 
@@ -1120,7 +1275,8 @@ function selectTargets(
  *    anything else is checked and before anything is written. Every
  *    `--target` value must be one of `GUIDANCE_TARGETS`, else
  *    `BoardError(1, 'usage', 'unknown target given with --target; expected
- *    one of claude, agents-md, openspec, mcp-json, claude-hooks')`, which
+ *    one of claude, agents-md, openspec, mcp-json, claude-hooks, codex,
+ *    cursor, antigravity, copilot')`, which
  *    does not repeat the target, before anything is written. Given targets
  *    are de-duplicated, each with reason `requested with --target`. With
  *    none given, `detectTargets(root)` (`autoDetected` true), which never
@@ -1132,6 +1288,14 @@ function selectTargets(
  *    selected, `BoardError(1, 'no-targets', <message>)` whose message names
  *    `root`, says nothing was detected, and lists every target in
  *    `GUIDANCE_TARGETS` with `--target`. Nothing is written.
+ *    With `global`, after the target checks: `BoardError(1, 'usage',
+ *    "--global edits a harness's global MCP config and needs --target
+ *    codex or --target antigravity")` unless `codex` or `antigravity` was
+ *    given with `--target` (auto-detected or prompted ones do not count;
+ *    other given targets may come with them and are unaffected by
+ *    `--global`); then `globalConfigPath` for each of the two given, which
+ *    may throw its own usage error. Nothing is read or written before
+ *    these checks pass.
  * 3. Each selected target is processed in `GUIDANCE_TARGETS` order. A
  *    refused target writes nothing and does not stop the others. A target
  *    either writes its whole change or nothing. Before the per-target steps
@@ -1216,6 +1380,47 @@ function selectTargets(
  *   without `command`), unless `force`, which replaces it in place by
  *   `wanted` (rewritten as above): `updated`.
  *
+ * `codex`, `antigravity` (design.md "Rulings from task group 4"): the
+ * `AGENTS.md` outcome exactly as `agents-md` (the same block, markers,
+ * refusals and `--force`), reported under the target's name; selecting
+ * several of `agents-md`, `codex` and `antigravity` processes the file
+ * once per target in order, so the first writes it and the others find it
+ * up to date (`unchanged`). Without `global`, the target adds its
+ * registration command to `registerCommands` and reads no global file.
+ * With `global`, a second outcome for the global file:
+ * - `codex` (`config.toml`, a line edit that never parses or rewrites the
+ *   rest of the file): absent: parent directories created, the file
+ *   written as `renderCodexBlock(version, command)` plus `\n`: `created`.
+ *   Refusals in this order: `malformed-file`, `toml-shape`,
+ *   `malformed-marker`, `foreign-table`, `entry-differs` (see
+ *   `RefusalReason`). Without markers, the block is appended as the
+ *   `AGENTS.md` block is (a `\n` when the text does not end with one, an
+ *   empty line, the block, `\n`; a byte order mark, CRLF lines, comments
+ *   and every other byte kept): `updated`. With a managed block: the
+ *   wanted block is `renderCodexBlock(version, c)` where `c` is the
+ *   `--command` value, else the command the block records (none for the
+ *   default `npx` entry, so a local command is never reverted); exactly
+ *   the region: `unchanged`; else the region replaced: `updated` (a
+ *   block of another version, or another `--command`, needs no
+ *   `--force`).
+ * - `antigravity` (`mcp_config.json`): the `mcp-json` rules (`mcpServers`
+ *   created when missing, managed entries, `entry-differs`,
+ *   `malformed-file`, `lossy-json`, `--command` replacing a managed entry
+ *   without `--force`), parent directories created for a new file.
+ * - Both: an existing file is replaced atomically, keeping its mode, as
+ *   `.claude/settings.json` is, and a symbolic link at the path is
+ *   followed and kept; no `outside-tree` check (see `RefusalReason`).
+ *
+ * `cursor`: two outcomes. `.cursor/rules/agentboard.mdc`, wanted content
+ * `renderCursorRule(version)`, follows the `claude` rules (owned whole
+ * when a line contains `<!-- agentboard-guidance:`, `foreign-file`
+ * otherwise). `.cursor/mcp.json` follows the `mcp-json` rules, and an
+ * existing file is replaced atomically, keeping its mode. A refusal of
+ * one file does not stop the other.
+ *
+ * `copilot` (`.github/copilot-instructions.md`): the `agents-md` rules,
+ * block `renderAgentsBlock(version)`, parent directories created.
+ *
  * `claude-hooks` (`.claude/settings.json`; board-harness-hooks "Hooks
  * installed in Claude settings"; design.md "Rulings from task group 3"):
  * - The wanted entries: `hookGroup(key, { version, strict:
@@ -1265,7 +1470,8 @@ function selectTargets(
  * @throws BoardError exit 1 `usage` (a `command` that is empty or
  * contains `\n`, checked first, then an unknown target, exactly `unknown
  * target given with --target; expected one of claude, agents-md,
- * openspec, mcp-json, claude-hooks`, which does not repeat the target) or
+ * openspec, mcp-json, claude-hooks, codex, cursor, antigravity, copilot`,
+ * which does not repeat the target, then the `--global` checks) or
  * `no-targets` (no `--target`, nothing detected and no `command`).
  */
 export function installGuidance(options: InstallOptions): InstallResult {
@@ -1279,6 +1485,9 @@ export function installGuidance(options: InstallOptions): InstallResult {
     command: options.command,
     hooksStrict: options.hooksStrict ?? false,
   };
+  if (options.global === true) {
+    throw new Error('not implemented: agents install --global (task 4.2)');
+  }
   const targets: TargetOutcome[] = selections.map(({ target, reason }) => ({
     target,
     path: TARGET_FILES[target],
@@ -1291,6 +1500,7 @@ export function installGuidance(options: InstallOptions): InstallResult {
     autoDetected,
     targets,
     refused: targets.filter((t) => t.action === 'refused').length,
+    registerCommands: [],
   };
 }
 
@@ -1305,8 +1515,12 @@ export function installGuidance(options: InstallOptions): InstallResult {
  * 2. Per outcome: `<action> <target> <path>`, followed by ` (up to date)`
  *    for `unchanged`, and for `refused` by `: <message>` and then each
  *    `manual` line indented by four spaces.
- * 3. `agents install: <c> created, <u> updated, <n> unchanged, <r> refused
- *    (guidance v<version>) in <root>`.
+ * 3. When `result.registerCommands` is not empty: one line saying that
+ *    these commands register the agentboard MCP server in each harness's
+ *    global config (which agentboard edits only with `--global`), then
+ *    each command on its own line, indented by four spaces.
+ * 4. `agents install: <c> created, <u> updated, <n> unchanged, <r> refused
+ *    (guidance v<version>) in <root>`, counting outcomes.
  * Pure.
  */
 export function renderInstall(result: InstallResult): string {
@@ -1349,6 +1563,8 @@ export interface InstallFlags {
   readonly mcpCommand?: string;
   /** `--hooks-strict`. */
   readonly hooksStrict: boolean;
+  /** `--global`. */
+  readonly global?: boolean;
 }
 
 /**
@@ -1376,6 +1592,7 @@ export function installCommand(cwd: string, env: Env, flags: InstallFlags): Comm
     targets: flags.targets,
     force: flags.force,
     hooksStrict: flags.hooksStrict,
+    global: flags.global ?? false,
     ...(command === undefined ? {} : { command }),
     ...(flags.mcpCommand === undefined ? {} : { commandFlag: 'mcp-command' as const }),
   });

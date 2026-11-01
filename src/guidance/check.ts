@@ -90,6 +90,13 @@ export interface CheckOptions {
    * pass it, to simulate a newer CLI.
    */
   readonly version?: number;
+  /**
+   * `agents check --global`: also inspect the global files of `codex` and
+   * `antigravity` (`globalConfigPath(target, env)`, which throws its usage
+   * error when `HOME` or `CODEX_HOME` is unusable). Without it no global
+   * file is read.
+   */
+  readonly global?: boolean;
 }
 
 /**
@@ -144,6 +151,25 @@ export interface CheckOptions {
  *   duplicated entry, another timeout or matcher, an extra key, mixed
  *   modes or executables, an owned handler sharing a group with a user
  *   handler).
+ * - `codex` and `antigravity` are never reported for `AGENTS.md`: the
+ *   shared block is reported once, as `agents-md`. With `global` only:
+ *   `codex` for `config.toml` (path `globalConfigPath('codex', env)`),
+ *   found when it has a marker-like line (`# agentboard:start` or `#
+ *   agentboard:end`, also in a file that is not strict UTF-8 or ends
+ *   inside a multi-line construct, which is then `modified` with version
+ *   null). Malformed markers: `modified` (version as for `agents-md`). A
+ *   pair recorded as N: N != v `stale`; `current` when the region is
+ *   exactly `renderCodexBlock(v, c)` for no `c` or the non-empty `c` it
+ *   records and no `foreign-table` or `toml-shape` definition of the
+ *   server exists outside the markers (Codex would then read two
+ *   definitions); else `modified`. `antigravity` for `mcp_config.json`,
+ *   exactly as `mcp-json` (`installedVersion` null).
+ * - `cursor`: up to two entries, in this order: `.cursor/rules/agentboard.mdc`
+ *   exactly as `claude` with `renderCursorRule(v)`, and `.cursor/mcp.json`
+ *   exactly as `mcp-json` (`installedVersion` null), each reported with
+ *   target `cursor` and its own path when found.
+ * - `copilot`: `.github/copilot-instructions.md` exactly as `agents-md`
+ *   with `renderAgentsBlock(v)`.
  *
  * Paths `agents install` would refuse, for every target:
  * - outside the tree (see `RefusalReason` `outside-tree`: the path with
@@ -155,7 +181,9 @@ export interface CheckOptions {
  * - unreadable (`EACCES` or `EPERM` on read): reported as `modified` with
  *   `installedVersion` null, since whether it holds guidance cannot be
  *   known, so the command exits 1; `checkCommand` adds a warning naming it.
- * Never throws for these (no exit 5).
+ * Never throws for these (no exit 5). A global file follows the same
+ * rules except that it is outside the tree by design: a symbolic link
+ * there is followed.
  */
 export function checkGuidance(options: CheckOptions): GuidanceCheckEntry[] {
   return inspect(options).entries;
@@ -172,6 +200,9 @@ function inspect(options: CheckOptions): {
   entries: GuidanceCheckEntry[];
   unreadable: Unreadable[];
 } {
+  if (options.global === true) {
+    throw new Error('not implemented: agents check --global (task 4.2)');
+  }
   const root = workingTreeRoot(options.cwd, options.env ?? process.env);
   const v = options.version ?? GUIDANCE_VERSION;
   const entries: GuidanceCheckEntry[] = [];
@@ -219,6 +250,12 @@ function checkTarget(target: GuidanceTarget, path: string, v: number): Found | n
       return checkMcpJson(path);
     case 'claude-hooks':
       return checkClaudeHooks(path, v);
+    case 'codex':
+    case 'cursor':
+    case 'antigravity':
+    case 'copilot':
+      // Not implemented yet (task 4.2): reported as not found.
+      return null;
   }
 }
 
@@ -417,9 +454,21 @@ export function renderGuidanceCheck(entries: readonly GuidanceCheckEntry[], root
  * then one line, `<k> of <n> guidance target(s) are not current; run
  * agentboard agents install to rewrite them`. Otherwise exit 0 (also when
  * nothing was found).
+ *
+ * Whatever the states, when `AGENTS.md` at the working tree root (with
+ * symbolic links resolved inside the tree, as for the targets) is larger
+ * than `ANTIGRAVITY_RULES_FILE_LIMIT` (24576) bytes, `warnings` ends with
+ * one line `AGENTS.md is <n> bytes; the Antigravity CLI reads at most 24
+ * KB (24576 bytes) of a rules file, so it ignores the rest` and the exit
+ * code is unchanged (board-agent-guidance: "Antigravity rules stay within
+ * size limits"). `options.global` is `agents check --global`.
  */
-export function checkCommand(cwd: string, env: Env): CommandOutput {
-  const { entries, unreadable } = inspect({ cwd, env });
+export function checkCommand(
+  cwd: string,
+  env: Env,
+  options: { readonly global?: boolean } = {},
+): CommandOutput {
+  const { entries, unreadable } = inspect({ cwd, env, global: options.global ?? false });
   const output: CommandOutput = {
     json: entries,
     text: renderGuidanceCheck(entries, workingTreeRoot(cwd, env)),
