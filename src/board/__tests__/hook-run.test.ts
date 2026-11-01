@@ -30,6 +30,8 @@ import {
   HEX_40,
   HEX_64,
   LONG_WORD,
+  PREFIXED_ACTOR_KEYS,
+  SECRET_FIXTURES,
   TOKEN_FIXTURES,
   URL_WITH_CREDENTIALS,
   expectNoLeak,
@@ -106,6 +108,8 @@ function startPayload(cwd: string): string {
  * Token-shaped names a hook never accepts as an actor (a secret pattern,
  * or outside the actor form); `TOKEN_FIXTURES` also holds words that have
  * the actor form, which are valid actors and may be named in an answer.
+ * The provider keys of the actor form (secret-prefix-patterns: short
+ * Stripe and GitLab keys) fail `isActorName` by a pattern alone.
  */
 const NOT_ACTORS: readonly string[] = [
   GITHUB_TOKEN,
@@ -114,7 +118,11 @@ const NOT_ACTORS: readonly string[] = [
   HEX_64,
   URL_WITH_CREDENTIALS,
   LONG_WORD,
+  ...PREFIXED_ACTOR_KEYS.map((f) => f.value),
 ];
+
+/** The fixtures no hook output may contain: the shared ones and the prefixed actor keys. */
+const LEAK_FIXTURES = [...SECRET_FIXTURES, ...PREFIXED_ACTOR_KEYS];
 
 const SILENT: HookOutcome = { exitCode: 0, stdout: '', stderr: '' };
 
@@ -389,7 +397,11 @@ describe('scenario: unresolvable actor at session start', () => {
       });
       for (const out of [fromFlag, fromEnv]) {
         noActorContext(out);
-        expectNoLeak('session-start with a token as the actor', [out.stdout, out.stderr]);
+        expectNoLeak(
+          'session-start with a token as the actor',
+          [out.stdout, out.stderr],
+          LEAK_FIXTURES,
+        );
       }
     }
     noActorContext(
@@ -424,7 +436,7 @@ describe('scenario: unresolvable actor at session start', () => {
       }
     }
     for (const [label, out] of outs) {
-      expectNoLeak(`session-start, ${label}`, [out.stdout, out.stderr]);
+      expectNoLeak(`session-start, ${label}`, [out.stdout, out.stderr], LEAK_FIXTURES);
     }
     // An empty --as falls back to AGENTBOARD_ACTOR; both empty is no actor at all.
     expect(

@@ -7,31 +7,92 @@ import { BoardError } from '../store/errors.js';
 
 /**
  * Names of the secret patterns, in the order they are checked and
- * reported:
+ * reported (board-cli "No secrets on the board"; secret-prefix-patterns
+ * design.md "The patterns"): the three original provider patterns, the
+ * other provider patterns alphabetically, then the catch-all.
  *
- * - `pem-private-key`: a PEM private key header, `-----BEGIN ` then any
- *   run of upper-case letters, digits and spaces ending in `PRIVATE KEY`,
- *   then `-----` (for example `-----BEGIN PRIVATE KEY-----`,
- *   `-----BEGIN RSA PRIVATE KEY-----`, `-----BEGIN OPENSSH PRIVATE
- *   KEY-----`).
+ * - `pem-private-key`: `-----BEGIN ` then any run of upper-case ASCII
+ *   letters, digits and spaces ending in `PRIVATE KEY`, optionally
+ *   followed by ` BLOCK`, then `-----` (PEM private key headers such as
+ *   `-----BEGIN PRIVATE KEY-----`, `-----BEGIN RSA PRIVATE KEY-----` and
+ *   `-----BEGIN OPENSSH PRIVATE KEY-----`, and the PGP private key block
+ *   header `-----BEGIN PGP PRIVATE KEY BLOCK-----`).
  * - `aws-access-key-id`: `AKIA` or `ASIA` followed by exactly 16
  *   characters of `[0-9A-Z]`, not preceded or followed by another
- *   `[0-9A-Za-z]` character.
+ *   ASCII letter or digit.
  * - `github-token`: a classic token `ghp_`, `gho_`, `ghu_`, `ghs_` or `ghr_`
  *   followed by at least 36 characters of `[A-Za-z0-9]`, or a fine-grained
  *   token `github_pat_` followed by at least 22 characters of
  *   `[A-Za-z0-9_]`.
+ * - `anthropic-api-key`: `sk-ant-` followed by at least 16 characters of
+ *   `[A-Za-z0-9_-]`.
+ * - `digitalocean-token`: `dop_v1_`, `doo_v1_` or `dor_v1_` followed by at
+ *   least 16 characters of `[a-f0-9]`.
+ * - `docker-token`: `dckr_pat_` or `dckr_oat_` followed by at least 16
+ *   characters of `[A-Za-z0-9_-]`.
+ * - `gitlab-token`: `glpat-` followed by at least 16 characters of
+ *   `[A-Za-z0-9_-]`.
+ * - `google-api-key`: `AIza` followed by at least 32 characters of
+ *   `[A-Za-z0-9_-]`.
+ * - `huggingface-token`: `hf_` followed by at least 32 characters of
+ *   `[A-Za-z0-9]`.
+ * - `jwt`: `eyJ` and at least 8 characters of `[A-Za-z0-9_-]`, a `.`,
+ *   `eyJ` and at least 8 characters of `[A-Za-z0-9_-]`, a `.`, then at
+ *   least 16 characters of `[A-Za-z0-9_-]`.
+ * - `npm-token`: `npm_` followed by at least 32 characters of
+ *   `[A-Za-z0-9]`.
+ * - `openai-api-key`: `sk-proj-`, `sk-svcacct-` or `sk-admin-` followed by
+ *   at least 16 characters of `[A-Za-z0-9_-]`, or `sk-` followed by at
+ *   least 32 characters of `[A-Za-z0-9]` (so `sk-ant-` keys, and
+ *   hyphenated words, never match it).
+ * - `pypi-token`: `pypi-AgEIcHlwaS5vcmc` followed by at least 16
+ *   characters of `[A-Za-z0-9_-]`.
+ * - `sendgrid-api-key`: `SG.`, at least 16 characters of `[A-Za-z0-9_-]`,
+ *   a `.`, then at least 16 characters of `[A-Za-z0-9_-]`.
+ * - `shopify-token`: `shpat_`, `shpca_`, `shppa_` or `shpss_` followed by
+ *   at least 16 characters of `[A-Fa-f0-9]`.
+ * - `slack-token`: `xoxa-`, `xoxb-`, `xoxe-`, `xoxp-`, `xoxr-`, `xoxs-` or
+ *   `xapp-`, one or more ASCII digits, a `-`, then at least 16 characters
+ *   of `[A-Za-z0-9-]`.
+ * - `stripe-secret-key`: `sk_live_`, `sk_test_`, `rk_live_` or `rk_test_`
+ *   followed by at least 16 characters of `[A-Za-z0-9]`. Publishable keys
+ *   (`pk_live_`, `pk_test_`) are public and match no pattern.
+ * - `stripe-webhook-secret`: `whsec_` followed by at least 16 characters
+ *   of `[A-Za-z0-9]`.
  * - `generic-secret-assignment`: one of the words `token`, `secret`,
- *   `password` or `key` (case-insensitive, possibly the end of a longer
- *   identifier such as `api_key` or `GITHUB_TOKEN`), then optional spaces, a
- *   separator `:` or `=`, optional spaces, an optional `"` or `'`, then 32 or
- *   more consecutive base64 or base64url characters (`[A-Za-z0-9+/_-]`,
- *   optionally followed by `=` padding).
+ *   `password` or `key` (ASCII case-insensitive, possibly the end of a
+ *   longer identifier such as `api_key` or `GITHUB_TOKEN`), then optional
+ *   spaces, a separator `:` or `=`, optional spaces, an optional `"` or
+ *   `'`, then 32 or more consecutive base64 or base64url characters
+ *   (`[A-Za-z0-9+/_-]`, optionally followed by `=` padding).
+ *
+ * Every pattern from `anthropic-api-key` to `stripe-webhook-secret`
+ * matches only where its first character is not preceded by an ASCII
+ * letter or digit (a preceding `_`, `-`, `.`, `=`, `:`, quote, space or the
+ * start of the text is allowed), and is case-sensitive. Each "at least" is
+ * a minimum with no maximum: a longer run, or a run followed by other
+ * text, still matches. Twilio account and API key SIDs and unprefixed
+ * secrets match no provider pattern.
  */
 export const SECRET_PATTERN_NAMES = [
   'pem-private-key',
   'aws-access-key-id',
   'github-token',
+  'anthropic-api-key',
+  'digitalocean-token',
+  'docker-token',
+  'gitlab-token',
+  'google-api-key',
+  'huggingface-token',
+  'jwt',
+  'npm-token',
+  'openai-api-key',
+  'pypi-token',
+  'sendgrid-api-key',
+  'shopify-token',
+  'slack-token',
+  'stripe-secret-key',
+  'stripe-webhook-secret',
   'generic-secret-assignment',
 ] as const;
 
@@ -67,11 +128,33 @@ export function isActorName(name: string): boolean {
   return secretPatternsIn(name).length === 0 && ACTOR_FORM.test(name);
 }
 
+/**
+ * Matches no text: the stub expression of each provider pattern added by
+ * secret-prefix-patterns until task 1.1 replaces it with the expression
+ * documented on `SECRET_PATTERN_NAMES`.
+ */
+const NOT_IMPLEMENTED = /(?!)/;
+
 /** The expression of each pattern, as documented on `SECRET_PATTERN_NAMES`. */
 const PATTERNS: Record<SecretPatternName, RegExp> = {
   'pem-private-key': /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/,
   'aws-access-key-id': /(?<![0-9A-Za-z])(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Za-z])/,
   'github-token': /gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22}/,
+  'anthropic-api-key': NOT_IMPLEMENTED,
+  'digitalocean-token': NOT_IMPLEMENTED,
+  'docker-token': NOT_IMPLEMENTED,
+  'gitlab-token': NOT_IMPLEMENTED,
+  'google-api-key': NOT_IMPLEMENTED,
+  'huggingface-token': NOT_IMPLEMENTED,
+  jwt: NOT_IMPLEMENTED,
+  'npm-token': NOT_IMPLEMENTED,
+  'openai-api-key': NOT_IMPLEMENTED,
+  'pypi-token': NOT_IMPLEMENTED,
+  'sendgrid-api-key': NOT_IMPLEMENTED,
+  'shopify-token': NOT_IMPLEMENTED,
+  'slack-token': NOT_IMPLEMENTED,
+  'stripe-secret-key': NOT_IMPLEMENTED,
+  'stripe-webhook-secret': NOT_IMPLEMENTED,
   'generic-secret-assignment': /(?:token|secret|password|key) *[:=] *["']?[A-Za-z0-9+/_-]{32}/i,
 };
 

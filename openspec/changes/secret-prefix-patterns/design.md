@@ -274,3 +274,35 @@ imports fine. This change's own `tasks.md` is written that way.
   throwaway program that does not import `src/board/secrets.ts`, and
   reruns the false-positive count over the board and docs, printing
   counts only.
+
+### Test-author rulings (group 1)
+
+Where the spec does not spell a case out, the tests of group 1 read it
+as follows:
+
+- A key after `TOKEN=` (scenario "Prefixed key after a separator or
+  quote") is refused naming its pattern first; when the key's first 32
+  characters are all of `[A-Za-z0-9+/_-]` it is also a
+  `generic-secret-assignment` and that name follows, as the spec's
+  definition of the generic pattern implies. After `"`, `:`, a space or
+  `id=` (no keyword) only the provider pattern is named.
+- "Not preceded by an ASCII letter or digit" admits every other
+  character before a prefix, including `/`, `[`, `<` and a tab, not only
+  the ones the design lists.
+- ` BLOCK` is optional once: `-----BEGIN PGP PRIVATE KEY BLOCK
+  BLOCK-----` matches no pattern.
+- Case-sensitivity is pinned with upper-cased (or lower-cased) prefixes
+  of every new pattern, all accepted, and with a DigitalOcean token of
+  upper-case hex, accepted because its alphabet is `[a-f0-9]`.
+- The actor fixtures of actor-secret-check that a new pattern now names
+  (the JWT, the Slack token and the OpenAI project key, all longer than
+  32 characters) move from the table of names refused for the form to
+  the table refused by a pattern, so they get the pattern message
+  (patterns are tested first). The short Stripe and GitLab keys join the
+  pattern table, so every actor surface that loops over it (`--as`,
+  `AGENTBOARD_ACTOR`, `--to`, the MCP `as` and `to`, `serve --as`, the
+  web `to`) tests them, and the hook's actor resolution treats them as
+  no valid actor.
+- The test stub adds the fifteen names to `SECRET_PATTERN_NAMES` with
+  an expression that matches nothing, so that test code indexed by
+  pattern name typechecks; the implementer replaces each expression.
