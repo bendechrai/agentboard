@@ -265,19 +265,144 @@ the cache still locked after the busy timeout and one retry).
 ### Requirement: No secrets on the board
 The board is not a secret store. `new`, `comment` and `handoff`, and `move`
 and `close` when given `--unplanned`, SHALL refuse
-text that matches well-known secret patterns (private key PEM headers, AWS
-access key ids, GitHub tokens, and strings of 32 or more base64 characters
-following `token`, `secret`, `password` or `key` and a separator), exiting 1
+text that matches a secret pattern, exiting 1
 with the pattern name and not the matched text, unless `--allow-secret-like`
-is given.
+is given. The patterns, in the order their names are reported, SHALL be:
+
+- `pem-private-key`: `-----BEGIN `, any run of upper-case ASCII letters,
+  digits and spaces ending in `PRIVATE KEY`, optionally followed by
+  ` BLOCK`, then `-----` (PEM private key headers and the PGP private key
+  block header).
+- `aws-access-key-id`: `AKIA` or `ASIA` followed by exactly 16 characters
+  of `[0-9A-Z]`, not preceded or followed by another ASCII letter or
+  digit.
+- `github-token`: `ghp_`, `gho_`, `ghu_`, `ghs_` or `ghr_` followed by at
+  least 36 characters of `[A-Za-z0-9]`, or `github_pat_` followed by at
+  least 22 characters of `[A-Za-z0-9_]`.
+- `anthropic-api-key`: `sk-ant-` followed by at least 16 characters of
+  `[A-Za-z0-9_-]`.
+- `digitalocean-token`: `dop_v1_`, `doo_v1_` or `dor_v1_` followed by at
+  least 16 characters of `[a-f0-9]`.
+- `docker-token`: `dckr_pat_` or `dckr_oat_` followed by at least 16
+  characters of `[A-Za-z0-9_-]`.
+- `gitlab-token`: `glpat-` followed by at least 16 characters of
+  `[A-Za-z0-9_-]`.
+- `google-api-key`: `AIza` followed by at least 32 characters of
+  `[A-Za-z0-9_-]`.
+- `huggingface-token`: `hf_` followed by at least 32 characters of
+  `[A-Za-z0-9]`.
+- `jwt`: `eyJ` and at least 8 characters of `[A-Za-z0-9_-]`, a `.`,
+  `eyJ` and at least 8 characters of `[A-Za-z0-9_-]`, a `.`, then at
+  least 16 characters of `[A-Za-z0-9_-]`.
+- `npm-token`: `npm_` followed by at least 32 characters of
+  `[A-Za-z0-9]`.
+- `openai-api-key`: `sk-proj-`, `sk-svcacct-`, `sk-admin-` or `sk-None-`
+  followed by at least 16 characters of `[A-Za-z0-9_-]`, or `sk-` followed by at
+  least 32 characters of `[A-Za-z0-9]`.
+- `pypi-token`: `pypi-AgEIcHlwaS5vcmc` followed by at least 16
+  characters of `[A-Za-z0-9_-]`.
+- `sendgrid-api-key`: `SG.`, at least 16 characters of `[A-Za-z0-9_-]`,
+  a `.`, then at least 16 characters of `[A-Za-z0-9_-]`.
+- `shopify-token`: `shpat_`, `shpca_`, `shppa_` or `shpss_` followed by
+  at least 16 characters of `[A-Fa-f0-9]`.
+- `slack-token`: `xoxa-`, `xoxb-`, `xoxe-`, `xoxp-`, `xoxr-`, `xoxs-` or
+  `xapp-`, one or more ASCII digits, a `-`, then at least 16 characters
+  of `[A-Za-z0-9-]`.
+- `stripe-secret-key`: `sk_live_`, `sk_test_`, `rk_live_` or `rk_test_`
+  followed by at least 16 characters of `[A-Za-z0-9]`.
+- `stripe-webhook-secret`: `whsec_` followed by at least 16 characters
+  of `[A-Za-z0-9]`.
+- `generic-secret-assignment`: one of the words `token`, `secret`,
+  `password` or `key` (ASCII case-insensitive, possibly the end of a
+  longer identifier such as `api_key`), optional spaces, `:` or `=`,
+  optional spaces, an optional `"` or `'`, then at least 32 characters of
+  `[A-Za-z0-9+/_-]`.
+
+Every pattern from `anthropic-api-key` to `stripe-webhook-secret` SHALL
+match only where its first character is not preceded by an ASCII letter
+or digit, except `jwt`, which SHALL match only where its first `eyJ` is
+not preceded by an ASCII letter, digit, `_` or `-` (a character of its
+own alphabet). For both anchors, a preceding letter or digit that ends
+a backslash escape (`\n`, `\r`, `\t`, `\b` or `\f`, judged on those
+two characters alone) or a percent-encoding (`%` and two hexadecimal
+digits) does not prevent a match, so a key right after an escape in
+pasted JSON or a URL is matched. Every such pattern SHALL be
+case-sensitive. Checking any text SHALL take time linear in its length:
+a run of a pattern's prefix and alphabet with no terminator never makes
+the check quadratic, and no input, however long, makes the check fail
+with an error instead of a result. Each "at least" is a minimum with
+no maximum: a longer run, or a run followed by other text, still
+matches. A refusal SHALL name every matching pattern once, in the order
+above. Stripe publishable keys (`pk_live_`, `pk_test_`) and Twilio
+account and API key SIDs are public identifiers and match no pattern.
 
 #### Scenario: PEM header refused
 - **WHEN** a comment contains `-----BEGIN PRIVATE KEY-----`
 - **THEN** the command exits 1 naming the `pem-private-key` pattern and writes no event
 
+#### Scenario: PGP private key block refused
+- **WHEN** a comment contains `-----BEGIN PGP PRIVATE KEY BLOCK-----`
+- **THEN** the command exits 1 naming `pem-private-key` and writes no event
+
+#### Scenario: Public key header accepted
+- **WHEN** a comment contains `-----BEGIN PUBLIC KEY-----` or `-----BEGIN PGP PUBLIC KEY BLOCK-----`
+- **THEN** the comment is written
+
 #### Scenario: Secret-like unplanned reason refused
 - **WHEN** `move T1 merged --unplanned "token: <40 base64 characters>"` runs without `--allow-secret-like`
 - **THEN** the command exits 1 naming the pattern, not the text, and writes no event
+
+#### Scenario: Bare provider key refused
+- **WHEN** a comment consists of, or contains between spaces, each of: `sk-ant-api03-` and 95 characters of `[A-Za-z0-9_-]`; `dop_v1_` and 64 lowercase hex digits; `dckr_pat_` and 27 characters of `[A-Za-z0-9_-]`; `glpat-` and 20 characters of `[A-Za-z0-9_-]`; `AIza` and 35 characters of `[A-Za-z0-9_-]`; `hf_` and 34 letters; a JWT whose three segments are 20, 24 and 43 characters; `npm_` and 36 letters and digits; `sk-proj-` and 156 characters of `[A-Za-z0-9_-]`; `sk-` and 48 letters and digits; `pypi-AgEIcHlwaS5vcmc` and 150 characters of `[A-Za-z0-9_-]`; `SG.`, 22 characters, `.` and 43 characters; `shpat_` and 32 hex digits; `xoxb-`, digits, `-`, digits, `-` and 24 letters and digits; `sk_live_` and 24 letters and digits; `rk_test_` and 99 letters and digits; `whsec_` and 32 letters and digits
+- **THEN** each is refused with exit 1 and reason `secret-like`, naming respectively `anthropic-api-key`, `digitalocean-token`, `docker-token`, `gitlab-token`, `google-api-key`, `huggingface-token`, `jwt`, `npm-token`, `openai-api-key`, `openai-api-key`, `pypi-token`, `sendgrid-api-key`, `shopify-token`, `slack-token`, `stripe-secret-key`, `stripe-secret-key` and `stripe-webhook-secret` and no other pattern, no part of the key appears in any output, and no event is written
+
+#### Scenario: Prefixed key after a separator or quote
+- **WHEN** a comment contains `TOKEN=`, `"`, `:` or `xoxe.` immediately followed by a key of a new pattern (for example `xoxe.xoxp-1-` and 140 letters and digits, or `"glpat-` and 20 characters)
+- **THEN** it is refused naming that pattern
+
+#### Scenario: Short key that fits the actor form
+- **WHEN** a comment is exactly `rk_live_` followed by 16 letters and digits
+- **THEN** it is refused naming `stripe-secret-key`
+
+#### Scenario: Assigned key names both patterns
+- **WHEN** a comment contains `STRIPE_KEY=sk_live_` followed by 24 letters and digits
+- **THEN** it is refused naming `stripe-secret-key, generic-secret-assignment`, in that order
+
+#### Scenario: Override writes a prefixed key
+- **WHEN** a comment holding `glpat-` and 20 characters runs with `--allow-secret-like`
+- **THEN** the comment is written
+
+#### Scenario: Near-misses stay accepted
+- **WHEN** comments contain `pk_live_` and 24 letters and digits, `pk_test_` and 24, `sk_live_` and 15, `sk_test_...`, `glpat-` and 15 characters, `whsec_short`, `npm_config_cache_directory_setting`, `npm_package_version`, `hf_hub_download_cache_dir`, `pypi-publish-workflow-step-two`, `xoxo-hugs-and-kisses-everyone`, `sk-learn-and-pandas-in-the-notebook`, `task-runner-for-the-ci-pipeline-and-more`, `SG.example.com`, `eyJ is how base64 JSON starts`, `SK` or `AC` and 32 hex digits, and `AIza` and 31 characters
+- **THEN** each comment is written
+
+#### Scenario: Prefix inside a word
+- **WHEN** a comment contains a key of a new pattern immediately preceded by an ASCII letter or digit (for example `x` then `sk_live_` and 24 letters and digits, or `2` then `npm_` and 36 letters and digits)
+- **THEN** that pattern does not match and the comment is written unless another pattern matches
+
+#### Scenario: JWT inside a base64url run
+- **WHEN** a comment contains `_` or `-` immediately followed by a JWT whose three segments are 20, 24 and 43 characters
+- **THEN** `jwt` does not match and the comment is written unless another pattern matches; the same JWT after a space, `.`, `=`, `:` or a quote is refused naming `jwt`
+
+#### Scenario: Adversarial input is checked in linear time
+- **WHEN** free text of 64 KB consists of a pattern's prefix repeated, or a prefix followed by a long run of its alphabet with no terminator (for example `eyJ_` repeated)
+- **THEN** the check finishes well within a second for every pattern
+
+#### Scenario: Key after an escape or a percent-encoding
+- **WHEN** a comment contains `\n`, `\t`, `%22`, `%3D` or `%20` immediately followed by a key of a new pattern (for example `line1\n` then `sk_live_` and 24 letters and digits, or `cfg%3D` then `glpat-` and 20 characters)
+- **THEN** it is refused naming that pattern; `desk_live_` and 24 letters and digits, and a key after `\q` or `%2G`, still match no pattern
+
+#### Scenario: Very long input is checked without error
+- **WHEN** free text or an actor name holds about 6 MiB of a pattern's alphabet straight after its prefix (for example `eyJ` or `SG.` followed by 6 MiB of `A`)
+- **THEN** the check returns its result as for any other text: the text is written, or refused with `secret-like` or `invalid-actor` for a pattern or the actor form, and never refused with an internal error
+
+#### Scenario: Anthropic key is not an OpenAI key
+- **WHEN** a comment contains `sk-ant-api03-` and 95 characters of `[A-Za-z0-9_-]`
+- **THEN** the refusal names `anthropic-api-key` and not `openai-api-key`
+
+#### Scenario: Every surface uses the same patterns
+- **WHEN** a key of a new pattern is given as a ticket title to `new`, a task line to `import-change`, a hand-off note, a `release --force --reason`, and a comment through the web app's write action
+- **THEN** each is refused with reason `secret-like` naming the pattern (with the bypass hint on the CLI commands that have `--allow-secret-like`, without it for `import-change`, and with 400 on the web), and nothing is written
 
 ### Requirement: MCP server
 `agentboard mcp` SHALL serve an MCP server over stdio exposing one tool per
@@ -1593,3 +1718,7 @@ are not checked.
 #### Scenario: Events from before the check
 - **WHEN** a board holds events whose actor is a GitHub-style token, written before this check or by an older version, and `agentboard show`, `list`, `inbox --as orch` and `rebuild --check` run
 - **THEN** the events are folded as before and every command succeeds
+
+#### Scenario: Short prefixed key as the actor
+- **WHEN** `agentboard comment T1 "hi" --as <key>` runs with `<key>` each of `rk_live_` and 24 letters and digits, `sk_test_` and 24 letters and digits, and `glpat-` and 20 characters of `[A-Za-z0-9_-]` (all of the actor form), with and without `--json`, and again with `--allow-secret-like`, and `AGENTBOARD_ACTOR` set to the first of them for `agentboard claim T1`
+- **THEN** each exits 1 with reason `invalid-actor` and the pattern message naming `stripe-secret-key`, `stripe-secret-key` and `gitlab-token` respectively (`stripe-secret-key` for the environment), no event file is written, and the key appears nowhere in stdout or stderr

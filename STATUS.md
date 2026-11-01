@@ -183,6 +183,17 @@ them on it (see "Known gaps").
   any actor still fold. Delivered in PRs #128 and #131 (ticket
   01M5Y9MQB9E3969DZ29VX5MZD0); archived as
   `openspec/changes/archive/2026-10-31-actor-secret-check`.
+- **Provider key prefixes are secret-like** (`board-cli`): the shared
+  secret patterns recognise Anthropic, DigitalOcean, Docker, GitLab,
+  Google, Hugging Face, npm, OpenAI (including `sk-proj-` and
+  `sk-None-`), PyPI, SendGrid, Shopify, Slack and Stripe secret,
+  restricted and webhook keys, JWTs and PGP private key headers, so
+  free text and actor names carrying them are refused on every surface;
+  Stripe publishable keys stay allowed. Each pattern is linear-time and
+  never throws on long input (guarded at 64 KB and 6 MiB). Residual
+  risks are in the archived design. Delivered in PRs #139 and #143
+  (ticket 01M69B8W53DGS7CF8XY4H951TC); archived as
+  `openspec/changes/archive/2026-11-01-secret-prefix-patterns`.
 
 ## What is next
 
