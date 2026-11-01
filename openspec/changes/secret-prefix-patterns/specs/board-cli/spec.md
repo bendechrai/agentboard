@@ -58,7 +58,11 @@ is given. The patterns, in the order their names are reported, SHALL be:
 
 Every pattern from `anthropic-api-key` to `stripe-webhook-secret` SHALL
 match only where its first character is not preceded by an ASCII letter
-or digit, and SHALL be case-sensitive. Each "at least" is a minimum with
+or digit, except `jwt`, which SHALL match only where its first `eyJ` is
+not preceded by an ASCII letter, digit, `_` or `-` (a character of its
+own alphabet), and every such pattern SHALL be case-sensitive. Checking
+any text SHALL take time linear in its length: a run of a pattern's
+prefix and alphabet with no terminator never makes the check quadratic. Each "at least" is a minimum with
 no maximum: a longer run, or a run followed by other text, still
 matches. A refusal SHALL name every matching pattern once, in the order
 above. Stripe publishable keys (`pk_live_`, `pk_test_`) and Twilio
@@ -107,6 +111,14 @@ account and API key SIDs are public identifiers and match no pattern.
 #### Scenario: Prefix inside a word
 - **WHEN** a comment contains a key of a new pattern immediately preceded by an ASCII letter or digit (for example `x` then `sk_live_` and 24 letters and digits, or `2` then `npm_` and 36 letters and digits)
 - **THEN** that pattern does not match and the comment is written unless another pattern matches
+
+#### Scenario: JWT inside a base64url run
+- **WHEN** a comment contains `_` or `-` immediately followed by a JWT whose three segments are 20, 24 and 43 characters
+- **THEN** `jwt` does not match and the comment is written unless another pattern matches; the same JWT after a space, `.`, `=`, `:` or a quote is refused naming `jwt`
+
+#### Scenario: Adversarial input is checked in linear time
+- **WHEN** free text of 64 KB consists of a pattern's prefix repeated, or a prefix followed by a long run of its alphabet with no terminator (for example `eyJ_` repeated)
+- **THEN** the check finishes well within a second for every pattern
 
 #### Scenario: Anthropic key is not an OpenAI key
 - **WHEN** a comment contains `sk-ant-api03-` and 95 characters of `[A-Za-z0-9_-]`

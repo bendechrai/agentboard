@@ -302,13 +302,29 @@ describe('scenario: Prefixed key after a separator or quote', () => {
     expect(secretPatternsIn(`"${GLPAT_20}`)).toEqual(['gitlab-token']);
   });
 
-  it('keys after _, - and . (not letters or digits) still match', () => {
+  it('keys after _, - and . (not letters or digits) still match, except a JWT after _ or -', () => {
     for (const k of NEW_PATTERN_KEYS) {
-      for (const before of ['_', '-', '.', '=', '/', '[', '<', '\t']) {
+      const allowed =
+        k.pattern === 'jwt'
+          ? ['.', '=', '/', '[', '<', '\t', ' ', '"', ':']
+          : ['_', '-', '.', '=', '/', '[', '<', '\t'];
+      for (const before of allowed) {
         expect(secretPatternsIn(`${before}${k.value}`), `${before} ${k.label}`).toContain(
           k.pattern,
         );
       }
+    }
+  });
+
+  it('scenario: JWT inside a base64url run: not jwt after _ or - (orchestrator ruling)', () => {
+    for (const label of ['jwt 20 . 24 . 43', 'jwt 36 . 43 . 36']) {
+      const value = providerKey(label).value;
+      for (const before of ['_', '-', 'token_', 'id-', 'x_', '9-']) {
+        expect(secretPatternsIn(`${before}${value}`), `${before} ${label}`).toEqual([]);
+        expect(secretPatternsIn(`see ${before}${value} here`), `${before} ${label}`).toEqual([]);
+      }
+      expect(secretPatternsIn(`Bearer ${value}`)).toEqual(['jwt']);
+      expect(secretPatternsIn(`auth=${value}`)).toEqual(['jwt']);
     }
   });
 });
@@ -489,4 +505,110 @@ describe('a refusal names every matching pattern once, in SECRET_PATTERN_NAMES o
         'the board is not a secret store (pass --allow-secret-like if this is not a secret)',
     );
   });
+});
+
+// ---------------------------------------------------------------------------
+// Time guard (orchestrator ruling during group 1; board-cli scenario
+// "Adversarial input is checked in linear time"; design.md "Anchoring"):
+// every pattern runs over 64 KB near-miss inputs, the shapes of the
+// implementer's timing script, and each check must finish within 1 s. A
+// quadratic pattern takes seconds at this size (the general-anchor jwt
+// took 5.7 s on `eyJ_` repeated); a linear one takes milliseconds.
+
+/** 64 KB. */
+const SIZE = 64 * 1024;
+
+/** `unit` repeated to exactly `SIZE` characters. */
+function rep(unit: string): string {
+  return unit.repeat(Math.ceil(SIZE / unit.length)).slice(0, SIZE);
+}
+
+/** `prefix` then `SIZE` characters of `fill`, with no terminator. */
+function run(prefix: string, fill: string): string {
+  return prefix + fill.repeat(SIZE);
+}
+
+/** `n` copies of `a`. */
+const as = (n: number): string => 'a'.repeat(n);
+
+/** The PyPI prefix, split so no source line holds a token prefix whole. */
+const PYPI_PREFIX = ['pypi-AgEI', 'cHlwaS5vcmc'].join('');
+
+/** Adversarial inputs per pattern: `[pattern, label, input]`. Labels name shapes, never values. */
+const ADVERSARIAL: readonly (readonly [string, string, string])[] = [
+  ['pem-private-key', 'BEGIN and a long run', run('-----BEGIN ', 'A ')],
+  ['pem-private-key', 'near-miss headers repeated', rep('-----BEGIN PRIVATE KEX-----')],
+  ['aws-access-key-id', 'prefix repeated', rep('AKIA-')],
+  ['aws-access-key-id', 'prefix and a long run', run('AKIA', 'A')],
+  ['github-token', 'prefix repeated', rep('ghp_-')],
+  ['github-token', 'fine-grained one short repeated', rep(`github_pat_${as(21)}-`)],
+  ['anthropic-api-key', 'prefix repeated', rep('sk-ant-')],
+  ['anthropic-api-key', 'one short repeated', rep(`sk-ant-${as(15)} `)],
+  ['digitalocean-token', 'prefix repeated', rep('dop_v1_')],
+  ['digitalocean-token', 'prefix and a non-hex run', run('dop_v1_', 'g')],
+  ['docker-token', 'prefix repeated', rep('dckr_pat_')],
+  ['docker-token', 'one short repeated', rep(`dckr_pat_${as(15)} `)],
+  ['gitlab-token', 'prefix repeated', rep('glpat-')],
+  ['gitlab-token', 'one short repeated', rep(`glpat-${as(15)} `)],
+  ['google-api-key', 'prefix repeated', rep('AIza.')],
+  ['google-api-key', 'one short repeated', rep(`AIza${as(31)} `)],
+  ['huggingface-token', 'prefix repeated', rep('hf_-')],
+  ['huggingface-token', 'one short repeated', rep(`hf_${as(31)} `)],
+  ['jwt', 'eyJ_ repeated', rep('eyJ_')],
+  ['jwt', 'eyJ- repeated', rep('eyJ-')],
+  ['jwt', 'prefix and a long run with no dot', run('eyJ', 'a')],
+  ['jwt', 'first segments repeated', rep(`eyJ${as(8)}.`)],
+  ['jwt', 'one segment then eyJ_ repeated', `eyJ${as(8)}.${rep('eyJ_')}`],
+  ['jwt', 'two segments then eyJ_ repeated', `eyJ${as(8)}.eyJ${as(8)}.${rep('_-')}x`],
+  ['jwt', 'eyJ_eyJ. repeated', rep('eyJ_eyJ.')],
+  ['npm-token', 'prefix repeated', rep('npm_-')],
+  ['npm-token', 'one short repeated', rep(`npm_${as(31)} `)],
+  ['openai-api-key', 'prefix repeated', rep('sk-')],
+  ['openai-api-key', 'prefix and a hyphen run', run('sk-', '-')],
+  ['openai-api-key', 'project one short repeated', rep(`sk-proj-${as(15)} `)],
+  ['openai-api-key', 'bare one short repeated', rep(`sk-${as(31)} `)],
+  ['pypi-token', 'prefix repeated', rep(`${PYPI_PREFIX}.`)],
+  ['pypi-token', 'one short repeated', rep(`${PYPI_PREFIX}${as(15)} `)],
+  ['sendgrid-api-key', 'prefix repeated', rep('SG.')],
+  ['sendgrid-api-key', 'prefix and a long run with no dot', run('SG.', 'a')],
+  ['sendgrid-api-key', 'first segments repeated', rep(`SG.${as(16)}.`)],
+  ['sendgrid-api-key', 'prefix and hyphen repeated', rep('SG.-')],
+  ['sendgrid-api-key', 'prefix then a-SG. repeated', `SG.${rep('a-SG.')}`],
+  ['shopify-token', 'prefix repeated', rep('shpat_')],
+  ['shopify-token', 'prefix and a non-hex run', run('shpat_', 'g')],
+  ['slack-token', 'prefix repeated', rep('xoxb-')],
+  ['slack-token', 'prefix and a digit run', run('xoxb-', '1')],
+  ['slack-token', 'one short repeated', rep(`xoxb-1-${as(15)} `)],
+  ['slack-token', 'prefix, digit, hyphen repeated', rep('xoxb-1-')],
+  ['stripe-secret-key', 'prefix repeated', rep('sk_live_')],
+  ['stripe-secret-key', 'one short repeated', rep(`sk_live_${as(15)} `)],
+  ['stripe-webhook-secret', 'prefix repeated', rep('whsec_')],
+  ['stripe-webhook-secret', 'one short repeated', rep(`whsec_${as(15)} `)],
+  ['generic-secret-assignment', 'keyword repeated', rep('key=')],
+  ['generic-secret-assignment', 'keyword and a non-base64 run', run('key=', '.')],
+  ['generic-secret-assignment', 'one short repeated', rep(`key=${as(31)} `)],
+  [
+    'every pattern',
+    'letters and digits',
+    rep('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'),
+  ],
+];
+
+describe('time guard: every pattern is checked in linear time', () => {
+  it('covers every pattern name', () => {
+    const covered = new Set(ADVERSARIAL.map(([name]) => name));
+    for (const name of SECRET_PATTERN_NAMES) {
+      expect(covered.has(name), name).toBe(true);
+    }
+  });
+
+  it.each(ADVERSARIAL.map(([name, label, input]) => [`${name}: ${label}`, input] as const))(
+    '%s (64 KB) is checked within 1 s',
+    (_label, input) => {
+      expect(input.length).toBeGreaterThanOrEqual(SIZE);
+      const start = performance.now();
+      secretPatternsIn(input);
+      expect(performance.now() - start).toBeLessThan(1000);
+    },
+  );
 });

@@ -131,6 +131,21 @@ trailing text, or longer than documented, still matches. Patterns are
 case-sensitive, like the existing provider patterns, because every
 prefix is documented in one case.
 
+`jwt` is anchored more strictly (orchestrator ruling during group 1):
+its `eyJ` must not follow an ASCII letter, digit, `_` or `-`, the
+characters of its own segment alphabet. With the general anchor a JWT
+can start after any `_` or `-` inside a base64url run, and a dot-less
+run such as `eyJ_` repeated makes the engine retry the 8-or-more
+segment scan from every one of those starts: quadratic, measured at
+5.7 s for 64 KB and 23 s for 128 KB. Anchoring on the alphabet boundary
+leaves one start per run, which is linear. The cost is that a JWT glued
+to a preceding `_` or `-` (`token_eyJ...`) is not named `jwt`; real
+tokens are delimited by a space, quote, `=`, `:` or a header prefix
+such as `Bearer `, which all still match. Every other pattern keeps the
+general anchor, and a test runs every pattern over 64 KB adversarial
+inputs within a generous time bound so that a future quadratic pattern
+fails.
+
 ### Minimum lengths
 
 The rule, applied to every new pattern:
@@ -288,7 +303,14 @@ as follows:
   `id=` (no keyword) only the provider pattern is named.
 - "Not preceded by an ASCII letter or digit" admits every other
   character before a prefix, including `/`, `[`, `<` and a tab, not only
-  the ones the design lists.
+  the ones the design lists. For `jwt` (orchestrator ruling) `_` and `-`
+  are excluded too: a JWT after either is not named `jwt`.
+- The time guard runs `secretPatternsIn` once per adversarial input of
+  64 KB (each pattern's prefix repeated, the prefix and a long run of
+  its alphabet with no terminator, and one character short of the
+  minimum repeated, as in the implementer's timing script) and requires
+  each call to finish within 1 s, about 1/100th of the slowest quadratic
+  case measured and well above a linear one.
 - ` BLOCK` is optional once: `-----BEGIN PGP PRIVATE KEY BLOCK
   BLOCK-----` matches no pattern.
 - Case-sensitivity is pinned with upper-cased (or lower-cased) prefixes

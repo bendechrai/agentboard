@@ -70,7 +70,10 @@ import { BoardError } from '../store/errors.js';
  * Every pattern from `anthropic-api-key` to `stripe-webhook-secret`
  * matches only where its first character is not preceded by an ASCII
  * letter or digit (a preceding `_`, `-`, `.`, `=`, `:`, quote, space or the
- * start of the text is allowed), and is case-sensitive. Each "at least" is
+ * start of the text is allowed), except `jwt`, whose `eyJ` must not be
+ * preceded by an ASCII letter, digit, `_` or `-` (its own alphabet, so a
+ * dot-less run cannot start a match at every `_` or `-` and the check
+ * stays linear). Every pattern is case-sensitive. Each "at least" is
  * a minimum with no maximum: a longer run, or a run followed by other
  * text, still matches. Twilio account and API key SIDs and unprefixed
  * secrets match no provider pattern.
