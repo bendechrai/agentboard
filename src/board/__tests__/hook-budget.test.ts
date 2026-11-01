@@ -713,7 +713,7 @@ describe('round 2 finding 1: the stop read loop and answer, and the pre-tool-use
       const opens = recordOpens();
       const answer = hookOn(clean, argv, root, stopPayload(root));
       watch.onRead = null;
-      if (argv.includes('--strict')) {
+      if (argv[1] === '--strict') {
         expect(answer.exitCode, answer.stderr).toBe(2);
         expect(answer.stderr).toContain(T0);
       } else {
