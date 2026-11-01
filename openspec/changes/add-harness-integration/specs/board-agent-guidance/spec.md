@@ -186,7 +186,18 @@ the markers, a `.claude/settings.json` that is not valid JSON or whose
 or an existing `mcpServers.agentboard` entry that is not a managed entry
 (see "Managed MCP entry") SHALL cause that target to be refused with exit 1 and a message naming
 the file, unless `--force` is given, and other targets SHALL still be
-processed.
+processed. `--force` replaces a foreign `[mcp_servers.agentboard]` table
+(and its sub-tables) by the marked block. A definition of the server in
+`config.toml`, outside the markers, that a line edit cannot replace or
+that a `[mcp_servers.agentboard]` header would make invalid (an array of
+tables, a dotted key or inline table at or below `mcp_servers.agentboard`,
+a value given to `mcp_servers` itself, or a key/value line below the
+block's end marker and above the next table header, which TOML reads into
+the block's table) SHALL be refused as `toml-shape` even with `--force`,
+and so SHALL a `config.toml` that is not strict UTF-8 or ends inside a
+multi-line string, array or inline table (`malformed-file`). Headers and
+keys inside multi-line strings are not definitions, and quoted and bare
+spellings of a key are the same key.
 
 #### Scenario: User content in AGENTS.md survives
 - **WHEN** `AGENTS.md` contains user text before and after an existing managed block and `agents install --target agents-md` runs with a newer guidance version
@@ -203,6 +214,10 @@ processed.
 #### Scenario: Foreign Codex table is refused
 - **WHEN** the global `config.toml` (in a scratch `CODEX_HOME`) already has a hand-written `[mcp_servers.agentboard]` table outside the markers
 - **THEN** `agents install --target codex --global` exits 1 naming the file, leaves it unchanged and still processes other targets
+
+#### Scenario: Unreplaceable Codex definition is refused
+- **WHEN** the global `config.toml` (in a scratch `CODEX_HOME`) defines `mcp_servers.agentboard.command` with a dotted key
+- **THEN** `agents install --target codex --global --force` refuses it as `toml-shape` and leaves the file unchanged
 
 #### Scenario: Foreign Cursor rule is refused
 - **WHEN** `.cursor/rules/agentboard.mdc` exists without the marker
@@ -228,6 +243,11 @@ A target is `stale` only when its recorded version differs from the
 running guidance version, so installing or adding a target never changes
 the state of another (see "Installing guidance into a host project" for
 when the version is raised).
+The shared `AGENTS.md` block is reported once, as `agents-md`, whichever
+of `agents-md`, `codex` and `antigravity` wrote it; `codex` and
+`antigravity` are reported only for their global files, with `--global`.
+`cursor` is reported once per file found, the rule and the
+`.cursor/mcp.json` entry, each with its own path.
 
 #### Scenario: Hand-edited hook is modified
 - **WHEN** an installed agentboard hook command in `.claude/settings.json` is edited but keeps its marker
@@ -357,7 +377,13 @@ with reason `usage` and write nothing. Without `--global` these targets SHALL
 print the exact command that registers the server (`codex mcp add agentboard
 -- <command> mcp` or `agy mcp add agentboard <command> mcp`, with the
 `--command` executable or `npx -y @bendechrai/agentboard`) and write only
-their project files. With `--global`, the edit SHALL follow the marker,
+their project files; with `--json` the commands are the install result's
+`registerCommands`. The global paths SHALL come from the environment
+only: `CODEX_HOME` when set and non-empty, else `HOME`, for Codex, and
+`HOME` for Antigravity; a variable that is unset, empty or not an absolute
+path SHALL make `--global` (and `agents check --global`) exit 1 with
+reason `usage`, without repeating its value, before anything is read or
+written. With `--global`, the edit SHALL follow the marker,
 refusal, `--force` and `check` rules of the other targets, and SHALL NOT
 alter any other entry or key of the global file. `agents check --global`
 SHALL also inspect these files; plain `agents check` SHALL NOT read them.
@@ -374,6 +400,10 @@ SHALL also inspect these files; plain `agents check` SHALL NOT read them.
 - **WHEN** `agents install --global` runs with no `--target`
 - **THEN** it exits 1 with reason `usage` and writes nothing
 
+#### Scenario: Global needs a usable home
+- **WHEN** `agents install --target codex --global` runs with `HOME` set to a relative path and no `CODEX_HOME`
+- **THEN** it exits 1 with reason `usage`, the path appears in no output, and nothing is written
+
 #### Scenario: Antigravity global entry
 - **WHEN** `agents install --target antigravity --global` runs with a scratch `HOME` and `agy mcp list` is then run with the same `HOME`
 - **THEN** `agentboard` is listed, and a pre-existing unmanaged `agentboard` entry is refused as `entry-differs` without `--force`
@@ -383,7 +413,8 @@ The `AGENTS.md` block written for `antigravity` is the same block as for
 `agents-md`, and SHALL be at most 4096 bytes (the Antigravity CLI reads at
 most 24 KB per rules file and 20000 tokens in aggregate). `agents check`
 SHALL print a warning, without changing its exit code, when an `AGENTS.md`
-at the project root is larger than 24 KB. A project-level Antigravity skills
+at the project root is larger than 24 KB (24576 bytes), whether or not it
+holds the block. A project-level Antigravity skills
 or plugins registration is not written (see design.md).
 
 #### Scenario: Block size
