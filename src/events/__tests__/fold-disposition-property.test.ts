@@ -277,6 +277,9 @@ function cloneTicket(ticket: Ticket | undefined): Ticket | null {
   return ticket === undefined ? null : (JSON.parse(JSON.stringify(ticket)) as Ticket);
 }
 
+/** Fixed fast-check seed for the vacuity check; see the comment on that test. */
+const VACUITY_SEED = 1;
+
 describe('property: the scope disposition', () => {
   it(
     'no merged ticket is undisposed at any fold position, the oracle agrees, and read order is irrelevant',
@@ -351,6 +354,12 @@ describe('property: the scope disposition', () => {
     },
   );
 
+  // This check is seeded, unlike the main property above, so that it is
+  // deterministic. With a random seed about 1 run in 800 (measured 4 failures in
+  // 3300 seeds) draws no merged unplanned ticket, which failed CI
+  // once. The seed was chosen by measurement: all four outcomes occur under
+  // it. If the generator changes and a count reaches 0, search for a new
+  // seed that restores all four rather than relaxing the assertions.
   it('is not vacuous: some runs merge an unplanned ticket, link one and refuse one', () => {
     const outcomes = { merged: 0, refused: 0, linked: 0, alreadyLinked: 0 };
     fc.assert(
@@ -365,7 +374,7 @@ describe('property: the scope disposition', () => {
           if (r.reason === 'already-linked') outcomes.alreadyLinked += 1;
         }
       }),
-      { numRuns: 150 },
+      { numRuns: 150, seed: VACUITY_SEED },
     );
     expect(outcomes.merged).toBeGreaterThan(0);
     expect(outcomes.refused).toBeGreaterThan(0);
