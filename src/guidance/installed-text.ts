@@ -706,14 +706,20 @@ export const CURSOR_RULE_DESCRIPTION =
  * frontmatter included. Plain ASCII. Pure.
  */
 export function renderCursorRule(version: number = GUIDANCE_VERSION): string {
-  void version;
-  throw new Error('not implemented: renderCursorRule (task 4.2)');
+  const block = renderAgentsBlock(version).split('\n');
+  return `${[
+    '---',
+    `description: ${CURSOR_RULE_DESCRIPTION}`,
+    'alwaysApply: true',
+    '---',
+    skillMarker(version),
+    ...block.slice(1, -1),
+  ].join('\n')}\n`;
 }
 
 /** The start marker of the Codex `config.toml` block: exactly `# agentboard:start v<version>`. */
 export function codexBlockStart(version: number): string {
-  void version;
-  throw new Error('not implemented: codexBlockStart (task 4.2)');
+  return `# agentboard:start v${String(version)}`;
 }
 
 /** The end marker of the Codex `config.toml` block. */
@@ -729,8 +735,30 @@ export const CODEX_BLOCK_END = '# agentboard:end';
  * `value`. Pure.
  */
 export function tomlBasicString(value: string): string {
-  void value;
-  throw new Error('not implemented: tomlBasicString (task 4.2)');
+  let out = '"';
+  for (const c of value) {
+    const code = c.codePointAt(0) ?? 0;
+    if (c === '"') {
+      out += '\\"';
+    } else if (c === '\\') {
+      out += '\\\\';
+    } else if (c === '\b') {
+      out += '\\b';
+    } else if (c === '\t') {
+      out += '\\t';
+    } else if (c === '\n') {
+      out += '\\n';
+    } else if (c === '\f') {
+      out += '\\f';
+    } else if (c === '\r') {
+      out += '\\r';
+    } else if (code < 0x20 || code === 0x7f) {
+      out += `\\u${code.toString(16).toUpperCase().padStart(4, '0')}`;
+    } else {
+      out += c;
+    }
+  }
+  return `${out}"`;
 }
 
 /**
@@ -754,10 +782,18 @@ export function tomlBasicString(value: string): string {
  * by `, `. Pure.
  */
 export function renderCodexBlock(version: number = GUIDANCE_VERSION, command?: string): string {
-  void version;
-  void command;
-  throw new Error('not implemented: renderCodexBlock (task 4.2)');
+  const entry = mcpEntry(command);
+  return [
+    codexBlockStart(version),
+    `[${CODEX_TABLE}]`,
+    `command = ${tomlBasicString(entry.command)}`,
+    `args = [${entry.args.map(tomlBasicString).join(', ')}]`,
+    CODEX_BLOCK_END,
+  ].join('\n');
 }
+
+/** The dotted key of the table the Codex block defines: `mcp_servers.agentboard`. */
+export const CODEX_TABLE = `mcp_servers.${MCP_SERVER_NAME}`;
 
 /**
  * The command `agents install` prints for the `codex` target without
@@ -769,8 +805,7 @@ export function renderCodexBlock(version: number = GUIDANCE_VERSION, command?: s
  * passes it to `codex` exactly as given, with no expansion. Pure.
  */
 export function codexMcpAddCommand(command?: string): string {
-  void command;
-  throw new Error('not implemented: codexMcpAddCommand (task 4.2)');
+  return `codex mcp add ${MCP_SERVER_NAME} -- ${hookExecutable(command)} ${MCP_LOCAL_ARGS.join(' ')}`;
 }
 
 /**
@@ -781,6 +816,5 @@ export function codexMcpAddCommand(command?: string): string {
  * `codexMcpAddCommand`. Pure.
  */
 export function agyMcpAddCommand(command?: string): string {
-  void command;
-  throw new Error('not implemented: agyMcpAddCommand (task 4.2)');
+  return `agy mcp add ${MCP_SERVER_NAME} ${hookExecutable(command)} ${MCP_LOCAL_ARGS.join(' ')}`;
 }

@@ -440,6 +440,7 @@ const ALLOWED: Readonly<Record<string, readonly Allowed[]>> = {
     { fn: 'selectTargets', value: 'all', why: REGISTRY },
     { fn: 'selectTargets', value: 'AGENTS_MD_PATH', why: REGISTRY },
     { fn: 'selectTargets', value: 'OPENSPEC_CONFIG_PATH', why: REGISTRY },
+    { fn: 'selectTargets', value: 'COPILOT_PATH', why: REGISTRY },
     { fn: 'selectTargets', value: 'root', why: CONFIG },
   ],
   'src/mcp/tools.ts': [

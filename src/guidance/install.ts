@@ -28,7 +28,7 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 
 import { Pair, Scalar, YAMLMap, YAMLSeq, isMap, isScalar, isSeq, type Document } from 'yaml';
 
@@ -36,9 +36,12 @@ import type { CommandOutput, Env } from '../cli/types.js';
 import { BoardError } from '../store/errors.js';
 import {
   AGENTS_MD_PATH,
+  ANTIGRAVITY_CONFIG_PATH,
   CLAUDE_HOOK_EVENTS,
   CLAUDE_SETTINGS_PATH,
+  CODEX_CONFIG_FILE,
   COPILOT_PATH,
+  CURSOR_MCP_PATH,
   CURSOR_RULE_PATH,
   GUIDANCE_VERSION,
   MCP_JSON_PATH,
@@ -49,11 +52,15 @@ import {
   SHELL_BUILTINS,
   SHELL_SPECIAL_BUILTINS,
   SKILL_PATH,
+  agyMcpAddCommand,
+  codexMcpAddCommand,
   hookGroup,
   manualOpenSpecLines,
   mcpEntry,
   openSpecVersionComment,
   renderAgentsBlock,
+  renderCodexBlock,
+  renderCursorRule,
   renderSkill,
   type ClaudeHookOptions,
   type OpenSpecOperation,
@@ -63,6 +70,7 @@ import {
   PERMISSION_CODES,
   agentsMarkers,
   errorCode,
+  globalPath,
   groupHandlers,
   hasHooksShape,
   hasSkillMarker,
@@ -80,8 +88,19 @@ import {
   readBytes,
   readText,
   readUtf8Json,
+  readUtf8Text,
   targetPath,
+  type AgentsMarkers,
+  type TargetPath,
 } from './markers.js';
+import {
+  CODEX_TABLE_HEADER,
+  codexMarkers,
+  managedCodexCommand,
+  scanToml,
+  serverDefinitions,
+  type LineRange,
+} from './toml.js';
 
 /**
  * The installation targets, in the order they are always processed and
@@ -167,7 +186,11 @@ export const INIT_SUGGESTION =
 export interface InstallOptions {
   /** Directory the command runs in; the working tree root is resolved from it. */
   readonly cwd: string;
-  /** Environment for `git rev-parse` (default `process.env`). */
+  /**
+   * Environment for `git rev-parse` and, with `--global`, for the global
+   * file paths (`globalConfigPath`: `HOME` and `CODEX_HOME`); default
+   * `process.env`.
+   */
   readonly env?: Env;
   /**
    * The `--target` values as given (repeatable, duplicates allowed). Empty
@@ -501,9 +524,23 @@ export interface RegisterCommand {
  * path` (`antigravity`); the message never repeats the value.
  */
 export function globalConfigPath(target: 'codex' | 'antigravity', env: Env): string {
-  void target;
-  void env;
-  throw new Error('not implemented: globalConfigPath (task 4.2)');
+  const usable = (value: string | undefined): value is string =>
+    value !== undefined && value !== '' && isAbsolute(value);
+  if (target === 'codex') {
+    const codexHome = env.CODEX_HOME;
+    const base = codexHome !== undefined && codexHome !== '' ? codexHome : null;
+    if (base !== null && usable(base)) {
+      return join(base, CODEX_CONFIG_FILE);
+    }
+    if (base === null && usable(env.HOME)) {
+      return join(env.HOME, '.codex', CODEX_CONFIG_FILE);
+    }
+    throw new BoardError(1, 'usage', '--global needs CODEX_HOME or HOME set to an absolute path');
+  }
+  if (usable(env.HOME)) {
+    return join(env.HOME, ANTIGRAVITY_CONFIG_PATH);
+  }
+  throw new BoardError(1, 'usage', '--global needs HOME set to an absolute path');
 }
 
 /**
@@ -568,6 +605,18 @@ export function detectTargets(root: string): TargetSelection[] {
   if (kindOf(join(root, OPENSPEC_CONFIG_PATH)) !== null) {
     selected.push({ target: 'openspec', reason: `${OPENSPEC_CONFIG_PATH} exists` });
   }
+  if (kindOf(join(root, '.codex')) === 'dir') {
+    selected.push({ target: 'codex', reason: '.codex/ exists' });
+  }
+  if (kindOf(join(root, '.cursor')) === 'dir') {
+    selected.push({ target: 'cursor', reason: '.cursor/ exists' });
+  }
+  if (kindOf(join(root, '.agents')) === 'dir') {
+    selected.push({ target: 'antigravity', reason: '.agents/ exists' });
+  }
+  if (kindOf(join(root, COPILOT_PATH)) !== null) {
+    selected.push({ target: 'copilot', reason: `${COPILOT_PATH} exists` });
+  }
   return selected;
 }
 
@@ -611,25 +660,35 @@ function write(path: string, content: string, encoding: BufferEncoding = 'utf8')
   writeFileSync(path, content, encoding);
 }
 
-/** The `claude` target: the whole of `SKILL.md`. */
-function installSkill(path: string, version: number, force: boolean): Handled {
-  const wanted = renderSkill(version);
+/**
+ * A file agentboard owns whole when it carries the `SKILL.md` marker: the
+ * `claude` target (`SKILL.md`, `renderSkill`) and the Cursor rule of the
+ * `cursor` target (`renderCursorRule`). `rel` names the file in messages
+ * and `what` says what it is (`the Claude Code skill`, `the Cursor rule`).
+ */
+function installWholeFile(
+  path: string,
+  rel: string,
+  what: string,
+  wanted: string,
+  force: boolean,
+): Handled {
   const existing = readBytes(path);
   if (existing === null) {
     write(path, wanted);
-    return done('created', `wrote the Claude Code skill ${SKILL_PATH}`);
+    return done('created', `wrote ${what} ${rel}`);
   }
   if (!hasSkillMarker(existing) && !force) {
     return refuse(
       'foreign-file',
-      `${SKILL_PATH} exists without the agentboard-guidance marker, so it is not agentboard's to overwrite`,
+      `${rel} exists without the agentboard-guidance marker, so it is not agentboard's to overwrite`,
     );
   }
   if (existing === wanted) {
-    return done('unchanged', `${SKILL_PATH} is up to date`);
+    return done('unchanged', `${rel} is up to date`);
   }
   write(path, wanted);
-  return done('updated', `rewrote the Claude Code skill ${SKILL_PATH}`);
+  return done('updated', `rewrote ${what} ${rel}`);
 }
 
 /**
@@ -644,48 +703,59 @@ function appendBlock(text: string, block: string): string {
   return `${text}${text.endsWith('\n') ? '' : '\n'}\n${block}\n`;
 }
 
-/** The `agents-md` target: the managed block of `AGENTS.md`. */
-function installAgentsMd(path: string, version: number, force: boolean): Handled {
+/**
+ * The managed `AGENTS.md` block in the file at `path`, named `rel`: the
+ * `agents-md`, `codex` and `antigravity` targets (`AGENTS.md`) and the
+ * `copilot` target (`.github/copilot-instructions.md`).
+ */
+function installBlock(path: string, rel: string, version: number, force: boolean): Handled {
   const block = renderAgentsBlock(version);
   const existing = readBytes(path);
   if (existing === null) {
     write(path, `${block}\n`, 'latin1');
-    return done('created', `wrote ${AGENTS_MD_PATH} with the agentboard block`);
+    return done('created', `wrote ${rel} with the agentboard block`);
   }
   const markers = agentsMarkers(existing);
   if (markers.kind === 'none') {
     write(path, appendBlock(existing, block), 'latin1');
-    return done('updated', `appended the agentboard block to ${AGENTS_MD_PATH}`);
+    return done('updated', `appended the agentboard block to ${rel}`);
   }
   if (markers.kind === 'pair') {
     if (existing.slice(markers.start, markers.end) === block) {
-      return done('unchanged', `${AGENTS_MD_PATH} is up to date`);
+      return done('unchanged', `${rel} is up to date`);
     }
     write(
       path,
       `${existing.slice(0, markers.start)}${block}${existing.slice(markers.end)}`,
       'latin1',
     );
-    return done('updated', `replaced the agentboard block in ${AGENTS_MD_PATH}`);
+    return done('updated', `replaced the agentboard block in ${rel}`);
   }
   if (!force) {
     return refuse(
       'malformed-marker',
-      `${AGENTS_MD_PATH} has agentboard markers that are not one well-formed start and end pair; fix them by hand`,
+      `${rel} has agentboard markers that are not one well-formed start and end pair; fix them by hand`,
     );
+  }
+  write(path, appendBlock(withoutMarkerLines(existing, markers), block), 'latin1');
+  return done(
+    'updated',
+    `removed the malformed agentboard markers from ${rel} and appended a fresh block`,
+  );
+}
+
+/** `text` with every marker-like line of `markers` (malformed) removed, and nothing else. */
+function withoutMarkerLines(text: string, markers: AgentsMarkers): string {
+  if (markers.kind !== 'malformed') {
+    return text;
   }
   let kept = '';
   let from = 0;
   for (const line of markers.lines) {
-    kept += existing.slice(from, line.start);
+    kept += text.slice(from, line.start);
     from = line.end;
   }
-  kept += existing.slice(from);
-  write(path, appendBlock(kept, block), 'latin1');
-  return done(
-    'updated',
-    `removed the malformed agentboard markers from ${AGENTS_MD_PATH} and appended a fresh block`,
-  );
+  return kept + text.slice(from);
 }
 
 /** True when a YAML node counts as absent (missing, or a null value). */
@@ -851,46 +921,60 @@ function installOpenSpec(path: string, version: number, force: boolean): Handled
 }
 
 /**
- * The `mcp-json` target: the `mcpServers.agentboard` key of `.mcp.json`.
- * `mcpCommand` is the `--command` executable, undefined when not given.
+ * The `mcpServers.agentboard` key of the JSON file at `path`, named `rel`:
+ * the `mcp-json` target (`.mcp.json`), the `cursor` target's
+ * `.cursor/mcp.json` and the `antigravity` target's global
+ * `mcp_config.json` (which `replace` rewrites atomically, `replaceFile`;
+ * `.mcp.json` is written in place as before). `mcpCommand` is the
+ * `--command` executable, undefined when not given.
  */
-function installMcpJson(path: string, force: boolean, mcpCommand: string | undefined): Handled {
+function installMcpFile(
+  path: string,
+  rel: string,
+  force: boolean,
+  mcpCommand: string | undefined,
+  replace: (path: string, content: string) => void,
+): Handled {
   const read = readUtf8Json(path);
   const entry = mcpEntry(mcpCommand);
   if (read === null) {
     write(path, settingsText({ mcpServers: { [MCP_SERVER_NAME]: entry } }, false));
-    return done('created', `wrote ${MCP_JSON_PATH} with the agentboard MCP server`);
+    return done('created', `wrote ${rel} with the agentboard MCP server`);
   }
   const config = read === 'invalid' ? null : parseMcpJson(read.text);
   const servers = config?.mcpServers;
   if (read === 'invalid' || config === null || (servers !== undefined && !isJsonObject(servers))) {
     return refuse(
       'malformed-file',
-      `${MCP_JSON_PATH} cannot be edited: it is not UTF-8 text holding a JSON object with an mcpServers object, nested at most ${MAX_JSON_DEPTH} levels deep`,
+      `${rel} cannot be edited: it is not UTF-8 text holding a JSON object with an mcpServers object, nested at most ${MAX_JSON_DEPTH} levels deep`,
     );
   }
-  const serialize = (value: unknown): string => settingsText(value, read.bom);
   const map = servers ?? {};
   if (Object.hasOwn(map, MCP_SERVER_NAME)) {
     const existing = map[MCP_SERVER_NAME];
     if (isManagedMcpEntry(existing)) {
       if (mcpCommand === undefined || jsonEqual(existing, entry)) {
-        return done('unchanged', `${MCP_JSON_PATH} is up to date`);
+        return done('unchanged', `${rel} is up to date`);
       }
     } else if (!force) {
       return refuse(
         'entry-differs',
-        `${MCP_JSON_PATH} already has an mcpServers.agentboard entry that agentboard does not manage (extra keys or other arguments)`,
+        `${rel} already has an mcpServers.agentboard entry that agentboard does not manage (extra keys or other arguments)`,
       );
     }
   }
   if (!force && !jsonRewriteIsLossless(read.text)) {
-    return refuse('lossy-json', lossyMessage(MCP_JSON_PATH));
+    return refuse('lossy-json', lossyMessage(rel));
   }
   map[MCP_SERVER_NAME] = entry;
   config.mcpServers = map;
-  writeFileSync(path, serialize(config), 'utf8');
-  return done('updated', `wrote the agentboard MCP server into ${MCP_JSON_PATH}`);
+  replace(path, settingsText(config, read.bom));
+  return done('updated', `wrote the agentboard MCP server into ${rel}`);
+}
+
+/** Writes `content` over the existing file at `path` in place. */
+function overwrite(path: string, content: string): void {
+  writeFileSync(path, content, 'utf8');
 }
 
 /** `value` as the installer serializes a JSON file, with a byte order mark when `bom`. */
@@ -1084,6 +1168,122 @@ function installClaudeHooks(path: string, version: number, run: RunOptions): Han
   return done('updated', `wrote the agentboard hooks into ${CLAUDE_SETTINGS_PATH}`);
 }
 
+/**
+ * `text` with `edits` (non-overlapping, any order) applied: each range
+ * `[start, end)` replaced by its `replacement`.
+ */
+function applyEdits(
+  text: string,
+  edits: readonly (LineRange & { readonly replacement: string })[],
+): string {
+  const sorted = [...edits].sort((a, b) => a.start - b.start);
+  let out = '';
+  let from = 0;
+  for (const edit of sorted) {
+    out += text.slice(from, edit.start) + edit.replacement;
+    from = edit.end;
+  }
+  return out + text.slice(from);
+}
+
+/**
+ * The new text of a Codex `config.toml` (decoded, without its byte order
+ * mark) holding the agentboard block, or a refusal (see `installGuidance`,
+ * `codex`, and `RefusalReason`): `malformed-file`, then `toml-shape`, then
+ * `malformed-marker`, then `foreign-table`, then `entry-differs`. `null`
+ * text means the file already holds exactly the wanted block.
+ */
+function editCodexToml(
+  text: string,
+  abs: string,
+  version: number,
+  run: RunOptions,
+): { readonly text: string | null; readonly message: string } | Handled {
+  const scan = scanToml(text);
+  if (scan.unterminated) {
+    return refuse(
+      'malformed-file',
+      `${abs} cannot be edited: it ends inside a multi-line string, an array or an inline table, where the agentboard block cannot be appended`,
+    );
+  }
+  const { foreign, shape } = serverDefinitions(scan, text.length);
+  if (shape) {
+    return refuse(
+      'toml-shape',
+      `${abs} defines the agentboard MCP server (${CODEX_TABLE_HEADER}) outside the agentboard markers in a way a line edit cannot replace (an array of tables, a dotted key or inline table, a value given to mcp_servers, or a setting below the block's end marker); remove or move that definition by hand`,
+    );
+  }
+  const markers = codexMarkers(text);
+  if (markers.kind === 'malformed') {
+    if (!run.force) {
+      return refuse(
+        'malformed-marker',
+        `${abs} has agentboard markers that are not one well-formed start and end pair; fix them by hand`,
+      );
+    }
+    return editCodexToml(withoutMarkerLines(text, markers), abs, version, run);
+  }
+  if (foreign.length > 0 && !run.force) {
+    return refuse(
+      'foreign-table',
+      `${abs} has a ${CODEX_TABLE_HEADER} table outside the agentboard markers`,
+    );
+  }
+  const removals = foreign.map((range) => ({ ...range, replacement: '' }));
+  if (markers.kind === 'none') {
+    const block = renderCodexBlock(version, run.command);
+    const [first, ...rest] = removals;
+    if (first === undefined) {
+      return { text: appendBlock(text, block), message: `appended the agentboard block to ${abs}` };
+    }
+    return {
+      text: applyEdits(text, [{ ...first, replacement: `${block}\n` }, ...rest]),
+      message: `replaced the ${CODEX_TABLE_HEADER} table in ${abs} by the agentboard block`,
+    };
+  }
+  const region = text.slice(markers.start, markers.end);
+  const managed = managedCodexCommand(region, markers.version);
+  if (managed === null && !run.force) {
+    return refuse(
+      'entry-differs',
+      `${abs} has text between the agentboard markers that is not a block agentboard wrote (a hand edit)`,
+    );
+  }
+  const block = renderCodexBlock(version, run.command ?? managed?.command);
+  const edits =
+    region === block
+      ? removals
+      : [...removals, { start: markers.start, end: markers.end, replacement: block }];
+  if (edits.length === 0) {
+    return { text: null, message: `${abs} is up to date` };
+  }
+  return { text: applyEdits(text, edits), message: `replaced the agentboard block in ${abs}` };
+}
+
+/**
+ * The `codex` target's global file (`--global`): the marked block of
+ * `config.toml` at `path` (symlinks resolved), reported as `abs`.
+ */
+function installCodexToml(path: string, abs: string, version: number, run: RunOptions): Handled {
+  const read = readUtf8Text(path);
+  if (read === null) {
+    write(path, `${renderCodexBlock(version, run.command)}\n`);
+    return done('created', `wrote ${abs} with the agentboard MCP server block`);
+  }
+  if (read === 'invalid') {
+    return refuse('malformed-file', `${abs} cannot be edited: it is not UTF-8 text`);
+  }
+  const edited = editCodexToml(read.text, abs, version, run);
+  if ('action' in edited) {
+    return edited;
+  }
+  if (edited.text === null) {
+    return done('unchanged', edited.message);
+  }
+  replaceFile(path, `${read.bom ? '\uFEFF' : ''}${edited.text}`);
+  return done('updated', edited.message);
+}
+
 /** What every target handler may need besides its path and version. */
 interface RunOptions {
   readonly force: boolean;
@@ -1093,46 +1293,97 @@ interface RunOptions {
   readonly hooksStrict: boolean;
 }
 
-/** Runs the handler of `target` on its resolved file `path`. */
-function runHandler(
-  target: GuidanceTarget,
-  path: string,
-  version: number,
-  run: RunOptions,
-): Handled {
-  switch (target) {
-    case 'claude':
-      return installSkill(path, version, run.force);
-    case 'agents-md':
-      return installAgentsMd(path, version, run.force);
-    case 'openspec':
-      return installOpenSpec(path, version, run.force);
-    case 'mcp-json':
-      return installMcpJson(path, run.force, run.command);
-    case 'claude-hooks':
-      return installClaudeHooks(path, version, run);
-    case 'codex':
-    case 'cursor':
-    case 'antigravity':
-    case 'copilot':
-      throw new Error(`not implemented: the ${target} target (task 4.2)`);
-  }
+/** One file of a target to install: its reported path, where it is, and its handler. */
+interface Job {
+  /** The reported path: relative for a project file, absolute for a global one. */
+  readonly path: string;
+  readonly where: TargetPath;
+  readonly handle: (resolved: string) => Handled;
 }
 
-/**
- * Installs `target` after checking its path (`outside-tree`, then
- * `not-a-file`), turning a permission error on a read, mkdir or write into
- * `unwritable` and a path that turns out not to hold a file, or a symlink
- * cycle (`ELOOP`), into `not-a-file`. Other errors propagate.
- */
-function installTarget(
+/** The global file paths of a run (`globalConfigPath`), for the targets given with `--global`. */
+interface GlobalPaths {
+  readonly codex?: string;
+  readonly antigravity?: string;
+}
+
+/** A job for the project file `rel` of the working tree `root`. */
+function projectJob(root: string, rel: string, handle: Job['handle']): Job {
+  return { path: rel, where: targetPath(root, rel), handle };
+}
+
+/** A job for the global file `abs` (never `outside-tree`). */
+function globalJob(abs: string, handle: Job['handle']): Job {
+  return { path: abs, where: globalPath(abs), handle };
+}
+
+/** The jobs of `target`, in the order their outcomes are reported (see `TargetOutcome`). */
+function jobsOf(
   target: GuidanceTarget,
   root: string,
   version: number,
   run: RunOptions,
-): Handled {
+  globals: GlobalPaths,
+): Job[] {
   const rel = TARGET_FILES[target];
-  const where = targetPath(root, rel);
+  const block = projectJob(root, rel, (path) => installBlock(path, rel, version, run.force));
+  switch (target) {
+    case 'claude':
+      return [
+        projectJob(root, rel, (path) =>
+          installWholeFile(path, rel, 'the Claude Code skill', renderSkill(version), run.force),
+        ),
+      ];
+    case 'agents-md':
+    case 'copilot':
+      return [block];
+    case 'openspec':
+      return [projectJob(root, rel, (path) => installOpenSpec(path, version, run.force))];
+    case 'mcp-json':
+      return [
+        projectJob(root, rel, (path) =>
+          installMcpFile(path, rel, run.force, run.command, overwrite),
+        ),
+      ];
+    case 'claude-hooks':
+      return [projectJob(root, rel, (path) => installClaudeHooks(path, version, run))];
+    case 'codex': {
+      const abs = globals.codex;
+      return abs === undefined
+        ? [block]
+        : [block, globalJob(abs, (path) => installCodexToml(path, abs, version, run))];
+    }
+    case 'antigravity': {
+      const abs = globals.antigravity;
+      return abs === undefined
+        ? [block]
+        : [
+            block,
+            globalJob(abs, (path) =>
+              installMcpFile(path, abs, run.force, run.command, replaceFile),
+            ),
+          ];
+    }
+    case 'cursor':
+      return [
+        projectJob(root, rel, (path) =>
+          installWholeFile(path, rel, 'the Cursor rule', renderCursorRule(version), run.force),
+        ),
+        projectJob(root, CURSOR_MCP_PATH, (path) =>
+          installMcpFile(path, CURSOR_MCP_PATH, run.force, run.command, replaceFile),
+        ),
+      ];
+  }
+}
+
+/**
+ * Runs `job` after checking its path (`outside-tree`, then `not-a-file`),
+ * turning a permission error on a read, mkdir or write into `unwritable`
+ * and a path that turns out not to hold a file, or a symlink cycle
+ * (`ELOOP`), into `not-a-file`. Other errors propagate.
+ */
+function runJob(job: Job, root: string): Handled {
+  const { path: rel, where } = job;
   if (where.kind === 'outside-tree') {
     return refuse(
       'outside-tree',
@@ -1143,7 +1394,7 @@ function installTarget(
     return refuse('not-a-file', `${rel} ${where.what} (${where.code}); nothing was written`);
   }
   try {
-    return runHandler(target, where.path, version, run);
+    return job.handle(where.path);
   } catch (error) {
     const code = errorCode(error);
     if (code !== null && PERMISSION_CODES.includes(code)) {
@@ -1260,7 +1511,7 @@ function selectTargets(
     throw new BoardError(
       1,
       'no-targets',
-      `nothing to install detected in ${root} (no .claude/, ${AGENTS_MD_PATH} or ${OPENSPEC_CONFIG_PATH}); choose targets with --target: ${all}`,
+      `nothing to install detected in ${root} (no .claude/, ${AGENTS_MD_PATH}, ${OPENSPEC_CONFIG_PATH}, .codex/, .cursor/, .agents/ or ${COPILOT_PATH}); choose targets with --target: ${all}`,
     );
   }
   return { selections, autoDetected };
@@ -1488,29 +1739,50 @@ export function installGuidance(options: InstallOptions): InstallResult {
     command: options.command,
     hooksStrict: options.hooksStrict ?? false,
   };
+  const env = options.env ?? process.env;
+  const given = options.targets ?? [];
+  const globals: GlobalPaths = {};
   if (options.global === true) {
-    throw new Error('not implemented: agents install --global (task 4.2)');
+    if (!given.includes('codex') && !given.includes('antigravity')) {
+      throw new BoardError(
+        1,
+        'usage',
+        "--global edits a harness's global MCP config and needs --target codex or --target antigravity",
+      );
+    }
+    for (const target of ['codex', 'antigravity'] as const) {
+      if (given.includes(target)) {
+        (globals as Record<string, string>)[target] = globalConfigPath(target, env);
+      }
+    }
   }
-  const targets: TargetOutcome[] = selections.map(({ target, reason }) => ({
-    target,
-    path: TARGET_FILES[target],
-    reason,
-    ...installTarget(target, root, version, run),
-  }));
+  const targets: TargetOutcome[] = [];
+  const registerCommands: RegisterCommand[] = [];
+  for (const { target, reason } of selections) {
+    for (const job of jobsOf(target, root, version, run, globals)) {
+      targets.push({ target, path: job.path, reason, ...runJob(job, root) });
+    }
+    if (options.global !== true && (target === 'codex' || target === 'antigravity')) {
+      const command =
+        target === 'codex' ? codexMcpAddCommand(run.command) : agyMcpAddCommand(run.command);
+      registerCommands.push({ target, command });
+    }
+  }
   return {
     root,
     version,
     autoDetected,
     targets,
     refused: targets.filter((t) => t.action === 'refused').length,
-    registerCommands: [],
+    registerCommands,
   };
 }
 
 /**
  * The human output of `agents install`, plain ASCII, one line each, ending
  * with a newline:
- * 1. When `result.autoDetected`: `selected <target>: <reason>` per target.
+ * 1. When `result.autoDetected`: `selected <target>: <reason>` per target
+ *    (once, whatever the number of its outcomes).
  *    Otherwise one such line for each target whose reason is
  *    `COMMAND_REASON` (so `selected mcp-json: requested with --command`
  *    whenever `--command` or `--mcp-command` was given), and none for the
@@ -1528,8 +1800,10 @@ export function installGuidance(options: InstallOptions): InstallResult {
  */
 export function renderInstall(result: InstallResult): string {
   const lines: string[] = [];
+  const selected = new Set<GuidanceTarget>();
   for (const t of result.targets) {
-    if (result.autoDetected || t.reason === COMMAND_REASON) {
+    if ((result.autoDetected || t.reason === COMMAND_REASON) && !selected.has(t.target)) {
+      selected.add(t.target);
       lines.push(`selected ${t.target}: ${t.reason}`);
     }
   }
@@ -1542,6 +1816,12 @@ export function renderInstall(result: InstallResult): string {
     } else {
       lines.push(head);
     }
+  }
+  if (result.registerCommands.length > 0) {
+    lines.push(
+      "These commands register the agentboard MCP server in each harness's global config, which agentboard edits only with --global:",
+      ...result.registerCommands.map((r) => `    ${r.command}`),
+    );
   }
   const count = (action: InstallAction): string =>
     String(result.targets.filter((t) => t.action === action).length);

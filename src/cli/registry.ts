@@ -2492,7 +2492,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'agents install',
     summary: "Install guidance that points this project's coding agents at the board",
     description:
-      "Writes short agent guidance into the root of the current working tree (git rev-parse --show-toplevel, or the current directory outside git): claude writes the Claude Code skill .claude/skills/agentboard/SKILL.md, agents-md a managed block in AGENTS.md, openspec agentboard: guidance entries for apply and archive in openspec/config.yaml, mcp-json an agentboard server in .mcp.json that runs npx -y @bendechrai/agentboard mcp, and claude-hooks the three agentboard hook entries (SessionStart, Stop and PreToolUse running agentboard hook) in .claude/settings.json, merged beside the user's own settings and hooks. With --command <executable>, the MCP server and the hooks run that executable instead of npx (for a linked or local install; the value goes into .mcp.json as given and is quoted where needed in the hooks); --mcp-command is its deprecated alias. The hooks warn by default; --hooks-strict writes them in strict mode, where stop and pre-tool-use block (see agentboard help hook). With no --target it selects claude, agents-md and openspec when .claude/, AGENTS.md or openspec/config.yaml exist, and says why; mcp-json is installed only when asked for with --target mcp-json or --command, which selects it in addition to the other targets, and claude-hooks only with --target claude-hooks. An existing agentboard server or hook executable is kept on reinstall, and --command replaces it with the given executable. Only agentboard's own region of each file is changed. A file or entry agentboard does not own is refused unless --force is given, and the other targets are still installed. The installed text points agents to agentboard help agents. Needs no board and no actor; commit the files it writes.",
+      "Writes short agent guidance into the root of the current working tree (git rev-parse --show-toplevel, or the current directory outside git): claude writes the Claude Code skill .claude/skills/agentboard/SKILL.md, agents-md a managed block in AGENTS.md, openspec agentboard: guidance entries for apply and archive in openspec/config.yaml, mcp-json an agentboard server in .mcp.json that runs npx -y @bendechrai/agentboard mcp, and claude-hooks the three agentboard hook entries (SessionStart, Stop and PreToolUse running agentboard hook) in .claude/settings.json, merged beside the user's own settings and hooks, codex and antigravity the same AGENTS.md block (which the Codex and Antigravity CLIs read) plus, printed for you to run, the codex mcp add or agy mcp add command that registers the MCP server in that harness's global config, cursor an always-applied rule in .cursor/rules/agentboard.mdc and an agentboard server in .cursor/mcp.json, and copilot the same managed block in .github/copilot-instructions.md. With --global, given with --target codex or --target antigravity, the global config ($CODEX_HOME/config.toml, default ~/.codex/config.toml, as a marked block; ~/.gemini/config/mcp_config.json as an mcpServers entry) is edited too instead of printing the command; without it no global file is read or written. With --command <executable>, every MCP server entry, the printed commands and the hooks run that executable instead of npx (for a linked or local install; the value goes into the JSON entries as given and is quoted where needed in the hooks and the printed commands); --mcp-command is its deprecated alias. The hooks warn by default; --hooks-strict writes them in strict mode, where stop and pre-tool-use block (see agentboard help hook). With no --target it selects claude, agents-md, openspec, codex, cursor, antigravity and copilot when .claude/, AGENTS.md, openspec/config.yaml, .codex/, .cursor/, .agents/ or .github/copilot-instructions.md exist, and says why; mcp-json is installed only when asked for with --target mcp-json or --command, which selects it in addition to the other targets, and claude-hooks only with --target claude-hooks. An existing agentboard server or hook executable is kept on reinstall, and --command replaces it with the given executable. Only agentboard's own region of each file is changed. A file or entry agentboard does not own is refused unless --force is given, and the other targets are still installed; a Codex config.toml that defines the server in a way a line edit cannot replace is refused even with --force. The installed text points agents to agentboard help agents. Needs no board and no actor; commit the project files it writes.",
     group: 'setup',
     examples: [
       {
@@ -2533,7 +2533,7 @@ export const COMMANDS: readonly CommandSpec[] = [
         code: 1,
         reason: 'usage',
         meaning:
-          'Invalid arguments: unknown command, flag or --target, a missing or malformed argument, a --command (or --mcp-command) that is empty, contains a newline, starts with a hyphen, a plus sign or a percent sign, or is a shell special built-in or another shell built-in, or both --command and --mcp-command (nothing is written)',
+          'Invalid arguments: unknown command, flag or --target, a missing or malformed argument, a --command (or --mcp-command) that is empty, contains a newline, starts with a hyphen, a plus sign or a percent sign, or is a shell special built-in or another shell built-in, both --command and --mcp-command, or --global without --target codex or --target antigravity or with HOME (or CODEX_HOME) unset, empty or not an absolute path (nothing is written)',
       },
       EXIT_INVALID_ACTOR,
       {
@@ -2547,13 +2547,13 @@ export const COMMANDS: readonly CommandSpec[] = [
       flag(
         'target',
         'string',
-        'Target to install: claude, agents-md, openspec, mcp-json or claude-hooks (repeatable)',
+        'Target to install: claude, agents-md, openspec, mcp-json, claude-hooks, codex, cursor, antigravity or copilot (repeatable)',
         { repeatable: true },
       ),
       flag(
         'command',
         'string',
-        'Executable the .mcp.json server (with the argument mcp) and the claude-hooks commands run, instead of npx (selects mcp-json)',
+        'Executable the MCP server entries (.mcp.json, .cursor/mcp.json, the global configs), the printed codex and agy registration commands and the claude-hooks commands run, with the argument mcp or hook, instead of npx (selects mcp-json)',
       ),
       flag(
         'mcp-command',
@@ -2592,7 +2592,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'agents check',
     summary: 'Report whether the installed agent guidance is current',
     description:
-      "Inspects the agent guidance installed in the root of the current working tree (the Claude Code skill, the AGENTS.md block, the openspec/config.yaml entries, the .mcp.json server and the agentboard hooks in .claude/settings.json) and reports each target found as current, stale (installed by another guidance version) or modified (its managed text was edited by hand). Exits 1 unless every target found is current, so it can run in a project's own checks; agentboard agents install brings them up to date. Needs no board and no actor.",
+      "Inspects the agent guidance installed in the root of the current working tree (the Claude Code skill, the AGENTS.md block, reported once as agents-md whichever of agents-md, codex and antigravity wrote it, the openspec/config.yaml entries, the .mcp.json server, the agentboard hooks in .claude/settings.json, the Cursor rule and .cursor/mcp.json server, each reported as cursor with its own path, and the .github/copilot-instructions.md block) and reports each target found as current, stale (installed by another guidance version) or modified (its managed text was edited by hand). With --global it also inspects the global MCP config of codex ($CODEX_HOME/config.toml) and antigravity (~/.gemini/config/mcp_config.json), reported by their absolute paths; without it neither is read. It warns on stderr, without changing the exit code, when AGENTS.md is larger than 24 KB, the most the Antigravity CLI reads of a rules file. Exits 1 unless every target found is current, so it can run in a project's own checks; agentboard agents install brings them up to date. Needs no board and no actor.",
     group: 'setup',
     examples: [
       { command: 'agentboard agents check', summary: 'Check the installed agent guidance' },
