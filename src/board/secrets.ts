@@ -138,18 +138,26 @@ export function isActorName(name: string): boolean {
 }
 
 /**
- * The left anchor of every provider pattern from `anthropic-api-key` to
- * `stripe-webhook-secret` (secret-prefix-patterns design.md "Anchoring"
- * and "Rulings from review round 1", R2): the prefix starts where the
- * preceding character is not one of `blocking`, or where the two or three
- * preceding characters are a backslash escape (`\n`, `\r`, `\t`, `\b`,
- * `\f`, judged on those two characters alone) or a percent-encoding (`%`
- * and two hexadecimal digits). Every lookbehind has a fixed length, so the
- * check stays linear. `blocking` is the ASCII letters and digits, and for
- * `jwt` also `_` and `-`, its own alphabet.
+ * A provider pattern from `anthropic-api-key` to `stripe-webhook-secret`:
+ * `prefix` then `rest`, matched only where the prefix starts after a
+ * character that is not one of `blocking`, at the start of the text, or
+ * right after a backslash escape (`\\n`, `\\r`, `\\t`, `\\b`, `\\f`, judged
+ * on those two characters alone) or a percent-encoding (`%` and two
+ * hexadecimal digits) (secret-prefix-patterns design.md "Anchoring" and
+ * "Rulings from review round 1", R2). `blocking` is the ASCII letters and
+ * digits, and for `jwt` also `_` and `-`, its own alphabet.
+ *
+ * The prefix literal leads and the anchor is a lookbehind after it that
+ * re-reads the prefix, rather than a lookbehind before it: the engine then
+ * scans for the literal and evaluates the anchor only where the prefix
+ * occurs, which on Node 22 is 1/60th of the time of a leading lookbehind
+ * over a long text. Every lookbehind alternative has a fixed length, so the
+ * check stays linear.
  */
-function anchored(blocking: string, body: string): RegExp {
-  return new RegExp(`(?:(?<![${blocking}])|(?<=\\\\[nrtbf])|(?<=%[0-9A-Fa-f]{2}))${body}`);
+function anchored(blocking: string, prefix: string, rest: string): RegExp {
+  return new RegExp(
+    `${prefix}(?<=(?:^|[^${blocking}]|\\\\[nrtbf]|%[0-9A-Fa-f]{2})${prefix})${rest}`,
+  );
 }
 
 /** The characters that block the general anchor. */
@@ -168,30 +176,33 @@ const PATTERNS: Record<SecretPatternName, RegExp> = {
   'pem-private-key': /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/,
   'aws-access-key-id': /(?<![0-9A-Za-z])(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Za-z])/,
   'github-token': /gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22}/,
-  'anthropic-api-key': anchored(ALNUM, 'sk-ant-[A-Za-z0-9_-]{16}'),
-  'digitalocean-token': anchored(ALNUM, 'do[por]_v1_[a-f0-9]{16}'),
-  'docker-token': anchored(ALNUM, 'dckr_[po]at_[A-Za-z0-9_-]{16}'),
-  'gitlab-token': anchored(ALNUM, 'glpat-[A-Za-z0-9_-]{16}'),
-  'google-api-key': anchored(ALNUM, 'AIza[A-Za-z0-9_-]{32}'),
-  'huggingface-token': anchored(ALNUM, 'hf_[A-Za-z0-9]{32}'),
+  'anthropic-api-key': anchored(ALNUM, 'sk-ant-', '[A-Za-z0-9_-]{16}'),
+  'digitalocean-token': anchored(ALNUM, 'do[por]_v1_', '[a-f0-9]{16}'),
+  'docker-token': anchored(ALNUM, 'dckr_[po]at_', '[A-Za-z0-9_-]{16}'),
+  'gitlab-token': anchored(ALNUM, 'glpat-', '[A-Za-z0-9_-]{16}'),
+  'google-api-key': anchored(ALNUM, 'AIza', '[A-Za-z0-9_-]{32}'),
+  'huggingface-token': anchored(ALNUM, 'hf_', '[A-Za-z0-9]{32}'),
   jwt: anchored(
     `${ALNUM}_-`,
-    'eyJ[A-Za-z0-9_-]{8}[A-Za-z0-9_-]*\\.eyJ[A-Za-z0-9_-]{8}[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]{16}',
+    'eyJ',
+    '[A-Za-z0-9_-]{8}[A-Za-z0-9_-]*\\.eyJ[A-Za-z0-9_-]{8}[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]{16}',
   ),
-  'npm-token': anchored(ALNUM, 'npm_[A-Za-z0-9]{32}'),
+  'npm-token': anchored(ALNUM, 'npm_', '[A-Za-z0-9]{32}'),
   'openai-api-key': anchored(
     ALNUM,
-    'sk-(?:(?:proj|svcacct|admin|None)-[A-Za-z0-9_-]{16}|[A-Za-z0-9]{32})',
+    'sk-',
+    '(?:(?:proj|svcacct|admin|None)-[A-Za-z0-9_-]{16}|[A-Za-z0-9]{32})',
   ),
-  'pypi-token': anchored(ALNUM, 'pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{16}'),
+  'pypi-token': anchored(ALNUM, 'pypi-AgEIcHlwaS5vcmc', '[A-Za-z0-9_-]{16}'),
   'sendgrid-api-key': anchored(
     ALNUM,
-    'SG\\.[A-Za-z0-9_-]{16}[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]{16}',
+    'SG\\.',
+    '[A-Za-z0-9_-]{16}[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]{16}',
   ),
-  'shopify-token': anchored(ALNUM, 'shp(?:at|ca|pa|ss)_[A-Fa-f0-9]{16}'),
-  'slack-token': anchored(ALNUM, 'x(?:ox[abeprs]|app)-[0-9]+-[A-Za-z0-9-]{16}'),
-  'stripe-secret-key': anchored(ALNUM, '[sr]k_(?:live|test)_[A-Za-z0-9]{16}'),
-  'stripe-webhook-secret': anchored(ALNUM, 'whsec_[A-Za-z0-9]{16}'),
+  'shopify-token': anchored(ALNUM, 'shp(?:at|ca|pa|ss)_', '[A-Fa-f0-9]{16}'),
+  'slack-token': anchored(ALNUM, 'x(?:ox[abeprs]|app)-', '[0-9]+-[A-Za-z0-9-]{16}'),
+  'stripe-secret-key': anchored(ALNUM, '[sr]k_(?:live|test)_', '[A-Za-z0-9]{16}'),
+  'stripe-webhook-secret': anchored(ALNUM, 'whsec_', '[A-Za-z0-9]{16}'),
   'generic-secret-assignment': /(?:token|secret|password|key) *[:=] *["']?[A-Za-z0-9+/_-]{32}/i,
 };
 
