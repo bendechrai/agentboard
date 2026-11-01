@@ -40,7 +40,8 @@ integrates its source tip, and SHALL never discard what the human
 resolved nor apply again a commit the human already resolved (the clones
 of one board share its history: the re-run replays only what reached the
 board since the worktree was made, and nothing when nothing did, so one
-re-run completes the move). Every event file present in the old `.board/events` at any
+re-run completes the move). Every event file present in the old
+`.board/events` at any
 point of the move (written by another writer or a standalone `sync`
 while the move ran, even between the verification and the moment the old
 repository is kept aside) SHALL end in the new worktree, carried over
@@ -63,7 +64,8 @@ SHALL record the tip it integrated, and the record SHALL follow it when
 it integrates more; the tip `refs/agentboard/migrating` holds, which the
 whole host shares, SHALL stand for that record only for a temporary made
 before the record existed and only when no other temporary worktree
-exists on the host, otherwise such a temporary SHALL NOT be adopted. A temporary left by a move of a board replaced since,
+exists on the host, otherwise such a temporary SHALL NOT be adopted. A
+temporary left by a move of a board replaced since,
 even one whose git directory has the same realpath, device and inode as
 the old one's and whose history holds that HEAD, or by a move that began
 before the board's history or its remote's was rewritten so that it no
@@ -82,30 +84,68 @@ one). It SHALL never be refused for being made by an earlier version, and
 once adopted it is judged as one made by this version.
 Immediately before the compare-and-swap that updates
 `refs/agentboard/board` in the host repository, every move SHALL record in
-its temporary worktree the value the swap compares against, the ref's
-value before the swap (the zero object name when the ref does not exist).
+its temporary worktree the value the ref had before the first update of
+this board that is not yet published: the value the swap compares against
+(the zero object name when the ref does not exist), except when the move
+resumes from a dead temporary of this board without rebase or cherry-pick
+state whose HEAD is an ancestor of, or equal to, the ref as the leftover
+pass found it (the evidence). When the ref still has that value at the
+swap, the ref already holds this board's unpublished commits, and the move
+SHALL carry the evidence's record forward instead (an adopted temporary
+keeps its own) when the evidence's HEAD equals the ref; when its HEAD is a
+strict ancestor of the ref (another writer added commits on top), or it
+has no readable, well formed record, the move SHALL write none. When the
+ref has another value at the swap (another writer moved it after the
+leftover pass) that is a descendant of, or equal to, the HEAD of any such
+temporary (the evidence or another), it still holds this board's
+unpublished commits, and the move SHALL write no record either. Writing
+none means a later run with another board
+refuses rather than resets or integrates. When several such temporaries
+exist, the evidence is the first in the byte order of their names whose
+HEAD equals the ref, or, when none does, the first in that order. A
+record equal to its temporary's HEAD is taken as content the ref held
+independently of that move only because a resume never records a value
+that holds its own board's commits. The evidence SHALL NOT be removed
+before the move that resumes from it has written its own record, so no run
+that stops between the leftover pass and that write (a kill, or a refusal
+that discards its fresh temporary) loses it.
 A move that updated the ref and did not complete has put its commits into
 the ref without publishing them; they SHALL reach neither the board now at
 `.board` nor the host's remote unless the temporary is this board's.
-Before any leftover is removed or adopted, the move SHALL judge every dead
+Before any leftover is removed or adopted, the move SHALL judge every
 temporary worktree without rebase or cherry-pick state whose HEAD is an
 ancestor of, or equal to, the local `refs/agentboard/board`, whether or
-not it integrated something, by the tests that decide adoption. One that
-is this board's is handled as before, and what it put into the ref is this
-board's history: a move killed after it updated the ref completes when run
-again with the same board. For one that is not this board's: when the ref
-equals its HEAD and its record of the value before the swap is readable
-and well formed, the move SHALL set the ref back to that value (deleting
-it when the value is the zero object name) with a compare-and-swap against
-that HEAD, say so in its output, judge the remaining temporaries against
-the new value, and remove and name the temporary as left by a move of
-another board; otherwise (no such record, as from a version that did not
-write it, or a ref that has moved past that HEAD) the move SHALL exit 3
-with reason `sync-failed`, naming the ref, the temporary's path and how to
-reset the ref by hand, and change nothing: the temporary, `.board`,
-`refs/agentboard/board` and the host's remote stay as they are. A lost
-compare-and-swap of the reset SHALL be the same refusal as a lost
-compare-and-swap of the update, the ref unchanged. A local
+not it integrated something, by the tests that decide adoption. A live one
+(its pid names a running process) that is not this board's SHALL make the
+move exit 3 with reason `sync-in-progress`, naming the temporary, before
+anything else of this rule, changing nothing: another move may be
+running, or the pid was reused, and either way its commits are not
+integrated. A live one that is this board's is left alone. A dead one
+that is this board's is handled as before, and what it put into the ref is
+this board's history: a move killed after it updated the ref completes
+when run again with the same board. For a dead one that
+is not this board's: when the ref equals its HEAD and its record of the
+value before the swap is readable and well formed, the move SHALL set the
+ref back to that value (deleting it when the value is the zero object name
+of the repository's hash algorithm) with a compare-and-swap against that
+HEAD, say so in its output, judge the remaining temporaries against the
+new value, and remove and name the temporary as left by a move of another
+board, also when a kill between the reset and the removal leaves the
+removal to the next run; every dead temporary of another board whose HEAD
+was in the ref when the run began is named the same way, also one whose
+update a reset made for another temporary undid; when the recorded value
+equals that HEAD the ref SHALL be left as it is, with no line saying it
+was set back, and the temporary removed and named the same way;
+otherwise (no such record, as
+from a version that did not write it, a recorded value that is not a
+commit of the host repository, or a ref that has moved past that HEAD) the
+move SHALL exit 3 with reason `sync-failed`, naming the ref, the
+temporary's path and how to reset the ref by hand, and change nothing
+more: the temporary, `.board`, `refs/agentboard/board` and the host's
+remote stay as they are, except that resets already made earlier in the
+same run stay, and the refusal SHALL say so instead of saying nothing was
+changed. A lost compare-and-swap of the reset SHALL be the same refusal as
+a lost compare-and-swap of the update, the ref unchanged. A local
 `refs/agentboard/board` that does not hold the HEAD of such a temporary is
 integrated as before.
 
@@ -224,3 +264,47 @@ integrated as before.
 #### Scenario: Reset of the host ref loses a race
 - **WHEN** the move is about to set the local `refs/agentboard/board` back for a temporary of another board and something moves the ref first
 - **THEN** it exits 3 with reason `sync-failed` as a lost compare-and-swap of the update does, the ref keeps the value the other writer gave it, and `.board` and the temporary are unchanged
+
+#### Scenario: Move of the same board interrupted twice after it updated the host ref, then replaced
+- **WHEN** a move of standalone board A into a host whose remote has no `refs/agentboard/board` (or has another clone's) is killed right after it updated the local `refs/agentboard/board`, the move is run again with A and that run is killed right after its own update, or right before it, or refused at the rename because `.board` was replaced right after its update, `.board` is (then) an unrelated standalone board B, and `agentboard init --into-host` runs
+- **THEN** it moves B with exit 0 and the ref deleted (a real reset, said in its output; no line says the ref was set back to a value it already had), and no event file or commit of A is in `.board/events`, the local `refs/agentboard/board` or the host remote's `refs/agentboard/board`
+
+#### Scenario: Record carried forward from the same board's leftover
+- **WHEN** a move of board A beside a local ref fetched by hand updated the ref and stopped, a run of A that resumes from its temporary (whose HEAD equals the ref) stops after its own update, `.board` is an unrelated board B, and `agentboard init --into-host` runs
+- **THEN** every temporary records the hand-fetched commit, never the value A's own update wrote, and the run with B sets the ref back to the hand-fetched commit; when A's leftover held no record, the resuming run writes none and the run with B refuses with reason `sync-failed`
+
+#### Scenario: Resume of the same board stopped before its update keeps the evidence
+- **WHEN** a move of board A is killed right after it updated the local `refs/agentboard/board`, a run of A is then killed after the leftover pass and before its step 2 fetch, or refused because the fetch of the host remote's board ref failed, `.board` is replaced by an unrelated board B, and `agentboard init --into-host` runs
+- **THEN** A's first temporary is still there with its record before the run with B, and that run moves B with exit 0 and the ref deleted, nothing of A in `.board/events` or either ref
+
+#### Scenario: Live temporary of another board in the host ref
+- **WHEN** the temporary of a move of board A that updated the local `refs/agentboard/board` is named by the pid of a running process, `.board` is an unrelated board B, and `agentboard init --into-host` runs
+- **THEN** it exits 3 with reason `sync-in-progress` naming the temporary, and the temporary, `.board`, the local and the remote `refs/agentboard/board` are unchanged; once that process has exited, the next run moves B with the ref deleted and nothing of A anywhere
+
+#### Scenario: Killed between the reset and the removal of the temporary
+- **WHEN** a run with board B is killed right after it set back the local `refs/agentboard/board` for a temporary of board A, and `agentboard init --into-host` runs again
+- **THEN** it moves B with exit 0 and names the temporary as left by a move of another board, not as left by an interrupted move
+
+#### Scenario: Refusal after a reset in the same run
+- **WHEN** two moves of other boards updated the ref one after the other, the newer one recorded its value before, the older one recorded none, and `agentboard init --into-host` runs
+- **THEN** the ref is set back for the newer one and the move exits 3 with reason `sync-failed` for the older one, saying that the reset already made was kept rather than that nothing was changed
+
+#### Scenario: Another writer on top of the unpublished update before the same board resumes
+- **WHEN** a move of board A is killed right after it updated the local `refs/agentboard/board`, another writer adds a commit on top of that update in the local ref, a run of A is killed right after its own update, `.board` is replaced by an unrelated board B, and `agentboard init --into-host` runs
+- **THEN** the resuming run recorded no value before its swap, and the run with B exits 3 with reason `sync-failed` saying that move left no record, naming the resuming run's temporary, and changes nothing; no event file of A is in `.board/events` or the host remote's `refs/agentboard/board`
+
+#### Scenario: Two temporaries of the same board undone by one reset
+- **WHEN** a run of board A that resumed from its leftover is killed right after its update, so two temporaries of A hold the ref, `.board` is replaced by an unrelated board B, and `agentboard init --into-host` runs
+- **THEN** the ref is deleted once, and both temporaries are named as left by a move of another board, neither as left by an interrupted move
+
+#### Scenario: Another writer moves the host ref while the same board resumes
+- **WHEN** a move of board A is killed right after it updated the local `refs/agentboard/board`, a run of A resumes from its temporary and, after its leftover pass and before its step 2 fetch, another writer adds a commit on top of A's update in the local ref, that run is killed right after its own update or right before it, `.board` is replaced by an unrelated board B, and `agentboard init --into-host` runs; once with the host's remote holding another clone's board (A's temporary is adopted) and once with it holding none (a fresh temporary)
+- **THEN** the resuming run recorded no value before its swap, and the run with B exits 3 with reason `sync-failed` and changes nothing; no event file of A is in `.board/events` or the host remote's `refs/agentboard/board`
+
+#### Scenario: Evidence equal to the ref preferred over an older one
+- **WHEN** a move of board A is killed right after it updated the local `refs/agentboard/board`, A gains an event, a run of A that resumes from that temporary is killed between its own update and the removal of the first temporary, the first temporary's name sorts before the second's, a further run of A is killed right after its update, `.board` is replaced by an unrelated board B, and `agentboard init --into-host` runs
+- **THEN** it moves B with exit 0 and the ref deleted (said in its output), and no event file or commit of A is in `.board/events`, the local `refs/agentboard/board` or the host remote's `refs/agentboard/board`
+
+#### Scenario: Another writer sets the host ref back to an older leftover while the same board resumes
+- **WHEN** a move of board A is killed right after it updated the local `refs/agentboard/board`, A gains an event, a run of A that resumes from that temporary is killed between its own update and the removal of the first temporary, a further run of A sorts the first temporary before the second and, after its leftover pass and before its step 2 fetch, another writer sets the local ref back to the first temporary's HEAD, that run is killed right after its own update, `.board` is replaced by an unrelated board B, and `agentboard init --into-host` runs
+- **THEN** it exits 3 with reason `sync-failed` and changes nothing, and no event file of A is in `.board/events` or the host remote's `refs/agentboard/board`
