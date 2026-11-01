@@ -26,9 +26,11 @@ import {
   GH_TOKEN,
   URL_TOKEN,
   credentialUrls,
+  escapeRegExp,
   localEnv,
   printingSshShim,
   startAuthServer,
+  tokenUserPromptPattern,
   type AuthServer,
   withoutTiming,
 } from '../../board/__tests__/no-echo-remote-helpers.js';
@@ -226,7 +228,9 @@ describe('an auth failure through the built CLI (HTTP 401 on 127.0.0.1)', () => 
       `http://${GH_TOKEN}@127.0.0.1:${server.port}/me/x.git`,
       3,
       'remote-unreachable',
-      `the repository given with --remote cannot be read (fatal: could not read Password for 'http://<redacted>@127.0.0.1:${server.port}': terminal prompts disabled${UNREACHABLE_TAIL}`,
+      new RegExp(
+        `^${escapeRegExp('the repository given with --remote cannot be read (')}${tokenUserPromptPattern(server.port)}${escapeRegExp(UNREACHABLE_TAIL)}$`,
+      ),
     );
   });
 });
