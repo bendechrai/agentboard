@@ -363,6 +363,26 @@ the other mode SHALL update the owned entries without `--force`. Existing
 keys, other hooks and their order SHALL be preserved, and reinstalling
 SHALL add no duplicate entry.
 
+Each entry SHALL be one matcher group holding one handler `{"type":
+"command", "command": ..., "timeout": 5}`. The `--command` executable SHALL
+be written as one shell word, single-quoted when it holds a character
+outside `A-Z a-z 0-9 _ . / @ % + = : , -`, so it runs as given with no
+expansion. A handler is owned only when its command ends exactly with the
+marker, and only `hooks.SessionStart`, `hooks.Stop` and `hooks.PreToolUse`
+are inspected; any other hook, including one that looks like agentboard's
+without the exact marker, is user content. Per key, extra owned entries
+SHALL be removed and the wanted entry put where the first owned entry was,
+a user handler that shares a group with an owned one SHALL be kept, and a
+file whose owned entries are already as wanted SHALL NOT be written.
+Without `--command`, a reinstall SHALL keep the executable the installed
+commands share. A `.claude/settings.json` that is not valid JSON or not a
+JSON object SHALL be refused, and `--force` replaces it whole; a `hooks`
+value that is not an object, or one of the three keys holding something
+other than an array, SHALL be refused, and `--force` replaces those values
+only; no refusal repeats the file's content. The file SHALL be replaced
+atomically, keeping its mode and following a symbolic link that stays in
+the working tree; `.claude/settings.local.json` is never read or written.
+
 #### Scenario: Fresh install is warn-only
 - **WHEN** `agents install --target claude-hooks` runs in a project with no `.claude/settings.json`
 - **THEN** the file has the three entries, none containing `--strict`, each with a marker and a timeout of 5 or less
@@ -378,3 +398,15 @@ SHALL add no duplicate entry.
 #### Scenario: Local executable
 - **WHEN** `agents install --target claude-hooks --command agentboard` runs
 - **THEN** the hook commands begin `agentboard hook`
+
+#### Scenario: Local executable kept on reinstall
+- **WHEN** the hooks were installed with `--command agentboard` and `agents install --target claude-hooks` runs again without `--command`
+- **THEN** the hook commands still begin `agentboard hook` and the file is unchanged
+
+#### Scenario: Look-alike user hook is kept
+- **WHEN** `.claude/settings.json` has a user `PreToolUse` hook running `npx -y @bendechrai/agentboard hook pre-tool-use` without the marker and the hooks are installed
+- **THEN** the user hook is unchanged and the agentboard entry is added after it
+
+#### Scenario: Invalid settings are refused
+- **WHEN** `.claude/settings.json` has a trailing comma and `agents install --target claude-hooks` runs
+- **THEN** the target is refused naming the file, the file is unchanged, no part of its content is printed, and with `--force` it is replaced by a file holding only the three entries

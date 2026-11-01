@@ -413,6 +413,89 @@ group's ticket:
   out-of-time line (a discovery that swallowed the signal would answer
   silently).
 
+## Rulings from task group 3 (test author)
+
+Taken while writing the group 3 tests, posted as `DECISION:` comments on
+the group's ticket and pinned by the tests and the contracts in
+`src/guidance/install.ts` (`installGuidance`, `claude-hooks`;
+`RefusalReason`; `installCommand`), `src/guidance/check.ts`,
+`src/guidance/installed-text.ts` (`hookExecutable`, `hookCommand`,
+`hookGroup`) and `src/guidance/markers.ts` (`hookMarkerVersion`,
+`parseHookCommand`):
+
+- **Entry shape.** Each key (`SessionStart`, `Stop`, `PreToolUse`) gets
+  one matcher group holding one handler, `{"type": "command", "command":
+  ..., "timeout": 5}`; `PreToolUse` has `"matcher":
+  "Edit|Write|MultiEdit|NotebookEdit"` first, the other two no matcher.
+  The timeout is exactly 5. The command is `<executable> hook <event>[
+  --strict] # agentboard-hooks: v<N>`; no `--as` (the actor comes from the
+  environment). A fresh file is `JSON.stringify(..., null, 2)` plus a
+  line feed, keys in that order.
+- **The executable is one shell word.** `--command` names an executable,
+  as for `.mcp.json`, so in a hook command it is written as given when it
+  holds only `A-Z a-z 0-9 _ . / @ % + = : , -`, and otherwise single-quoted
+  (`'` as `'\''`): a path with spaces runs, and `$VAR` or `~` is not
+  expanded. Without `--command` it is `npx -y @bendechrai/agentboard`.
+- **Ownership.** A handler is agentboard's when its `command` ends exactly
+  with `# agentboard-hooks: v<N>` (no leading zero, nothing after it, not
+  even a space). Only the three keys are inspected; other keys of `hooks`
+  and elements of any shape in the three arrays are user content. A user
+  hook that looks like agentboard's but lacks the exact marker is kept
+  and agentboard's own entry is added beside it.
+- **Merge.** Per key: up to date when it holds exactly one owned group,
+  deep-equal to the wanted group (so an up-to-date file in another
+  formatting, key order or line ending is not written at all). Otherwise
+  every owned handler is removed, a group left empty goes, a group that
+  still holds user handlers stays, and the wanted group takes the place
+  of the first owned group (right after it when it stayed), or is
+  appended. Missing keys are appended in the order above, a missing
+  `hooks` as the last top-level key. Duplicates therefore collapse to
+  one, at the first position.
+- **The executable is kept, the mode is not.** Without `--command`, a
+  reinstall keeps the executable the installed commands share (when every
+  owned command parses and they agree), as the `.mcp.json` entry keeps a
+  local command; otherwise it uses `npx`. The mode follows
+  `--hooks-strict` on every run, as the spec says.
+- **Refusals.** `malformed-settings`: not valid JSON (comments, trailing
+  commas, an empty or truncated file) or a top level that is not an
+  object; `--force` replaces the whole file by a fresh one, as `--force`
+  replaces a foreign `SKILL.md`. `hooks-shape`: `hooks` present and not an
+  object (`null` included) or one of the three keys present and not an
+  array; `--force` replaces each offending value in place. Both are named
+  in the spec's list of refusals `--force` overrides. Neither message
+  quotes the file or the JSON parser's error, which can quote it.
+- **File handling.** A leading UTF-8 byte order mark is accepted and kept;
+  a rewrite uses line feeds (insignificant formatting). No size limit. A
+  symbolic link inside the tree is followed and kept; one leading outside
+  (a `.claude` linked to a home directory, say) is refused
+  `outside-tree`, like every target. The file is replaced atomically (a
+  temporary file beside it, given its mode, renamed over it), so Claude
+  Code never reads half a file; a file the process may not write is
+  refused `unwritable` rather than replaced by the rename, and a
+  directory where the temporary file cannot be created is `unwritable`
+  too. `.claude/settings.local.json` is never read or written.
+- **Check.** Found when an owned handler is under one of the three keys,
+  or, for a file that cannot be read as settings, when its text contains
+  `# agentboard-hooks:` (then `modified`, version unknown). Version: the
+  one every owned handler records, else unknown (`modified`); another
+  version is `stale` whatever the text. `current` needs one owned group
+  per key, every command parsing with its key's event, one executable and
+  one mode across the three, and each group deep-equal to its rendering.
+- **Selection.** Auto-detection never selects `claude-hooks`, also where
+  it is installed (an old install is not upgraded by a bare `agents
+  install`). `--command` selects `mcp-json` as the spec says, also next to
+  `--target claude-hooks` alone. `--hooks-strict` without `claude-hooks`
+  changes nothing and prints nothing. `claude-hooks` follows `mcp-json`
+  in the target order.
+- **The alias.** `--command` and `--mcp-command` together are a usage
+  error from the parser (`give only one of --command, --mcp-command`, an
+  exclusive group), repeating neither value. The reason is `requested
+  with --command` for either flag. `--mcp-command` prints `agentboard:
+  --mcp-command is deprecated; use --command, which does the same` as the
+  first stderr line of every run that returns (also `--json`, also with a
+  refused target); a usage error prints only itself and names the flag
+  that was given (`--mcp-command must not be empty`).
+
 ## Risks / Trade-offs
 
 - **PreToolUse is intrusive and adds latency to every edit** -> warn-only

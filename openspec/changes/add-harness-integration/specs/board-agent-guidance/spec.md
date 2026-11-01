@@ -76,7 +76,9 @@ strict mode (see board-harness-hooks) and has no effect without
 `mcp-json` target in addition to the explicit or auto-detected ones, and
 the output SHALL name `--command` as the reason. `--mcp-command <executable>` SHALL remain a deprecated alias of
 `--command`, behaving identically and printing a one-line deprecation notice
-on stderr. `--command` sets the executable for every MCP entry and for the
+on stderr as the first stderr line of every run that does not end in a
+usage error; giving both flags SHALL exit 1 with reason `usage`, repeating
+neither value, and write nothing. `--command` sets the executable for every MCP entry and for the
 hooks. An empty
 `--command` (or `--mcp-command`) value or one containing a newline SHALL
 exit 1 with reason `usage`, naming the flag but not the value, and write
