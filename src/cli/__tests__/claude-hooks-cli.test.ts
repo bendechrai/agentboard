@@ -333,8 +333,28 @@ describe('values a shell would misread (review round 1, R3)', SPAWNS, () => {
     return dir;
   }
 
-  const NAMES = ['FOO=bar', 'if', 'time', 'function', '!', '{', 'case', 'select', '[['];
-  const SHELLS = ['/bin/sh', ...(existsSync('/bin/bash') ? ['/bin/bash'] : [])];
+  const NAMES = [
+    'FOO=bar',
+    'if',
+    'time',
+    'function',
+    '!',
+    '{',
+    'case',
+    'select',
+    '[[',
+    'coproc',
+    'end',
+    'foreach',
+    'nocorrect',
+    'repeat',
+  ];
+  const ZSH = ['/usr/bin/zsh', '/bin/zsh'].find((p) => existsSync(p));
+  const SHELLS = [
+    '/bin/sh',
+    ...(existsSync('/bin/bash') ? ['/bin/bash'] : []),
+    ...(ZSH === undefined ? [] : [ZSH]),
+  ];
 
   it.each(NAMES)('runs an executable named %s found on the PATH', (name) => {
     const root = plainProject();
@@ -359,8 +379,13 @@ describe('values a shell would misread (review round 1, R3)', SPAWNS, () => {
 
   it.each([
     ['-rf', 'must not start with a hyphen'],
+    ['+x', 'must not start with a plus sign'],
+    ['%1', 'must not start with a percent sign'],
     ['exec', 'must not be a shell special built-in; give the path of the executable'],
     ['set', 'must not be a shell special built-in; give the path of the executable'],
+    ['echo', 'must not be a shell built-in; give the path of the executable'],
+    ['true', 'must not be a shell built-in; give the path of the executable'],
+    ['[', 'must not be a shell built-in; give the path of the executable'],
   ])('refuses --command %s as usage naming the flag, writing nothing', (value, why) => {
     const root = plainProject();
     const out = cli(
@@ -383,5 +408,59 @@ describe('values a shell would misread (review round 1, R3)', SPAWNS, () => {
       expect(out.code).toBe(1);
       expectNoLeak(f.name, [out.stdout, out.stderr], [f]);
     }
+  });
+
+  it('repeats no part of a refused value with a leading plus or percent sign', () => {
+    for (const f of TOKEN_FIXTURES.slice(0, 2)) {
+      for (const lead of ['+', '%']) {
+        const root = plainProject();
+        const out = cli(['agents', 'install', `--command=${lead}${f.value}`, '--json'], root);
+        expect(out.code).toBe(1);
+        expect(errorOf(out)).toMatchObject({ exitCode: 1, reason: 'usage' });
+        expectNoLeak(f.name, [out.stdout, out.stderr], [f]);
+      }
+    }
+  });
+});
+
+describe('a settings file nested too deep (group 3 follow-ups, F3)', SPAWNS, () => {
+  const DEEP = 100_000;
+  const deep = `{"deep": ${'['.repeat(DEEP)}${']'.repeat(DEEP)}}`;
+
+  it('refuses it without an internal error and still writes and reports the other targets', () => {
+    for (const force of [false, true]) {
+      const root = plainProject();
+      writeRel(root, SETTINGS, deep);
+      const out = cli(
+        ['agents', 'install', '--target', 'claude', '--target', 'claude-hooks'],
+        root,
+      );
+      expect(out.code, out.stderr).toBe(1);
+      expect(out.stderr).not.toMatch(/call stack|RangeError|internal/i);
+      expect(out.stdout).toContain('created claude ');
+      expect(out.stderr).toMatch(
+        /^agentboard: refused claude-hooks: \.claude\/settings\.json .*nested at most 512 levels deep/m,
+      );
+      expect(readRel(root, SETTINGS)).toBe(deep);
+      if (force) {
+        const forced = cli(['agents', 'install', '--target', 'claude-hooks', '--force'], root);
+        expect(forced.code, forced.stderr).toBe(0);
+        expect(commandsOf(root).Stop).toEqual([`${NPX} hook stop # agentboard-hooks: v3`]);
+      }
+    }
+  });
+
+  it('refuses it in --json output and check reports it without an internal error', () => {
+    const root = plainProject();
+    writeRel(root, SETTINGS, deep);
+    const asJson = cli(['agents', 'install', '--target', 'claude-hooks', '--json'], root);
+    expect(asJson.code, asJson.stderr).toBe(1);
+    expect(oneJson(asJson)).toMatchObject({
+      refused: 1,
+      targets: [{ target: 'claude-hooks', action: 'refused', refusal: 'malformed-settings' }],
+    });
+    const check = cli(['agents', 'check'], root);
+    expect(check.code).not.toBe(5);
+    expect(check.stderr).not.toMatch(/call stack|RangeError|internal/i);
   });
 });

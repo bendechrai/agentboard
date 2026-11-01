@@ -148,6 +148,16 @@ const CASES: readonly Case[] = [
     expected: usage('--mcp-command must not start with a hyphen', argsHint('agents install')),
   },
   {
+    name: 'a --command value with a leading plus sign (group 3 follow-ups, F1)',
+    argv: (t) => ['agents', 'install', `--command=+${t}`],
+    expected: usage('--command must not start with a plus sign', argsHint('agents install')),
+  },
+  {
+    name: 'a --mcp-command value with a leading percent sign (group 3 follow-ups, F1)',
+    argv: (t) => ['agents', 'install', `--mcp-command=%${t}`],
+    expected: usage('--mcp-command must not start with a percent sign', argsHint('agents install')),
+  },
+  {
     name: '--command with --mcp-command (add-harness-integration)',
     argv: (t) => ['agents', 'install', '--command', t, '--mcp-command', t],
     expected: usage('give only one of --command, --mcp-command', argsHint('agents install')),

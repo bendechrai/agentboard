@@ -405,11 +405,12 @@ export interface ClaudeHookGroup {
  * The executable text at the start of a hook command:
  * - `command` undefined: `HOOK_DEFAULT_EXECUTABLE`;
  * - `command` made only of the characters `A-Z a-z 0-9 _ . / @ % + : , -`
- *   (non-empty), not starting with `-` and not one of
+ *   (non-empty), not starting with `-`, `+` or `%` and not one of
  *   `SHELL_RESERVED_WORDS`: written as given;
  * - a value with `=` (which the shell would read as an assignment), a
- *   leading `-` (which `installGuidance` refuses anyway) or equal to a
- *   reserved word: single-quoted like the next case;
+ *   leading `-`, `+` or `%` (shell options and a job reference, which
+ *   `installGuidance` refuses anyway) or equal to a reserved word:
+ *   single-quoted like the next case;
  * - anything else (a space, `$`, `~`, `#`, a quote, a backslash, a
  *   carriage return, ...): one POSIX shell word in single quotes, each `'`
  *   written as `'\''`, so the shell runs exactly that path, with no
@@ -428,10 +429,12 @@ export function hookExecutable(command?: string): string {
 }
 
 /**
- * Words a POSIX shell (or bash) may read as reserved at the start of a
+ * Words a POSIX shell, bash or zsh may read as reserved at the start of a
  * command; a `--command` value equal to one is single-quoted so it names
- * an executable (POSIX reserved words, plus `[[`, `]]`, `function`,
- * `select` and `time`).
+ * an executable, since a quoted word is never reserved (POSIX reserved
+ * words; `[[`, `]]`, `function`, `select` and `time`, reserved in bash and
+ * other shells; `coproc`, reserved in bash and zsh; and `end`, `foreach`,
+ * `nocorrect` and `repeat`, reserved in zsh).
  */
 export const SHELL_RESERVED_WORDS: readonly string[] = [
   '!',
@@ -455,6 +458,11 @@ export const SHELL_RESERVED_WORDS: readonly string[] = [
   'function',
   'select',
   'time',
+  'coproc',
+  'end',
+  'foreach',
+  'nocorrect',
+  'repeat',
 ];
 
 /**
@@ -479,6 +487,116 @@ export const SHELL_SPECIAL_BUILTINS: readonly string[] = [
   'times',
   'trap',
   'unset',
+];
+
+/**
+ * The regular built-ins of the shells a hook command may run in: every
+ * built-in of dash 0.5.12 (`/bin/sh` on Debian and Ubuntu; `type <name>`),
+ * bash 5.3 (`compgen -b`) and zsh 5.9 (`${(k)builtins}`, under `zsh -c`
+ * and `zsh -f -c` alike), less `SHELL_SPECIAL_BUILTINS`. The shell finds a
+ * built-in before any file on the PATH, quoted or not, so a `--command`
+ * value equal to one (a bare name, with no `/`) is refused as a usage
+ * error, like a special built-in: give the path of the executable. Plain
+ * names that are not built-ins of these shells (`agentboard`, `npx`,
+ * `node`) are not affected. `[` first, then in ASCII order.
+ */
+export const SHELL_BUILTINS: readonly string[] = [
+  '[',
+  'alias',
+  'autoload',
+  'bg',
+  'bind',
+  'bindkey',
+  'builtin',
+  'bye',
+  'caller',
+  'cd',
+  'chdir',
+  'command',
+  'compadd',
+  'comparguments',
+  'compcall',
+  'compctl',
+  'compdescribe',
+  'compfiles',
+  'compgen',
+  'compgroups',
+  'complete',
+  'compopt',
+  'compquote',
+  'compset',
+  'comptags',
+  'comptry',
+  'compvalues',
+  'declare',
+  'dirs',
+  'disable',
+  'disown',
+  'echo',
+  'echotc',
+  'echoti',
+  'emulate',
+  'enable',
+  'false',
+  'fc',
+  'fg',
+  'float',
+  'functions',
+  'getln',
+  'getopts',
+  'hash',
+  'help',
+  'history',
+  'integer',
+  'jobs',
+  'kill',
+  'let',
+  'limit',
+  'local',
+  'log',
+  'logout',
+  'mapfile',
+  'noglob',
+  'popd',
+  'print',
+  'printf',
+  'private',
+  'pushd',
+  'pushln',
+  'pwd',
+  'r',
+  'read',
+  'readarray',
+  'rehash',
+  'sched',
+  'setopt',
+  'shopt',
+  'source',
+  'suspend',
+  'test',
+  'true',
+  'ttyctl',
+  'type',
+  'typeset',
+  'ulimit',
+  'umask',
+  'unalias',
+  'unfunction',
+  'unhash',
+  'unlimit',
+  'unsetopt',
+  'vared',
+  'wait',
+  'whence',
+  'where',
+  'which',
+  'zcompile',
+  'zformat',
+  'zle',
+  'zmodload',
+  'zparseopts',
+  'zregexparse',
+  'zstyle',
 ];
 
 /**

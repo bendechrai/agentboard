@@ -441,6 +441,15 @@ describe('the drift guard: every example parses to its own command', () => {
     expect(usage?.meaning).toMatch(/special built-in/);
   });
 
+  it('names the plus sign, percent sign and built-in usage errors (group 3 follow-ups, F1, F2)', () => {
+    const usage = command('agents install').exitCodes.find(
+      (e) => e.code === 1 && e.reason === 'usage',
+    );
+    expect(usage?.meaning).toMatch(/plus sign/);
+    expect(usage?.meaning).toMatch(/percent sign/);
+    expect(usage?.meaning).toMatch(/shell built-in/);
+  });
+
   it('lists the --command usage errors among the agents install exit codes', () => {
     const usage = command('agents install').exitCodes.find(
       (e) => e.code === 1 && e.reason === 'usage',

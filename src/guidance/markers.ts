@@ -541,7 +541,11 @@ export function hookArrays(
  * after removing one leading byte order mark (EF BB BF): `null` when the
  * file does not exist, `invalid` when the bytes are not valid UTF-8 (a
  * Latin-1 byte, an overlong sequence, an encoded surrogate, a truncated
- * sequence), else the text without the mark and whether it had one. Used
+ * sequence) or when the text is nested more than `MAX_JSON_DEPTH` levels
+ * deep (`jsonDepth`), else the text without the mark and whether it had
+ * one. The depth is checked before anything parses or scans the text, so
+ * a file deep enough to exhaust the stack is refused like invalid JSON
+ * instead of failing the run. Used
  * for `.claude/settings.json` and `.mcp.json`, which agentboard rewrites,
  * so a byte it cannot read is never turned into U+FFFD and written back.
  * Permission errors propagate as from `readFileSync`.
@@ -565,6 +569,30 @@ export function readUtf8Json(
 }
 
 /**
+ * The deepest nesting `.claude/settings.json` and `.mcp.json` may have:
+ * a file nested deeper is read as `invalid` (`readUtf8Json`). Well below
+ * the depth at which `JSON.stringify` or any recursive walk exhausts the
+ * stack (about 5,000), and far above any real settings file.
+ */
+export const MAX_JSON_DEPTH = 512;
+
+/**
+ * The deepest nesting of arrays and objects in `text`: the largest number
+ * of `[` and `{` open at once, counting only brackets outside strings (a
+ * string runs from a `"` to the next `"` not escaped by a backslash, so
+ * `\"` and `\\` inside it are skipped as pairs). `0` for a scalar or
+ * empty text, `1` for `[]` or `{"a": 1}`, `3` for `{"a": [[]]}`. Text that
+ * is not valid JSON still gets a number (the most brackets open at any
+ * point, a closing bracket never taking the count below 0; `[[[` is 3).
+ * Iterative: never throws, whatever the depth (a million nested arrays
+ * give 1000000). Pure.
+ */
+export function jsonDepth(text: string): number {
+  void text;
+  throw new Error('not implemented');
+}
+
+/**
  * True when `JSON.stringify(JSON.parse(text))` would give back every
  * value and the key order of `text` (valid JSON, without a byte order
  * mark), that is when `text` has none of:
@@ -580,7 +608,9 @@ export function readUtf8Json(
  *   `"4294967294"`) are not all before its other keys in ascending
  *   numeric order, which JavaScript would reorder (`{"b":1,"10":2}`,
  *   `{"10":1,"2":2}`); `"01"`, `"-1"` and `"4294967295"` are ordinary keys.
- * Pure; never throws for valid JSON.
+ * Pure; never throws for valid JSON, at any depth: the scan keeps its own
+ * stack rather than recursing, so a document nested a hundred thousand
+ * levels deep gets an answer like any other.
  */
 export function jsonRewriteIsLossless(text: string): boolean {
   return new LosslessScan(text).value();

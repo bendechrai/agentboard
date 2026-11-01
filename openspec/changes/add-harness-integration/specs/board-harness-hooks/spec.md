@@ -379,9 +379,12 @@ commands share. A `.claude/settings.json` that is not valid JSON or not a
 JSON object SHALL be refused, and `--force` replaces it whole; a `hooks`
 value that is not an object, or one of the three keys holding something
 other than an array, SHALL be refused, and `--force` replaces those values
-only; no refusal repeats the file's content. A `--command` value starting with `-`, or equal to a POSIX special
-built-in, SHALL be refused with reason `usage` naming the flag; one with
-`=` or equal to a shell reserved word SHALL be single-quoted. The file SHALL be replaced
+only; no refusal repeats the file's content. A file nested more than 512
+levels deep SHALL be refused like invalid JSON, never with an internal
+error. A `--command` value starting with `-`, `+` or `%`, or equal to a
+POSIX special built-in or a regular built-in of sh, bash or zsh, SHALL be
+refused with reason `usage` naming the flag; one with
+`=` or equal to a shell reserved word (of sh, bash or zsh) SHALL be single-quoted. The file SHALL be replaced
 atomically, the temporary file flushed to disk before the rename, keeping its mode and following a symbolic link that stays in
 the working tree; `.claude/settings.local.json` is never read or written.
 
@@ -415,7 +418,15 @@ the working tree; `.claude/settings.local.json` is never read or written.
 
 #### Scenario: A lossy rewrite is refused
 - **WHEN** `.claude/settings.json` holds `12345678901234567890`, `-0`, a duplicate key or `{"b":1,"10":2}` and the hooks must be written
-- **THEN** the target is refused as `lossy-json` and the file is unchanged; with `--force` it is rewritten
+- **THEN** the target is refused as `lossy-json`, the message saying what `--force` would discard and none of the file's content, and the file is unchanged; with `--force` it is rewritten
+
+#### Scenario: Deeply nested settings are refused
+- **WHEN** `.claude/settings.json` is nested 100,000 levels deep and `agents install --target claude --target claude-hooks` runs
+- **THEN** `claude-hooks` is refused as `malformed-settings` with the file unchanged, the skill is written and reported, and the run exits 1 without an internal error
+
+#### Scenario: A shell built-in is refused as the executable
+- **WHEN** `agents install --target claude-hooks --command echo` runs
+- **THEN** it exits 1 with reason `usage`, naming `--command` and saying to give the path of the executable, and writes nothing; `--command /usr/local/bin/echo` installs
 
 #### Scenario: Invalid settings are refused
 - **WHEN** `.claude/settings.json` has a trailing comma and `agents install --target claude-hooks` runs
