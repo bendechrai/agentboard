@@ -42,7 +42,7 @@ import { BoardError } from '../store/errors.js';
  *   least 16 characters of `[A-Za-z0-9_-]`.
  * - `npm-token`: `npm_` followed by at least 32 characters of
  *   `[A-Za-z0-9]`.
- * - `openai-api-key`: `sk-proj-`, `sk-svcacct-` or `sk-admin-` followed by
+ * - `openai-api-key`: `sk-proj-`, `sk-svcacct-`, `sk-admin-` or `sk-None-` followed by
  *   at least 16 characters of `[A-Za-z0-9_-]`, or `sk-` followed by at
  *   least 32 characters of `[A-Za-z0-9]` (so `sk-ant-` keys, and
  *   hyphenated words, never match it).
@@ -73,7 +73,12 @@ import { BoardError } from '../store/errors.js';
  * start of the text is allowed), except `jwt`, whose `eyJ` must not be
  * preceded by an ASCII letter, digit, `_` or `-` (its own alphabet, so a
  * dot-less run cannot start a match at every `_` or `-` and the check
- * stays linear). Every pattern is case-sensitive. Each "at least" is
+ * stays linear). For both anchors, a letter or digit that ends a
+ * backslash escape (`\n`, `\r`, `\t`, `\b`, `\f`, judged on those two
+ * characters alone) or a percent-encoding (`%` and two hex digits) does
+ * not prevent a match. Every pattern is case-sensitive, and none throws on
+ * long input: open-ended minimums are written as a fixed count followed by
+ * a star, which V8 runs without a backtrack entry per character. Each "at least" is
  * a minimum with no maximum: a longer run, or a run followed by other
  * text, still matches. Twilio account and API key SIDs and unprefixed
  * secrets match no provider pattern.

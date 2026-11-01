@@ -34,8 +34,8 @@ is given. The patterns, in the order their names are reported, SHALL be:
   least 16 characters of `[A-Za-z0-9_-]`.
 - `npm-token`: `npm_` followed by at least 32 characters of
   `[A-Za-z0-9]`.
-- `openai-api-key`: `sk-proj-`, `sk-svcacct-` or `sk-admin-` followed by
-  at least 16 characters of `[A-Za-z0-9_-]`, or `sk-` followed by at
+- `openai-api-key`: `sk-proj-`, `sk-svcacct-`, `sk-admin-` or `sk-None-`
+  followed by at least 16 characters of `[A-Za-z0-9_-]`, or `sk-` followed by at
   least 32 characters of `[A-Za-z0-9]`.
 - `pypi-token`: `pypi-AgEIcHlwaS5vcmc` followed by at least 16
   characters of `[A-Za-z0-9_-]`.
@@ -60,9 +60,15 @@ Every pattern from `anthropic-api-key` to `stripe-webhook-secret` SHALL
 match only where its first character is not preceded by an ASCII letter
 or digit, except `jwt`, which SHALL match only where its first `eyJ` is
 not preceded by an ASCII letter, digit, `_` or `-` (a character of its
-own alphabet), and every such pattern SHALL be case-sensitive. Checking
-any text SHALL take time linear in its length: a run of a pattern's
-prefix and alphabet with no terminator never makes the check quadratic. Each "at least" is a minimum with
+own alphabet). For both anchors, a preceding letter or digit that ends
+a backslash escape (`\n`, `\r`, `\t`, `\b` or `\f`, judged on those
+two characters alone) or a percent-encoding (`%` and two hexadecimal
+digits) does not prevent a match, so a key right after an escape in
+pasted JSON or a URL is matched. Every such pattern SHALL be
+case-sensitive. Checking any text SHALL take time linear in its length:
+a run of a pattern's prefix and alphabet with no terminator never makes
+the check quadratic, and no input, however long, makes the check fail
+with an error instead of a result. Each "at least" is a minimum with
 no maximum: a longer run, or a run followed by other text, still
 matches. A refusal SHALL name every matching pattern once, in the order
 above. Stripe publishable keys (`pk_live_`, `pk_test_`) and Twilio
@@ -119,6 +125,14 @@ account and API key SIDs are public identifiers and match no pattern.
 #### Scenario: Adversarial input is checked in linear time
 - **WHEN** free text of 64 KB consists of a pattern's prefix repeated, or a prefix followed by a long run of its alphabet with no terminator (for example `eyJ_` repeated)
 - **THEN** the check finishes well within a second for every pattern
+
+#### Scenario: Key after an escape or a percent-encoding
+- **WHEN** a comment contains `\n`, `\t`, `%22`, `%3D` or `%20` immediately followed by a key of a new pattern (for example `line1\n` then `sk_live_` and 24 letters and digits, or `cfg%3D` then `glpat-` and 20 characters)
+- **THEN** it is refused naming that pattern; `desk_live_` and 24 letters and digits, and a key after `\q` or `%2G`, still match no pattern
+
+#### Scenario: Very long input is checked without error
+- **WHEN** free text or an actor name holds about 6 MiB of a pattern's alphabet straight after its prefix (for example `eyJ` or `SG.` followed by 6 MiB of `A`)
+- **THEN** the check returns its result as for any other text: the text is written, or refused with `secret-like` or `invalid-actor` for a pattern or the actor form, and never refused with an internal error
 
 #### Scenario: Anthropic key is not an OpenAI key
 - **WHEN** a comment contains `sk-ant-api03-` and 95 characters of `[A-Za-z0-9_-]`

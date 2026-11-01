@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  AFTER_ESCAPE,
   ASSIGNED_STRIPE_KEY,
+  DOUBLE_BACKSLASH_N,
+  SLUG_ACTORS,
+  SLUG_FALSE_POSITIVES,
+  hex,
+  jwt,
+  sendgrid,
   GLPAT_20,
   NEAR_MISSES,
   NEW_PATTERN_KEYS,
@@ -611,4 +618,219 @@ describe('time guard: every pattern is checked in linear time', () => {
       expect(performance.now() - start).toBeLessThan(1000);
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// Review round 1 (orchestrator rulings R1 to R5; design.md "Rulings from
+// review round 1").
+
+describe('R1: no pattern throws on very long input (board-cli "Very long input is checked without error")', () => {
+  /** About 6 MiB: past the 5.3 MiB at which an open-ended counted repeat overflows V8's backtrack stack. */
+  const MIB6 = 6 * 1024 * 1024;
+
+  /** `[label, build, expected]`: the input is built inside the test so only one is in memory at a time. */
+  const LONG: readonly (readonly [string, () => string, readonly string[]])[] = [
+    ['eyJ then 6 MiB of A', () => `eyJ${'A'.repeat(MIB6)}`, []],
+    ['eyJ then 6 MiB of the base64url alphabet', () => `eyJ${urlsafe(MIB6)}`, []],
+    [
+      'one JWT segment, then eyJ and 6 MiB of A',
+      () => `eyJ${'a'.repeat(8)}.eyJ${'A'.repeat(MIB6)}`,
+      [],
+    ],
+    [
+      'a JWT whose first segment is 6 MiB',
+      () => `eyJ${'A'.repeat(MIB6)}.eyJ${'a'.repeat(8)}.${'a'.repeat(16)}`,
+      ['jwt'],
+    ],
+    [
+      'a JWT whose second segment is 6 MiB',
+      () => `eyJ${'a'.repeat(8)}.eyJ${'A'.repeat(MIB6)}.${'a'.repeat(16)}`,
+      ['jwt'],
+    ],
+    ['SG. then 6 MiB of A', () => `SG.${'A'.repeat(MIB6)}`, []],
+    ['SG. then 6 MiB of the base64url alphabet', () => `SG.${urlsafe(MIB6)}`, []],
+    [
+      'a SendGrid key whose first segment is 6 MiB',
+      () => `SG.${'A'.repeat(MIB6)}.${'a'.repeat(16)}`,
+      ['sendgrid-api-key'],
+    ],
+    // Every pattern: 6 MiB of its alphabet straight after its prefix.
+    ['pem: BEGIN then 6 MiB of A and spaces', () => `-----BEGIN ${'A '.repeat(MIB6 / 2)}`, []],
+    ['aws: AKIA then 6 MiB of A', () => `AKIA${'A'.repeat(MIB6)}`, []],
+    ['github: ghp_ then 6 MiB', () => ['gh', 'p_', alnum(MIB6)].join(''), ['github-token']],
+    [
+      'anthropic: sk-ant- then 6 MiB',
+      () => ['sk-', 'ant-', urlsafe(MIB6)].join(''),
+      ['anthropic-api-key'],
+    ],
+    [
+      'digitalocean: dop_v1_ then 6 MiB',
+      () => ['dop', '_v1_', hex(MIB6)].join(''),
+      ['digitalocean-token'],
+    ],
+    [
+      'docker: dckr_pat_ then 6 MiB',
+      () => ['dckr', '_pat_', urlsafe(MIB6)].join(''),
+      ['docker-token'],
+    ],
+    ['gitlab: glpat- then 6 MiB', () => ['glp', 'at-', urlsafe(MIB6)].join(''), ['gitlab-token']],
+    ['google: AIza then 6 MiB', () => ['AI', 'za', urlsafe(MIB6)].join(''), ['google-api-key']],
+    ['huggingface: hf_ then 6 MiB', () => ['hf', '_', alnum(MIB6)].join(''), ['huggingface-token']],
+    ['npm: npm_ then 6 MiB', () => ['npm', '_', alnum(MIB6)].join(''), ['npm-token']],
+    [
+      'openai: sk-proj- then 6 MiB',
+      () => ['sk-', 'proj-', urlsafe(MIB6)].join(''),
+      ['openai-api-key'],
+    ],
+    ['openai: sk- then 6 MiB', () => ['sk', '-', alnum(MIB6)].join(''), ['openai-api-key']],
+    [
+      'pypi: prefix then 6 MiB',
+      () => ['pypi-AgEI', 'cHlwaS5vcmc', urlsafe(MIB6)].join(''),
+      ['pypi-token'],
+    ],
+    ['shopify: shpat_ then 6 MiB', () => ['shp', 'at_', hex(MIB6)].join(''), ['shopify-token']],
+    ['slack: xoxb-1- then 6 MiB', () => ['xox', 'b-1-', alnum(MIB6)].join(''), ['slack-token']],
+    ['slack: xoxb- then 6 MiB of digits', () => ['xox', 'b-', '1'.repeat(MIB6)].join(''), []],
+    [
+      'stripe: sk_live_ then 6 MiB',
+      () => ['sk', '_live_', alnum(MIB6)].join(''),
+      ['stripe-secret-key'],
+    ],
+    [
+      'whsec: whsec_ then 6 MiB',
+      () => ['wh', 'sec_', alnum(MIB6)].join(''),
+      ['stripe-webhook-secret'],
+    ],
+    ['generic: key= then 6 MiB', () => `key=${urlsafe(MIB6)}`, ['generic-secret-assignment']],
+  ];
+
+  it.each(LONG.map(([label, build, expected]) => [label, build, expected] as const))(
+    '%s: returns its names without throwing, within 10 s',
+    (_label, build, expected) => {
+      const input = build();
+      expect(input.length).toBeGreaterThanOrEqual(MIB6);
+      const start = performance.now();
+      let names: string[] = [];
+      expect(() => {
+        names = secretPatternsIn(input);
+      }).not.toThrow();
+      expect(performance.now() - start).toBeLessThan(10_000);
+      expect(names).toEqual(expected);
+    },
+  );
+
+  it('refuseSecretLike and isActorName also return normally on 6 MiB after eyJ and SG.', () => {
+    for (const input of [`eyJ${'A'.repeat(MIB6)}`, `SG.${'A'.repeat(MIB6)}`]) {
+      expect(() => {
+        refuseSecretLike([input], false);
+      }).not.toThrow();
+      expect(isActorName(input)).toBe(false);
+    }
+  });
+});
+
+describe('R2: a key right after a backslash escape or a percent-encoding is matched', () => {
+  it.each(AFTER_ESCAPE.map(([label, text, pattern]) => [label, text, pattern] as const))(
+    '%s',
+    (_label, text, pattern) => {
+      expect(secretPatternsIn(text)).toEqual([pattern]);
+      expect(secretPatternsIn(`{"msg":"${text}"}`)).toEqual([pattern]);
+    },
+  );
+
+  it('an escaped backslash then n before a key is judged on the two characters \\n: matched (test-author ruling)', () => {
+    expect(secretPatternsIn(DOUBLE_BACKSLASH_N)).toEqual(['stripe-secret-key']);
+  });
+
+  it('desk_live_ stays unmatched, and an incomplete escape or percent-encoding still blocks a prefix', () => {
+    expect(secretPatternsIn(['de', 'sk', '_live_', alnum(24)].join(''))).toEqual([]);
+    expect(secretPatternsIn(['\\nde', 'sk', '_live_', alnum(24)].join(''))).toEqual([]);
+    expect(secretPatternsIn(['%3Dde', 'sk', '_live_', alnum(24)].join(''))).toEqual([]);
+  });
+
+  it('a JWT after an escape or a percent-encoding is matched, after _ or - still not', () => {
+    const value = jwt(20, 24, 43);
+    for (const before of ['\\n', '\\t', '%22', '%3D', '%20']) {
+      expect(secretPatternsIn(`${before}${value}`), before).toEqual(['jwt']);
+    }
+    for (const before of ['\\n_', '%20-', '_', '-']) {
+      expect(secretPatternsIn(`${before}${value}`), before).toEqual([]);
+    }
+  });
+
+  it('the AWS key id keeps its own two-sided anchor (test-author ruling): not matched after \\n', () => {
+    const id = ['AK', 'IA', 'Q4X7FAKEEXAMPLE2'].join('');
+    expect(secretPatternsIn(` ${id}`)).toEqual(['aws-access-key-id']);
+    expect(secretPatternsIn(`\\n${id}`)).toEqual([]);
+  });
+});
+
+describe('R3: slugs after hyphenated prefixes are refused (accepted residual risk)', () => {
+  it.each(SLUG_FALSE_POSITIVES.map((k) => [k.label, k] as const))(
+    '%s names its pattern',
+    (_label, k) => {
+      expect(secretPatternsIn(k.value)).toEqual([k.pattern]);
+    },
+  );
+
+  it.each(SLUG_ACTORS.map((k) => [k.label, k] as const))(
+    '%s, of the actor form, fails the actor check by its pattern',
+    (_label, k) => {
+      expect(ACTOR_FORM.test(k.value)).toBe(true);
+      expect(secretPatternsIn(k.value)).toEqual([k.pattern]);
+      expect(isActorName(k.value)).toBe(false);
+    },
+  );
+});
+
+describe('R4: OpenAI user keys sk-None- are openai-api-key', () => {
+  it('sk-None- with 48 letters and digits, and with exactly 16 of the base64url alphabet, match; 15 do not', () => {
+    expect(secretPatternsIn(providerKey('openai user sk-None- + 48').value)).toEqual([
+      'openai-api-key',
+    ]);
+    expect(secretPatternsIn(['sk-', 'None-', urlsafe(16)].join(''))).toEqual(['openai-api-key']);
+    expect(secretPatternsIn(['sk-', 'None-', urlsafe(15)].join(''))).toEqual([]);
+    expect(secretPatternsIn(['sk-', 'none-', urlsafe(48)].join(''))).toEqual([]);
+  });
+});
+
+describe('R5: exact boundaries of the second segments, and the other surviving mutants', () => {
+  it('a JWT whose segments are exactly eyJ + 8, eyJ + 8 and 16 matches', () => {
+    expect(jwt(11, 11, 16)).toHaveLength(11 + 1 + 11 + 1 + 16);
+    expect(secretPatternsIn(jwt(11, 11, 16))).toEqual(['jwt']);
+    expect(secretPatternsIn(jwt(11, 10, 16))).toEqual([]);
+    expect(secretPatternsIn(jwt(10, 11, 16))).toEqual([]);
+    expect(secretPatternsIn(jwt(11, 11, 15))).toEqual([]);
+  });
+
+  it('a SendGrid key whose segments are exactly 16 and 16 matches', () => {
+    expect(secretPatternsIn(sendgrid(16, 16))).toEqual(['sendgrid-api-key']);
+    expect(secretPatternsIn(sendgrid(16, 15))).toEqual([]);
+    expect(secretPatternsIn(sendgrid(15, 16))).toEqual([]);
+  });
+
+  it('the near-misses with _ at or past the minimum, SG without its dot, xoxb-- and another PyPI tail all match nothing', () => {
+    const labels = [
+      'hf_ snake_case, 39 after the prefix',
+      'hf_ + 31 then _ then 31',
+      'npm_ snake_case, 45 after the prefix',
+      'npm_ + 31 then _ then 31',
+      'sk_test_ snake_case, 32 after the prefix',
+      'rk_live_ + 15 then _ then 15',
+      'sk_live_ + 15 then _ then 15',
+      'whsec_ snake_case, 30 after the prefix',
+      'whsec_ + 15 then _ then 15',
+      'SGx 22 . 43',
+      'SG_ 22 . 43',
+      'xoxb-- + 24',
+      'xapp-- + 24',
+      'pypi-AgEIcHlw with another tail + 150',
+      'pypi-AgEI + 150',
+    ];
+    for (const label of labels) {
+      const k = NEAR_MISSES.find((n) => n.label === label);
+      expect(k, label).toBeDefined();
+      expect(secretPatternsIn(k?.value ?? ''), label).toEqual([]);
+    }
+  });
 });

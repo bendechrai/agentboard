@@ -125,6 +125,7 @@ export const PROVIDER_KEYS: readonly ProviderKey[] = [
   row('openai sk-proj- + 156', key('sk-', 'proj-', urlsafe(156)), 'openai-api-key'),
   row('openai sk-svcacct- + 156', key('sk-', 'svcacct-', urlsafe(156)), 'openai-api-key'),
   row('openai sk-admin- + 156', key('sk-', 'admin-', urlsafe(156)), 'openai-api-key'),
+  row('openai user sk-None- + 48', key('sk-', 'None-', alnum(48)), 'openai-api-key'),
   row('pypi + 150', [PYPI, urlsafe(150)].join(''), 'pypi-token'),
   row('sendgrid SG. 22 . 43', sendgrid(22, 43), 'sendgrid-api-key'),
   row('shopify shpat_ + 32', key('shp', 'at_', hex(32)), 'shopify-token'),
@@ -236,6 +237,7 @@ export const ONE_SHORT: readonly Accepted[] = [
   { label: 'sk-proj- + 15', value: key('sk-', 'proj-', urlsafe(15)) },
   { label: 'sk-svcacct- + 15', value: key('sk-', 'svcacct-', urlsafe(15)) },
   { label: 'sk-admin- + 15', value: key('sk-', 'admin-', urlsafe(15)) },
+  { label: 'sk-None- + 15', value: key('sk-', 'None-', urlsafe(15)) },
   { label: 'sk- + 31', value: key('sk', '-', alnum(31)) },
   { label: 'pypi + 15', value: [PYPI, urlsafe(15)].join('') },
   { label: 'SG. 15 . 16', value: sendgrid(15, 16) },
@@ -308,6 +310,83 @@ export const NEAR_MISSES: readonly Accepted[] = [
   { label: 'PYPI- upper-case + 150', value: [PYPI.toUpperCase(), urlsafe(150)].join('') },
   // The DigitalOcean alphabet is lower-case hex only.
   { label: 'dop_v1_ + 64 upper-case hex', value: key('dop', '_v1_', hex(64).toUpperCase()) },
+  // Review round 1, R5: `_` is outside the hf_, npm_, Stripe and whsec_
+  // alphabets, so a snake_case identifier at or past the minimum length
+  // after the prefix, with no unbroken run that long, matches nothing.
+  {
+    label: 'hf_ snake_case, 39 after the prefix',
+    value: 'hf_hub_download_cache_directory_for_models',
+  },
+  { label: 'hf_ + 31 then _ then 31', value: key('hf', '_', `${alnum(31)}_${alnum(31)}`) },
+  {
+    label: 'npm_ snake_case, 45 after the prefix',
+    value: 'npm_package_dependencies_typescript_eslint_parser',
+  },
+  { label: 'npm_ + 31 then _ then 31', value: key('npm', '_', `${alnum(31)}_${alnum(31)}`) },
+  {
+    label: 'sk_test_ snake_case, 32 after the prefix',
+    value: 'sk_test_payment_intent_confirmation_flow',
+  },
+  {
+    label: 'rk_live_ + 15 then _ then 15',
+    value: key('rk', '_live_', `${alnum(15)}_${alnum(15)}`),
+  },
+  {
+    label: 'sk_live_ + 15 then _ then 15',
+    value: key('sk', '_live_', `${alnum(15)}_${alnum(15)}`),
+  },
+  {
+    label: 'whsec_ snake_case, 30 after the prefix',
+    value: 'whsec_signing_secret_for_webhooks_v2',
+  },
+  { label: 'whsec_ + 15 then _ then 15', value: key('wh', 'sec_', `${alnum(15)}_${alnum(15)}`) },
+  // The dot after SG is literal.
+  { label: 'SGx 22 . 43', value: sendgrid(22, 43).replace(/^SG\./, 'SGx') },
+  { label: 'SG_ 22 . 43', value: sendgrid(22, 43).replace(/^SG\./, 'SG_') },
+  // Slack needs at least one digit between the hyphens.
+  { label: 'xoxb-- + 24', value: key('xox', 'b--', alnum(24)) },
+  { label: 'xapp-- + 24', value: key('xa', 'pp--', alnum(24)) },
+  // The whole PyPI prefix is required: the same length with another tail.
+  {
+    label: 'pypi-AgEIcHlw with another tail + 150',
+    value: key('pypi-AgEI', 'cHlwZZZZZZZ', urlsafe(150)),
+  },
+  { label: 'pypi-AgEI + 150', value: key('pypi-', 'AgEI', urlsafe(150)) },
+  // Review round 1, R2: an escape or a percent-encoding only counts when
+  // complete; any other letter or digit before a prefix still blocks it.
+  { label: 'backslash q then sk_live_ + 24', value: `\\q${key('sk', '_live_', alnum(24))}` },
+  { label: 'backslash x then glpat- + 20', value: `\\x${key('glp', 'at-', urlsafe(20))}` },
+  { label: '%2G then sk_live_ + 24', value: `%2G${key('sk', '_live_', alnum(24))}` },
+  { label: '%G2 then glpat- + 20', value: `%G2${key('glp', 'at-', urlsafe(20))}` },
+  { label: 'a%2 then npm_ + 36', value: `a%2${key('npm', '_', alnum(36))}` },
+  { label: '%20d then sk_live_ + 24 (desk)', value: `%20de${key('sk', '_live_', alnum(24))}` },
+  { label: 'backslash n x then glpat- + 20', value: `\\nx${key('glp', 'at-', urlsafe(20))}` },
+  { label: 'backslash n _ then jwt', value: `\\n_${jwt(20, 24, 43)}` },
+];
+
+/**
+ * Ordinary slugs after a hyphenated or underscored prefix (review round
+ * 1, R3: accepted residual risk, design.md "Residual risk"): each is
+ * refused naming `pattern`, a deliberate false positive.
+ */
+export const SLUG_FALSE_POSITIVES: readonly ProviderKey[] = [
+  row('sk-proj- slug', key('sk-', 'proj-migr', 'ation-to-new-api'), 'openai-api-key'),
+  row('sk-admin- slug', key('sk-', 'admin-dashb', 'oard-refactor-notes'), 'openai-api-key'),
+  row('glpat- slug', key('glp', 'at-rotati', 'on-for-ci-runners'), 'gitlab-token'),
+  row('sk-ant- slug', key('sk-', 'ant-api-key', '-rotation-procedure'), 'anthropic-api-key'),
+  row('dckr_pat_ slug', key('dck', 'r_pat_rotat', 'ion_script_v2_final'), 'docker-token'),
+  row(
+    'SG. slug',
+    key('SG.', 'marketing_campaig', 'n_2024.newsletter_template_final'),
+    'sendgrid-api-key',
+  ),
+];
+
+/** Actor names of the actor form that are slugs after a prefix (R3): refused by the pattern. */
+export const SLUG_ACTORS: readonly ProviderKey[] = [
+  row('glpat- bot', key('glp', 'at-rotat', 'ion-bot-for-ci'), 'gitlab-token'),
+  row('sk-ant- reviewer', key('sk-', 'ant-revi', 'ewer-claude-1'), 'anthropic-api-key'),
+  row('xoxb- bot', key('xox', 'b-1-inte', 'gration-bot-0'), 'slack-token'),
 ];
 
 /**
@@ -343,6 +422,54 @@ export const RK_LIVE_24 = providerKey('stripe rk_live_ + 24').value;
 export const SK_TEST_24 = providerKey('stripe sk_test_ + 24').value;
 /** `glpat-` and 20 characters of `[A-Za-z0-9_-]` (26 characters). */
 export const GLPAT_20 = providerKey('gitlab glpat- + 20').value;
+
+/** What may stand right before a key in `AFTER_ESCAPE`: escapes, percent-encodings and the escapes that end in punctuation. */
+const ESCAPES: readonly string[] = [
+  'line1\\n',
+  '\\n',
+  '\\r',
+  '\\t',
+  '\\b',
+  '\\f',
+  'x\\t',
+  '%22',
+  '%3D',
+  'cfg%3D',
+  '%20',
+  'my%20key%20',
+  '%2f',
+  '%0A',
+  '\\"',
+  '\\\\',
+  '\\/',
+];
+
+/**
+ * Keys right after a backslash escape or a percent-encoding (review
+ * round 1, R2; board-cli scenario "Key after an escape or a
+ * percent-encoding"): `[label, text, pattern]`, each text refused naming
+ * exactly `pattern`. The escapes are the two characters backslash and a
+ * letter, as they appear in pasted JSON.
+ */
+export const AFTER_ESCAPE: readonly (readonly [string, string, string])[] = [
+  'stripe sk_live_ + 24',
+  'gitlab glpat- + 20',
+  'anthropic sk-ant-api03- + 95',
+  'npm npm_ + 36',
+  'slack xoxb-',
+  'jwt 20 . 24 . 43',
+  'google AIza + 35',
+].flatMap((label) => {
+  const k = providerKey(label);
+  return ESCAPES.map((before) => [`${before} ${label}`, `${before}${k.value}`, k.pattern] as const);
+});
+
+/**
+ * An escaped backslash then a literal `n` before a key (`a\\n` in JSON):
+ * the escape is judged on its own two characters (test-author ruling,
+ * design.md "Rulings from review round 1"), so the key is matched.
+ */
+export const DOUBLE_BACKSLASH_N = `a\\\\n${key('sk', '_live_', alnum(24))}`;
 
 /** `STRIPE_KEY=` and `sk_live_` with 24 letters and digits (scenario "Assigned key names both patterns"). */
 export const ASSIGNED_STRIPE_KEY = [

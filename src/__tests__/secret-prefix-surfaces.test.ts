@@ -65,6 +65,7 @@ import {
   type ProviderKey,
 } from './harness/provider-key-fixtures.js';
 import {
+  actorFormMessage,
   actorPatternMessage,
   expectNoLeak,
   type SecretFixture,
@@ -611,5 +612,69 @@ describe('scenario: Short prefixed key as the actor (MCP)', () => {
       actorPatternMessage('AGENTBOARD_ACTOR', pattern),
       [f],
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review round 1, R1 (board-cli scenario "Very long input is checked
+// without error"): the two surfaces that accept about 6 MiB in one string
+// (the MCP stdio transport allows 10 MiB; a tasks.md line is unbounded)
+// refuse or write it normally, never with exit 5. The CLI argument limit
+// (128 KiB) and the web body limit (64 KiB) keep such input off the other
+// surfaces.
+
+/** About 6 MiB. */
+const MIB6 = 6 * 1024 * 1024;
+
+describe('scenario: Very long input is checked without error (surfaces)', () => {
+  it('MCP board_comment with as set to eyJ and 6 MiB of A: invalid-actor for the form, not exit 5', async () => {
+    const s = await mcpServed();
+    const before = allNames(s.eventsDir);
+    const result = (await s.child.client.callTool({
+      name: 'board_comment',
+      arguments: { id: s.id, text: 'hi', as: `eyJ${'A'.repeat(MIB6)}` },
+    })) as CallResult;
+    const text = JSON.stringify(result);
+    expect(text.length).toBeLessThan(64 * 1024);
+    expect(/A{64}/.test(text)).toBe(false);
+    expect(/A{64}/.test(s.child.stderr())).toBe(false);
+    expect(result.isError).toBe(true);
+    const error = result.structuredContent as unknown as ToolError;
+    expect({ exitCode: error.exitCode, reason: error.reason, message: error.message }).toEqual({
+      exitCode: 1,
+      reason: 'invalid-actor',
+      message: actorFormMessage('the argument as'),
+    });
+    expect(allNames(s.eventsDir)).toEqual(before);
+  });
+
+  it('import-change with a 6 MiB task line after SG. imports it (exit 0), in process', () => {
+    const { root, boardDir } = project();
+    mkdirSync(join(root, 'openspec', 'changes', 'long-line'), { recursive: true });
+    writeFileSync(
+      join(root, 'openspec', 'changes', 'long-line', 'tasks.md'),
+      `## 1. One\n- [ ] 1.1 SG.${'A'.repeat(MIB6)}\n`,
+    );
+    const out = run(['import-change', 'long-line', '--as', 'orch', '--json'], root);
+    expect(out.code, out.stderr.slice(0, 500)).toBe(0);
+    expect(allNames(join(boardDir, 'events')).length).toBeGreaterThan(0);
+  });
+
+  it('import-change with a 6 MiB task line after eyJ that ends in a key is refused secret-like, not exit 5', () => {
+    const { root, boardDir } = project();
+    mkdirSync(join(root, 'openspec', 'changes', 'long-key'), { recursive: true });
+    writeFileSync(
+      join(root, 'openspec', 'changes', 'long-key', 'tasks.md'),
+      `## 1. One\n- [ ] 1.1 eyJ${'A'.repeat(MIB6)} then ${GLPAT_20}\n`,
+    );
+    const before = allNames(join(boardDir, 'events'));
+    const out = run(['import-change', 'long-key', '--as', 'orch', '--json'], root);
+    expect(out.code, out.stderr.slice(0, 500)).toBe(1);
+    expect((oneJson(out) as { error: { reason: string; message: string } }).error).toMatchObject({
+      reason: 'secret-like',
+      message: secretMessage('gitlab-token', false),
+    });
+    expect(/A{64}/.test(out.stdout + out.stderr)).toBe(false);
+    expect(allNames(join(boardDir, 'events'))).toEqual(before);
   });
 });
