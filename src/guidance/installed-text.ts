@@ -337,8 +337,7 @@ export const HOOKS_MARKER_TEXT = '# agentboard-hooks:';
  * Pure.
  */
 export function hooksMarker(version: number): string {
-  void version;
-  throw new Error('not implemented');
+  return `${HOOKS_MARKER_TEXT} v${String(version)}`;
 }
 
 /** The executable a hook command runs when `--command` is not given. */
@@ -368,6 +367,13 @@ export const CLAUDE_HOOK_EVENTS: readonly {
   { key: 'Stop', event: 'stop' },
   { key: 'PreToolUse', event: 'pre-tool-use' },
 ];
+
+/** The `hook` event of each settings key (`CLAUDE_HOOK_EVENTS` as a lookup). */
+const EVENT_OF_KEY: Readonly<Record<ClaudeHookKey, ClaudeHookEvent>> = {
+  SessionStart: 'session-start',
+  Stop: 'stop',
+  PreToolUse: 'pre-tool-use',
+};
 
 /** What the hook entries are rendered for. */
 export interface ClaudeHookOptions {
@@ -408,9 +414,17 @@ export interface ClaudeHookGroup {
  * Never trimmed, resolved or checked for existence. Pure.
  */
 export function hookExecutable(command?: string): string {
-  void command;
-  throw new Error('not implemented');
+  if (command === undefined) {
+    return HOOK_DEFAULT_EXECUTABLE;
+  }
+  if (SHELL_SAFE_WORD.test(command)) {
+    return command;
+  }
+  return `'${command.replaceAll("'", "'\\''")}'`;
 }
+
+/** A non-empty executable text that needs no quoting in a POSIX shell. */
+const SHELL_SAFE_WORD = /^[A-Za-z0-9_./@%+=:,-]+$/;
 
 /**
  * The command string of one agentboard hook: `hookExecutable(command)`,
@@ -419,9 +433,8 @@ export function hookExecutable(command?: string): string {
  * `npx -y @bendechrai/agentboard hook stop # agentboard-hooks: v3`. Pure.
  */
 export function hookCommand(event: ClaudeHookEvent, options: ClaudeHookOptions = {}): string {
-  void event;
-  void options;
-  throw new Error('not implemented');
+  const strict = options.strict === true ? ' --strict' : '';
+  return `${hookExecutable(options.command)} hook ${event}${strict} ${hooksMarker(options.version ?? GUIDANCE_VERSION)}`;
 }
 
 /**
@@ -434,7 +447,12 @@ export function hookCommand(event: ClaudeHookEvent, options: ClaudeHookOptions =
  * `timeout`), no other key. A new object every call. Pure.
  */
 export function hookGroup(key: ClaudeHookKey, options: ClaudeHookOptions = {}): ClaudeHookGroup {
-  void key;
-  void options;
-  throw new Error('not implemented');
+  const handler: ClaudeHookHandler = {
+    type: 'command',
+    command: hookCommand(EVENT_OF_KEY[key], options),
+    timeout: HOOK_TIMEOUT_SECONDS,
+  };
+  return key === 'PreToolUse'
+    ? { matcher: PRE_TOOL_USE_MATCHER, hooks: [handler] }
+    : { hooks: [handler] };
 }

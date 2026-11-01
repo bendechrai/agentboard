@@ -13,8 +13,18 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  mkdirSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 
 import { Pair, Scalar, YAMLMap, YAMLSeq, isMap, isScalar, isSeq, type Document } from 'yaml';
 
@@ -22,6 +32,7 @@ import type { CommandOutput, Env } from '../cli/types.js';
 import { BoardError } from '../store/errors.js';
 import {
   AGENTS_MD_PATH,
+  CLAUDE_HOOK_EVENTS,
   CLAUDE_SETTINGS_PATH,
   GUIDANCE_VERSION,
   MCP_JSON_PATH,
@@ -30,24 +41,32 @@ import {
   OPENSPEC_GUIDANCE,
   OPENSPEC_OPERATIONS,
   SKILL_PATH,
+  hookGroup,
   manualOpenSpecLines,
   mcpEntry,
   openSpecVersionComment,
   renderAgentsBlock,
   renderSkill,
+  type ClaudeHookOptions,
   type OpenSpecOperation,
 } from './installed-text.js';
 import {
   PERMISSION_CODES,
   agentsMarkers,
   errorCode,
+  groupHandlers,
+  hasHooksShape,
   hasSkillMarker,
+  hookArrays,
   isAgentboardItem,
   isJsonObject,
   isManagedMcpEntry,
+  isOwnedHandler,
   jsonEqual,
   openSpecItems,
+  parseClaudeSettings,
   parseConfig,
+  parseHookCommand,
   parseMcpJson,
   readBytes,
   readText,
@@ -346,8 +365,9 @@ function kindOf(path: string): 'dir' | 'file' | null {
  * `AGENTS.md` exists (reason `AGENTS.md exists`), `openspec` when
  * `openspec/config.yaml` exists (reason `openspec/config.yaml exists`).
  * `mcp-json` is never selected, because registering a server changes what
- * every session in the project loads. Reads only; may return an empty
- * array.
+ * every session in the project loads, and neither is `claude-hooks`, even
+ * where it is installed, because hooks change what the agent may do. Reads
+ * only; may return an empty array.
  */
 export function detectTargets(root: string): TargetSelection[] {
   const selected: TargetSelection[] = [];
@@ -675,15 +695,170 @@ function installMcpJson(path: string, force: boolean, mcpCommand: string | undef
   return done('updated', `wrote the agentboard MCP server into ${MCP_JSON_PATH}`);
 }
 
+/** `value` as the installer serializes a settings file, with a byte order mark when `bom`. */
+function settingsText(value: unknown, bom: boolean): string {
+  return `${bom ? '\uFEFF' : ''}${JSON.stringify(value, null, 2)}\n`;
+}
+
+/**
+ * Replaces the file at `path` (symlinks already resolved) by `content`
+ * atomically: the content goes to a temporary file in the same directory,
+ * which takes the mode of the file it replaces and is renamed over it. A
+ * file the process may not write (`accessSync` for writing) throws
+ * `EACCES` before anything is created, and a temporary file is never left
+ * behind when a step fails.
+ */
+function replaceFile(path: string, content: string): void {
+  accessSync(path, constants.W_OK);
+  const mode = statSync(path).mode & 0o7777;
+  const temp = join(
+    dirname(path),
+    `.${basename(path)}.${String(process.pid)}.${Math.random().toString(36).slice(2)}.tmp`,
+  );
+  try {
+    writeFileSync(temp, content, { encoding: 'utf8', mode });
+    chmodSync(temp, mode);
+    renameSync(temp, path);
+  } catch (error) {
+    try {
+      unlinkSync(temp);
+    } catch {
+      // Never created, or already renamed: nothing to remove.
+    }
+    throw error;
+  }
+}
+
+/**
+ * The executable the installed hook commands of `settings` share: every
+ * owned handler's command parses with the event of its key and they all
+ * name one executable (null for the default). Undefined when there is
+ * none to keep (no owned handler, a command that does not parse, or
+ * several executables), so the default is used.
+ */
+function installedExecutable(settings: Record<string, unknown>): string | null | undefined {
+  const executables = new Set<string | null>();
+  for (const { event, groups } of hookArrays(settings)) {
+    for (const group of groups) {
+      for (const handler of groupHandlers(group)) {
+        if (!isOwnedHandler(handler)) {
+          continue;
+        }
+        const parsed = parseHookCommand(String(handler.command));
+        if (parsed === null || parsed.event !== event) {
+          return undefined;
+        }
+        executables.add(parsed.executable);
+      }
+    }
+  }
+  const [only] = executables;
+  return executables.size === 1 ? only : undefined;
+}
+
+/**
+ * Merges the wanted group into the `hooks.<key>` array `groups`: the
+ * array unchanged (same reference) when it holds exactly one owned group
+ * deep-equal to `wanted`; otherwise a new array with every owned handler
+ * removed, groups left empty dropped, and `wanted` where the first owned
+ * group was (right after it when user handlers kept it), or appended.
+ */
+function mergeHookGroups(groups: readonly unknown[], wanted: object): readonly unknown[] {
+  const owned = groups.filter((group) => groupHandlers(group).some(isOwnedHandler));
+  if (owned.length === 1 && jsonEqual(owned[0], wanted)) {
+    return groups;
+  }
+  const merged: unknown[] = [];
+  let placed = false;
+  for (const group of groups) {
+    if (!owned.includes(group) || !isJsonObject(group)) {
+      merged.push(group);
+      continue;
+    }
+    const users = groupHandlers(group).filter((handler) => !isOwnedHandler(handler));
+    if (users.length > 0) {
+      merged.push({ ...group, hooks: users });
+    }
+    if (!placed) {
+      merged.push(wanted);
+      placed = true;
+    }
+  }
+  if (!placed) {
+    merged.push(wanted);
+  }
+  return merged;
+}
+
 /**
  * The `claude-hooks` target: the three agentboard entries of
  * `.claude/settings.json` (see `installGuidance`, `claude-hooks`).
  */
 function installClaudeHooks(path: string, version: number, run: RunOptions): Handled {
-  void path;
-  void version;
-  void run;
-  throw new Error('not implemented');
+  const text = readText(path);
+  const render = (settings: Record<string, unknown>): ClaudeHookOptions => {
+    const kept = run.command ?? installedExecutable(settings);
+    return {
+      version,
+      strict: run.hooksStrict,
+      ...(typeof kept === 'string' ? { command: kept } : {}),
+    };
+  };
+  const fresh = (bom: boolean): string => {
+    const options = render({});
+    const hooks = Object.fromEntries(
+      CLAUDE_HOOK_EVENTS.map(({ key }) => [key, [hookGroup(key, options)]]),
+    );
+    return settingsText({ hooks }, bom);
+  };
+  if (text === null) {
+    write(path, fresh(false));
+    return done('created', `wrote ${CLAUDE_SETTINGS_PATH} with the agentboard hooks`);
+  }
+  const parsed = parseClaudeSettings(text);
+  if (parsed === null) {
+    if (!run.force) {
+      return refuse(
+        'malformed-settings',
+        `${CLAUDE_SETTINGS_PATH} is not a JSON object (invalid JSON, or a top level that is not an object), so the agentboard hooks cannot be merged into it`,
+      );
+    }
+    replaceFile(path, fresh(text.startsWith('\uFEFF')));
+    return done(
+      'updated',
+      `replaced the unreadable ${CLAUDE_SETTINGS_PATH} by a fresh file with the agentboard hooks`,
+    );
+  }
+  const { bom, settings } = parsed;
+  if (!hasHooksShape(settings)) {
+    if (!run.force) {
+      return refuse(
+        'hooks-shape',
+        `${CLAUDE_SETTINGS_PATH} has a hooks value, or a SessionStart, Stop or PreToolUse entry under it, that is not the object or array Claude Code expects`,
+      );
+    }
+    if (!isJsonObject(settings.hooks)) {
+      settings.hooks = {};
+    }
+  }
+  const options = render(settings);
+  const hooks = isJsonObject(settings.hooks) ? settings.hooks : {};
+  settings.hooks = hooks;
+  let changed = false;
+  for (const { key } of CLAUDE_HOOK_EVENTS) {
+    const wanted = hookGroup(key, options);
+    const groups = Array.isArray(hooks[key]) ? (hooks[key] as unknown[]) : [];
+    const merged = mergeHookGroups(groups, wanted);
+    if (merged !== groups || !Array.isArray(hooks[key])) {
+      hooks[key] = merged;
+      changed = true;
+    }
+  }
+  if (!changed) {
+    return done('unchanged', `${CLAUDE_SETTINGS_PATH} is up to date`);
+  }
+  replaceFile(path, settingsText(settings, bom));
+  return done('updated', `wrote the agentboard hooks into ${CLAUDE_SETTINGS_PATH}`);
 }
 
 /** What every target handler may need besides its path and version. */
@@ -762,9 +937,6 @@ function installTarget(
  */
 export const COMMAND_REASON = 'requested with --command';
 
-/** The reason the stubbed selection still gives; replaced by `COMMAND_REASON`. */
-const MCP_COMMAND_REASON = 'requested with --mcp-command';
-
 /**
  * The one stderr line (without the `agentboard: ` prefix) that `agents
  * install --mcp-command` prints first, on every run that returns
@@ -774,13 +946,18 @@ const MCP_COMMAND_REASON = 'requested with --mcp-command';
 export const MCP_COMMAND_DEPRECATION =
   '--mcp-command is deprecated; use --command, which does the same';
 
-/** Throws `usage` when `--mcp-command` was given an empty value or a line feed. */
-function validateMcpCommand(mcpCommand: string | undefined): void {
-  if (mcpCommand === '') {
-    throw new BoardError(1, 'usage', '--mcp-command must not be empty');
+/**
+ * Throws `usage` when `--command` (or `--mcp-command`, when `flag` says
+ * the value came from it) was given an empty value or a line feed. The
+ * message names the flag, never the value.
+ */
+function validateCommand(command: string | undefined, flag: InstallOptions['commandFlag']): void {
+  const name = flag ?? 'command';
+  if (command === '') {
+    throw new BoardError(1, 'usage', `--${name} must not be empty`);
   }
-  if (mcpCommand?.includes('\n') === true) {
-    throw new BoardError(1, 'usage', '--mcp-command must not contain a newline');
+  if (command?.includes('\n') === true) {
+    throw new BoardError(1, 'usage', `--${name} must not contain a newline`);
   }
 }
 
@@ -812,7 +989,7 @@ function selectTargets(
       ? chosen
       : GUIDANCE_TARGETS.flatMap((target): TargetSelection[] => {
           if (target === 'mcp-json') {
-            return [{ target, reason: MCP_COMMAND_REASON }];
+            return [{ target, reason: COMMAND_REASON }];
           }
           return chosen.filter((s) => s.target === target);
         });
@@ -987,7 +1164,7 @@ function selectTargets(
  * `no-targets` (no `--target`, nothing detected and no `command`).
  */
 export function installGuidance(options: InstallOptions): InstallResult {
-  validateMcpCommand(options.command);
+  validateCommand(options.command, options.commandFlag);
   const root = workingTreeRoot(options.cwd, options.env ?? process.env);
   const version = options.version ?? GUIDANCE_VERSION;
   const force = options.force ?? false;
@@ -1030,7 +1207,7 @@ export function installGuidance(options: InstallOptions): InstallResult {
 export function renderInstall(result: InstallResult): string {
   const lines: string[] = [];
   for (const t of result.targets) {
-    if (result.autoDetected || t.reason === MCP_COMMAND_REASON) {
+    if (result.autoDetected || t.reason === COMMAND_REASON) {
       lines.push(`selected ${t.target}: ${t.reason}`);
     }
   }
@@ -1098,13 +1275,14 @@ export function installCommand(cwd: string, env: Env, flags: InstallFlags): Comm
     ...(flags.mcpCommand === undefined ? {} : { commandFlag: 'mcp-command' as const }),
   });
   const refused = result.targets.filter((t) => t.action === 'refused');
-  const output: CommandOutput = { json: result, text: renderInstall(result) };
-  if (refused.length === 0) {
-    return output;
-  }
-  return {
-    ...output,
-    exitCode: 1,
-    warnings: refused.map((t) => `refused ${t.target}: ${t.message}`),
+  const warnings = [
+    ...(flags.mcpCommand === undefined ? [] : [MCP_COMMAND_DEPRECATION]),
+    ...refused.map((t) => `refused ${t.target}: ${t.message}`),
+  ];
+  const output: CommandOutput = {
+    json: result,
+    text: renderInstall(result),
+    ...(warnings.length === 0 ? {} : { warnings }),
   };
+  return refused.length === 0 ? output : { ...output, exitCode: 1 };
 }

@@ -12,11 +12,15 @@ import { isMap, isScalar, isSeq, parseDocument, type Document } from 'yaml';
 
 import {
   BLOCK_END,
+  CLAUDE_HOOK_EVENTS,
   type ClaudeHookEvent,
+  type ClaudeHookKey,
+  HOOK_DEFAULT_EXECUTABLE,
   MCP_ENTRY,
   MCP_LOCAL_ARGS,
   OPENSPEC_OPERATIONS,
   OPENSPEC_PREFIX,
+  hookExecutable,
 } from './installed-text.js';
 
 /** The `code` of a Node.js system error, or null. */
@@ -415,9 +419,26 @@ export function isManagedMcpEntry(value: unknown): boolean {
  * give null. Pure.
  */
 export function hookMarkerVersion(command: unknown): number | null {
-  void command;
-  throw new Error('not implemented');
+  if (typeof command !== 'string') {
+    return null;
+  }
+  const match = HOOK_MARKER_AT_END.exec(command);
+  return match?.[1] === undefined ? null : toVersion(match[1]);
 }
+
+/** The marker at the very end of a hook command, capturing its version. */
+const HOOK_MARKER_AT_END = /# agentboard-hooks: v(0|[1-9]\d*)$/;
+
+/**
+ * A whole hook command as `hookCommand` renders it: the executable (the
+ * default command line, one unquoted shell-safe word, or one single-quoted
+ * word), ` hook `, the event, an optional ` --strict`, a space and the
+ * marker. Groups: executable text, event, `--strict`, version.
+ */
+const HOOK_COMMAND = new RegExp(
+  `^(${HOOK_DEFAULT_EXECUTABLE.replaceAll(/[.+@/-]/g, '\\$&')}|[A-Za-z0-9_./@%+=:,-]+|'(?:[^']|'\\\\'')*')` +
+    ` hook (${CLAUDE_HOOK_EVENTS.map((e) => e.event).join('|')})( --strict)? # agentboard-hooks: v(0|[1-9]\\d*)$`,
+);
 
 /** An agentboard hook command taken apart (see `parseHookCommand`). */
 export interface ParsedHookCommand {
@@ -440,6 +461,93 @@ export interface ParsedHookCommand {
  * `bunx agentboard` or a badly quoted word, gives null). Pure.
  */
 export function parseHookCommand(command: string): ParsedHookCommand | null {
-  void command;
-  throw new Error('not implemented');
+  const match = HOOK_COMMAND.exec(command);
+  if (match === null) {
+    return null;
+  }
+  const [, text = '', event = '', strict, digits = ''] = match;
+  const version = toVersion(digits);
+  if (version === null || !isHookEvent(event)) {
+    return null;
+  }
+  let executable: string | null;
+  if (text === HOOK_DEFAULT_EXECUTABLE) {
+    executable = null;
+  } else {
+    executable = text.startsWith("'") ? text.slice(1, -1).replaceAll("'\\''", "'") : text;
+    if (hookExecutable(executable) !== text) {
+      return null;
+    }
+  }
+  return { executable, event, strict: strict !== undefined, version };
+}
+
+function isHookEvent(value: string): value is ClaudeHookEvent {
+  return CLAUDE_HOOK_EVENTS.some((e) => e.event === value);
+}
+
+/** The parsed `.claude/settings.json`: its top-level object and whether it began with a byte order mark. */
+export interface ClaudeSettings {
+  readonly bom: boolean;
+  readonly settings: Record<string, unknown>;
+}
+
+/**
+ * Parses the text of `.claude/settings.json`: a leading UTF-8 byte order
+ * mark is skipped and recorded; null when the rest is not valid JSON or
+ * its top level is not an object (`malformed-settings`).
+ */
+export function parseClaudeSettings(text: string): ClaudeSettings | null {
+  const bom = text.startsWith('\uFEFF');
+  const settings = parseMcpJson(bom ? text.slice(1) : text);
+  return settings === null ? null : { bom, settings };
+}
+
+/**
+ * True when the `hooks` of a parsed settings object has the shape
+ * agentboard can merge into: absent, or an object whose `SessionStart`,
+ * `Stop` and `PreToolUse`, where present, are arrays (`hooks-shape`
+ * otherwise; other keys of `hooks` may hold anything).
+ */
+export function hasHooksShape(settings: Record<string, unknown>): boolean {
+  if (!Object.hasOwn(settings, 'hooks')) {
+    return true;
+  }
+  const hooks = settings.hooks;
+  return (
+    isJsonObject(hooks) &&
+    CLAUDE_HOOK_EVENTS.every(({ key }) => !Object.hasOwn(hooks, key) || Array.isArray(hooks[key]))
+  );
+}
+
+/**
+ * The handlers of one element of a `hooks.<key>` array: the elements of
+ * its `hooks` array when it is an object holding one, else none (an
+ * element of any other shape is user content with no handler).
+ */
+export function groupHandlers(group: unknown): readonly unknown[] {
+  return isJsonObject(group) && Array.isArray(group.hooks) ? (group.hooks as unknown[]) : [];
+}
+
+/** True when `handler` is an object whose `command` ends with the marker (`hookMarkerVersion`). */
+export function isOwnedHandler(handler: unknown): handler is Record<string, unknown> {
+  return isJsonObject(handler) && hookMarkerVersion(handler.command) !== null;
+}
+
+/**
+ * The `hooks.<key>` arrays of a settings object whose hooks have the
+ * expected shape (`hasHooksShape`), for the keys present, in
+ * `CLAUDE_HOOK_EVENTS` order.
+ */
+export function hookArrays(
+  settings: Record<string, unknown>,
+): { key: ClaudeHookKey; event: ClaudeHookEvent; groups: unknown[] }[] {
+  const hooks = settings.hooks;
+  if (!isJsonObject(hooks)) {
+    return [];
+  }
+  return CLAUDE_HOOK_EVENTS.flatMap(({ key, event }) => {
+    const groups = hooks[key];
+    return Array.isArray(groups) ? [{ key, event, groups: groups as unknown[] }] : [];
+  });
 }
