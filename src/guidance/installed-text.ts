@@ -404,8 +404,12 @@ export interface ClaudeHookGroup {
 /**
  * The executable text at the start of a hook command:
  * - `command` undefined: `HOOK_DEFAULT_EXECUTABLE`;
- * - `command` made only of the characters `A-Z a-z 0-9 _ . / @ % + = : , -`
- *   (non-empty): written as given;
+ * - `command` made only of the characters `A-Z a-z 0-9 _ . / @ % + : , -`
+ *   (non-empty), not starting with `-` and not one of
+ *   `SHELL_RESERVED_WORDS`: written as given;
+ * - a value with `=` (which the shell would read as an assignment), a
+ *   leading `-` (which `installGuidance` refuses anyway) or equal to a
+ *   reserved word: single-quoted like the next case;
  * - anything else (a space, `$`, `~`, `#`, a quote, a backslash, a
  *   carriage return, ...): one POSIX shell word in single quotes, each `'`
  *   written as `'\''`, so the shell runs exactly that path, with no
@@ -422,6 +426,60 @@ export function hookExecutable(command?: string): string {
   }
   return `'${command.replaceAll("'", "'\\''")}'`;
 }
+
+/**
+ * Words a POSIX shell (or bash) may read as reserved at the start of a
+ * command; a `--command` value equal to one is single-quoted so it names
+ * an executable (POSIX reserved words, plus `[[`, `]]`, `function`,
+ * `select` and `time`).
+ */
+export const SHELL_RESERVED_WORDS: readonly string[] = [
+  '!',
+  '{',
+  '}',
+  'case',
+  'do',
+  'done',
+  'elif',
+  'else',
+  'esac',
+  'fi',
+  'for',
+  'if',
+  'in',
+  'then',
+  'until',
+  'while',
+  '[[',
+  ']]',
+  'function',
+  'select',
+  'time',
+];
+
+/**
+ * The POSIX special built-ins. A shell finds these before any file on the
+ * PATH, quoted or not, so a `--command` value equal to one (with no `/`)
+ * is refused as a usage error: no rendering could run an executable of
+ * that name.
+ */
+export const SHELL_SPECIAL_BUILTINS: readonly string[] = [
+  'break',
+  ':',
+  'continue',
+  '.',
+  'eval',
+  'exec',
+  'exit',
+  'export',
+  'readonly',
+  'return',
+  'set',
+  'shift',
+  'times',
+  'trap',
+  'unset',
+];
 
 /** A non-empty executable text that needs no quoting in a POSIX shell. */
 const SHELL_SAFE_WORD = /^[A-Za-z0-9_./@%+=:,-]+$/;

@@ -241,6 +241,25 @@ export type InstallAction = 'created' | 'updated' | 'unchanged' | 'refused';
  *   content and never a reason. With `--force` each offending value is
  *   replaced, at its key position, by an object or array holding only
  *   the agentboard entries; every other key is kept.
+ * - `malformed-settings` also covers bytes that are not valid UTF-8 (after
+ *   a leading byte order mark): a stray Latin-1 byte, an overlong
+ *   sequence, an encoded surrogate. They are never replaced by U+FFFD and
+ *   written back; `--force` replaces the file as for invalid JSON (keeping
+ *   a leading byte order mark). For `.mcp.json` the same bytes are its
+ *   `malformed-file` refusal (even with `--force`, as for invalid JSON).
+ * - `lossy-json` (`claude-hooks`, `mcp-json`): the file must be rewritten
+ *   and the rewrite would not give back every value and key order the
+ *   user wrote (`jsonRewriteIsLossless` is false): a number literal whose
+ *   exact decimal value the rewritten literal does not have (`1e400`,
+ *   `12345678901234567890`, `0.10000000000000000001`), `-0`, a duplicate
+ *   key in any object, or array-index keys (`"0"` to `"4294967294"`,
+ *   canonical form) after other keys or out of ascending order, which
+ *   JavaScript would move. Nothing is written. With `--force` the file is
+ *   rewritten anyway, discarding exactly that: the extra digits (the
+ *   nearest JS number, or `null` for a literal out of range), the sign of
+ *   `-0`, every occurrence of a duplicate key but the last, and the order
+ *   of array-index keys. A file that needs no write is never refused. The
+ *   message names the file and never its content.
  * - `outside-tree` (every target):
  *   the target path, with symlinks resolved (`realpathSync` of the file
  *   when it exists, else of its nearest existing ancestor, with the rest of
@@ -276,6 +295,7 @@ export type RefusalReason =
   | 'entry-differs'
   | 'malformed-settings'
   | 'hooks-shape'
+  | 'lossy-json'
   | 'malformed-file'
   | 'missing-file'
   | 'outside-tree'
@@ -399,6 +419,7 @@ const FORCEABLE: readonly RefusalReason[] = [
   'entry-differs',
   'malformed-settings',
   'hooks-shape',
+  'lossy-json',
 ];
 
 function done(action: Exclude<InstallAction, 'refused'>, message: string): Handled {
@@ -948,8 +969,13 @@ export const MCP_COMMAND_DEPRECATION =
 
 /**
  * Throws `usage` when `--command` (or `--mcp-command`, when `flag` says
- * the value came from it) was given an empty value or a line feed. The
- * message names the flag, never the value.
+ * the value came from it) was given, in this order of checks, an empty
+ * value (`--<flag> must not be empty`), a line feed (`--<flag> must not
+ * contain a newline`), a value starting with `-` (`--<flag> must not
+ * start with a hyphen`), or a value equal to one of
+ * `SHELL_SPECIAL_BUILTINS` (`--<flag> must not be a shell special
+ * built-in; give the path of the executable`). The message names the
+ * flag, never the value.
  */
 function validateCommand(command: string | undefined, flag: InstallOptions['commandFlag']): void {
   const name = flag ?? 'command';
@@ -1008,8 +1034,8 @@ function selectTargets(
  *
  * 1. `root = workingTreeRoot(cwd, env)`; `version = options.version ??
  *    GUIDANCE_VERSION`.
- * 2. Selection. `command`, when given, must be non-empty and contain no
- *    `\n`, else `BoardError(1, 'usage', <message>)` naming the flag given
+ * 2. Selection. `command`, when given, must pass `validateCommand`
+ *    (non-empty, no `\n`, no leading `-`, not a special built-in), else `BoardError(1, 'usage', <message>)` naming the flag given
  *    (`--command`, or `--mcp-command` when `commandFlag` is `mcp-command`)
  *    and saying why (empty, or contains a newline), never the value, before
  *    anything else is checked and before anything is written. Every

@@ -551,3 +551,43 @@ export function hookArrays(
     return Array.isArray(groups) ? [{ key, event, groups: groups as unknown[] }] : [];
   });
 }
+
+/**
+ * Reads `path` as strict UTF-8 (`TextDecoder('utf-8', { fatal: true })`)
+ * after removing one leading byte order mark (EF BB BF): `null` when the
+ * file does not exist, `invalid` when the bytes are not valid UTF-8 (a
+ * Latin-1 byte, an overlong sequence, an encoded surrogate, a truncated
+ * sequence), else the text without the mark and whether it had one. Used
+ * for `.claude/settings.json` and `.mcp.json`, which agentboard rewrites,
+ * so a byte it cannot read is never turned into U+FFFD and written back.
+ * Permission errors propagate as from `readFileSync`.
+ */
+export function readUtf8Json(
+  path: string,
+): { readonly text: string; readonly bom: boolean } | 'invalid' | null {
+  void path;
+  throw new Error('not implemented');
+}
+
+/**
+ * True when `JSON.stringify(JSON.parse(text))` would give back every
+ * value and the key order of `text` (valid JSON, without a byte order
+ * mark), that is when `text` has none of:
+ * - a number literal whose exact decimal value differs from that of the
+ *   literal `JSON.stringify` writes for it (`1e400` and `-1e400`, which
+ *   become `null`; `12345678901234567890`; `0.10000000000000000001`;
+ *   `18446744073709551616`, written `18446744073709552000`); literals that
+ *   only spell the same value differently (`1.0`, `1e2`, `2.5E-3`, `-5`)
+ *   are fine;
+ * - `-0` in any spelling (`-0`, `-0.0`, `-0e5`);
+ * - a key that appears twice in one object, at any depth;
+ * - an object whose array-index keys (canonical decimal strings `"0"` to
+ *   `"4294967294"`) are not all before its other keys in ascending
+ *   numeric order, which JavaScript would reorder (`{"b":1,"10":2}`,
+ *   `{"10":1,"2":2}`); `"01"`, `"-1"` and `"4294967295"` are ordinary keys.
+ * Pure; never throws for valid JSON.
+ */
+export function jsonRewriteIsLossless(text: string): boolean {
+  void text;
+  throw new Error('not implemented');
+}
