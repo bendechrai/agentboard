@@ -784,6 +784,75 @@ without `--force` as below.
   carries `registerCommands`, and the check test that installs every
   target expects the shared block once.
 
+## Rulings from review round 1 of task group 4
+
+Taken by the orchestrator on the two reviews of PR #142 (reviewer-hk4
+approved with nits; reviewer-hk4-2 requested changes), posted as
+`DECISION:` comments on the group's ticket, written into the spec delta
+where they change behaviour and pinned by the tests and the contracts in
+`src/guidance/install.ts` (`RefusalReason`, `validateCommand`):
+
+- **R1 A marker that is not a comment line is never the block.** In
+  `config.toml` a marker-like line that the scan does not classify as a
+  comment line (inside a multi-line string, inside an array or inline
+  table spanning lines, or after a key) makes the markers malformed, also
+  when the lines look like a well-formed pair: install refuses it as
+  `malformed-marker` (repeating none of it; a `--command` switch is
+  refused the same way), and `check` reports `modified`. Refined by the
+  test author: `--force` does not override this case. The text is part
+  of the user's value, so removing it would change user data, and leaving
+  it would make every later install need `--force` again; the message
+  does not offer `--force`. Markdown targets (`AGENTS.md`, the Copilot
+  file, the Cursor rule and `SKILL.md`) are out of scope: Markdown has no
+  unambiguous comment position (a fence can be opened by an indented or
+  unclosed line, inside lists and quotes), so detecting "inside a fenced
+  code block" needs a CommonMark block parser, and any approximation can
+  turn an existing 0.3.0 install from `current` into `modified` (for
+  example a block that 0.3.0 appended after an unclosed fence), against
+  "Existing installs stay current". There, the worst case is agentboard
+  editing text between its own markers inside a code example, not
+  changing a configuration value.
+- **R2 Marker text in `--command`.** A `--command` (or `--mcp-command`)
+  value containing the text of any agentboard marker (`<!--
+  agentboard:start`, `<!-- agentboard:end`, `# agentboard:start`, `#
+  agentboard:end`, `<!-- agentboard-guidance:`, `# agentboard-hooks:`) is
+  a usage error, `--<flag> must not contain agentboard marker text`,
+  checked last among the `--command` checks, naming the flag and never
+  the value.
+- **R3 `--force` keeps what belongs to the next table.** Replacing a
+  foreign `[mcp_servers.agentboard]` table removes only its own header
+  and key lines (key/value and continuation lines, with the comment and
+  blank lines between them); the run of comment and blank lines directly
+  above the next header, marker line or the end of the file stays.
+- **R4 A line the scan cannot read is `malformed-file`.** A statement
+  that is neither a header nor a key/value line, a header or key that
+  does not parse, and an escape in any basic string, key or value, other
+  than `\b \t \n \f \r \e \" \\`, a valid `\uXXXX` or `\UXXXXXXXX` and a
+  multi-line string's line-ending backslash, make `config.toml`
+  `malformed-file`, even with `--force` (`\x41` included), instead of
+  being skipped. `check` treats such a file as it treats invalid UTF-8.
+- **R5 Linear trimming.** `bare()` trims marker-like lines without a
+  backtracking regular expression; a 200 KB marker-like line in
+  `config.toml`, `AGENTS.md` or the Copilot file is refused within a
+  second (tested through the built CLI in a child killed after 10 s).
+  The other marker expressions (`wellFormedStart`, the skill and OpenSpec
+  version lines, matched on trimmed or anchored text without nested
+  quantifiers) are linear.
+- **R6 Mutant tests and hygiene.** Tests for a foreign table directly
+  above the marked block under `--force` (M20), `command = ""` between
+  the markers (`entry-differs`, M24), multi-line strings closed by four
+  or five quotes inside an array (M2), and the atomic replace of
+  `.cursor/mcp.json` (a new inode, M19). Tests that use a relative or
+  empty HOME or CODEX_HOME run with the process in a fresh temporary
+  directory, which must stay empty, so a regression cannot write into the
+  repository.
+- **R7** The spec's strict UTF-8 and `lossy-json` sentences name
+  `.cursor/mcp.json` and Antigravity's `mcp_config.json` too.
+- **Accepted, no change:** a block rewritten into a CRLF `config.toml`
+  is written with line feeds, so the file has mixed line ends; this is
+  the 0.3.0 behaviour of the `AGENTS.md` block, and changing it would
+  change existing installs.
+
 ## Risks / Trade-offs
 
 - **PreToolUse is intrusive and adds latency to every edit** -> warn-only

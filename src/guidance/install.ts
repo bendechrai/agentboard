@@ -382,7 +382,14 @@ export type InstallAction = 'created' | 'updated' | 'unchanged' | 'refused';
  *   `CODEX_BLOCK_END`, matched as the `AGENTS.md` ones: a marker-like line
  *   contains `# agentboard:start` or `# agentboard:end`; `--force`
  *   removes every marker-like line and nothing else, then installs as
- *   into a file without markers).
+ *   into a file without markers). A marker-like line of `config.toml`
+ *   that is not a comment line by the TOML scan (inside a multi-line
+ *   string, inside an array or inline table spanning lines, or after a
+ *   key) is never one of the block's markers: the markers are then
+ *   malformed, even when they look like a well-formed pair, and `--force`
+ *   does not override this (that text is the user's value, so nothing is
+ *   removed; the message does not offer `--force`). Review round 1 of
+ *   task group 4, R1.
  * - `entry-differs` also covers `mcpServers.agentboard` in
  *   `.cursor/mcp.json` and in Antigravity's `mcp_config.json` (the
  *   `.mcp.json` rules), and a Codex block whose text between the markers
@@ -395,7 +402,13 @@ export type InstallAction = 'created' | 'updated' | 'unchanged' | 'refused';
  *   `malformed-file` also covers a `config.toml` that is not strict UTF-8
  *   after a leading byte order mark, or that ends inside a multi-line
  *   string or an unclosed array or inline table (appending the block
- *   would land inside it), even with `--force`.
+ *   would land inside it), even with `--force`; and (R4) a `config.toml`
+ *   holding a line the scan cannot fully read: a statement that is no
+ *   header and no key/value line, a header or key that does not parse,
+ *   or an escape in any basic string (key or value, one-line or
+ *   multi-line) other than `\b \t \n \f \r \e \" \\`, a valid
+ *   `\uXXXX` or `\UXXXXXXXX`, or a line-ending backslash in a multi-line
+ *   string (so `\x41` is refused).
  * - `foreign-table` (`codex`, `--global`): `config.toml` has, outside the
  *   markers, a table header `[k]` whose key `k` is `mcp_servers.agentboard`
  *   or below it (`mcp_servers.agentboard.env`). Keys compare after
@@ -403,10 +416,13 @@ export type InstallAction = 'created' | 'updated' | 'unchanged' | 'refused';
  *   parts, whitespace around the dots and the brackets, an indented header
  *   and a trailing comment are all the same key; case matters. A header
  *   inside a multi-line string or array is not a header. With `--force`
- *   each such table (from its header line to the line before the next
- *   header, or the end of the file) is removed, and the block goes where
- *   the marked block is, else where the first removed table was. Overridden
- *   by `--force`.
+ *   each such table's own lines are removed: its header line through its
+ *   last key/value or continuation line before the next header, marker
+ *   line or the end of the file, so the run of comment and blank lines
+ *   directly above the next header (or at the end of the file) stays, as
+ *   it belongs to what follows (R3); comment and blank lines between the
+ *   table's key lines go with it. The block goes where the marked block
+ *   is, else where the first removed table was. Overridden by `--force`.
  * - `toml-shape` (`codex`, `--global`): `config.toml` defines the server,
  *   outside the markers, in a way a line edit cannot replace or that a
  *   `[mcp_servers.agentboard]` header would make invalid TOML: an array of
@@ -1437,8 +1453,13 @@ export const MCP_COMMAND_DEPRECATION =
  * quoted), a value equal to one of `SHELL_SPECIAL_BUILTINS` (`--<flag>
  * must not be a shell special built-in; give the path of the
  * executable`), or a value equal to one of `SHELL_BUILTINS` (`--<flag>
- * must not be a shell built-in; give the path of the executable`). Only
- * the whole value is compared: a path ending in such a name
+ * must not be a shell built-in; give the path of the executable`), and
+ * last (R2) a value containing the text of any agentboard marker,
+ * `<!-- agentboard:start`, `<!-- agentboard:end`, `# agentboard:start`,
+ * `# agentboard:end`, `<!-- agentboard-guidance:` or `# agentboard-hooks:`
+ * (`--<flag> must not contain agentboard marker text`), which would
+ * write a file agentboard then refuses itself. Only the built-in checks
+ * compare the whole value: a path ending in such a name
  * (`/usr/local/bin/echo`) and a `+` or `%` after the first character are
  * fine. The message names the flag, never the value.
  */

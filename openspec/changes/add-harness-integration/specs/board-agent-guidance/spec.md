@@ -80,7 +80,8 @@ on stderr as the first stderr line of every run that does not end in a
 usage error; giving both flags SHALL exit 1 with reason `usage`, repeating
 neither value, and write nothing. `--command` sets the executable for every MCP entry and for the
 hooks. An empty
-`--command` (or `--mcp-command`) value, one containing a newline, one
+`--command` (or `--mcp-command`) value, one containing a newline or the
+text of an agentboard marker, one
 starting with `-`, `+` or `%`, or one equal to a shell built-in (a POSIX
 special built-in, or a regular built-in of sh, bash or zsh, which the shell
 runs instead of any file of that name) SHALL
@@ -168,11 +169,11 @@ In every markdown, TOML and text file, everything outside the owned region SHALL
 preserved byte for byte. In `openspec/config.yaml` and every JSON file, which
 are rewritten through a YAML or JSON serializer, every key, value, entry,
 comment and their order outside the owned entries SHALL be preserved, while
-insignificant formatting (indentation, quoting style) MAY be normalized. `.claude/settings.json` and `.mcp.json` SHALL be
-decoded as strict UTF-8 (after a byte order mark): other bytes are refused
+insignificant formatting (indentation, quoting style) MAY be normalized. `.claude/settings.json`, `.mcp.json`, `.cursor/mcp.json` and
+Antigravity's `mcp_config.json` SHALL be decoded as strict UTF-8 (after a byte order mark): other bytes are refused
 as for invalid JSON, never replaced, and so is a file nested more than 512
 levels deep, which SHALL be refused without an internal error and without
-leaving another target of the run written but unreported. When rewriting either file would not
+leaving another target of the run written but unreported. When rewriting any of these files would not
 give back every value and key order (a number literal the rewrite would
 write with another decimal value, `-0`, a duplicate key, array-index keys
 JavaScript would reorder), the target SHALL be refused as `lossy-json`
@@ -197,7 +198,17 @@ the block's table) SHALL be refused as `toml-shape` even with `--force`,
 and so SHALL a `config.toml` that is not strict UTF-8 or ends inside a
 multi-line string, array or inline table (`malformed-file`). Headers and
 keys inside multi-line strings are not definitions, and quoted and bare
-spellings of a key are the same key.
+spellings of a key are the same key. A `config.toml` line the scan cannot
+fully read (no header or key/value statement, a key that does not parse,
+or an escape other than TOML's and `\e`, such as `\x41`) SHALL make the
+file `malformed-file`, even with `--force`. A Codex marker line that is
+not a TOML comment line (inside a multi-line string, an array or an
+inline table, or after a key) SHALL never be taken as the block's marker:
+the target is refused as `malformed-marker`, even with `--force` and
+without offering it, and `agents check` reports it `modified`. `--force`
+on a foreign `[mcp_servers.agentboard]` table replaces only its header
+and key lines, keeping the comment and blank lines directly above the
+next table header.
 
 #### Scenario: User content in AGENTS.md survives
 - **WHEN** `AGENTS.md` contains user text before and after an existing managed block and `agents install --target agents-md` runs with a newer guidance version
@@ -218,6 +229,10 @@ spellings of a key are the same key.
 #### Scenario: Unreplaceable Codex definition is refused
 - **WHEN** the global `config.toml` (in a scratch `CODEX_HOME`) defines `mcp_servers.agentboard.command` with a dotted key
 - **THEN** `agents install --target codex --global --force` refuses it as `toml-shape` and leaves the file unchanged
+
+#### Scenario: Marker pair inside a TOML string is not the block
+- **WHEN** the global `config.toml` holds a well-formed agentboard block inside a multi-line string value
+- **THEN** `agents install --target codex --global` (also with `--command`) refuses it as `malformed-marker`, the file is unchanged, and `agents check --global` reports codex `modified`
 
 #### Scenario: Foreign Cursor rule is refused
 - **WHEN** `.cursor/rules/agentboard.mdc` exists without the marker
